@@ -1322,24 +1322,18 @@ class ParityRecorder:
         return cls._canonical_module_path(result.module_path)
 
     @staticmethod
-    def _hf_module_path(result: ComparisonResult) -> str:
-        for endpoint_path in result.module_path.split("<->"):
+    def _endpoint_module_path(result: ComparisonResult) -> str:
+        endpoint_paths = result.module_path.split("<->")
+        preferred_paths = [
+            endpoint_path
+            for endpoint_path in endpoint_paths
+            if endpoint_path.strip().startswith("hf:")
+        ]
+        for endpoint_path in preferred_paths or reversed(endpoint_paths):
             value = endpoint_path.strip()
-            if not value.startswith("hf:"):
-                continue
-            path = value.removeprefix("hf:")
-            path = re.sub(
-                r"^(?:fp32|bf16|bfloat16)@[^:]+(?:\[[^]]+\])?:",
-                "",
-                path,
-            )
-            for precision in ("fp32:", "bf16:", "bfloat16:"):
-                if path.startswith(precision):
-                    path = path.removeprefix(precision)
-                    break
-            if path.startswith("layers."):
-                return "-"
-            return path
+            path = value.rsplit(":", 1)[-1]
+            if path:
+                return path
         return "-"
 
     @classmethod
@@ -1758,7 +1752,7 @@ class ParityRecorder:
     def table(self, *, color: bool = False) -> str:
         headers = (
             "component",
-            "hf_path",
+            "endpoint_path",
             "actual_dtype",
             "expected_dtype",
             "actual",
@@ -1798,7 +1792,7 @@ class ParityRecorder:
                 " | ".join(
                     (
                         self._display_path(result),
-                        self._hf_module_path(result),
+                        self._endpoint_module_path(result),
                         result.actual_dtype or "-",
                         result.expected_dtype or "-",
                         result.actual_summary or "-",
@@ -1826,7 +1820,7 @@ class ParityRecorder:
     def html_table(self) -> str:
         headers = (
             ("component", ""),
-            ("hf_path", "path"),
+            ("endpoint_path", "path"),
             ("actual_dtype", "dtype"),
             ("expected_dtype", "dtype"),
             ("actual", "value"),
@@ -1863,7 +1857,7 @@ class ParityRecorder:
             rows.append(
                 f"<tr{row_class}>"
                 + cell(self._display_path(result))
-                + cell(self._hf_module_path(result), "path")
+                + cell(self._endpoint_module_path(result), "path")
                 + cell(result.actual_dtype or "-", "dtype")
                 + cell(result.expected_dtype or "-", "dtype")
                 + cell(result.actual_summary or "-", "value")
@@ -1900,8 +1894,10 @@ class ParityRecorder:
             )
         controls = "".join(
             f"<button type='button' data-column-group='{group}' "
-            "onclick=\"this.closest('.parity-table-container').classList."
-            f"toggle('hide-{group}')\">Toggle {label}</button>"
+            "aria-pressed='false' onclick=\"const container=this.closest("
+            "'.parity-table-container');const pressed=container.classList."
+            f"toggle('hide-{group}');this.setAttribute('aria-pressed',pressed)\">"
+            f"Toggle {label}</button>"
             for group, label in (
                 ("path", "paths"),
                 ("dtype", "dtypes"),
@@ -2072,20 +2068,18 @@ class ParityRecorder:
                     f"fill='{marker}'><title>{escape(name)} layer {layer}: "
                     f"max_abs={result.max_abs:.6g}</title></circle>"
                 )
-        legend_x = left
-        for index, name in enumerate(populated):
-            x_value = legend_x + index * 180
-            svg.append(
-                f"<line x1='{x_value}' y1='{height - 12}' x2='{x_value + 22}' "
-                f"y2='{height - 12}' stroke='{colors[name]}' stroke-width='3'/>"
-                f"<text x='{x_value + 28}' y='{height - 8}'>{escape(name)}</text>"
-            )
         svg.append("</svg>")
+        legend = "".join(
+            "<span class='error-chart-legend-item'>"
+            f"<span class='error-chart-swatch' style='background:{colors[name]}'></span>"
+            f"<span>{escape(name)}</span></span>"
+            for name in populated
+        )
         return (
             "<div class='error-chart'><h3>Max-abs error by layer</h3>"
             "<p>Log scale. Red markers identify configured explosion points.</p>"
             + "".join(svg)
-            + "</div>"
+            + f"<div class='error-chart-legend'>{legend}</div></div>"
         )
 
     def html_section(self, section_id: str) -> str:
@@ -2111,7 +2105,11 @@ class ParityRecorder:
                     "<!doctype html><html><head><meta charset='utf-8'>"
                     "<style>body{font-family:monospace}"
                     ".column-controls{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}"
-                    ".column-controls button{cursor:pointer;padding:4px 10px}"
+                    ".column-controls button{cursor:pointer;padding:4px 10px;"
+                    "border:1px solid #94a3b8;border-radius:4px;background:#e2e8f0;"
+                    "color:#1e293b}"
+                    ".column-controls button[aria-pressed='true']{background:#2563eb;"
+                    "border-color:#1d4ed8;color:#fff}"
                     ".parity-table-scroll{max-height:72vh;overflow:auto;border:1px solid #bbb}"
                     ".parity-table{border-collapse:separate;border-spacing:0;width:100%}"
                     ".parity-table th,.parity-table td{border:0;border-right:1px solid #bbb;"
@@ -2125,6 +2123,11 @@ class ParityRecorder:
                     ".trace{color:#007c91;font-weight:bold}"
                     ".explosion-row{background:#fff1d6}.axis{stroke:#333}.grid{stroke:#ddd}"
                     ".error-chart svg{width:100%;max-width:920px}"
+                    ".error-chart-legend{display:grid;grid-template-columns:"
+                    "repeat(auto-fit,minmax(240px,1fr));gap:6px 18px;max-width:920px}"
+                    ".error-chart-legend-item{display:flex;align-items:center;gap:8px;"
+                    "min-width:0;overflow-wrap:anywhere}"
+                    ".error-chart-swatch{width:22px;height:3px;flex:0 0 22px}"
                     "</style></head><body>"
                     f"<h1>GLM-5 parity report</h1>{self.html_section('result')}"
                     "</body></html>\n"
@@ -2196,10 +2199,10 @@ class ParitySuiteReport:
         )
         configuration = (
             "<details open><summary>Effective test configuration</summary>"
-            "<table class='configuration'><thead><tr>"
+            "<div class='configuration-scroll'><table class='configuration'><thead><tr>"
             "<th>category</th><th>parameter</th><th>effective value</th>"
             "</tr></thead><tbody>"
-            f"{configuration_rows}</tbody></table></details>"
+            f"{configuration_rows}</tbody></table></div></details>"
         )
         document = (
             "<!doctype html><html><head><meta charset='utf-8'>"
@@ -2209,12 +2212,16 @@ class ParitySuiteReport:
             ".report-toc h2{margin:4px 0 8px}.report-toc ul{display:flex;gap:18px;flex-wrap:wrap;list-style:none;padding:0}"
             "section{margin:36px 0;scroll-margin-top:16px}table{border-collapse:collapse;width:100%}"
             "th,td{border:1px solid #bbb;padding:4px 8px;text-align:left}"
-            "th{background:#f5f5f5}"
+            "thead th{position:sticky;top:0;z-index:2;background:#f5f5f5}"
             "details{margin:20px 0}summary{font-weight:bold;cursor:pointer}"
             ".configuration{width:auto;min-width:720px;margin-top:10px}"
-            ".configuration th{position:static}"
+            ".configuration-scroll{max-height:72vh;overflow:auto}"
             ".column-controls{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}"
-            ".column-controls button{cursor:pointer;padding:4px 10px}"
+            ".column-controls button{cursor:pointer;padding:4px 10px;"
+            "border:1px solid #94a3b8;border-radius:4px;background:#e2e8f0;"
+            "color:#1e293b}"
+            ".column-controls button[aria-pressed='true']{background:#2563eb;"
+            "border-color:#1d4ed8;color:#fff}"
             ".parity-table-scroll{max-height:72vh;overflow:auto;border:1px solid #bbb}"
             ".parity-table{border-collapse:separate;border-spacing:0;width:100%}"
             ".parity-table th,.parity-table td{border:0;border-right:1px solid #bbb;"
@@ -2230,6 +2237,11 @@ class ParitySuiteReport:
             ".explosion-row{background:#fff1d6}"
             ".axis{stroke:#333}.grid{stroke:#ddd}"
             ".error-chart{overflow-x:auto}.error-chart svg{width:100%;min-width:700px;max-width:920px}"
+            ".error-chart-legend{display:grid;grid-template-columns:"
+            "repeat(auto-fit,minmax(240px,1fr));gap:6px 18px;max-width:920px}"
+            ".error-chart-legend-item{display:flex;align-items:center;gap:8px;"
+            "min-width:0;overflow-wrap:anywhere}"
+            ".error-chart-swatch{width:22px;height:3px;flex:0 0 22px}"
             "</style></head><body>"
             f"<h1>{escape(self.title)}</h1>"
             "<nav id='report-contents' class='report-toc' aria-label='Report contents'>"
@@ -5195,17 +5207,19 @@ class TestGlm5Parity(
         ]
         if missing:
             return None, "missing replay tensors: " + ", ".join(missing)
-        model_size = reader.manifest["test_plan"]["model_size"]
         try:
+            replay_tensors = {
+                name: reader.tensor(key)
+                for name, key in keys.items()
+            }
+            q_rotated = replay_tensors["q_rotated"]
+            k_normalized = replay_tensors["k_normalized"]
             scores = _replay_titan_indexer_scores(
-                **{
-                    name: reader.tensor(key)
-                    for name, key in keys.items()
-                },
+                **replay_tensors,
                 attention_mask=reader.tensor(mask_key),
-                n_heads=int(model_size["index_heads"]),
-                head_dim=int(model_size["index_head_dim"]),
-                rope_head_dim=int(model_size["qk_rope_head_dim"]),
+                n_heads=int(q_rotated.shape[-2]),
+                head_dim=int(k_normalized.shape[-1]),
+                rope_head_dim=int(q_rotated.shape[-1]),
             )
         except (KeyError, RuntimeError, ValueError) as error:
             return None, f"indexer score replay failed: {error}"

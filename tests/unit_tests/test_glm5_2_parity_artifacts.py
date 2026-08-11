@@ -323,6 +323,72 @@ def test_offline_score_diagnostics_prefer_captured_scores(
     assert not reader.metadata(router_key).compare
 
 
+def test_legacy_indexer_score_replay_infers_geometry_from_tensors(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "legacy-scores"
+    writer = _writer(path)
+    prefix = "end-to-end/activation/layers.1.attention.indexer"
+    tensors = {
+        f"{prefix}.wq_b": torch.tensor([[[0.0, 2.0], [0.0, 4.0]]]),
+        f"{prefix}.rope[0]": torch.tensor([[[[1.0]], [[3.0]]]]),
+        f"{prefix}.k_norm": torch.tensor([[[0.0, 6.0], [0.0, 8.0]]]),
+        f"{prefix}.rope[1]": torch.tensor([[[[5.0]], [[7.0]]]]),
+        f"{prefix}.weights_proj": torch.ones((1, 2, 1)),
+        "fixture/data/end-to-end/causal_mask": torch.zeros((1, 2, 2)),
+    }
+    for key, value in tensors.items():
+        writer.add(
+            ObservationMetadata(
+                key=key,
+                section_id="end-to-end",
+                scope="trace",
+                component="indexer",
+                layer=1,
+                compare=False,
+            ),
+            value,
+        )
+    writer.write()
+    reader = ParityArtifactReader(path)
+    metadata = ObservationMetadata(
+        key="end-to-end/checkpoint/layers.1.attention.indexer",
+        section_id="end-to-end",
+        scope="configured",
+        component="indexer",
+        layer=1,
+        value_kind="discrete",
+    )
+
+    scores, error = glm5_parity.TestGlm5Parity._replay_artifact_indexer_scores(
+        reader, metadata
+    )
+
+    assert error == ""
+    expected = torch.tensor([[[17.0, 23.0], [39.0, 53.0]]]) / (2.0**0.5)
+    torch.testing.assert_close(scores, expected)
+
+
+def test_endpoint_path_is_visible_without_an_hf_endpoint() -> None:
+    recorder = glm5_parity.ParityRecorder(glm5_parity.BF16)
+    recorder.tensor(
+        scope="configured",
+        component="q_norm",
+        layer=3,
+        actual=torch.zeros(1),
+        expected=torch.zeros(1),
+        module_path=(
+            "titan:bf16:layers.3.attention.q_norm <-> "
+            "titan:bf16:layers.3.attention.q_norm"
+        ),
+    )
+
+    html = recorder.html_table()
+
+    assert "endpoint_path" in html
+    assert "<td class='col-path'>layers.3.attention.q_norm</td>" in html
+
+
 def test_glm5_offline_q_residual_uses_suite_tolerance(
     tmp_path: Path,
 ) -> None:
@@ -382,9 +448,14 @@ def test_glm5_2_html_contents_is_top_only_and_targets_sections(
     assert html.count("class='report-toc'") == 1
     assert ".report-toc{position:sticky" not in html
     assert ".parity-table thead th{position:sticky" in html
+    assert "class='configuration-scroll'" in html
+    assert "thead th{position:sticky" in html
     assert "data-column-group='metric'" in html
+    assert "aria-pressed='false'" in html
+    assert "button[aria-pressed='true']" in html
     assert "hide-metric" in html
     assert "class='parity-table-scroll'" in html
+    assert ".error-chart-legend{display:grid" in html
     assert "href='#section-0-component-indexer'" in html
     assert "<section id='section-0-component-indexer'>" in html
     assert html.index("class='report-toc'") < html.index("<section id=")
