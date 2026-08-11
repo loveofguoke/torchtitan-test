@@ -83,6 +83,8 @@ class PrecisionPolicy:
     exact_discrete: bool = True
 
 
+# rtol, atol
+# abs(actual - expected) <= atol + rtol * abs(expected)
 FP32 = PrecisionPolicy("fp32", torch.float32, 1e-4, 1e-5)
 BF16 = PrecisionPolicy("bf16", torch.bfloat16, 5e-2, 5e-2)
 TOP_LEVEL_COMPONENTS = {"tok_embeddings", "norm", "lm_head"}
