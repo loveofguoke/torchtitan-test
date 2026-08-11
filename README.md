@@ -13,7 +13,7 @@ Install the repositories from source into the same environment. A GPU-only
 environment needs TorchTitan and the test requirements:
 
 ```bash
-pip install -e ../torchtitan
+pip install -e ../torchtitan --no-deps
 pip install -r requirements-test.txt
 ```
 
@@ -21,8 +21,8 @@ An NPU environment also needs the matching TorchTitanTurbo checkout and its
 NPU runtime dependencies:
 
 ```bash
-pip install -e ../torchtitan
-pip install -e ../TorchTitanTurbo
+pip install -e ../torchtitan --no-deps
+pip install -e ../TorchTitanTurbo --no-deps
 pip install -r requirements-test.txt
 ```
 
