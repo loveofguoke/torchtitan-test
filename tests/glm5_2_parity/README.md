@@ -22,6 +22,16 @@ and exception are written with `status=failed`; failed runs cannot be compared.
 Because parameters and gradients are retained for offline comparison, budget at
 least two model-state sizes per artifact, plus activation traces and fixtures.
 
+End-to-end captures also retain full indexer selection scores and full router
+choice scores. When a top-k decision differs, compare reports candidate scores,
+the K/K+1 cutoff margin, and a CPU replay of legacy indexer captures. Existing
+artifacts remain comparable through the replay fallback; newly captured
+artifacts expose the device-side score trace directly.
+
+HTML result tables keep their header visible inside a bounded scroll area.
+Buttons above each table independently fold path, dtype, value, metric, and
+diagnostic column groups without hiding the component or status columns.
+
 ## Existing paired command
 
 torchtitan glm5.2 vs hf glm5.2

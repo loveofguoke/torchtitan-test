@@ -1047,6 +1047,113 @@ def _selection_mismatch_coordinates(
     return mismatched_coordinates
 
 
+def _ordered_mismatch_coordinates(
+    actual: torch.Tensor,
+    expected: torch.Tensor,
+) -> list[tuple[int, int]]:
+    """Return batch and query coordinates with different ordered values."""
+    if actual.shape != expected.shape or actual.ndim != 3:
+        return []
+    coordinates = []
+    for batch_index in range(actual.shape[0]):
+        for position in range(actual.shape[1]):
+            if not torch.equal(
+                actual[batch_index, position],
+                expected[batch_index, position],
+            ):
+                coordinates.append((batch_index, position))
+    return coordinates
+
+
+def _replay_titan_indexer_scores(
+    q_projection: torch.Tensor,
+    q_rotated: torch.Tensor,
+    k_normalized: torch.Tensor,
+    k_rotated: torch.Tensor,
+    projected_weights: torch.Tensor,
+    attention_mask: torch.Tensor,
+    *,
+    n_heads: int,
+    head_dim: int,
+    rope_head_dim: int,
+) -> torch.Tensor:
+    """Reconstruct TorchTitan index scores from captured indexer tensors."""
+    batch_size, sequence_length = q_projection.shape[:2]
+    q_full = q_projection.reshape(
+        batch_size, sequence_length, n_heads, head_dim
+    )
+    q_pass = q_full[..., rope_head_dim:]
+    k_pass = k_normalized[..., rope_head_dim:]
+    q = torch.cat((q_rotated, q_pass), dim=-1).float()
+    k = torch.cat((k_rotated.squeeze(2), k_pass), dim=-1).float()
+    scores = torch.matmul(
+        q.transpose(1, 2),
+        k.transpose(1, 2).unsqueeze(1),
+    ) * (head_dim**-0.5)
+    scores = F.relu(scores)
+    weights = projected_weights.float() * (n_heads**-0.5)
+    index_scores = torch.matmul(
+        weights.unsqueeze(-2), scores.transpose(1, 2)
+    ).squeeze(-2)
+    if attention_mask.ndim == 4:
+        attention_mask = attention_mask[:, 0]
+    if attention_mask.shape != index_scores.shape:
+        raise ValueError(
+            "captured attention mask does not match replayed index scores: "
+            f"mask={tuple(attention_mask.shape)}, "
+            f"scores={tuple(index_scores.shape)}"
+        )
+    return index_scores + attention_mask.float()
+
+
+@torch.no_grad()
+def _capture_titan_indexer_scores(
+    indexer: torch.nn.Module,
+    inputs: tuple[Any, ...],
+) -> torch.Tensor:
+    """Evaluate the indexer score path without applying top-k."""
+    if len(inputs) != 4:
+        raise ValueError(
+            f"TorchTitan indexer expected four inputs, got {len(inputs)}"
+        )
+    hidden_states, q_residual, positions, attention_mask = inputs
+    batch_size, sequence_length = hidden_states.shape[:2]
+    q_projection = indexer.wq_b(q_residual).view(
+        batch_size,
+        sequence_length,
+        indexer.n_heads,
+        indexer.head_dim,
+    )
+    q_rotated, _q_pass = torch.split(
+        q_projection,
+        [indexer.qk_rope_head_dim, indexer.head_dim - indexer.qk_rope_head_dim],
+        dim=-1,
+    )
+    k_normalized = indexer.k_norm(indexer.wk(hidden_states))
+    k_rotated, _k_pass = torch.split(
+        k_normalized.unsqueeze(2),
+        [indexer.qk_rope_head_dim, indexer.head_dim - indexer.qk_rope_head_dim],
+        dim=-1,
+    )
+    q_rotated, k_rotated = indexer.rope(
+        q_rotated, k_rotated, positions
+    )
+    projected_weights = indexer.weights_proj(
+        hidden_states.to(indexer.weights_proj.weight.dtype)
+    )
+    return _replay_titan_indexer_scores(
+        q_projection,
+        q_rotated,
+        k_normalized,
+        k_rotated,
+        projected_weights,
+        attention_mask,
+        n_heads=indexer.n_heads,
+        head_dim=indexer.head_dim,
+        rope_head_dim=indexer.qk_rope_head_dim,
+    )
+
+
 def _causal_mask(positions_BL: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
     batch_size, sequence_length = positions_BL.shape
     token_indices = torch.arange(sequence_length, device=positions_BL.device)
@@ -1717,6 +1824,29 @@ class ParityRecorder:
         return "\n".join(lines)
 
     def html_table(self) -> str:
+        headers = (
+            ("component", ""),
+            ("hf_path", "path"),
+            ("actual_dtype", "dtype"),
+            ("expected_dtype", "dtype"),
+            ("actual", "value"),
+            ("expected", "value"),
+            ("max_abs", "metric"),
+            ("mean_abs", "metric"),
+            ("rmse", "metric"),
+            ("mean_rel", "metric"),
+            ("rel_l2", "metric"),
+            ("cosine", "metric"),
+            ("mismatches", "diagnostic"),
+            ("trend", "diagnostic"),
+            ("status", ""),
+        )
+
+        def cell(value: str, group: str = "", extra_class: str = "") -> str:
+            classes = [name for name in (f"col-{group}" if group else "", extra_class) if name]
+            class_attribute = f" class='{' '.join(classes)}'" if classes else ""
+            return f"<td{class_attribute}>{escape(value)}</td>"
+
         rows = []
         for result in self.ordered_results():
             status = self._status(result)
@@ -1732,33 +1862,68 @@ class ParityRecorder:
             )
             rows.append(
                 f"<tr{row_class}>"
-                f"<td>{escape(self._display_path(result))}</td>"
-                f"<td>{escape(self._hf_module_path(result))}</td>"
-                f"<td>{escape(result.actual_dtype or '-')}</td>"
-                f"<td>{escape(result.expected_dtype or '-')}</td>"
-                f"<td>{escape(result.actual_summary or '-')}</td>"
-                f"<td>{escape(result.expected_summary or '-')}</td>"
-                f"<td>{'-' if result.max_abs is None else f'{result.max_abs:.6g}'}</td>"
-                f"<td>{'-' if result.mean_abs is None else f'{result.mean_abs:.6g}'}</td>"
-                f"<td>{'-' if result.rmse is None else f'{result.rmse:.6g}'}</td>"
-                f"<td>{'-' if result.mean_rel is None else f'{result.mean_rel:.6g}'}</td>"
-                f"<td>{'-' if result.relative_l2 is None else f'{result.relative_l2:.6g}'}</td>"
-                f"<td>{'-' if result.cosine_similarity is None else f'{result.cosine_similarity:.8g}'}</td>"
-                f"<td>{escape(self._mismatch_display(result))}</td>"
-                f"<td>{escape(trend)}</td>"
-                f"<td class='{status_class}'>{status}</td>"
-                "</tr>"
+                + cell(self._display_path(result))
+                + cell(self._hf_module_path(result), "path")
+                + cell(result.actual_dtype or "-", "dtype")
+                + cell(result.expected_dtype or "-", "dtype")
+                + cell(result.actual_summary or "-", "value")
+                + cell(result.expected_summary or "-", "value")
+                + cell(
+                    "-" if result.max_abs is None else f"{result.max_abs:.6g}",
+                    "metric",
+                )
+                + cell(
+                    "-" if result.mean_abs is None else f"{result.mean_abs:.6g}",
+                    "metric",
+                )
+                + cell("-" if result.rmse is None else f"{result.rmse:.6g}", "metric")
+                + cell(
+                    "-" if result.mean_rel is None else f"{result.mean_rel:.6g}",
+                    "metric",
+                )
+                + cell(
+                    "-"
+                    if result.relative_l2 is None
+                    else f"{result.relative_l2:.6g}",
+                    "metric",
+                )
+                + cell(
+                    "-"
+                    if result.cosine_similarity is None
+                    else f"{result.cosine_similarity:.8g}",
+                    "metric",
+                )
+                + cell(self._mismatch_display(result), "diagnostic")
+                + cell(trend, "diagnostic")
+                + cell(status, extra_class=status_class)
+                + "</tr>"
             )
+        controls = "".join(
+            f"<button type='button' data-column-group='{group}' "
+            "onclick=\"this.closest('.parity-table-container').classList."
+            f"toggle('hide-{group}')\">Toggle {label}</button>"
+            for group, label in (
+                ("path", "paths"),
+                ("dtype", "dtypes"),
+                ("value", "values"),
+                ("metric", "metrics"),
+                ("diagnostic", "diagnostics"),
+            )
+        )
+        header_cells = []
+        for name, group in headers:
+            class_attribute = f" class='col-{group}'" if group else ""
+            header_cells.append(
+                f"<th{class_attribute}>{escape(name)}</th>"
+            )
+        header = "".join(header_cells)
         return (
-            "<table><thead><tr><th>component</th><th>hf_path</th>"
-            "<th>actual_dtype</th><th>expected_dtype</th>"
-            "<th>actual</th>"
-            "<th>expected</th><th>max_abs</th><th>mean_abs</th><th>rmse</th>"
-            "<th>mean_rel</th><th>rel_l2</th><th>cosine</th>"
-            "<th>mismatches</th><th>trend</th><th>status</th>"
-            "</tr></thead><tbody>"
+            "<div class='parity-table-container'>"
+            f"<div class='column-controls'>{controls}</div>"
+            "<div class='parity-table-scroll'>"
+            f"<table class='parity-table'><thead><tr>{header}</tr></thead><tbody>"
             + "".join(rows)
-            + "</tbody></table>"
+            + "</tbody></table></div></div>"
         )
 
     def html_error_curve(self) -> str:
@@ -1944,9 +2109,18 @@ class ParityRecorder:
             if output_path.lower().endswith(".html"):
                 html_report = (
                     "<!doctype html><html><head><meta charset='utf-8'>"
-                    "<style>body{font-family:monospace}table{border-collapse:collapse}"
-                    "th,td{border:1px solid #bbb;padding:4px 8px}"
-                    "td:first-child{white-space:nowrap}"
+                    "<style>body{font-family:monospace}"
+                    ".column-controls{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}"
+                    ".column-controls button{cursor:pointer;padding:4px 10px}"
+                    ".parity-table-scroll{max-height:72vh;overflow:auto;border:1px solid #bbb}"
+                    ".parity-table{border-collapse:separate;border-spacing:0;width:100%}"
+                    ".parity-table th,.parity-table td{border:0;border-right:1px solid #bbb;"
+                    "border-bottom:1px solid #bbb;padding:4px 8px;text-align:left}"
+                    ".parity-table thead th{position:sticky;top:0;z-index:2;background:#f5f5f5}"
+                    ".parity-table td:first-child{white-space:nowrap}"
+                    ".hide-path .col-path,.hide-dtype .col-dtype,"
+                    ".hide-value .col-value,.hide-metric .col-metric,"
+                    ".hide-diagnostic .col-diagnostic{display:none}"
                     ".pass{color:#087f23;font-weight:bold}.fail{color:#b00020;font-weight:bold}"
                     ".trace{color:#007c91;font-weight:bold}"
                     ".explosion-row{background:#fff1d6}.axis{stroke:#333}.grid{stroke:#ddd}"
@@ -2039,7 +2213,17 @@ class ParitySuiteReport:
             "details{margin:20px 0}summary{font-weight:bold;cursor:pointer}"
             ".configuration{width:auto;min-width:720px;margin-top:10px}"
             ".configuration th{position:static}"
-            "td:first-child{white-space:nowrap}"
+            ".column-controls{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}"
+            ".column-controls button{cursor:pointer;padding:4px 10px}"
+            ".parity-table-scroll{max-height:72vh;overflow:auto;border:1px solid #bbb}"
+            ".parity-table{border-collapse:separate;border-spacing:0;width:100%}"
+            ".parity-table th,.parity-table td{border:0;border-right:1px solid #bbb;"
+            "border-bottom:1px solid #bbb;padding:4px 8px;text-align:left}"
+            ".parity-table thead th{position:sticky;top:0;z-index:2;background:#f5f5f5}"
+            ".parity-table td:first-child{white-space:nowrap}"
+            ".hide-path .col-path,.hide-dtype .col-dtype,"
+            ".hide-value .col-value,.hide-metric .col-metric,"
+            ".hide-diagnostic .col-diagnostic{display:none}"
             ".pass{color:#087f23;font-weight:bold}"
             ".fail{color:#b00020;font-weight:bold}"
             ".trace{color:#007c91;font-weight:bold}"
@@ -2295,8 +2479,14 @@ class EndpointTrace:
 
     blocks: dict[str, dict[int, torch.Tensor]] = field(default_factory=dict)
     indexer: dict[str, dict[int, torch.Tensor]] = field(default_factory=dict)
+    indexer_scores: dict[str, dict[int, torch.Tensor]] = field(
+        default_factory=dict
+    )
     router: dict[str, dict[int, torch.Tensor]] = field(default_factory=dict)
     router_weights: dict[str, dict[int, torch.Tensor]] = field(default_factory=dict)
+    router_scores: dict[str, dict[int, torch.Tensor]] = field(
+        default_factory=dict
+    )
     expert_load: dict[str, dict[int, torch.Tensor]] = field(default_factory=dict)
     moe_inputs: dict[str, dict[int, torch.Tensor]] = field(default_factory=dict)
 
@@ -2313,8 +2503,10 @@ class EndpointTrace:
             label = endpoint.label
             trace.blocks[label] = {}
             trace.indexer[label] = {}
+            trace.indexer_scores[label] = {}
             trace.router[label] = {}
             trace.router_weights[label] = {}
+            trace.router_scores[label] = {}
             trace.expert_load[label] = {}
             trace.moe_inputs[label] = {}
             layers = model.model.layers if endpoint.implementation == "hf" else model.layers
@@ -2349,6 +2541,25 @@ class EndpointTrace:
                     else layer.attention.indexer
                 )
                 handles.append(indexer.register_forward_hook(capture_indexer))
+                if endpoint.implementation == "titan":
+                    def capture_indexer_scores(
+                        module,
+                        inputs,
+                        *,
+                        label=label,
+                        layer_index=layer_index,
+                    ) -> None:
+                        trace.indexer_scores[label][layer_index] = (
+                            _capture_titan_indexer_scores(module, inputs)
+                            .detach()
+                            .cpu()
+                        )
+
+                    handles.append(
+                        indexer.register_forward_pre_hook(
+                            capture_indexer_scores
+                        )
+                    )
                 if endpoint.implementation == "hf" and hasattr(layer.mlp, "gate"):
                     def capture_moe_input(
                         _module, inputs, *, label=label, layer_index=layer_index
@@ -2389,9 +2600,24 @@ class EndpointTrace:
                         _module, _inputs, output, *, label=label, layer_index=layer_index
                     ) -> None:
                         indices = output[1]
+                        scores_for_choice = output[2]
+                        expert_bias = (
+                            _inputs[1] if len(_inputs) > 1 else None
+                        )
+                        if expert_bias is not None:
+                            scores_for_choice = scores_for_choice + expert_bias
+                        if _module.num_expert_groups is not None:
+                            scores_for_choice = (
+                                _module._get_node_limited_routing_scores(
+                                    scores_for_choice
+                                )
+                            )
                         trace.router[label][layer_index] = indices.detach().cpu()
                         trace.router_weights[label][layer_index] = (
                             output[0].detach().cpu()
+                        )
+                        trace.router_scores[label][layer_index] = (
+                            scores_for_choice.detach().cpu()
                         )
                         trace.expert_load[label][layer_index] = F.one_hot(
                             indices,
@@ -4513,8 +4739,10 @@ class TestGlm5Parity(
         groups: tuple[tuple[str, dict[int, torch.Tensor], str], ...] = (
             ("decoder_block", trace.blocks[label], "tensor"),
             ("indexer", trace.indexer[label], "discrete"),
+            ("indexer_scores", trace.indexer_scores[label], "tensor"),
             ("router", trace.router[label], "discrete"),
             ("router_weights", trace.router_weights[label], "tensor"),
+            ("router_scores", trace.router_scores[label], "tensor"),
             ("expert_load", trace.expert_load[label], "discrete"),
             ("moe_input", trace.moe_inputs[label], "tensor"),
         )
@@ -4522,11 +4750,12 @@ class TestGlm5Parity(
             for layer, value in sorted(values.items()):
                 parent_path = (
                     f"layers.{layer}.attention"
-                    if component == "indexer"
+                    if component in {"indexer", "indexer_scores"}
                     else f"layers.{layer}.moe"
                     if component in {
                         "router",
                         "router_weights",
+                        "router_scores",
                         "expert_load",
                         "moe_input",
                     }
@@ -4551,8 +4780,18 @@ class TestGlm5Parity(
                     node_kind=(
                         "discrete_checkpoint"
                         if value_kind == "discrete"
+                        else "diagnostic_score"
+                        if component in {"indexer_scores", "router_scores"}
                         else "activation_checkpoint"
                     ),
+                    checkpoint=component not in {
+                        "indexer_scores",
+                        "router_scores",
+                    },
+                    compare=component not in {
+                        "indexer_scores",
+                        "router_scores",
+                    },
                     positions_key=(
                         positions_key
                         if value_kind == "discrete" and value.ndim == 3
@@ -4924,6 +5163,214 @@ class TestGlm5Parity(
         )
         return match is None
 
+    @staticmethod
+    def _replay_artifact_indexer_scores(
+        reader: ParityArtifactReader,
+        metadata: ObservationMetadata,
+    ) -> tuple[torch.Tensor | None, str]:
+        if not isinstance(metadata.layer, int):
+            return None, "indexer layer is unavailable"
+        captured_score_key = (
+            f"{metadata.section_id}/checkpoint/layers.{metadata.layer}."
+            "attention.indexer_scores"
+        )
+        if captured_score_key in reader.observation_keys:
+            return reader.tensor(captured_score_key), ""
+        prefix = (
+            f"{metadata.section_id}/activation/layers.{metadata.layer}."
+            "attention.indexer"
+        )
+        keys = {
+            "q_projection": f"{prefix}.wq_b",
+            "q_rotated": f"{prefix}.rope[0]",
+            "k_normalized": f"{prefix}.k_norm",
+            "k_rotated": f"{prefix}.rope[1]",
+            "projected_weights": f"{prefix}.weights_proj",
+        }
+        case_id = metadata.tags.get("case_id", metadata.section_id)
+        mask_key = f"fixture/data/{case_id}/causal_mask"
+        missing = [
+            key for key in (*keys.values(), mask_key)
+            if key not in reader.observation_keys
+        ]
+        if missing:
+            return None, "missing replay tensors: " + ", ".join(missing)
+        model_size = reader.manifest["test_plan"]["model_size"]
+        try:
+            scores = _replay_titan_indexer_scores(
+                **{
+                    name: reader.tensor(key)
+                    for name, key in keys.items()
+                },
+                attention_mask=reader.tensor(mask_key),
+                n_heads=int(model_size["index_heads"]),
+                head_dim=int(model_size["index_head_dim"]),
+                rope_head_dim=int(model_size["qk_rope_head_dim"]),
+            )
+        except (KeyError, RuntimeError, ValueError) as error:
+            return None, f"indexer score replay failed: {error}"
+        return scores, ""
+
+    @classmethod
+    def _offline_indexer_mismatch_detail(
+        cls,
+        *,
+        actual_reader: ParityArtifactReader,
+        expected_reader: ParityArtifactReader,
+        actual_metadata: ObservationMetadata,
+        expected_metadata: ObservationMetadata,
+        actual_topk: torch.Tensor,
+        expected_topk: torch.Tensor,
+        positions: torch.Tensor | None,
+    ) -> str:
+        if positions is None or actual_topk.ndim != 3:
+            return "score replay unavailable: indexer positions are missing"
+        coordinates = _selection_mismatch_coordinates(
+            actual_topk, expected_topk, positions
+        )
+        actual_scores, actual_error = cls._replay_artifact_indexer_scores(
+            actual_reader, actual_metadata
+        )
+        expected_scores, expected_error = cls._replay_artifact_indexer_scores(
+            expected_reader, expected_metadata
+        )
+        if actual_scores is None or expected_scores is None:
+            errors = "; ".join(
+                value for value in (actual_error, expected_error) if value
+            )
+            return f"score replay unavailable: {errors}"
+        topk = actual_topk.shape[-1]
+        entries = []
+        for batch_index, position in coordinates:
+            actual_ids = {
+                int(value) for value in actual_topk[batch_index, position]
+            }
+            expected_ids = {
+                int(value) for value in expected_topk[batch_index, position]
+            }
+            candidates = sorted(actual_ids.symmetric_difference(expected_ids))
+            candidate_scores = ", ".join(
+                f"id{candidate}:actual="
+                f"{float(actual_scores[batch_index, position, candidate]):.8g},"
+                f"expected="
+                f"{float(expected_scores[batch_index, position, candidate]):.8g}"
+                for candidate in candidates
+            )
+            actual_sorted = actual_scores[batch_index, position].sort(
+                descending=True
+            ).values
+            expected_sorted = expected_scores[batch_index, position].sort(
+                descending=True
+            ).values
+            actual_margin = (
+                float(actual_sorted[topk - 1] - actual_sorted[topk])
+                if actual_sorted.numel() > topk else float("nan")
+            )
+            expected_margin = (
+                float(expected_sorted[topk - 1] - expected_sorted[topk])
+                if expected_sorted.numel() > topk else float("nan")
+            )
+            actual_replay = actual_scores[batch_index, position].topk(
+                topk
+            ).indices
+            expected_replay = expected_scores[batch_index, position].topk(
+                topk
+            ).indices
+            entries.append(
+                f"score_replay b{batch_index},p{position} "
+                f"candidates=[{candidate_scores}] "
+                f"cutoff_margin(actual={actual_margin:.8g},"
+                f"expected={expected_margin:.8g}) "
+                f"topk(actual={actual_replay.tolist()},"
+                f"expected={expected_replay.tolist()})"
+            )
+        return "; ".join(entries)
+
+    @staticmethod
+    def _artifact_router_scores(
+        reader: ParityArtifactReader,
+        metadata: ObservationMetadata,
+    ) -> tuple[torch.Tensor | None, str]:
+        if not isinstance(metadata.layer, int):
+            return None, "router layer is unavailable"
+        score_key = (
+            f"{metadata.section_id}/checkpoint/layers.{metadata.layer}."
+            "moe.router_scores"
+        )
+        if score_key in reader.observation_keys:
+            return reader.tensor(score_key), ""
+        gate_key = (
+            f"{metadata.section_id}/activation/layers.{metadata.layer}."
+            "moe.router.gate"
+        )
+        if gate_key in reader.observation_keys:
+            return torch.sigmoid(reader.tensor(gate_key).float()), ""
+        return None, f"missing router score tensor: {score_key}"
+
+    @classmethod
+    def _offline_router_mismatch_detail(
+        cls,
+        *,
+        actual_reader: ParityArtifactReader,
+        expected_reader: ParityArtifactReader,
+        actual_metadata: ObservationMetadata,
+        expected_metadata: ObservationMetadata,
+        actual_topk: torch.Tensor,
+        expected_topk: torch.Tensor,
+    ) -> str:
+        coordinates = _ordered_mismatch_coordinates(
+            actual_topk, expected_topk
+        )
+        actual_scores, actual_error = cls._artifact_router_scores(
+            actual_reader, actual_metadata
+        )
+        expected_scores, expected_error = cls._artifact_router_scores(
+            expected_reader, expected_metadata
+        )
+        if actual_scores is None or expected_scores is None:
+            errors = "; ".join(
+                value for value in (actual_error, expected_error) if value
+            )
+            return f"router score trace unavailable: {errors}"
+        topk = actual_topk.shape[-1]
+        entries = []
+        for batch_index, position in coordinates:
+            actual_ids = {
+                int(value) for value in actual_topk[batch_index, position]
+            }
+            expected_ids = {
+                int(value) for value in expected_topk[batch_index, position]
+            }
+            candidates = sorted(actual_ids.symmetric_difference(expected_ids))
+            candidate_scores = ", ".join(
+                f"id{candidate}:actual="
+                f"{float(actual_scores[batch_index, position, candidate]):.8g},"
+                f"expected="
+                f"{float(expected_scores[batch_index, position, candidate]):.8g}"
+                for candidate in candidates
+            )
+            actual_sorted = actual_scores[batch_index, position].sort(
+                descending=True
+            ).values
+            expected_sorted = expected_scores[batch_index, position].sort(
+                descending=True
+            ).values
+            actual_margin = (
+                float(actual_sorted[topk - 1] - actual_sorted[topk])
+                if actual_sorted.numel() > topk else float("nan")
+            )
+            expected_margin = (
+                float(expected_sorted[topk - 1] - expected_sorted[topk])
+                if expected_sorted.numel() > topk else float("nan")
+            )
+            entries.append(
+                f"router_score b{batch_index},p{position} "
+                f"candidates=[{candidate_scores}] "
+                f"cutoff_margin(actual={actual_margin:.8g},"
+                f"expected={expected_margin:.8g})"
+            )
+        return "; ".join(entries)
+
     def _compare_artifact_observation(
         self,
         *,
@@ -5029,7 +5476,7 @@ class TestGlm5Parity(
                     positions = actual.tensor(positions_key)
                 elif positions_key in expected.observation_keys:
                     positions = expected.tensor(positions_key)
-            recorder.discrete(
+            result = recorder.discrete(
                 scope=metadata.scope,
                 component=metadata.component,
                 layer=metadata.layer,
@@ -5044,6 +5491,32 @@ class TestGlm5Parity(
                 actual_dtype=actual_dtype,
                 expected_dtype=expected_dtype,
             )
+            if not result.passed and metadata.component == "indexer":
+                replay_detail = self._offline_indexer_mismatch_detail(
+                    actual_reader=actual,
+                    expected_reader=expected,
+                    actual_metadata=actual_metadata,
+                    expected_metadata=expected_metadata,
+                    actual_topk=actual_tensor,
+                    expected_topk=expected_tensor,
+                    positions=positions,
+                )
+                if replay_detail:
+                    result.detail = f"{result.detail}; {replay_detail}"
+            elif not result.passed and metadata.component in {
+                "router",
+                "router_indices",
+            }:
+                score_detail = self._offline_router_mismatch_detail(
+                    actual_reader=actual,
+                    expected_reader=expected,
+                    actual_metadata=actual_metadata,
+                    expected_metadata=expected_metadata,
+                    actual_topk=actual_tensor,
+                    expected_topk=expected_tensor,
+                )
+                if score_detail:
+                    result.detail = f"{result.detail}; {score_detail}"
             return
         state_key = actual_metadata.tags.get("state_key", "")
         routed_suffixes = (

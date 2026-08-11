@@ -254,6 +254,75 @@ def test_discrete_mismatch_column_reports_every_batch_and_topk() -> None:
     )
 
 
+def test_indexer_score_replay_uses_captured_mixed_precision_boundaries() -> None:
+    scores = glm5_parity._replay_titan_indexer_scores(
+        q_projection=torch.tensor([[[0.0, 2.0], [0.0, 4.0]]]),
+        q_rotated=torch.tensor([[[[1.0]], [[3.0]]]]),
+        k_normalized=torch.tensor([[[0.0, 6.0], [0.0, 8.0]]]),
+        k_rotated=torch.tensor([[[[5.0]], [[7.0]]]]),
+        projected_weights=torch.ones((1, 2, 1)),
+        attention_mask=torch.zeros((1, 2, 2)),
+        n_heads=1,
+        head_dim=2,
+        rope_head_dim=1,
+    )
+    expected = torch.tensor([[[17.0, 23.0], [39.0, 53.0]]]) / (2.0**0.5)
+    torch.testing.assert_close(scores, expected)
+
+
+def test_offline_score_diagnostics_prefer_captured_scores(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "scores"
+    writer = _writer(path)
+    indexer_key = (
+        "end-to-end/checkpoint/layers.1.attention.indexer_scores"
+    )
+    router_key = "end-to-end/checkpoint/layers.1.moe.router_scores"
+    for key, component, value in (
+        (indexer_key, "indexer_scores", torch.tensor([[[1.0, 2.0]]])),
+        (router_key, "router_scores", torch.tensor([[[0.25, 0.75]]])),
+    ):
+        writer.add(
+            ObservationMetadata(
+                key=key,
+                section_id="end-to-end",
+                scope="configured",
+                component=component,
+                layer=1,
+                checkpoint=False,
+                compare=False,
+            ),
+            value,
+        )
+    writer.write()
+    reader = ParityArtifactReader(path)
+    metadata = ObservationMetadata(
+        key="end-to-end/checkpoint/layers.1.attention.indexer",
+        section_id="end-to-end",
+        scope="configured",
+        component="indexer",
+        layer=1,
+        value_kind="discrete",
+    )
+
+    indexer_scores, indexer_error = (
+        glm5_parity.TestGlm5Parity._replay_artifact_indexer_scores(
+            reader, metadata
+        )
+    )
+    router_scores, router_error = (
+        glm5_parity.TestGlm5Parity._artifact_router_scores(reader, metadata)
+    )
+
+    assert indexer_error == ""
+    assert router_error == ""
+    assert torch.equal(indexer_scores, torch.tensor([[[1.0, 2.0]]]))
+    assert torch.equal(router_scores, torch.tensor([[[0.25, 0.75]]]))
+    assert not reader.metadata(indexer_key).compare
+    assert not reader.metadata(router_key).compare
+
+
 def test_glm5_offline_q_residual_uses_suite_tolerance(
     tmp_path: Path,
 ) -> None:
@@ -311,7 +380,11 @@ def test_glm5_2_html_contents_is_top_only_and_targets_sections(
 
     html = path.read_text(encoding="utf-8")
     assert html.count("class='report-toc'") == 1
-    assert "position:sticky" not in html
+    assert ".report-toc{position:sticky" not in html
+    assert ".parity-table thead th{position:sticky" in html
+    assert "data-column-group='metric'" in html
+    assert "hide-metric" in html
+    assert "class='parity-table-scroll'" in html
     assert "href='#section-0-component-indexer'" in html
     assert "<section id='section-0-component-indexer'>" in html
     assert html.index("class='report-toc'") < html.index("<section id=")
