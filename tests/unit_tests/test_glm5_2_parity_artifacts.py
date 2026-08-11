@@ -254,6 +254,139 @@ def test_discrete_mismatch_column_reports_every_batch_and_topk() -> None:
     )
 
 
+@pytest.mark.parametrize("component", ["indexer", "router"])
+def test_bf16_topk_cutoff_difference_is_boundary_pass(
+    component: str,
+) -> None:
+    recorder = glm5_parity.ParityRecorder(glm5_parity.BF16)
+    actual_topk = torch.tensor([[[1, 0]]], dtype=torch.int32)
+    expected_topk = torch.tensor([[[1, 2]]], dtype=torch.int32)
+    positions = torch.tensor([[2]]) if component == "indexer" else None
+    result = recorder.discrete(
+        scope="configured",
+        component=component,
+        layer=2,
+        actual=actual_topk,
+        expected=expected_topk,
+        positions=positions,
+    )
+
+    recorder.annotate_topk_scores(
+        result,
+        actual_topk=actual_topk,
+        expected_topk=expected_topk,
+        actual_scores=torch.tensor([[[0.9999, 1.1, 0.9998]]]),
+        expected_scores=torch.tensor([[[0.9997, 1.1, 0.9999]]]),
+        positions=positions,
+    )
+
+    assert result.passed
+    assert result.boundary_passed
+    assert recorder._status(result) == "BOUNDARY_PASS"
+    assert "boundary_passed=1" in recorder.summary()
+    assert "b0,p0 [1:1.1, 0:" in result.actual_topk_scores
+    assert "b0,p0 [1:1.1, 2:" in result.expected_topk_scores
+    assert "boundary=1 hard=0" in result.precision_band
+    assert "bf16_ulp_ref=" in result.precision_band
+    assert "bf16_rounding_band=" in result.precision_band
+    assert "observed_cutoff_band=" in result.precision_band
+    assert "score_topk_consistent=True" in result.precision_band
+    assert "actual_only=[0]" in result.detail
+    assert "expected_only=[2]" in result.detail
+
+
+@pytest.mark.parametrize("precision", [glm5_parity.FP32, glm5_parity.BF16])
+def test_topk_difference_outside_boundary_band_fails(
+    precision: glm5_parity.PrecisionPolicy,
+) -> None:
+    recorder = glm5_parity.ParityRecorder(precision)
+    actual_topk = torch.tensor([[[0, 1]]], dtype=torch.int32)
+    expected_topk = torch.tensor([[[2, 1]]], dtype=torch.int32)
+    result = recorder.discrete(
+        scope="configured",
+        component="router",
+        layer=1,
+        actual=actual_topk,
+        expected=expected_topk,
+    )
+
+    recorder.annotate_topk_scores(
+        result,
+        actual_topk=actual_topk,
+        expected_topk=expected_topk,
+        actual_scores=torch.tensor([[[1.2, 1.1, 0.5]]]),
+        expected_scores=torch.tensor([[[0.5, 1.1, 1.2]]]),
+    )
+
+    assert not result.passed
+    assert not result.boundary_passed
+    assert recorder._status(result) == "FAIL"
+    assert "boundary=0 hard=1" in result.precision_band
+    assert "verdict=hard" in result.detail
+
+
+def test_fp32_topk_cutoff_difference_remains_strict() -> None:
+    recorder = glm5_parity.ParityRecorder(glm5_parity.FP32)
+    actual_topk = torch.tensor([[[1, 0]]], dtype=torch.int32)
+    expected_topk = torch.tensor([[[1, 2]]], dtype=torch.int32)
+    result = recorder.discrete(
+        scope="configured",
+        component="indexer",
+        layer=2,
+        actual=actual_topk,
+        expected=expected_topk,
+        positions=torch.tensor([[2]]),
+    )
+
+    recorder.annotate_topk_scores(
+        result,
+        actual_topk=actual_topk,
+        expected_topk=expected_topk,
+        actual_scores=torch.tensor([[[0.9999, 1.1, 0.9998]]]),
+        expected_scores=torch.tensor([[[0.9997, 1.1, 0.9999]]]),
+        positions=torch.tensor([[2]]),
+    )
+
+    assert not result.passed
+    assert not result.boundary_passed
+    assert recorder._status(result) == "FAIL"
+
+
+def test_bf16_ulp_tracks_value_scale() -> None:
+    assert glm5_parity._bf16_ulp(1.0) == 2.0**-7
+    assert glm5_parity._bf16_ulp(0.5) == 2.0**-8
+    assert glm5_parity._bf16_ulp(-0.0184) == 2.0**-13
+
+
+def test_matching_topk_still_reports_every_selected_score() -> None:
+    recorder = glm5_parity.ParityRecorder(glm5_parity.BF16)
+    topk = torch.tensor([[[2, 0], [1, 2]]], dtype=torch.int32)
+    scores = torch.tensor([[[0.7, 0.2, 0.9], [0.1, 0.8, 0.6]]])
+    result = recorder.discrete(
+        scope="configured",
+        component="router",
+        layer=1,
+        actual=topk,
+        expected=topk,
+    )
+
+    recorder.annotate_topk_scores(
+        result,
+        actual_topk=topk,
+        expected_topk=topk,
+        actual_scores=scores,
+        expected_scores=scores,
+    )
+
+    assert result.passed
+    assert not result.boundary_passed
+    assert "b0,p0 [2:" in result.actual_topk_scores
+    assert ", 0:" in result.actual_topk_scores
+    assert "b0,p1 [1:" in result.actual_topk_scores
+    assert ", 2:" in result.actual_topk_scores
+    assert "queries=2 exact=2 boundary=0 hard=0" in result.precision_band
+
+
 def test_indexer_score_replay_uses_captured_mixed_precision_boundaries() -> None:
     scores = glm5_parity._replay_titan_indexer_scores(
         q_projection=torch.tensor([[[0.0, 2.0], [0.0, 4.0]]]),
@@ -451,9 +584,13 @@ def test_glm5_2_html_contents_is_top_only_and_targets_sections(
     assert "class='configuration-scroll'" in html
     assert "thead th{position:sticky" in html
     assert "data-column-group='metric'" in html
+    assert "data-column-group='topk'" in html
     assert "aria-pressed='false'" in html
     assert "button[aria-pressed='true']" in html
     assert "hide-metric" in html
+    assert "hide-topk" in html
+    assert "actual_topk_scores" in html
+    assert ".boundary{color:" in html
     assert "class='parity-table-scroll'" in html
     assert ".error-chart-legend{display:grid" in html
     assert "href='#section-0-component-indexer'" in html

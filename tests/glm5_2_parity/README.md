@@ -28,6 +28,14 @@ the K/K+1 cutoff margin, and a CPU replay of legacy indexer captures. Existing
 artifacts remain comparable through the replay fallback; newly captured
 artifacts expose the device-side score trace directly.
 
+Every offline indexer and router row reports the selected `id:score` list for
+every batch/query, together with the BF16 ULP at the cutoff scale, the nominal
+rounding band, the observed cross-device score band, and both K/K+1 margins.
+Discrete results have three states: `PASS` for identical selected sets,
+`BOUNDARY_PASS` for BF16-only cutoff changes explained by the measured score
+band and at most two BF16 ULPs per changed candidate, and `FAIL` for stable or
+out-of-band selection differences. FP32 selection remains exact.
+
 HTML result tables keep their header visible inside a bounded scroll area.
 Buttons above each table independently fold path, dtype, value, metric, and
 diagnostic column groups without hiding the component or status columns.

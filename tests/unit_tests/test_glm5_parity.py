@@ -1047,22 +1047,15 @@ def _selection_mismatch_coordinates(
     return mismatched_coordinates
 
 
-def _ordered_mismatch_coordinates(
-    actual: torch.Tensor,
-    expected: torch.Tensor,
-) -> list[tuple[int, int]]:
-    """Return batch and query coordinates with different ordered values."""
-    if actual.shape != expected.shape or actual.ndim != 3:
-        return []
-    coordinates = []
-    for batch_index in range(actual.shape[0]):
-        for position in range(actual.shape[1]):
-            if not torch.equal(
-                actual[batch_index, position],
-                expected[batch_index, position],
-            ):
-                coordinates.append((batch_index, position))
-    return coordinates
+def _bf16_ulp(value: float) -> float:
+    """Return the spacing of BF16 values at the supplied magnitude."""
+    magnitude = abs(float(value))
+    if not math.isfinite(magnitude):
+        return float("inf")
+    if magnitude == 0.0:
+        return 2.0**-133
+    exponent = math.floor(math.log2(magnitude))
+    return 2.0 ** max(exponent - 7, -133)
 
 
 def _replay_titan_indexer_scores(
@@ -1196,6 +1189,10 @@ class ComparisonResult:
     expected_summary: str = ""
     actual_dtype: str = ""
     expected_dtype: str = ""
+    boundary_passed: bool = False
+    actual_topk_scores: str = ""
+    expected_topk_scores: str = ""
+    precision_band: str = ""
     explosion: bool = False
     growth_ratio: float | None = None
 
@@ -1465,6 +1462,10 @@ class ParityRecorder:
         checkpoint_total = sum(result.checkpoint for result in self.results)
         trace_total = len(self.results) - checkpoint_total
         passed = checkpoint_total - len(self.failed)
+        boundary_passed = sum(
+            result.checkpoint and result.boundary_passed
+            for result in self.results
+        )
         rate = (
             100.0
             if checkpoint_total == 0
@@ -1474,6 +1475,7 @@ class ParityRecorder:
         return (
             f"rows={len(self.results)} checkpoints={checkpoint_total} "
             f"trace_rows={trace_total} passed={passed} "
+            f"boundary_passed={boundary_passed} "
             f"failed={len(self.failed)} pass_rate={rate:.1f}% "
             f"components={','.join(component_names)}"
         )
@@ -1619,7 +1621,11 @@ class ParityRecorder:
         elif actual_cpu.ndim < 2:
             passed = bool(torch.equal(actual_cpu, expected_cpu))
             mismatch_count = 0 if passed else 1
-        elif positions is not None and actual_cpu.ndim == 3:
+        elif actual_cpu.ndim == 3 and component in {
+            "indexer",
+            "router",
+            "router_indices",
+        }:
             # Indexer selections are causal.  Differences in future slots are
             # not observable at that query and must not be reported as fails.
             mismatch_coordinates = _selection_mismatch_coordinates(
@@ -1697,6 +1703,235 @@ class ParityRecorder:
         self.results.append(result)
         return result
 
+    def annotate_topk_scores(
+        self,
+        result: ComparisonResult,
+        *,
+        actual_topk: torch.Tensor,
+        expected_topk: torch.Tensor,
+        actual_scores: torch.Tensor | None,
+        expected_scores: torch.Tensor | None,
+        positions: torch.Tensor | None = None,
+        unavailable_reason: str = "",
+    ) -> None:
+        """Attach score evidence and classify BF16 cutoff-only differences."""
+        if actual_scores is None or expected_scores is None:
+            result.precision_band = (
+                "score analysis unavailable"
+                + (f": {unavailable_reason}" if unavailable_reason else "")
+            )
+            return
+        actual_topk_cpu = actual_topk.detach().cpu()
+        expected_topk_cpu = expected_topk.detach().cpu()
+        actual_scores_cpu = actual_scores.detach().float().cpu()
+        expected_scores_cpu = expected_scores.detach().float().cpu()
+        positions_cpu = None if positions is None else positions.detach().cpu()
+        if (
+            actual_topk_cpu.shape != expected_topk_cpu.shape
+            or actual_topk_cpu.ndim != 3
+            or actual_scores_cpu.shape != expected_scores_cpu.shape
+            or actual_scores_cpu.ndim != 3
+            or actual_scores_cpu.shape[:2] != actual_topk_cpu.shape[:2]
+        ):
+            result.precision_band = (
+                "score analysis unavailable: incompatible top-k or score shapes"
+            )
+            return
+
+        def selected_ids(
+            values: torch.Tensor,
+            valid_count: int,
+        ) -> list[int]:
+            return [
+                int(value)
+                for value in values.reshape(-1)
+                if 0 <= int(value) < valid_count
+            ]
+
+        def score_list(ids: list[int], scores: torch.Tensor) -> str:
+            return "[" + ", ".join(
+                f"{index}:{float(scores[index]):.8g}" for index in ids
+            ) + "]"
+
+        def format_margin(value: float | None) -> str:
+            return "n/a" if value is None else f"{value:.8g}"
+
+        actual_lines = []
+        expected_lines = []
+        band_lines = []
+        mismatch_lines = []
+        exact_count = 0
+        boundary_coordinates: list[tuple[int, int]] = []
+        hard_coordinates: list[tuple[int, int]] = []
+        num_candidates = actual_scores_cpu.shape[-1]
+        for batch_index in range(actual_topk_cpu.shape[0]):
+            for position in range(actual_topk_cpu.shape[1]):
+                valid_count = num_candidates
+                if positions_cpu is not None:
+                    valid_count = min(
+                        max(int(positions_cpu[batch_index, position]) + 1, 0),
+                        num_candidates,
+                    )
+                actual_ids = selected_ids(
+                    actual_topk_cpu[batch_index, position], valid_count
+                )
+                expected_ids = selected_ids(
+                    expected_topk_cpu[batch_index, position], valid_count
+                )
+                actual_row = actual_scores_cpu[batch_index, position, :valid_count]
+                expected_row = expected_scores_cpu[
+                    batch_index, position, :valid_count
+                ]
+                coordinate = f"b{batch_index},p{position}"
+                actual_lines.append(
+                    f"{coordinate} {score_list(actual_ids, actual_row)}"
+                )
+                expected_lines.append(
+                    f"{coordinate} {score_list(expected_ids, expected_row)}"
+                )
+                effective_topk = min(actual_topk_cpu.shape[-1], valid_count)
+                if effective_topk == 0:
+                    band_lines.append(f"{coordinate} no valid candidates")
+                    continue
+                score_error = (actual_row - expected_row).abs()
+                epsilon = float(score_error.max()) if score_error.numel() else 0.0
+                actual_sorted = actual_row.sort(descending=True).values
+                expected_sorted = expected_row.sort(descending=True).values
+                actual_cutoff = float(actual_sorted[effective_topk - 1])
+                expected_cutoff = float(expected_sorted[effective_topk - 1])
+                actual_margin = (
+                    float(
+                        actual_sorted[effective_topk - 1]
+                        - actual_sorted[effective_topk]
+                    )
+                    if actual_sorted.numel() > effective_topk
+                    else None
+                )
+                expected_margin = (
+                    float(
+                        expected_sorted[effective_topk - 1]
+                        - expected_sorted[effective_topk]
+                    )
+                    if expected_sorted.numel() > effective_topk
+                    else None
+                )
+                cutoff_ulp = max(
+                    _bf16_ulp(actual_cutoff),
+                    _bf16_ulp(expected_cutoff),
+                )
+                actual_set = set(actual_ids)
+                expected_set = set(expected_ids)
+                actual_score_set = set(
+                    actual_row.topk(effective_topk).indices.tolist()
+                )
+                expected_score_set = set(
+                    expected_row.topk(effective_topk).indices.tolist()
+                )
+                score_topk_consistent = (
+                    actual_score_set == actual_set
+                    and expected_score_set == expected_set
+                )
+                changed_ids = sorted(actual_set.symmetric_difference(expected_set))
+                verdict = "exact"
+                if not changed_ids:
+                    exact_count += 1
+                else:
+                    changed_epsilon = max(
+                        abs(
+                            float(actual_row[index])
+                            - float(expected_row[index])
+                        )
+                        for index in changed_ids
+                    )
+                    changed_ulp_ok = all(
+                        abs(
+                            float(actual_row[index])
+                            - float(expected_row[index])
+                        )
+                        <= 2.0
+                        * max(
+                            _bf16_ulp(float(actual_row[index])),
+                            _bf16_ulp(float(expected_row[index])),
+                        )
+                        for index in changed_ids
+                    )
+                    instability_width = 2.0 * changed_epsilon
+                    margins_unstable = (
+                        actual_margin is not None
+                        and expected_margin is not None
+                        and actual_margin <= instability_width
+                        and expected_margin <= instability_width
+                    )
+                    candidates_near_cutoff = all(
+                        abs(float(actual_row[index]) - actual_cutoff)
+                        <= instability_width
+                        and abs(float(expected_row[index]) - expected_cutoff)
+                        <= instability_width
+                        for index in changed_ids
+                    )
+                    boundary = (
+                        self.precision.name == "bf16"
+                        and score_topk_consistent
+                        and changed_ulp_ok
+                        and margins_unstable
+                        and candidates_near_cutoff
+                    )
+                    verdict = "boundary" if boundary else "hard"
+                    target = boundary_coordinates if boundary else hard_coordinates
+                    target.append((batch_index, position))
+                    candidate_entries = []
+                    for index in changed_ids:
+                        actual_value = float(actual_row[index])
+                        expected_value = float(expected_row[index])
+                        candidate_ulp = max(
+                            _bf16_ulp(actual_value),
+                            _bf16_ulp(expected_value),
+                        )
+                        candidate_entries.append(
+                            f"id{index}:actual={actual_value:.8g},"
+                            f"expected={expected_value:.8g},"
+                            f"delta={abs(actual_value - expected_value):.8g},"
+                            f"bf16_ulp={candidate_ulp:.8g}"
+                        )
+                    candidate_values = ", ".join(candidate_entries)
+                    mismatch_lines.append(
+                        f"{coordinate} verdict={verdict} changed=[{candidate_values}] "
+                        f"actual_only={sorted(actual_set - expected_set)} "
+                        f"expected_only={sorted(expected_set - actual_set)}"
+                    )
+                band_lines.append(
+                    f"{coordinate} verdict={verdict} score_max_abs={epsilon:.8g} "
+                    f"bf16_ulp_ref={cutoff_ulp:.8g} "
+                    f"bf16_rounding_band=+/-{0.5 * cutoff_ulp:.8g} "
+                    f"bf16_candidate_delta_budget={2.0 * cutoff_ulp:.8g} "
+                    f"score_topk_consistent={score_topk_consistent} "
+                    f"observed_cutoff_band=[{expected_cutoff - epsilon:.8g},"
+                    f"{expected_cutoff + epsilon:.8g}] "
+                    f"margin(actual={format_margin(actual_margin)},"
+                    f"expected={format_margin(expected_margin)})"
+                )
+
+        result.actual_topk_scores = "\n".join(actual_lines)
+        result.expected_topk_scores = "\n".join(expected_lines)
+        summary = (
+            f"queries={len(band_lines)} exact={exact_count} "
+            f"boundary={len(boundary_coordinates)} hard={len(hard_coordinates)}"
+        )
+        result.precision_band = "\n".join([summary, *band_lines])
+        if mismatch_lines:
+            score_detail = "; ".join(mismatch_lines)
+            result.detail = (
+                f"{result.detail}; {score_detail}"
+                if result.detail
+                else score_detail
+            )
+        if result.mismatch_count and not hard_coordinates:
+            result.passed = True
+            result.boundary_passed = True
+        elif hard_coordinates:
+            result.passed = False
+            result.boundary_passed = False
+
     def missing(
         self,
         *,
@@ -1741,11 +1976,13 @@ class ParityRecorder:
     def _status(result: ComparisonResult) -> str:
         if not result.checkpoint:
             return "TRACE"
+        if result.boundary_passed:
+            return "BOUNDARY_PASS"
         return "PASS" if result.passed else "FAIL"
 
     @staticmethod
     def _mismatch_display(result: ComparisonResult) -> str:
-        if not result.passed and result.detail:
+        if (not result.passed or result.boundary_passed) and result.detail:
             return f"{result.mismatch_count}: {result.detail}"
         return str(result.mismatch_count)
 
@@ -1757,6 +1994,9 @@ class ParityRecorder:
             "expected_dtype",
             "actual",
             "expected",
+            "actual_topk_scores",
+            "expected_topk_scores",
+            "precision_band",
             "max_abs",
             "mean_abs",
             "rmse",
@@ -1771,7 +2011,7 @@ class ParityRecorder:
             f"GLM-5 parity report: {self.title}",
             "",
             " | ".join(headers),
-            "-|-|-|-|-|-|-|-|-|-|-|-|-|-|-| ",
+            " | ".join("-" for _ in headers),
         ]
         for result in self.ordered_results():
             status = self._status(result)
@@ -1779,6 +2019,8 @@ class ParityRecorder:
                 status = (
                     f"\033[32m{status}\033[0m"
                     if status == "PASS"
+                    else f"\033[33m{status}\033[0m"
+                    if status == "BOUNDARY_PASS"
                     else f"\033[31m{status}\033[0m"
                     if status == "FAIL"
                     else f"\033[36m{status}\033[0m"
@@ -1797,6 +2039,9 @@ class ParityRecorder:
                         result.expected_dtype or "-",
                         result.actual_summary or "-",
                         result.expected_summary or "-",
+                        result.actual_topk_scores.replace("\n", " || ") or "-",
+                        result.expected_topk_scores.replace("\n", " || ") or "-",
+                        result.precision_band.replace("\n", " || ") or "-",
                         "-" if result.max_abs is None else f"{result.max_abs:.6g}",
                         "-" if result.mean_abs is None else f"{result.mean_abs:.6g}",
                         "-" if result.rmse is None else f"{result.rmse:.6g}",
@@ -1825,6 +2070,9 @@ class ParityRecorder:
             ("expected_dtype", "dtype"),
             ("actual", "value"),
             ("expected", "value"),
+            ("actual_topk_scores", "topk"),
+            ("expected_topk_scores", "topk"),
+            ("precision_band", "topk"),
             ("max_abs", "metric"),
             ("mean_abs", "metric"),
             ("rmse", "metric"),
@@ -1841,11 +2089,24 @@ class ParityRecorder:
             class_attribute = f" class='{' '.join(classes)}'" if classes else ""
             return f"<td{class_attribute}>{escape(value)}</td>"
 
+        def expandable_cell(value: str, group: str) -> str:
+            if not value:
+                return cell("-", group)
+            lines = value.splitlines()
+            classes = f"col-{group} expandable-cell"
+            summary = lines[0] if len(lines) == 1 else f"{len(lines)} lines"
+            return (
+                f"<td class='{classes}'><details>"
+                f"<summary>{escape(summary)}</summary>"
+                f"<pre>{escape(value)}</pre></details></td>"
+            )
+
         rows = []
         for result in self.ordered_results():
             status = self._status(result)
             status_class = (
                 "pass" if status == "PASS"
+                else "boundary" if status == "BOUNDARY_PASS"
                 else "fail" if status == "FAIL" else "trace"
             )
             row_class = " class='explosion-row'" if result.explosion else ""
@@ -1862,6 +2123,9 @@ class ParityRecorder:
                 + cell(result.expected_dtype or "-", "dtype")
                 + cell(result.actual_summary or "-", "value")
                 + cell(result.expected_summary or "-", "value")
+                + expandable_cell(result.actual_topk_scores, "topk")
+                + expandable_cell(result.expected_topk_scores, "topk")
+                + expandable_cell(result.precision_band, "topk")
                 + cell(
                     "-" if result.max_abs is None else f"{result.max_abs:.6g}",
                     "metric",
@@ -1902,6 +2166,7 @@ class ParityRecorder:
                 ("path", "paths"),
                 ("dtype", "dtypes"),
                 ("value", "values"),
+                ("topk", "top-k scores"),
                 ("metric", "metrics"),
                 ("diagnostic", "diagnostics"),
             )
@@ -2092,7 +2357,10 @@ class ParityRecorder:
             "2*|actual-expected|/(|actual|+|expected|). "
             "rel_l2 is ||actual-expected||2/||expected||2. "
             "Dtype flow reports observed input/parameter/output dtypes and "
-            "explicit compute dtypes where the implementation declares one.</p>"
+            "explicit compute dtypes where the implementation declares one. "
+            "BOUNDARY_PASS means BF16 top-k differences are confined to the "
+            "K/K+1 instability band: changed scores stay within two BF16 ULPs "
+            "and both cutoff margins are covered by observed score error.</p>"
             f"{self.html_error_curve()}{self.html_table()}</section>"
         )
 
@@ -2117,9 +2385,14 @@ class ParityRecorder:
                     ".parity-table thead th{position:sticky;top:0;z-index:2;background:#f5f5f5}"
                     ".parity-table td:first-child{white-space:nowrap}"
                     ".hide-path .col-path,.hide-dtype .col-dtype,"
-                    ".hide-value .col-value,.hide-metric .col-metric,"
+                    ".hide-value .col-value,.hide-topk .col-topk,"
+                    ".hide-metric .col-metric,"
                     ".hide-diagnostic .col-diagnostic{display:none}"
+                    ".expandable-cell{min-width:220px;max-width:520px}"
+                    ".expandable-cell summary{cursor:pointer;font-weight:bold}"
+                    ".expandable-cell pre{white-space:pre-wrap;overflow-wrap:anywhere}"
                     ".pass{color:#087f23;font-weight:bold}.fail{color:#b00020;font-weight:bold}"
+                    ".boundary{color:#b45309;font-weight:bold}"
                     ".trace{color:#007c91;font-weight:bold}"
                     ".explosion-row{background:#fff1d6}.axis{stroke:#333}.grid{stroke:#ddd}"
                     ".error-chart svg{width:100%;max-width:920px}"
@@ -2229,9 +2502,14 @@ class ParitySuiteReport:
             ".parity-table thead th{position:sticky;top:0;z-index:2;background:#f5f5f5}"
             ".parity-table td:first-child{white-space:nowrap}"
             ".hide-path .col-path,.hide-dtype .col-dtype,"
-            ".hide-value .col-value,.hide-metric .col-metric,"
+            ".hide-value .col-value,.hide-topk .col-topk,"
+            ".hide-metric .col-metric,"
             ".hide-diagnostic .col-diagnostic{display:none}"
+            ".expandable-cell{min-width:220px;max-width:520px}"
+            ".expandable-cell summary{cursor:pointer;font-weight:bold}"
+            ".expandable-cell pre{white-space:pre-wrap;overflow-wrap:anywhere}"
             ".pass{color:#087f23;font-weight:bold}"
+            ".boundary{color:#b45309;font-weight:bold}"
             ".fail{color:#b00020;font-weight:bold}"
             ".trace{color:#007c91;font-weight:bold}"
             ".explosion-row{background:#fff1d6}"
@@ -5225,81 +5503,6 @@ class TestGlm5Parity(
             return None, f"indexer score replay failed: {error}"
         return scores, ""
 
-    @classmethod
-    def _offline_indexer_mismatch_detail(
-        cls,
-        *,
-        actual_reader: ParityArtifactReader,
-        expected_reader: ParityArtifactReader,
-        actual_metadata: ObservationMetadata,
-        expected_metadata: ObservationMetadata,
-        actual_topk: torch.Tensor,
-        expected_topk: torch.Tensor,
-        positions: torch.Tensor | None,
-    ) -> str:
-        if positions is None or actual_topk.ndim != 3:
-            return "score replay unavailable: indexer positions are missing"
-        coordinates = _selection_mismatch_coordinates(
-            actual_topk, expected_topk, positions
-        )
-        actual_scores, actual_error = cls._replay_artifact_indexer_scores(
-            actual_reader, actual_metadata
-        )
-        expected_scores, expected_error = cls._replay_artifact_indexer_scores(
-            expected_reader, expected_metadata
-        )
-        if actual_scores is None or expected_scores is None:
-            errors = "; ".join(
-                value for value in (actual_error, expected_error) if value
-            )
-            return f"score replay unavailable: {errors}"
-        topk = actual_topk.shape[-1]
-        entries = []
-        for batch_index, position in coordinates:
-            actual_ids = {
-                int(value) for value in actual_topk[batch_index, position]
-            }
-            expected_ids = {
-                int(value) for value in expected_topk[batch_index, position]
-            }
-            candidates = sorted(actual_ids.symmetric_difference(expected_ids))
-            candidate_scores = ", ".join(
-                f"id{candidate}:actual="
-                f"{float(actual_scores[batch_index, position, candidate]):.8g},"
-                f"expected="
-                f"{float(expected_scores[batch_index, position, candidate]):.8g}"
-                for candidate in candidates
-            )
-            actual_sorted = actual_scores[batch_index, position].sort(
-                descending=True
-            ).values
-            expected_sorted = expected_scores[batch_index, position].sort(
-                descending=True
-            ).values
-            actual_margin = (
-                float(actual_sorted[topk - 1] - actual_sorted[topk])
-                if actual_sorted.numel() > topk else float("nan")
-            )
-            expected_margin = (
-                float(expected_sorted[topk - 1] - expected_sorted[topk])
-                if expected_sorted.numel() > topk else float("nan")
-            )
-            actual_replay = actual_scores[batch_index, position].topk(
-                topk
-            ).indices
-            expected_replay = expected_scores[batch_index, position].topk(
-                topk
-            ).indices
-            entries.append(
-                f"score_replay b{batch_index},p{position} "
-                f"candidates=[{candidate_scores}] "
-                f"cutoff_margin(actual={actual_margin:.8g},"
-                f"expected={expected_margin:.8g}) "
-                f"topk(actual={actual_replay.tolist()},"
-                f"expected={expected_replay.tolist()})"
-            )
-        return "; ".join(entries)
-
     @staticmethod
     def _artifact_router_scores(
         reader: ParityArtifactReader,
@@ -5320,70 +5523,6 @@ class TestGlm5Parity(
         if gate_key in reader.observation_keys:
             return torch.sigmoid(reader.tensor(gate_key).float()), ""
         return None, f"missing router score tensor: {score_key}"
-
-    @classmethod
-    def _offline_router_mismatch_detail(
-        cls,
-        *,
-        actual_reader: ParityArtifactReader,
-        expected_reader: ParityArtifactReader,
-        actual_metadata: ObservationMetadata,
-        expected_metadata: ObservationMetadata,
-        actual_topk: torch.Tensor,
-        expected_topk: torch.Tensor,
-    ) -> str:
-        coordinates = _ordered_mismatch_coordinates(
-            actual_topk, expected_topk
-        )
-        actual_scores, actual_error = cls._artifact_router_scores(
-            actual_reader, actual_metadata
-        )
-        expected_scores, expected_error = cls._artifact_router_scores(
-            expected_reader, expected_metadata
-        )
-        if actual_scores is None or expected_scores is None:
-            errors = "; ".join(
-                value for value in (actual_error, expected_error) if value
-            )
-            return f"router score trace unavailable: {errors}"
-        topk = actual_topk.shape[-1]
-        entries = []
-        for batch_index, position in coordinates:
-            actual_ids = {
-                int(value) for value in actual_topk[batch_index, position]
-            }
-            expected_ids = {
-                int(value) for value in expected_topk[batch_index, position]
-            }
-            candidates = sorted(actual_ids.symmetric_difference(expected_ids))
-            candidate_scores = ", ".join(
-                f"id{candidate}:actual="
-                f"{float(actual_scores[batch_index, position, candidate]):.8g},"
-                f"expected="
-                f"{float(expected_scores[batch_index, position, candidate]):.8g}"
-                for candidate in candidates
-            )
-            actual_sorted = actual_scores[batch_index, position].sort(
-                descending=True
-            ).values
-            expected_sorted = expected_scores[batch_index, position].sort(
-                descending=True
-            ).values
-            actual_margin = (
-                float(actual_sorted[topk - 1] - actual_sorted[topk])
-                if actual_sorted.numel() > topk else float("nan")
-            )
-            expected_margin = (
-                float(expected_sorted[topk - 1] - expected_sorted[topk])
-                if expected_sorted.numel() > topk else float("nan")
-            )
-            entries.append(
-                f"router_score b{batch_index},p{position} "
-                f"candidates=[{candidate_scores}] "
-                f"cutoff_margin(actual={actual_margin:.8g},"
-                f"expected={expected_margin:.8g})"
-            )
-        return "; ".join(entries)
 
     def _compare_artifact_observation(
         self,
@@ -5505,32 +5644,52 @@ class TestGlm5Parity(
                 actual_dtype=actual_dtype,
                 expected_dtype=expected_dtype,
             )
-            if not result.passed and metadata.component == "indexer":
-                replay_detail = self._offline_indexer_mismatch_detail(
-                    actual_reader=actual,
-                    expected_reader=expected,
-                    actual_metadata=actual_metadata,
-                    expected_metadata=expected_metadata,
-                    actual_topk=actual_tensor,
-                    expected_topk=expected_tensor,
-                    positions=positions,
+            actual_scores = None
+            expected_scores = None
+            actual_score_error = ""
+            expected_score_error = ""
+            if metadata.component == "indexer":
+                actual_scores, actual_score_error = (
+                    self._replay_artifact_indexer_scores(
+                        actual, actual_metadata
+                    )
                 )
-                if replay_detail:
-                    result.detail = f"{result.detail}; {replay_detail}"
-            elif not result.passed and metadata.component in {
+                expected_scores, expected_score_error = (
+                    self._replay_artifact_indexer_scores(
+                        expected, expected_metadata
+                    )
+                )
+            elif metadata.component in {
                 "router",
                 "router_indices",
             }:
-                score_detail = self._offline_router_mismatch_detail(
-                    actual_reader=actual,
-                    expected_reader=expected,
-                    actual_metadata=actual_metadata,
-                    expected_metadata=expected_metadata,
+                actual_scores, actual_score_error = self._artifact_router_scores(
+                    actual, actual_metadata
+                )
+                expected_scores, expected_score_error = self._artifact_router_scores(
+                    expected, expected_metadata
+                )
+            if metadata.component in {
+                "indexer",
+                "router",
+                "router_indices",
+            }:
+                recorder.annotate_topk_scores(
+                    result,
                     actual_topk=actual_tensor,
                     expected_topk=expected_tensor,
+                    actual_scores=actual_scores,
+                    expected_scores=expected_scores,
+                    positions=positions if metadata.component == "indexer" else None,
+                    unavailable_reason="; ".join(
+                        value
+                        for value in (
+                            actual_score_error,
+                            expected_score_error,
+                        )
+                        if value
+                    ),
                 )
-                if score_detail:
-                    result.detail = f"{result.detail}; {score_detail}"
             return
         state_key = actual_metadata.tags.get("state_key", "")
         routed_suffixes = (
