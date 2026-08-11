@@ -102,11 +102,11 @@ python tests/glm5_2_parity/titan_hf_gpu_fp32_random.py --compare
 The named aliases `--titan-gpu-capture` and `--hf-gpu-capture` are equivalent.
 
 Comparison rejects different test plans, fixture tensors, effective
-configuration, test-repository commits, TorchTitan source commits, incomplete
-artifacts, and corrupt shards. Dirty test or TorchTitan source trees are
-rejected by default. `GLM5_PARITY_ALLOW_DIRTY=1` exists only for exploratory
-development and weakens source reproducibility. TorchTitanTurbo source metadata
-is recorded per endpoint because a GPU-only endpoint does not require Turbo.
+configuration, incomplete artifacts, and corrupt shards. Test-repository,
+TorchTitan, and TorchTitanTurbo source metadata is recorded for diagnostics but
+does not gate fixture loading, capture, or comparison. This allows one
+experiment to run from uncommitted or differently committed checkouts while its
+scenario configuration and exact fixture contents remain identical.
 
 ## Framework self-check
 

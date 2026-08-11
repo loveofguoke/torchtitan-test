@@ -59,10 +59,10 @@ environment variables are unchanged because this repository preserves the
 source-installed `torchtitan` package; an NPU capture additionally imports
 `torchtitanturbo` before selecting the device backend.
 
-The offline workflow records both this test repository's commit and the
-installed TorchTitan source commit. Comparison requires both commits to match,
-while also recording the optional TorchTitanTurbo source and all package
-versions in each artifact.
+The offline workflow records this test repository, TorchTitan, optional
+TorchTitanTurbo, and package versions as diagnostic metadata. Commits and dirty
+worktrees do not gate execution. Experiment identity is enforced by the
+scenario configuration, suite version, test plan, and exact fixture checksums.
 
 See [tests/glm5_2_parity/README.md](tests/glm5_2_parity/README.md) for paired,
 fixture, capture, and CPU comparison commands.

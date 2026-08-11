@@ -241,51 +241,6 @@ def _git_metadata() -> dict[str, str]:
     return values
 
 
-def _validate_source_identity(
-    left: dict[str, Any],
-    right: dict[str, Any],
-    *,
-    left_label: str,
-    right_label: str,
-) -> None:
-    """Require identical test and TorchTitan sources for one comparison."""
-    required_commits = {
-        "test repository": "git_commit",
-        "torchtitan": "torchtitan_git_commit",
-    }
-    for source, key in required_commits.items():
-        left_commit = left.get(key)
-        right_commit = right.get(key)
-        if not left_commit or not right_commit:
-            raise ParityArtifactError(
-                f"missing {source} Git metadata for {left_label} or "
-                f"{right_label}; use source-installed repositories"
-            )
-        if left_commit != right_commit:
-            raise ParityArtifactError(
-                f"{left_label} and {right_label} used different {source} "
-                f"commits: {left_commit!r} != {right_commit!r}"
-            )
-
-    if os.environ.get("GLM5_PARITY_ALLOW_DIRTY", "0") == "1":
-        return
-    dirty: dict[str, Any] = {}
-    for label, source in ((left_label, left), (right_label, right)):
-        for key in (
-            "git_status",
-            "git_untracked_source",
-            "torchtitan_git_status",
-            "torchtitan_git_untracked_source",
-        ):
-            dirty[f"{label}_{key}"] = source.get(key, "")
-    if any(dirty.values()):
-        raise ParityArtifactError(
-            "parity requires clean test and TorchTitan source trees; set "
-            "GLM5_PARITY_ALLOW_DIRTY=1 only for exploratory runs. "
-            f"dirty status={dirty}"
-        )
-
-
 class _TeeStream:
     """Mirror Python text output to the console and an artifact log."""
 
@@ -3634,14 +3589,6 @@ class TestGlm5Parity(
                 raise ParityArtifactError(
                     "GLM5_PARITY_FIXTURE configuration does not match this capture"
                 )
-            fixture_source = reader.manifest.get("environment", {})
-            current_source = _git_metadata()
-            _validate_source_identity(
-                fixture_source,
-                current_source,
-                left_label="fixture",
-                right_label="capture",
-            )
             canonical_state: dict[str, torch.Tensor] = {}
             fingerprints: dict[str, str] = {}
             for key in sorted(reader.observation_keys):
@@ -5155,14 +5102,6 @@ class TestGlm5Parity(
         actual = ParityArtifactReader(self.COMPARE_ACTUAL_ARTIFACT)
         expected = ParityArtifactReader(self.COMPARE_EXPECTED_ARTIFACT)
         actual.validate_compatible(expected)
-        actual_source = actual.manifest.get("environment", {})
-        expected_source = expected.manifest.get("environment", {})
-        _validate_source_identity(
-            actual_source,
-            expected_source,
-            left_label="actual",
-            right_label="expected",
-        )
         fixture_keys = {
             key
             for reader in (actual, expected)
