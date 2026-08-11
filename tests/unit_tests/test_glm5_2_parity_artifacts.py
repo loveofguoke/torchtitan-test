@@ -227,6 +227,33 @@ def test_glm5_offline_comparator_ignores_router_tuple_branches() -> None:
     )
 
 
+def test_discrete_mismatch_column_reports_every_batch_and_topk() -> None:
+    actual = torch.zeros((2, 2, 2), dtype=torch.int32)
+    expected = actual.clone()
+    expected[1, 1] = torch.tensor([0, 1], dtype=torch.int32)
+    positions = torch.tensor([[0, 1], [0, 1]], dtype=torch.int64)
+    recorder = glm5_parity.ParityRecorder(glm5_parity.BF16)
+
+    result = recorder.discrete(
+        scope="component",
+        component="indexer",
+        layer=2,
+        actual=actual,
+        expected=expected,
+        positions=positions,
+    )
+
+    assert not result.passed
+    assert result.mismatch_count == 1
+    assert result.mismatch_positions == [1]
+    assert result.actual_summary == "p1: topk=[0, 0]"
+    assert result.expected_summary == "p1: topk=[0, 0]"
+    assert (
+        "1: b1,p1 actual topk=[0, 0] expected topk=[0, 1]"
+        in recorder.table()
+    )
+
+
 def test_glm5_offline_q_residual_uses_suite_tolerance(
     tmp_path: Path,
 ) -> None:

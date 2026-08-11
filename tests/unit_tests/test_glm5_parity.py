@@ -1001,12 +1001,12 @@ def _convert_models_to_bfloat16(
     pair.convert(BF16)
 
 
-def _selection_mismatch_positions(
+def _selection_mismatch_coordinates(
     actual_BLK: torch.Tensor,
     expected_BLK: torch.Tensor,
     positions_BL: torch.Tensor | None = None,
-) -> list[int]:
-    """Return query positions whose selected sets differ."""
+) -> list[tuple[int, int]]:
+    """Return batch and query coordinates whose selected sets differ."""
     if actual_BLK.shape != expected_BLK.shape:
         raise ValueError(
             "selection shapes differ: "
@@ -1024,7 +1024,7 @@ def _selection_mismatch_positions(
     actual_cpu = actual_BLK.detach().cpu()
     expected_cpu = expected_BLK.detach().cpu()
     positions_cpu = None if positions_BL is None else positions_BL.detach().cpu()
-    mismatched_positions: list[int] = []
+    mismatched_coordinates: list[tuple[int, int]] = []
     for batch_index in range(actual_cpu.shape[0]):
         for sequence_index in range(actual_cpu.shape[1]):
             causal_position = (
@@ -1043,8 +1043,8 @@ def _selection_mismatch_positions(
                 if causal_position is None or int(index) <= causal_position
             }
             if actual != expected:
-                mismatched_positions.append(sequence_index)
-    return mismatched_positions
+                mismatched_coordinates.append((batch_index, sequence_index))
+    return mismatched_coordinates
 
 
 def _causal_mask(positions_BL: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
@@ -1147,6 +1147,23 @@ class ParityRecorder:
             suffix = "" if len(selected) <= 8 else f" ... (+{len(selected) - 8})"
             return "; ".join(entries) + suffix
         return f"{value_name}={value.reshape(-1).tolist()}"
+
+    @staticmethod
+    def _discrete_mismatch_detail(
+        actual: torch.Tensor,
+        expected: torch.Tensor,
+        coordinates: list[tuple[int, int]],
+        value_name: str,
+    ) -> str:
+        entries = []
+        for batch_index, position in coordinates:
+            actual_values = actual[batch_index, position].reshape(-1).tolist()
+            expected_values = expected[batch_index, position].reshape(-1).tolist()
+            entries.append(
+                f"b{batch_index},p{position} actual {value_name}="
+                f"{actual_values} expected {value_name}={expected_values}"
+            )
+        return "; ".join(entries)
 
     @staticmethod
     def _canonical_module_path(module_path: str) -> str:
@@ -1492,6 +1509,7 @@ class ParityRecorder:
         actual_cpu = actual.detach().cpu()
         expected_cpu = expected.detach().cpu()
         mismatch_positions: set[int] = set()
+        mismatch_coordinates: list[tuple[int, int]] = []
         mismatch_count = 0
         detail = ""
         if actual_cpu.shape != expected_cpu.shape:
@@ -1503,13 +1521,22 @@ class ParityRecorder:
         elif positions is not None and actual_cpu.ndim == 3:
             # Indexer selections are causal.  Differences in future slots are
             # not observable at that query and must not be reported as fails.
-            mismatch_positions = set(
-                _selection_mismatch_positions(actual_cpu, expected_cpu, positions)
+            mismatch_coordinates = _selection_mismatch_coordinates(
+                actual_cpu, expected_cpu, positions
             )
-            mismatch_count = len(mismatch_positions)
+            mismatch_positions = {
+                sequence_index
+                for _batch_index, sequence_index in mismatch_coordinates
+            }
+            mismatch_count = len(mismatch_coordinates)
             passed = mismatch_count == 0
-            if mismatch_positions:
-                detail = "ordered causal selections differ"
+            if mismatch_coordinates:
+                detail = self._discrete_mismatch_detail(
+                    actual_cpu,
+                    expected_cpu,
+                    mismatch_coordinates,
+                    "topk" if component == "indexer" else "indices",
+                )
         else:
             passed = True
             for batch_index in range(actual_cpu.shape[0]):
@@ -1520,8 +1547,16 @@ class ParityRecorder:
                         passed = False
                         mismatch_count += 1
                         mismatch_positions.add(sequence_index)
-            if mismatch_positions:
-                detail = "ordered indices differ"
+                        mismatch_coordinates.append(
+                            (batch_index, sequence_index)
+                        )
+            if mismatch_coordinates:
+                detail = self._discrete_mismatch_detail(
+                    actual_cpu,
+                    expected_cpu,
+                    mismatch_coordinates,
+                    "topk" if component == "indexer" else "indices",
+                )
         result = ComparisonResult(
             scope,
             component,
@@ -1607,6 +1642,12 @@ class ParityRecorder:
             return "TRACE"
         return "PASS" if result.passed else "FAIL"
 
+    @staticmethod
+    def _mismatch_display(result: ComparisonResult) -> str:
+        if not result.passed and result.detail:
+            return f"{result.mismatch_count}: {result.detail}"
+        return str(result.mismatch_count)
+
     def table(self, *, color: bool = False) -> str:
         headers = (
             "component",
@@ -1665,7 +1706,7 @@ class ParityRecorder:
                             if result.cosine_similarity is None
                             else f"{result.cosine_similarity:.8g}"
                         ),
-                        str(result.mismatch_count),
+                        self._mismatch_display(result),
                         trend,
                         status,
                     )
@@ -1703,7 +1744,7 @@ class ParityRecorder:
                 f"<td>{'-' if result.mean_rel is None else f'{result.mean_rel:.6g}'}</td>"
                 f"<td>{'-' if result.relative_l2 is None else f'{result.relative_l2:.6g}'}</td>"
                 f"<td>{'-' if result.cosine_similarity is None else f'{result.cosine_similarity:.8g}'}</td>"
-                f"<td>{result.mismatch_count}</td>"
+                f"<td>{escape(self._mismatch_display(result))}</td>"
                 f"<td>{escape(trend)}</td>"
                 f"<td class='{status_class}'>{status}</td>"
                 "</tr>"
