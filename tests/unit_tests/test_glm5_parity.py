@@ -1233,20 +1233,23 @@ class ParityRecorder:
     def _discrete_summary(
         tensor: torch.Tensor,
         positions: torch.Tensor | None,
-        mismatch_positions: list[int],
+        mismatch_coordinates: list[tuple[int, int]],
         value_name: str,
     ) -> str:
         value = tensor.detach().cpu()
         if value.ndim == 3:
-            sequence_length = value.shape[1]
-            selected = sorted(set(mismatch_positions)) or [0]
+            selected = mismatch_coordinates or [(0, 0)]
             entries = []
-            for position in selected[:8]:
-                if position >= sequence_length:
+            for batch_index, position in selected[:8]:
+                if (
+                    batch_index >= value.shape[0]
+                    or position >= value.shape[1]
+                ):
                     continue
                 entries.append(
-                    f"p{position}: {value_name}="
-                    f"{value[0, position].reshape(-1).tolist()}"
+                    f"Batch {batch_index}, query position {position}: "
+                    f"{value_name}="
+                    f"{value[batch_index, position].reshape(-1).tolist()}"
                 )
             suffix = "" if len(selected) <= 8 else f" ... (+{len(selected) - 8})"
             return "; ".join(entries) + suffix
@@ -1264,10 +1267,11 @@ class ParityRecorder:
             actual_values = actual[batch_index, position].reshape(-1).tolist()
             expected_values = expected[batch_index, position].reshape(-1).tolist()
             entries.append(
-                f"b{batch_index},p{position} actual {value_name}="
-                f"{actual_values} expected {value_name}={expected_values}"
+                f"Batch {batch_index}, query position {position}\n"
+                f"  Actual {value_name}: {actual_values}\n"
+                f"  Expected {value_name}: {expected_values}"
             )
-        return "; ".join(entries)
+        return "\n\n".join(entries)
 
     @staticmethod
     def _canonical_module_path(module_path: str) -> str:
@@ -1682,13 +1686,13 @@ class ParityRecorder:
             actual_summary=self._discrete_summary(
                 actual_cpu,
                 positions,
-                sorted(mismatch_positions),
+                mismatch_coordinates,
                 "topk" if component == "indexer" else "indices",
             ),
             expected_summary=self._discrete_summary(
                 expected_cpu,
                 positions,
-                sorted(mismatch_positions),
+                mismatch_coordinates,
                 "topk" if component == "indexer" else "indices",
             ),
             actual_dtype=(
@@ -1749,16 +1753,22 @@ class ParityRecorder:
             ]
 
         def score_list(ids: list[int], scores: torch.Tensor) -> str:
+            ranked_ids = sorted(
+                ids,
+                key=lambda index: float(scores[index]),
+                reverse=True,
+            )
             return "[" + ", ".join(
-                f"{index}:{float(scores[index]):.8g}" for index in ids
+                f"index {index}: {float(scores[index]):.8g}"
+                for index in ranked_ids
             ) + "]"
 
         def format_margin(value: float | None) -> str:
             return "n/a" if value is None else f"{value:.8g}"
 
-        actual_lines = []
-        expected_lines = []
-        band_lines = []
+        actual_lines: dict[int, list[str]] = {}
+        expected_lines: dict[int, list[str]] = {}
+        band_lines: dict[int, list[str]] = {}
         mismatch_lines = []
         exact_count = 0
         boundary_coordinates: list[tuple[int, int]] = []
@@ -1782,16 +1792,23 @@ class ParityRecorder:
                 expected_row = expected_scores_cpu[
                     batch_index, position, :valid_count
                 ]
-                coordinate = f"b{batch_index},p{position}"
-                actual_lines.append(
-                    f"{coordinate} {score_list(actual_ids, actual_row)}"
+                coordinate = (
+                    f"Batch {batch_index}, query position {position}"
                 )
-                expected_lines.append(
-                    f"{coordinate} {score_list(expected_ids, expected_row)}"
+                actual_lines.setdefault(batch_index, []).append(
+                    f"Query position {position}: "
+                    f"{score_list(actual_ids, actual_row)}"
+                )
+                expected_lines.setdefault(batch_index, []).append(
+                    f"Query position {position}: "
+                    f"{score_list(expected_ids, expected_row)}"
                 )
                 effective_topk = min(actual_topk_cpu.shape[-1], valid_count)
                 if effective_topk == 0:
-                    band_lines.append(f"{coordinate} no valid candidates")
+                    band_lines.setdefault(batch_index, []).append(
+                        f"Query position {position}\n"
+                        "  Result: no valid candidates"
+                    )
                     continue
                 score_error = (actual_row - expected_row).abs()
                 epsilon = float(score_error.max()) if score_error.numel() else 0.0
@@ -1887,44 +1904,128 @@ class ParityRecorder:
                             _bf16_ulp(actual_value),
                             _bf16_ulp(expected_value),
                         )
-                        candidate_entries.append(
-                            f"id{index}:actual={actual_value:.8g},"
-                            f"expected={expected_value:.8g},"
-                            f"delta={abs(actual_value - expected_value):.8g},"
-                            f"bf16_ulp={candidate_ulp:.8g}"
+                        selection_side = (
+                            "selected only by Actual"
+                            if index in actual_set
+                            else "selected only by Expected"
                         )
-                    candidate_values = ", ".join(candidate_entries)
-                    mismatch_lines.append(
-                        f"{coordinate} verdict={verdict} changed=[{candidate_values}] "
-                        f"actual_only={sorted(actual_set - expected_set)} "
-                        f"expected_only={sorted(expected_set - actual_set)}"
+                        candidate_entries.append(
+                            f"  Index {index} ({selection_side})\n"
+                            f"    Actual score: {actual_value:.8g}\n"
+                            f"    Expected score: {expected_value:.8g}\n"
+                            f"    Absolute score difference: "
+                            f"{abs(actual_value - expected_value):.8g}\n"
+                            f"    BF16 ULP at this scale: {candidate_ulp:.8g}\n"
+                            f"    Difference in ULPs: "
+                            f"{abs(actual_value - expected_value) / candidate_ulp:.3f}"
+                        )
+                    classification = (
+                        "BF16 boundary pass" if boundary else "Hard mismatch"
                     )
-                band_lines.append(
-                    f"{coordinate} verdict={verdict} score_max_abs={epsilon:.8g} "
-                    f"bf16_ulp_ref={cutoff_ulp:.8g} "
-                    f"bf16_rounding_band=+/-{0.5 * cutoff_ulp:.8g} "
-                    f"bf16_candidate_delta_budget={2.0 * cutoff_ulp:.8g} "
-                    f"score_topk_consistent={score_topk_consistent} "
-                    f"observed_cutoff_band=[{expected_cutoff - epsilon:.8g},"
-                    f"{expected_cutoff + epsilon:.8g}] "
-                    f"margin(actual={format_margin(actual_margin)},"
-                    f"expected={format_margin(expected_margin)})"
+                    actual_ranked_ids = sorted(
+                        actual_ids,
+                        key=lambda index: float(actual_row[index]),
+                        reverse=True,
+                    )
+                    expected_ranked_ids = sorted(
+                        expected_ids,
+                        key=lambda index: float(expected_row[index]),
+                        reverse=True,
+                    )
+                    explanation = (
+                        "The changed candidates are confined to the K/K+1 "
+                        "selection boundary. Their score differences fit the "
+                        "two-ULP candidate budget, and the observed score "
+                        "error covers both cutoff margins."
+                        if boundary
+                        else "At least one changed candidate is outside the "
+                        "BF16 boundary allowance, outside the cutoff "
+                        "instability region, or inconsistent with the "
+                        "recorded score ranking."
+                    )
+                    mismatch_lines.append(
+                        f"{coordinate}\n"
+                        f"  Classification: {classification}\n"
+                        f"  Actual selected indices, highest score first: "
+                        f"{actual_ranked_ids}\n"
+                        f"  Expected selected indices, highest score first: "
+                        f"{expected_ranked_ids}\n"
+                        "  Changed candidates:\n"
+                        + "\n".join(candidate_entries)
+                        + f"\n  Explanation: {explanation}"
+                    )
+                result_label = {
+                    "exact": "Exact selection",
+                    "boundary": "BF16 boundary pass",
+                    "hard": "Hard mismatch",
+                }[verdict]
+                interpretation = {
+                    "exact": (
+                        "Both endpoints selected the same indices; ULP and "
+                        "error-band values are shown only as scale references."
+                    ),
+                    "boundary": (
+                        "Selection changed only inside the numerically "
+                        "unstable cutoff region, so this query is accepted."
+                    ),
+                    "hard": (
+                        "The selection change cannot be explained by the "
+                        "configured BF16 cutoff-boundary rule."
+                    ),
+                }[verdict]
+                band_lines.setdefault(batch_index, []).append(
+                    f"Query position {position}\n"
+                    f"  Result: {result_label}\n"
+                    f"  Maximum score difference: {epsilon:.8g}\n"
+                    f"  BF16 ULP at cutoff scale: {cutoff_ulp:.8g}\n"
+                    f"  One-value BF16 rounding interval: "
+                    f"+/-{0.5 * cutoff_ulp:.8g}\n"
+                    f"  Boundary candidate allowance (2 ULP): "
+                    f"{2.0 * cutoff_ulp:.8g}\n"
+                    f"  Observed cutoff instability interval: "
+                    f"[{expected_cutoff - epsilon:.8g}, "
+                    f"{expected_cutoff + epsilon:.8g}]\n"
+                    f"  Actual K/K+1 margin: {format_margin(actual_margin)}\n"
+                    f"  Expected K/K+1 margin: {format_margin(expected_margin)}\n"
+                    f"  Scores reproduce recorded top-k: "
+                    f"{'Yes' if score_topk_consistent else 'No'}\n"
+                    f"  Interpretation: {interpretation}"
                 )
 
-        result.actual_topk_scores = "\n".join(actual_lines)
-        result.expected_topk_scores = "\n".join(expected_lines)
-        summary = (
-            f"queries={len(band_lines)} exact={exact_count} "
-            f"boundary={len(boundary_coordinates)} hard={len(hard_coordinates)}"
+        def format_batches(
+            batches: dict[int, list[str]],
+            introduction: str,
+        ) -> str:
+            sections = [introduction]
+            for batch_index, lines in sorted(batches.items()):
+                body = "\n".join(f"  {line}" for line in lines)
+                sections.append(f"Batch {batch_index}\n{body}")
+            return "\n\n".join(sections)
+
+        num_queries = sum(len(lines) for lines in band_lines.values())
+        result.actual_topk_scores = format_batches(
+            actual_lines,
+            "Actual selected indices and scores, highest score first.",
         )
-        result.precision_band = "\n".join([summary, *band_lines])
+        result.expected_topk_scores = format_batches(
+            expected_lines,
+            "Expected selected indices and scores, highest score first.",
+        )
+        summary = (
+            f"Top-k summary: {num_queries} query positions; "
+            f"{exact_count} exact; {len(boundary_coordinates)} boundary-pass; "
+            f"{len(hard_coordinates)} hard mismatch."
+        )
+        result.precision_band = format_batches(
+            band_lines,
+            summary,
+        )
         if mismatch_lines:
-            score_detail = "; ".join(mismatch_lines)
-            result.detail = (
-                f"{result.detail}; {score_detail}"
-                if result.detail
-                else score_detail
+            score_detail = (
+                "Score boundary analysis\n"
+                + "\n\n".join(mismatch_lines)
             )
+            result.detail = score_detail
         if result.mismatch_count and not hard_coordinates:
             result.passed = True
             result.boundary_passed = True
@@ -1983,7 +2084,19 @@ class ParityRecorder:
     @staticmethod
     def _mismatch_display(result: ComparisonResult) -> str:
         if (not result.passed or result.boundary_passed) and result.detail:
-            return f"{result.mismatch_count}: {result.detail}"
+            if result.actual_topk_scores:
+                unit = (
+                    "query position"
+                    if result.mismatch_count == 1
+                    else "query positions"
+                )
+                heading = f"{result.mismatch_count} differing {unit}"
+            else:
+                unit = "mismatch" if result.mismatch_count == 1 else "mismatches"
+                heading = f"{result.mismatch_count} {unit}"
+            return (
+                f"{heading}\n\n{result.detail}"
+            )
         return str(result.mismatch_count)
 
     def table(self, *, color: bool = False) -> str:
@@ -1994,9 +2107,9 @@ class ParityRecorder:
             "expected_dtype",
             "actual",
             "expected",
-            "actual_topk_scores",
-            "expected_topk_scores",
-            "precision_band",
+            "Actual top-k scores",
+            "Expected top-k scores",
+            "BF16 cutoff analysis",
             "max_abs",
             "mean_abs",
             "rmse",
@@ -2070,9 +2183,9 @@ class ParityRecorder:
             ("expected_dtype", "dtype"),
             ("actual", "value"),
             ("expected", "value"),
-            ("actual_topk_scores", "topk"),
-            ("expected_topk_scores", "topk"),
-            ("precision_band", "topk"),
+            ("Actual top-k scores", "topk"),
+            ("Expected top-k scores", "topk"),
+            ("BF16 cutoff analysis", "topk"),
             ("max_abs", "metric"),
             ("mean_abs", "metric"),
             ("rmse", "metric"),
@@ -2089,15 +2202,19 @@ class ParityRecorder:
             class_attribute = f" class='{' '.join(classes)}'" if classes else ""
             return f"<td{class_attribute}>{escape(value)}</td>"
 
-        def expandable_cell(value: str, group: str) -> str:
+        def expandable_cell(
+            value: str,
+            group: str,
+            summary: str = "",
+        ) -> str:
             if not value:
                 return cell("-", group)
             lines = value.splitlines()
             classes = f"col-{group} expandable-cell"
-            summary = lines[0] if len(lines) == 1 else f"{len(lines)} lines"
+            summary_text = summary or lines[0]
             return (
                 f"<td class='{classes}'><details>"
-                f"<summary>{escape(summary)}</summary>"
+                f"<summary>{escape(summary_text)}</summary>"
                 f"<pre>{escape(value)}</pre></details></td>"
             )
 
@@ -2123,9 +2240,23 @@ class ParityRecorder:
                 + cell(result.expected_dtype or "-", "dtype")
                 + cell(result.actual_summary or "-", "value")
                 + cell(result.expected_summary or "-", "value")
-                + expandable_cell(result.actual_topk_scores, "topk")
-                + expandable_cell(result.expected_topk_scores, "topk")
-                + expandable_cell(result.precision_band, "topk")
+                + expandable_cell(
+                    result.actual_topk_scores,
+                    "topk",
+                    "View Actual top-k scores",
+                )
+                + expandable_cell(
+                    result.expected_topk_scores,
+                    "topk",
+                    "View Expected top-k scores",
+                )
+                + expandable_cell(
+                    result.precision_band,
+                    "topk",
+                    result.precision_band.splitlines()[0]
+                    if result.precision_band
+                    else "",
+                )
                 + cell(
                     "-" if result.max_abs is None else f"{result.max_abs:.6g}",
                     "metric",
@@ -2151,7 +2282,21 @@ class ParityRecorder:
                     else f"{result.cosine_similarity:.8g}",
                     "metric",
                 )
-                + cell(self._mismatch_display(result), "diagnostic")
+                + (
+                    expandable_cell(
+                        self._mismatch_display(result),
+                        "diagnostic",
+                        (
+                            f"{result.mismatch_count} differing query "
+                            f"position{'s' if result.mismatch_count != 1 else ''}"
+                            if result.actual_topk_scores
+                            else f"{result.mismatch_count} mismatches"
+                        ),
+                    )
+                    if result.detail
+                    and (not result.passed or result.boundary_passed)
+                    else cell(str(result.mismatch_count), "diagnostic")
+                )
                 + cell(trend, "diagnostic")
                 + cell(status, extra_class=status_class)
                 + "</tr>"
@@ -2349,6 +2494,27 @@ class ParityRecorder:
 
     def html_section(self, section_id: str) -> str:
         failed_class = "fail" if self.failed else "pass"
+        topk_help = ""
+        if any(result.actual_topk_scores for result in self.results):
+            topk_help = (
+                "<details class='topk-help' open>"
+                "<summary>How to read BF16 top-k results</summary><ul>"
+                "<li>Selected entries are grouped by batch and query position, "
+                "then sorted from highest score to lowest score.</li>"
+                "<li>BF16 ULP is the spacing between representable BF16 values "
+                "at the cutoff score's scale. One rounding contributes at most "
+                "half an ULP.</li>"
+                "<li>The two-ULP candidate allowance is the maximum score "
+                "difference accepted by the BF16 boundary rule.</li>"
+                "<li>The observed cutoff instability interval is the Expected "
+                "cutoff plus or minus the largest score difference for that "
+                "query.</li>"
+                "<li>BOUNDARY_PASS is used only when changed candidates remain "
+                "inside that instability interval, both K/K+1 margins are "
+                "covered, and replayed scores reproduce both recorded top-k "
+                "sets. Otherwise the result is FAIL.</li>"
+                "</ul></details>"
+            )
         return (
             f"<section id='{escape(section_id)}'>"
             f"<h2>{escape(self.title)}</h2>"
@@ -2361,7 +2527,7 @@ class ParityRecorder:
             "BOUNDARY_PASS means BF16 top-k differences are confined to the "
             "K/K+1 instability band: changed scores stay within two BF16 ULPs "
             "and both cutoff margins are covered by observed score error.</p>"
-            f"{self.html_error_curve()}{self.html_table()}</section>"
+            f"{topk_help}{self.html_error_curve()}{self.html_table()}</section>"
         )
 
     def write(self, path: str | None = None) -> str:
@@ -2390,7 +2556,8 @@ class ParityRecorder:
                     ".hide-diagnostic .col-diagnostic{display:none}"
                     ".expandable-cell{min-width:220px;max-width:520px}"
                     ".expandable-cell summary{cursor:pointer;font-weight:bold}"
-                    ".expandable-cell pre{white-space:pre-wrap;overflow-wrap:anywhere}"
+                    ".expandable-cell pre{white-space:pre-wrap;overflow-wrap:anywhere;"
+                    "line-height:1.5;padding:10px;background:#f8fafc;border-radius:4px}"
                     ".pass{color:#087f23;font-weight:bold}.fail{color:#b00020;font-weight:bold}"
                     ".boundary{color:#b45309;font-weight:bold}"
                     ".trace{color:#007c91;font-weight:bold}"
@@ -2401,6 +2568,8 @@ class ParityRecorder:
                     ".error-chart-legend-item{display:flex;align-items:center;gap:8px;"
                     "min-width:0;overflow-wrap:anywhere}"
                     ".error-chart-swatch{width:22px;height:3px;flex:0 0 22px}"
+                    ".topk-help{margin:14px 0;padding:8px 12px;border:1px solid #cbd5e1;"
+                    "background:#f8fafc}.topk-help li{margin:6px 0}"
                     "</style></head><body>"
                     f"<h1>GLM-5 parity report</h1>{self.html_section('result')}"
                     "</body></html>\n"
@@ -2507,7 +2676,8 @@ class ParitySuiteReport:
             ".hide-diagnostic .col-diagnostic{display:none}"
             ".expandable-cell{min-width:220px;max-width:520px}"
             ".expandable-cell summary{cursor:pointer;font-weight:bold}"
-            ".expandable-cell pre{white-space:pre-wrap;overflow-wrap:anywhere}"
+            ".expandable-cell pre{white-space:pre-wrap;overflow-wrap:anywhere;"
+            "line-height:1.5;padding:10px;background:#f8fafc;border-radius:4px}"
             ".pass{color:#087f23;font-weight:bold}"
             ".boundary{color:#b45309;font-weight:bold}"
             ".fail{color:#b00020;font-weight:bold}"
@@ -2520,6 +2690,8 @@ class ParitySuiteReport:
             ".error-chart-legend-item{display:flex;align-items:center;gap:8px;"
             "min-width:0;overflow-wrap:anywhere}"
             ".error-chart-swatch{width:22px;height:3px;flex:0 0 22px}"
+            ".topk-help{margin:14px 0;padding:8px 12px;border:1px solid #cbd5e1;"
+            "background:#f8fafc}.topk-help li{margin:6px 0}"
             "</style></head><body>"
             f"<h1>{escape(self.title)}</h1>"
             "<nav id='report-contents' class='report-toc' aria-label='Report contents'>"

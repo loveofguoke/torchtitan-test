@@ -246,12 +246,19 @@ def test_discrete_mismatch_column_reports_every_batch_and_topk() -> None:
     assert not result.passed
     assert result.mismatch_count == 1
     assert result.mismatch_positions == [1]
-    assert result.actual_summary == "p1: topk=[0, 0]"
-    assert result.expected_summary == "p1: topk=[0, 0]"
+    assert result.actual_summary == (
+        "Batch 1, query position 1: topk=[0, 0]"
+    )
+    assert result.expected_summary == (
+        "Batch 1, query position 1: topk=[0, 1]"
+    )
     assert (
-        "1: b1,p1 actual topk=[0, 0] expected topk=[0, 1]"
+        "1 mismatch"
         in recorder.table()
     )
+    assert "Batch 1, query position 1" in recorder.table()
+    assert "Actual topk: [0, 0]" in recorder.table()
+    assert "Expected topk: [0, 1]" in recorder.table()
 
 
 @pytest.mark.parametrize("component", ["indexer", "router"])
@@ -284,15 +291,25 @@ def test_bf16_topk_cutoff_difference_is_boundary_pass(
     assert result.boundary_passed
     assert recorder._status(result) == "BOUNDARY_PASS"
     assert "boundary_passed=1" in recorder.summary()
-    assert "b0,p0 [1:1.1, 0:" in result.actual_topk_scores
-    assert "b0,p0 [1:1.1, 2:" in result.expected_topk_scores
-    assert "boundary=1 hard=0" in result.precision_band
-    assert "bf16_ulp_ref=" in result.precision_band
-    assert "bf16_rounding_band=" in result.precision_band
-    assert "observed_cutoff_band=" in result.precision_band
-    assert "score_topk_consistent=True" in result.precision_band
-    assert "actual_only=[0]" in result.detail
-    assert "expected_only=[2]" in result.detail
+    assert "Batch 0" in result.actual_topk_scores
+    assert "Query position 0: [index 1: 1.1, index 0:" in (
+        result.actual_topk_scores
+    )
+    assert "Query position 0: [index 1: 1.1, index 2:" in (
+        result.expected_topk_scores
+    )
+    assert "1 boundary-pass; 0 hard mismatch" in result.precision_band
+    assert "BF16 ULP at cutoff scale:" in result.precision_band
+    assert "One-value BF16 rounding interval:" in result.precision_band
+    assert "Observed cutoff instability interval:" in result.precision_band
+    assert "Scores reproduce recorded top-k: Yes" in result.precision_band
+    assert "Index 0 (selected only by Actual)" in result.detail
+    assert "Index 2 (selected only by Expected)" in result.detail
+    assert "Explanation:" in result.detail
+    html = recorder.html_section("topk")
+    assert "How to read BF16 top-k results" in html
+    assert "View Actual top-k scores" in html
+    assert "1 differing query position" in html
 
 
 @pytest.mark.parametrize("precision", [glm5_parity.FP32, glm5_parity.BF16])
@@ -321,8 +338,8 @@ def test_topk_difference_outside_boundary_band_fails(
     assert not result.passed
     assert not result.boundary_passed
     assert recorder._status(result) == "FAIL"
-    assert "boundary=0 hard=1" in result.precision_band
-    assert "verdict=hard" in result.detail
+    assert "0 boundary-pass; 1 hard mismatch" in result.precision_band
+    assert "Classification: Hard mismatch" in result.detail
 
 
 def test_fp32_topk_cutoff_difference_remains_strict() -> None:
@@ -380,11 +397,13 @@ def test_matching_topk_still_reports_every_selected_score() -> None:
 
     assert result.passed
     assert not result.boundary_passed
-    assert "b0,p0 [2:" in result.actual_topk_scores
-    assert ", 0:" in result.actual_topk_scores
-    assert "b0,p1 [1:" in result.actual_topk_scores
-    assert ", 2:" in result.actual_topk_scores
-    assert "queries=2 exact=2 boundary=0 hard=0" in result.precision_band
+    assert "Query position 0: [index 2:" in result.actual_topk_scores
+    assert ", index 0:" in result.actual_topk_scores
+    assert "Query position 1: [index 1:" in result.actual_topk_scores
+    assert ", index 2:" in result.actual_topk_scores
+    assert "2 query positions; 2 exact; 0 boundary-pass" in (
+        result.precision_band
+    )
 
 
 def test_indexer_score_replay_uses_captured_mixed_precision_boundaries() -> None:
@@ -589,7 +608,7 @@ def test_glm5_2_html_contents_is_top_only_and_targets_sections(
     assert "button[aria-pressed='true']" in html
     assert "hide-metric" in html
     assert "hide-topk" in html
-    assert "actual_topk_scores" in html
+    assert "Actual top-k scores" in html
     assert ".boundary{color:" in html
     assert "class='parity-table-scroll'" in html
     assert ".error-chart-legend{display:grid" in html
