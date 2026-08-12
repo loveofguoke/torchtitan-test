@@ -1178,6 +1178,7 @@ class ComparisonResult:
     rmse: float | None = None
     mismatch_count: int = 0
     mismatch_positions: list[int] = field(default_factory=list)
+    mismatch_coordinates: list[tuple[int, int]] = field(default_factory=list)
     peak_position: int | None = None
     module_path: str = ""
     detail: str = ""
@@ -1190,6 +1191,9 @@ class ComparisonResult:
     actual_dtype: str = ""
     expected_dtype: str = ""
     boundary_passed: bool = False
+    boundary_local_passed: bool = False
+    boundary_propagation_checked: bool = False
+    boundary_propagation: str = ""
     actual_topk_scores: str = ""
     expected_topk_scores: str = ""
     precision_band: str = ""
@@ -1375,6 +1379,7 @@ class ParityRecorder:
         return cls._phase(result), 1, 0, 0, cls._path_key(result)
 
     def ordered_results(self) -> list[ComparisonResult]:
+        self.finalize_topk_boundary_verdicts()
         self._annotate_explosions()
         return sorted(self.results, key=self._result_key)
 
@@ -1463,6 +1468,7 @@ class ParityRecorder:
                 previous_error = max(result.max_abs or 0.0, numerical_floor)
 
     def summary(self) -> str:
+        self.finalize_topk_boundary_verdicts()
         checkpoint_total = sum(result.checkpoint for result in self.results)
         trace_total = len(self.results) - checkpoint_total
         passed = checkpoint_total - len(self.failed)
@@ -1542,6 +1548,7 @@ class ParityRecorder:
                 )
             peak_position = None
             mismatch_positions: list[int] = []
+            mismatch_coordinates: list[tuple[int, int]] = []
             detail = ""
             if diff.ndim >= 3:
                 position_max = diff.amax(dim=tuple([0] + list(range(2, diff.ndim))))
@@ -1550,6 +1557,15 @@ class ParityRecorder:
                 position_mismatch = mismatch_mask.any(dim=tuple([0] + list(range(2, diff.ndim))))
                 mismatch_positions = [
                     index for index, value in enumerate(position_mismatch.tolist()) if value
+                ]
+                coordinate_mismatch = mismatch_mask.any(
+                    dim=tuple(range(2, diff.ndim))
+                )
+                mismatch_coordinates = [
+                    (batch_index, sequence_index)
+                    for batch_index in range(coordinate_mismatch.shape[0])
+                    for sequence_index in range(coordinate_mismatch.shape[1])
+                    if bool(coordinate_mismatch[batch_index, sequence_index])
                 ]
                 detail = f"peak_position={peak_position}"
             mismatch_count = int(
@@ -1581,6 +1597,7 @@ class ParityRecorder:
                 ),
                 mismatch_count=mismatch_count,
                 mismatch_positions=mismatch_positions,
+                mismatch_coordinates=mismatch_coordinates,
                 peak_position=peak_position,
                 module_path=module_path,
                 detail=detail,
@@ -1677,6 +1694,7 @@ class ParityRecorder:
             passed,
             mismatch_count=mismatch_count,
             mismatch_positions=sorted(mismatch_positions),
+            mismatch_coordinates=mismatch_coordinates,
             module_path=module_path,
             detail=detail,
             parent_path=parent_path,
@@ -1812,6 +1830,14 @@ class ParityRecorder:
                     continue
                 score_error = (actual_row - expected_row).abs()
                 epsilon = float(score_error.max()) if score_error.numel() else 0.0
+                row_scale = max(
+                    float(torch.sqrt(expected_row.square().mean())),
+                    torch.finfo(torch.float32).tiny,
+                )
+                score_tolerance = self.precision.rtol * torch.maximum(
+                    expected_row.abs(),
+                    torch.full_like(expected_row, row_scale),
+                )
                 actual_sorted = actual_row.sort(descending=True).values
                 expected_sorted = expected_row.sort(descending=True).values
                 actual_cutoff = float(actual_sorted[effective_topk - 1])
@@ -1849,6 +1875,9 @@ class ParityRecorder:
                     and expected_score_set == expected_set
                 )
                 changed_ids = sorted(actual_set.symmetric_difference(expected_set))
+                score_within_tolerance = bool(
+                    torch.all(score_error <= score_tolerance)
+                )
                 verdict = "exact"
                 if not changed_ids:
                     exact_count += 1
@@ -1860,36 +1889,24 @@ class ParityRecorder:
                         )
                         for index in changed_ids
                     )
-                    changed_ulp_ok = all(
-                        abs(
-                            float(actual_row[index])
-                            - float(expected_row[index])
-                        )
-                        <= 2.0
-                        * max(
-                            _bf16_ulp(float(actual_row[index])),
-                            _bf16_ulp(float(expected_row[index])),
-                        )
-                        for index in changed_ids
-                    )
-                    instability_width = 2.0 * changed_epsilon
+                    instability_width = max(epsilon, changed_epsilon)
                     margins_unstable = (
                         actual_margin is not None
                         and expected_margin is not None
-                        and actual_margin <= instability_width
-                        and expected_margin <= instability_width
+                        and actual_margin <= 2.0 * instability_width
+                        and expected_margin <= 2.0 * instability_width
                     )
                     candidates_near_cutoff = all(
                         abs(float(actual_row[index]) - actual_cutoff)
-                        <= instability_width
+                        <= 2.0 * instability_width
                         and abs(float(expected_row[index]) - expected_cutoff)
-                        <= instability_width
+                        <= 2.0 * instability_width
                         for index in changed_ids
                     )
                     boundary = (
                         self.precision.name == "bf16"
                         and score_topk_consistent
-                        and changed_ulp_ok
+                        and score_within_tolerance
                         and margins_unstable
                         and candidates_near_cutoff
                     )
@@ -1934,14 +1951,15 @@ class ParityRecorder:
                     )
                     explanation = (
                         "The changed candidates are confined to the K/K+1 "
-                        "selection boundary. Their score differences fit the "
-                        "two-ULP candidate budget, and the observed score "
-                        "error covers both cutoff margins."
+                        "selection boundary. The complete score row passes "
+                        "the configured BF16 numerical tolerance, and the "
+                        "observed cross-device score error covers both cutoff "
+                        "margins. ULP values are diagnostic only."
                         if boundary
-                        else "At least one changed candidate is outside the "
-                        "BF16 boundary allowance, outside the cutoff "
-                        "instability region, or inconsistent with the "
-                        "recorded score ranking."
+                        else "The complete score row exceeds BF16 numerical "
+                        "tolerance, a changed candidate is outside the "
+                        "observed cutoff instability region, or the scores do "
+                        "not reproduce the recorded top-k selection."
                     )
                     mismatch_lines.append(
                         f"{coordinate}\n"
@@ -1966,7 +1984,8 @@ class ParityRecorder:
                     ),
                     "boundary": (
                         "Selection changed only inside the numerically "
-                        "unstable cutoff region, so this query is accepted."
+                        "unstable cutoff region. The local score evidence is "
+                        "acceptable; downstream impact is checked separately."
                     ),
                     "hard": (
                         "The selection change cannot be explained by the "
@@ -1977,12 +1996,19 @@ class ParityRecorder:
                     f"Query position {position}\n"
                     f"  Result: {result_label}\n"
                     f"  Maximum score difference: {epsilon:.8g}\n"
+                    f"  Pairwise ranking uncertainty (2 x maximum score "
+                    f"difference): {2.0 * epsilon:.8g}\n"
+                    f"  Score-row RMS scale: {row_scale:.8g}\n"
+                    f"  Scale-aware score tolerance: "
+                    f"rtol={self.precision.rtol:.8g} times the larger of "
+                    "each score magnitude and the row RMS scale\n"
                     f"  BF16 ULP at cutoff scale: {cutoff_ulp:.8g}\n"
                     f"  One-value BF16 rounding interval: "
                     f"+/-{0.5 * cutoff_ulp:.8g}\n"
-                    f"  Boundary candidate allowance (2 ULP): "
-                    f"{2.0 * cutoff_ulp:.8g}\n"
-                    f"  Observed cutoff instability interval: "
+                    "  ULP role: diagnostic only; not a fixed pass/fail limit.\n"
+                    f"  Complete score row passes BF16 tolerance: "
+                    f"{'Yes' if score_within_tolerance else 'No'}\n"
+                    f"  Observed one-score instability interval: "
                     f"[{expected_cutoff - epsilon:.8g}, "
                     f"{expected_cutoff + epsilon:.8g}]\n"
                     f"  Actual K/K+1 margin: {format_margin(actual_margin)}\n"
@@ -1991,6 +2017,13 @@ class ParityRecorder:
                     f"{'Yes' if score_topk_consistent else 'No'}\n"
                     f"  Interpretation: {interpretation}"
                 )
+
+        result.mismatch_coordinates = sorted(
+            set(boundary_coordinates).union(hard_coordinates)
+        )
+        result.mismatch_positions = sorted(
+            {position for _batch, position in result.mismatch_coordinates}
+        )
 
         def format_batches(
             batches: dict[int, list[str]],
@@ -2029,9 +2062,231 @@ class ParityRecorder:
         if result.mismatch_count and not hard_coordinates:
             result.passed = True
             result.boundary_passed = True
+            result.boundary_local_passed = True
         elif hard_coordinates:
             result.passed = False
             result.boundary_passed = False
+            result.boundary_local_passed = False
+
+    # ------------------------------------------------------------------
+    # BF16 TOP-K BOUNDARY AND DOWNSTREAM-PROPAGATION VERDICT
+    #
+    # Keep this logic in the test framework. TorchTitan and backend kernels
+    # remain unchanged. Local score geometry decides whether a top-k change is
+    # a plausible cutoff-boundary event. This second pass then decides whether
+    # that event is acceptable by auditing continuous downstream checkpoints.
+    # ULP values are diagnostic only; they are never a fixed pass/fail budget.
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _is_topk_result(result: ComparisonResult) -> bool:
+        return result.component in {"indexer", "router", "router_indices"}
+
+    @classmethod
+    def _is_downstream_result(
+        cls,
+        boundary: ComparisonResult,
+        candidate: ComparisonResult,
+    ) -> bool:
+        if candidate is boundary or candidate.max_abs is None:
+            return False
+        if not candidate.checkpoint:
+            return False
+        if candidate.scope != boundary.scope:
+            return False
+        if candidate.scope in {"parameters", "fixture", "fixture_model"}:
+            return False
+        if cls._is_topk_result(candidate):
+            return False
+        if isinstance(boundary.layer, int) and isinstance(candidate.layer, int):
+            if candidate.layer < boundary.layer:
+                return False
+        boundary_phase = cls._phase(boundary)
+        candidate_phase = cls._phase(candidate)
+        if candidate_phase > boundary_phase:
+            return True
+        if not isinstance(boundary.layer, int):
+            return False
+        if candidate.layer > boundary.layer:
+            return True
+        path = cls._display_path(candidate)
+        layer_prefix = f"layers.{boundary.layer}"
+        if boundary.component == "indexer":
+            return (
+                path == f"{layer_prefix}.attention"
+                or path.startswith(f"{layer_prefix}.attention.")
+                or path == layer_prefix
+                or path.startswith(f"{layer_prefix}.ffn_norm")
+                or path.startswith(f"{layer_prefix}.moe")
+                or path.startswith(f"{layer_prefix}.feed_forward")
+            )
+        return path == layer_prefix or path.startswith(
+            f"{layer_prefix}.moe"
+        )
+
+    @staticmethod
+    def _has_causally_related_error_position(
+        boundary: ComparisonResult,
+        candidate: ComparisonResult,
+    ) -> bool:
+        """Match same-token or later causal errors in the same batch."""
+        if boundary.mismatch_coordinates and candidate.mismatch_coordinates:
+            same_layer = (
+                isinstance(boundary.layer, int)
+                and candidate.layer == boundary.layer
+            )
+            return any(
+                boundary_batch == candidate_batch
+                and (
+                    boundary_position == candidate_position
+                    if same_layer
+                    else candidate_position >= boundary_position
+                )
+                for boundary_batch, boundary_position in (
+                    boundary.mismatch_coordinates
+                )
+                for candidate_batch, candidate_position in (
+                    candidate.mismatch_coordinates
+                )
+            )
+        if not boundary.mismatch_positions or not candidate.mismatch_positions:
+            return True
+        if isinstance(boundary.layer, int) and candidate.layer == boundary.layer:
+            return bool(
+                set(boundary.mismatch_positions).intersection(
+                    candidate.mismatch_positions
+                )
+            )
+        return any(
+            candidate_position >= boundary_position
+            for boundary_position in boundary.mismatch_positions
+            for candidate_position in candidate.mismatch_positions
+        )
+
+    @classmethod
+    def _format_downstream_checkpoint(cls, result: ComparisonResult) -> str:
+        path = cls._display_path(result)
+        if result.max_abs is None:
+            return path
+        return f"{path} (maximum absolute error {result.max_abs:.8g})"
+
+    def finalize_topk_boundary_verdicts(self) -> None:
+        """Combine local cutoff evidence with downstream numerical impact."""
+        self._annotate_explosions()
+        for boundary in self.results:
+            if not boundary.boundary_local_passed:
+                continue
+            if boundary.boundary_propagation:
+                suffix = "\n\n" + boundary.boundary_propagation
+                if boundary.precision_band.endswith(suffix):
+                    boundary.precision_band = boundary.precision_band[
+                        : -len(suffix)
+                    ]
+            downstream = [
+                candidate
+                for candidate in self.results
+                if self._is_downstream_result(boundary, candidate)
+            ]
+            related_downstream = [
+                candidate
+                for candidate in downstream
+                if candidate.passed
+                or self._has_causally_related_error_position(
+                    boundary, candidate
+                )
+            ]
+            related_ids = {id(candidate) for candidate in related_downstream}
+            failed = [
+                candidate
+                for candidate in related_downstream
+                if not candidate.passed
+            ]
+            unrelated_failed_count = sum(
+                not candidate.passed and id(candidate) not in related_ids
+                for candidate in downstream
+            )
+            exploded = [
+                candidate
+                for candidate in related_downstream
+                if candidate.explosion
+            ]
+            harmful = list(failed)
+            harmful_ids = {id(candidate) for candidate in harmful}
+            harmful.extend(
+                candidate
+                for candidate in exploded
+                if id(candidate) not in harmful_ids
+            )
+            boundary.boundary_propagation_checked = bool(related_downstream)
+            if harmful:
+                boundary.passed = False
+                boundary.boundary_passed = False
+                examples = ", ".join(
+                    self._format_downstream_checkpoint(candidate)
+                    for candidate in harmful[:6]
+                )
+                boundary.boundary_propagation = (
+                    "Downstream impact: NOT ACCEPTABLE\n"
+                    f"Checked {len(related_downstream)} related continuous "
+                    "checkpoints. "
+                    f"{len(failed)} failed their numerical tolerance and "
+                    f"{len(exploded)} showed explosive error growth.\n"
+                    f"Affected checkpoints: {examples}\n"
+                    "Final decision: FAIL. This boundary event cannot receive "
+                    "a weak pass because related downstream numerical errors "
+                    "are outside tolerance. This is association evidence, not "
+                    "a claim that the top-k change alone caused every error."
+                )
+            elif related_downstream:
+                boundary.passed = True
+                boundary.boundary_passed = True
+                largest = max(
+                    related_downstream,
+                    key=lambda candidate: candidate.max_abs or 0.0,
+                )
+                unrelated_note = (
+                    f" {unrelated_failed_count} failing checkpoint(s) at "
+                    "other sequence positions were not attributed to this "
+                    "boundary event."
+                    if unrelated_failed_count
+                    else ""
+                )
+                boundary.boundary_propagation = (
+                    "Downstream impact: ACCEPTABLE\n"
+                    f"Checked {len(related_downstream)} related continuous "
+                    "checkpoints after this top-k decision. All passed their "
+                    "configured numerical tolerance, and none showed "
+                    f"explosive error growth.{unrelated_note}\n"
+                    "Largest downstream difference: "
+                    f"{self._format_downstream_checkpoint(largest)}.\n"
+                    "Final decision: BOUNDARY_PASS."
+                )
+            else:
+                boundary.passed = True
+                boundary.boundary_passed = True
+                if downstream:
+                    boundary.boundary_propagation = (
+                        "Downstream impact: NO RELATED POSITIONAL EVIDENCE\n"
+                        "Later continuous failures occur only at other "
+                        "sequence positions, so they are not attributed to "
+                        "this boundary event. Final decision: BOUNDARY_PASS "
+                        "based on local evidence; review those failures "
+                        "independently."
+                    )
+                else:
+                    boundary.boundary_propagation = (
+                        "Downstream impact: NOT AVAILABLE IN THIS SECTION\n"
+                        "The local cutoff change is numerically explainable, "
+                        "but this report section contains no later continuous "
+                        "checkpoint. Final decision: BOUNDARY_PASS based on "
+                        "local evidence; confirm propagation in the "
+                        "end-to-end section."
+                    )
+            if boundary.precision_band and boundary.boundary_propagation not in (
+                boundary.precision_band
+            ):
+                boundary.precision_band += (
+                    "\n\n" + boundary.boundary_propagation
+                )
 
     def missing(
         self,
@@ -2068,6 +2323,7 @@ class ParityRecorder:
 
     @property
     def failed(self) -> list[ComparisonResult]:
+        self.finalize_topk_boundary_verdicts()
         return [
             result for result in self.results
             if result.checkpoint and not result.passed
@@ -2504,15 +2760,18 @@ class ParityRecorder:
                 "<li>BF16 ULP is the spacing between representable BF16 values "
                 "at the cutoff score's scale. One rounding contributes at most "
                 "half an ULP.</li>"
-                "<li>The two-ULP candidate allowance is the maximum score "
-                "difference accepted by the BF16 boundary rule.</li>"
+                "<li>ULP values explain the scale of BF16 rounding but are "
+                "diagnostic only. Multi-stage kernels may accumulate more than "
+                "a fixed number of final-score ULPs.</li>"
                 "<li>The observed cutoff instability interval is the Expected "
                 "cutoff plus or minus the largest score difference for that "
                 "query.</li>"
                 "<li>BOUNDARY_PASS is used only when changed candidates remain "
                 "inside that instability interval, both K/K+1 margins are "
-                "covered, and replayed scores reproduce both recorded top-k "
-                "sets. Otherwise the result is FAIL.</li>"
+                "covered, the complete score row passes scale-aware BF16 "
+                "tolerance, replayed scores reproduce both top-k sets, and "
+                "available downstream checkpoints show no harmful propagation."
+                "</li>"
                 "</ul></details>"
             )
         return (
@@ -2525,8 +2784,9 @@ class ParityRecorder:
             "Dtype flow reports observed input/parameter/output dtypes and "
             "explicit compute dtypes where the implementation declares one. "
             "BOUNDARY_PASS means BF16 top-k differences are confined to the "
-            "K/K+1 instability band: changed scores stay within two BF16 ULPs "
-            "and both cutoff margins are covered by observed score error.</p>"
+            "observed K/K+1 instability band, the score row passes scale-aware "
+            "BF16 tolerance, and available downstream checkpoints remain "
+            "numerically acceptable. ULP values are diagnostic only.</p>"
             f"{topk_help}{self.html_error_curve()}{self.html_table()}</section>"
         )
 

@@ -33,8 +33,11 @@ every batch/query, together with the BF16 ULP at the cutoff scale, the nominal
 rounding band, the observed cross-device score band, and both K/K+1 margins.
 Discrete results have three states: `PASS` for identical selected sets,
 `BOUNDARY_PASS` for BF16-only cutoff changes explained by the measured score
-band and at most two BF16 ULPs per changed candidate, and `FAIL` for stable or
-out-of-band selection differences. FP32 selection remains exact.
+band whose complete score row passes scale-aware BF16 tolerance and whose
+available downstream continuous checkpoints remain acceptable, and `FAIL` for
+stable, out-of-band, or harmful propagated differences. ULP values remain in
+the report as scale diagnostics but are not a fixed pass/fail limit. FP32
+selection remains exact.
 
 HTML result tables keep their header visible inside a bounded scroll area.
 Buttons above each table independently fold path, dtype, value, metric, and

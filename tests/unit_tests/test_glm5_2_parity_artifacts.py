@@ -301,6 +301,10 @@ def test_bf16_topk_cutoff_difference_is_boundary_pass(
     assert "1 boundary-pass; 0 hard mismatch" in result.precision_band
     assert "BF16 ULP at cutoff scale:" in result.precision_band
     assert "One-value BF16 rounding interval:" in result.precision_band
+    assert "ULP role: diagnostic only" in result.precision_band
+    assert "Complete score row passes BF16 tolerance: Yes" in (
+        result.precision_band
+    )
     assert "Observed cutoff instability interval:" in result.precision_band
     assert "Scores reproduce recorded top-k: Yes" in result.precision_band
     assert "Index 0 (selected only by Actual)" in result.detail
@@ -310,6 +314,7 @@ def test_bf16_topk_cutoff_difference_is_boundary_pass(
     assert "How to read BF16 top-k results" in html
     assert "View Actual top-k scores" in html
     assert "1 differing query position" in html
+    assert "Downstream impact: NOT AVAILABLE IN THIS SECTION" in html
 
 
 @pytest.mark.parametrize("precision", [glm5_parity.FP32, glm5_parity.BF16])
@@ -373,6 +378,138 @@ def test_bf16_ulp_tracks_value_scale() -> None:
     assert glm5_parity._bf16_ulp(1.0) == 2.0**-7
     assert glm5_parity._bf16_ulp(0.5) == 2.0**-8
     assert glm5_parity._bf16_ulp(-0.0184) == 2.0**-13
+
+
+def test_accumulated_score_error_over_two_ulps_can_be_boundary_pass() -> None:
+    recorder = glm5_parity.ParityRecorder(glm5_parity.BF16)
+    actual_topk = torch.tensor([[[1, 0]]], dtype=torch.int32)
+    expected_topk = torch.tensor([[[1, 2]]], dtype=torch.int32)
+    result = recorder.discrete(
+        scope="configured",
+        component="indexer",
+        layer=2,
+        actual=actual_topk,
+        expected=expected_topk,
+        positions=torch.tensor([[2]]),
+    )
+
+    recorder.annotate_topk_scores(
+        result,
+        actual_topk=actual_topk,
+        expected_topk=expected_topk,
+        actual_scores=torch.tensor([[[0.01802, 0.03, 0.01790]]]),
+        expected_scores=torch.tensor([[[0.01800, 0.03, 0.01815]]]),
+        positions=torch.tensor([[2]]),
+    )
+
+    assert result.boundary_local_passed
+    assert result.passed
+    assert "Difference in ULPs: 2." in result.detail
+    assert "ULP values are diagnostic only" in result.detail
+    assert "Pairwise ranking uncertainty" in result.precision_band
+
+
+def _boundary_result_with_downstream(
+    *,
+    downstream_passed: bool,
+) -> tuple[glm5_parity.ParityRecorder, glm5_parity.ComparisonResult]:
+    recorder = glm5_parity.ParityRecorder(glm5_parity.BF16)
+    actual_topk = torch.tensor([[[1, 0]]], dtype=torch.int32)
+    expected_topk = torch.tensor([[[1, 2]]], dtype=torch.int32)
+    boundary = recorder.discrete(
+        scope="configured",
+        component="indexer",
+        layer=2,
+        actual=actual_topk,
+        expected=expected_topk,
+        positions=torch.tensor([[2]]),
+        module_path="layers.2.attention.indexer",
+    )
+    recorder.annotate_topk_scores(
+        boundary,
+        actual_topk=actual_topk,
+        expected_topk=expected_topk,
+        actual_scores=torch.tensor([[[0.9999, 1.1, 0.9998]]]),
+        expected_scores=torch.tensor([[[0.9997, 1.1, 0.9999]]]),
+        positions=torch.tensor([[2]]),
+    )
+    recorder.tensor(
+        scope="configured",
+        component="attention",
+        layer=2,
+        actual=torch.tensor([0.0]),
+        expected=(
+            torch.tensor([0.0])
+            if downstream_passed
+            else torch.tensor([1.0])
+        ),
+        module_path="layers.2.attention",
+    )
+    recorder.finalize_topk_boundary_verdicts()
+    return recorder, boundary
+
+
+def test_boundary_pass_requires_acceptable_downstream_checkpoints() -> None:
+    recorder, boundary = _boundary_result_with_downstream(
+        downstream_passed=True
+    )
+
+    assert boundary.passed
+    assert boundary.boundary_passed
+    assert boundary.boundary_propagation_checked
+    assert "Downstream impact: ACCEPTABLE" in boundary.precision_band
+    assert recorder._status(boundary) == "BOUNDARY_PASS"
+
+
+def test_boundary_change_fails_when_downstream_checkpoint_fails() -> None:
+    recorder, boundary = _boundary_result_with_downstream(
+        downstream_passed=False
+    )
+
+    assert not boundary.passed
+    assert not boundary.boundary_passed
+    assert boundary.boundary_propagation_checked
+    assert "Downstream impact: NOT ACCEPTABLE" in boundary.precision_band
+    assert "layers.2.attention" in boundary.precision_band
+    assert recorder._status(boundary) == "FAIL"
+
+
+def test_boundary_change_fails_on_explosive_downstream_growth() -> None:
+    recorder, boundary = _boundary_result_with_downstream(
+        downstream_passed=True
+    )
+    recorder.tensor(
+        scope="configured",
+        component="attention",
+        layer=2,
+        actual=torch.tensor([1.01]),
+        expected=torch.tensor([1.0]),
+        module_path="layers.2.attention",
+    )
+    recorder.finalize_topk_boundary_verdicts()
+
+    assert not boundary.passed
+    assert not boundary.boundary_passed
+    assert "explosive error growth" in boundary.precision_band
+
+
+def test_boundary_does_not_claim_unrelated_batch_failure() -> None:
+    recorder, boundary = _boundary_result_with_downstream(
+        downstream_passed=True
+    )
+    recorder.tensor(
+        scope="configured",
+        component="decoder_block",
+        layer=3,
+        actual=torch.tensor([[[0.0]], [[1.0]]]),
+        expected=torch.zeros((2, 1, 1)),
+        module_path="layers.3",
+    )
+    recorder.finalize_topk_boundary_verdicts()
+
+    assert boundary.passed
+    assert boundary.boundary_passed
+    assert "other sequence positions" in boundary.precision_band
 
 
 def test_matching_topk_still_reports_every_selected_score() -> None:
