@@ -39,6 +39,11 @@ stable, out-of-band, or harmful propagated differences. ULP values remain in
 the report as scale diagnostics but are not a fixed pass/fail limit. FP32
 selection remains exact.
 
+Downstream relative error growth is diagnostic only because growth measured
+from a near-zero baseline can be arbitrarily large. A locally explainable
+boundary change is downgraded to `FAIL` only when a causally related continuous
+checkpoint exceeds its configured numerical tolerance.
+
 HTML result tables keep their header visible inside a bounded scroll area.
 Buttons above each table independently fold path, dtype, value, metric, and
 diagnostic column groups without hiding the component or status columns.

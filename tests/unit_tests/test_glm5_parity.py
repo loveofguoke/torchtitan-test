@@ -2204,18 +2204,17 @@ class ParityRecorder:
                 not candidate.passed and id(candidate) not in related_ids
                 for candidate in downstream
             )
-            exploded = [
+            growth_warnings = [
                 candidate
                 for candidate in related_downstream
                 if candidate.explosion
             ]
-            harmful = list(failed)
-            harmful_ids = {id(candidate) for candidate in harmful}
-            harmful.extend(
-                candidate
-                for candidate in exploded
-                if id(candidate) not in harmful_ids
-            )
+            # A large growth ratio is not a failure by itself. In particular,
+            # dividing by a near-zero preceding error can make an ordinary BF16
+            # difference look arbitrarily large. Only an absolute/relative
+            # tolerance failure is allowed to turn a locally explainable top-k
+            # boundary event into FAIL; growth remains diagnostic context.
+            harmful = failed
             boundary.boundary_propagation_checked = bool(related_downstream)
             if harmful:
                 boundary.passed = False
@@ -2229,7 +2228,8 @@ class ParityRecorder:
                     f"Checked {len(related_downstream)} related continuous "
                     "checkpoints. "
                     f"{len(failed)} failed their numerical tolerance and "
-                    f"{len(exploded)} showed explosive error growth.\n"
+                    f"{len(growth_warnings)} showed abrupt relative error "
+                    "growth.\n"
                     f"Affected checkpoints: {examples}\n"
                     "Final decision: FAIL. This boundary event cannot receive "
                     "a weak pass because related downstream numerical errors "
@@ -2250,12 +2250,20 @@ class ParityRecorder:
                     if unrelated_failed_count
                     else ""
                 )
+                growth_note = (
+                    f" {len(growth_warnings)} checkpoint(s) showed abrupt "
+                    "relative growth from a smaller preceding error, but "
+                    "their values still passed numerical tolerance; this is "
+                    "diagnostic only."
+                    if growth_warnings
+                    else ""
+                )
                 boundary.boundary_propagation = (
                     "Downstream impact: ACCEPTABLE\n"
                     f"Checked {len(related_downstream)} related continuous "
                     "checkpoints after this top-k decision. All passed their "
-                    "configured numerical tolerance, and none showed "
-                    f"explosive error growth.{unrelated_note}\n"
+                    "configured numerical tolerance."
+                    f"{growth_note}{unrelated_note}\n"
                     "Largest downstream difference: "
                     f"{self._format_downstream_checkpoint(largest)}.\n"
                     "Final decision: BOUNDARY_PASS."
@@ -2350,9 +2358,13 @@ class ParityRecorder:
             else:
                 unit = "mismatch" if result.mismatch_count == 1 else "mismatches"
                 heading = f"{result.mismatch_count} {unit}"
-            return (
-                f"{heading}\n\n{result.detail}"
+            final_verdict = (
+                "\n\nFinal boundary verdict\n"
+                + result.boundary_propagation
+                if result.boundary_propagation
+                else ""
             )
+            return f"{heading}\n\n{result.detail}{final_verdict}"
         return str(result.mismatch_count)
 
     def table(self, *, color: bool = False) -> str:

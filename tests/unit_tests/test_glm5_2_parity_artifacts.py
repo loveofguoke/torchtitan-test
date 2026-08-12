@@ -458,6 +458,10 @@ def test_boundary_pass_requires_acceptable_downstream_checkpoints() -> None:
     assert boundary.boundary_passed
     assert boundary.boundary_propagation_checked
     assert "Downstream impact: ACCEPTABLE" in boundary.precision_band
+    assert "Final boundary verdict" in recorder._mismatch_display(boundary)
+    assert "Final decision: BOUNDARY_PASS" in (
+        recorder._mismatch_display(boundary)
+    )
     assert recorder._status(boundary) == "BOUNDARY_PASS"
 
 
@@ -471,10 +475,11 @@ def test_boundary_change_fails_when_downstream_checkpoint_fails() -> None:
     assert boundary.boundary_propagation_checked
     assert "Downstream impact: NOT ACCEPTABLE" in boundary.precision_band
     assert "layers.2.attention" in boundary.precision_band
+    assert "Final decision: FAIL" in recorder._mismatch_display(boundary)
     assert recorder._status(boundary) == "FAIL"
 
 
-def test_boundary_change_fails_on_explosive_downstream_growth() -> None:
+def test_in_tolerance_growth_is_diagnostic_for_boundary_change() -> None:
     recorder, boundary = _boundary_result_with_downstream(
         downstream_passed=True
     )
@@ -488,9 +493,9 @@ def test_boundary_change_fails_on_explosive_downstream_growth() -> None:
     )
     recorder.finalize_topk_boundary_verdicts()
 
-    assert not boundary.passed
-    assert not boundary.boundary_passed
-    assert "explosive error growth" in boundary.precision_band
+    assert boundary.passed
+    assert boundary.boundary_passed
+    assert "diagnostic only" in boundary.precision_band
 
 
 def test_boundary_does_not_claim_unrelated_batch_failure() -> None:
