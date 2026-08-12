@@ -34,15 +34,31 @@ rounding band, the observed cross-device score band, and both K/K+1 margins.
 Discrete results have three states: `PASS` for identical selected sets,
 `BOUNDARY_PASS` for BF16-only cutoff changes explained by the measured score
 band whose complete score row passes scale-aware BF16 tolerance and whose
-available downstream continuous checkpoints remain acceptable, and `FAIL` for
-stable, out-of-band, or harmful propagated differences. ULP values remain in
-the report as scale diagnostics but are not a fixed pass/fail limit. FP32
-selection remains exact.
+same-layer direct attention or MoE/FFN output remains acceptable, and `FAIL`
+for stable, out-of-band, or direct-output differences outside tolerance. ULP
+values remain in the report as scale diagnostics but are not a fixed pass/fail
+limit. FP32 selection remains exact.
 
-Downstream relative error growth is diagnostic only because growth measured
-from a near-zero baseline can be arbitrarily large. A locally explainable
-boundary change is downgraded to `FAIL` only when a causally related continuous
-checkpoint exceeds its configured numerical tolerance.
+Relative error growth is diagnostic only because growth measured from a
+near-zero baseline can be arbitrarily large. A locally explainable boundary
+change is downgraded to `FAIL` only when the same-layer direct module output
+exceeds its configured numerical tolerance at the changed token. This marks
+where a discrepancy becomes important; it does not claim that the top-k node
+is the root cause.
+
+Report rows follow GLM execution semantics instead of path hierarchy. Forward
+rows are ordered from input to output, internal module outputs precede their
+parent output, and each decoder-layer output is last in that layer. Activation
+gradient rows use reverse execution order. New captures retain hook completion
+order to resolve events inside a semantic stage; old artifacts use the same
+GLM semantic ordering as a compatible fallback. Error trend connects only the
+major numeric dataflow checkpoints (norm, attention output, norm, FFN/MoE
+output, layer output), not unrelated branches or every trace leaf. A numeric
+checkpoint's PASS/FAIL is always determined by its configured tolerance;
+neither trend growth nor a neighboring component changes that verdict.
+Existing artifacts do not need to be recaptured for this report change. A CPU
+`compare` rerun is sufficient; old artifacts simply use semantic ordering where
+the optional execution-order tags are absent.
 
 HTML result tables keep their header visible inside a bounded scroll area.
 Buttons above each table independently fold path, dtype, value, metric, and

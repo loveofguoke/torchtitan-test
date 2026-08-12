@@ -314,7 +314,7 @@ def test_bf16_topk_cutoff_difference_is_boundary_pass(
     assert "How to read BF16 top-k results" in html
     assert "View Actual top-k scores" in html
     assert "1 differing query position" in html
-    assert "Downstream impact: NOT AVAILABLE IN THIS SECTION" in html
+    assert "Direct same-layer output: NOT CAPTURED" in html
 
 
 @pytest.mark.parametrize("precision", [glm5_parity.FP32, glm5_parity.BF16])
@@ -457,7 +457,7 @@ def test_boundary_pass_requires_acceptable_downstream_checkpoints() -> None:
     assert boundary.passed
     assert boundary.boundary_passed
     assert boundary.boundary_propagation_checked
-    assert "Downstream impact: ACCEPTABLE" in boundary.precision_band
+    assert "Direct same-layer output: ACCEPTABLE" in boundary.precision_band
     assert "Final boundary verdict" in recorder._mismatch_display(boundary)
     assert "Final decision: BOUNDARY_PASS" in (
         recorder._mismatch_display(boundary)
@@ -473,10 +473,46 @@ def test_boundary_change_fails_when_downstream_checkpoint_fails() -> None:
     assert not boundary.passed
     assert not boundary.boundary_passed
     assert boundary.boundary_propagation_checked
-    assert "Downstream impact: NOT ACCEPTABLE" in boundary.precision_band
+    assert "Direct same-layer output: NOT ACCEPTABLE" in (
+        boundary.precision_band
+    )
     assert "layers.2.attention" in boundary.precision_band
     assert "Final decision: FAIL" in recorder._mismatch_display(boundary)
     assert recorder._status(boundary) == "FAIL"
+
+
+def test_router_boundary_checks_same_layer_moe_output() -> None:
+    recorder = glm5_parity.ParityRecorder(glm5_parity.BF16)
+    actual_topk = torch.tensor([[[1, 0]]], dtype=torch.int32)
+    expected_topk = torch.tensor([[[1, 2]]], dtype=torch.int32)
+    boundary = recorder.discrete(
+        scope="configured",
+        component="router",
+        layer=2,
+        actual=actual_topk,
+        expected=expected_topk,
+        module_path="layers.2.moe.router",
+    )
+    recorder.annotate_topk_scores(
+        boundary,
+        actual_topk=actual_topk,
+        expected_topk=expected_topk,
+        actual_scores=torch.tensor([[[0.9999, 1.1, 0.9998]]]),
+        expected_scores=torch.tensor([[[0.9997, 1.1, 0.9999]]]),
+    )
+    recorder.tensor(
+        scope="trace",
+        component="moe",
+        layer=2,
+        actual=torch.tensor([[[1.0]]]),
+        expected=torch.zeros((1, 1, 1)),
+        module_path="layers.2.moe",
+    )
+    recorder.finalize_topk_boundary_verdicts()
+
+    assert not boundary.passed
+    assert not boundary.boundary_passed
+    assert "layers.2.moe" in boundary.boundary_propagation
 
 
 def test_in_tolerance_growth_is_diagnostic_for_boundary_change() -> None:
@@ -504,17 +540,218 @@ def test_boundary_does_not_claim_unrelated_batch_failure() -> None:
     )
     recorder.tensor(
         scope="configured",
-        component="decoder_block",
-        layer=3,
+        component="attention",
+        layer=2,
         actual=torch.tensor([[[0.0]], [[1.0]]]),
         expected=torch.zeros((2, 1, 1)),
-        module_path="layers.3",
+        module_path="layers.2.attention",
     )
     recorder.finalize_topk_boundary_verdicts()
 
     assert boundary.passed
     assert boundary.boundary_passed
     assert "other sequence positions" in boundary.precision_band
+
+
+def test_boundary_ignores_failures_after_the_direct_module_output() -> None:
+    recorder, boundary = _boundary_result_with_downstream(
+        downstream_passed=True
+    )
+    recorder.tensor(
+        scope="configured",
+        component="decoder_block",
+        layer=3,
+        actual=torch.tensor([1.0]),
+        expected=torch.tensor([0.0]),
+        module_path="layers.3",
+    )
+    recorder.finalize_topk_boundary_verdicts()
+
+    assert boundary.passed
+    assert boundary.boundary_passed
+    assert "Direct same-layer output: ACCEPTABLE" in (
+        boundary.precision_band
+    )
+
+
+def test_report_rows_follow_glm_dataflow_not_path_hierarchy() -> None:
+    recorder = glm5_parity.ParityRecorder(glm5_parity.FP32)
+
+    def record(path: str, component: str) -> None:
+        recorder.tensor(
+            scope="trace",
+            component=component,
+            layer=0,
+            actual=torch.zeros(1),
+            expected=torch.zeros(1),
+            module_path=path,
+        )
+
+    # Intentionally insert parent rows before their children.
+    record("layers.0", "decoder_block")
+    record("layers.0.feed_forward", "feed_forward")
+    record("layers.0.attention", "attention")
+    record("layers.0.attention.indexer", "indexer_scores")
+    record("layers.0.feed_forward.w2", "w2")
+    record("layers.0.ffn_norm", "ffn_norm")
+    record("layers.0.attention.indexer.weights_proj", "weights_proj")
+    record("layers.0.attention.q_norm", "q_norm")
+    record("layers.0.attention_norm", "attention_norm")
+
+    paths = [
+        recorder._display_path(result)
+        for result in recorder.ordered_results()
+    ]
+    assert paths == [
+        "layers.0.attention_norm",
+        "layers.0.attention.q_norm",
+        "layers.0.attention.indexer.weights_proj",
+        "layers.0.attention.indexer.scores",
+        "layers.0.attention",
+        "layers.0.ffn_norm",
+        "layers.0.feed_forward.w2",
+        "layers.0.feed_forward",
+        "layers.0",
+    ]
+
+
+def test_numeric_trend_uses_major_dataflow_checkpoints_only() -> None:
+    recorder = glm5_parity.ParityRecorder(glm5_parity.FP32)
+    rows = []
+    for index, (path, component) in enumerate(
+        (
+            ("layers.0.attention_norm", "attention_norm"),
+            ("layers.0.attention.q_norm", "q_norm"),
+            ("layers.0.attention", "attention"),
+            ("layers.0.ffn_norm", "ffn_norm"),
+            ("layers.0.feed_forward", "feed_forward"),
+            ("layers.0", "decoder_block"),
+            ("layers.1.attention_norm", "attention_norm"),
+        ),
+        start=1,
+    ):
+        rows.append(
+            recorder.tensor(
+                scope="trace",
+                component=component,
+                layer=int(path.split(".")[1]),
+                actual=torch.tensor([index * 1.0e-5]),
+                expected=torch.zeros(1),
+                module_path=path,
+            )
+        )
+
+    recorder.ordered_results()
+
+    by_path = {recorder._display_path(row): row for row in rows}
+    assert by_path["layers.0.attention"].trend_from == (
+        "layers.0.attention_norm"
+    )
+    assert by_path["layers.0.attention.q_norm"].trend_from == ""
+    assert by_path["layers.0"].trend_from == "layers.0.feed_forward"
+    assert by_path["layers.1.attention_norm"].trend_from == "layers.0"
+    assert "from layers.0" in recorder._trend_display(
+        by_path["layers.1.attention_norm"]
+    )
+
+
+def test_abrupt_growth_does_not_change_numeric_pass_fail() -> None:
+    recorder = glm5_parity.ParityRecorder(glm5_parity.FP32)
+    first = recorder.tensor(
+        scope="trace",
+        component="attention_norm",
+        layer=0,
+        actual=torch.tensor([1.0000001]),
+        expected=torch.ones(1),
+        module_path="layers.0.attention_norm",
+    )
+    second = recorder.tensor(
+        scope="trace",
+        component="attention",
+        layer=0,
+        actual=torch.tensor([1.00001]),
+        expected=torch.ones(1),
+        module_path="layers.0.attention",
+    )
+    recorder.ordered_results()
+
+    assert first.passed
+    assert second.passed
+    assert second.explosion
+    assert recorder._status(second) == "PASS"
+    assert "ABRUPT GROWTH" in recorder._trend_display(second)
+
+
+def test_activation_gradient_rows_follow_reverse_dataflow() -> None:
+    recorder = glm5_parity.ParityRecorder(glm5_parity.FP32)
+    for path, component, layer in (
+        ("layers.0.attention_norm", "attention_norm", 0),
+        ("layers.0", "decoder_block", 0),
+        ("layers.1.attention", "attention", 1),
+        ("layers.1", "decoder_block", 1),
+    ):
+        recorder.tensor(
+            scope="activation_gradient",
+            component=component,
+            layer=layer,
+            actual=torch.zeros(1),
+            expected=torch.zeros(1),
+            module_path=path,
+        )
+
+    assert [
+        recorder._display_path(result)
+        for result in recorder.ordered_results()
+    ] == [
+        "layers.1",
+        "layers.1.attention",
+        "layers.0",
+        "layers.0.attention_norm",
+    ]
+
+
+def test_legacy_activation_gradient_ties_use_reverse_natural_order() -> None:
+    recorder = glm5_parity.ParityRecorder(glm5_parity.FP32)
+    for output_index in (0, 1):
+        recorder.tensor(
+            scope="activation_gradient",
+            component="rope",
+            layer=0,
+            actual=torch.zeros(1),
+            expected=torch.zeros(1),
+            module_path=f"layers.0.attention.rope[{output_index}]",
+        )
+
+    assert [
+        recorder._display_path(result)
+        for result in recorder.ordered_results()
+    ] == [
+        "layers.0.attention.rope[1]",
+        "layers.0.attention.rope[0]",
+    ]
+
+
+def test_captured_order_breaks_ties_inside_one_semantic_stage() -> None:
+    recorder = glm5_parity.ParityRecorder(glm5_parity.FP32)
+    for output_index, execution_order in ((0, 8), (1, 7)):
+        recorder.tensor(
+            scope="trace",
+            component="rope",
+            layer=0,
+            actual=torch.zeros(1),
+            expected=torch.zeros(1),
+            module_path=f"layers.0.attention.rope[{output_index}]",
+            execution_order=execution_order,
+            execution_order_source="captured forward hook",
+        )
+
+    assert [
+        recorder._display_path(result)
+        for result in recorder.ordered_results()
+    ] == [
+        "layers.0.attention.rope[1]",
+        "layers.0.attention.rope[0]",
+    ]
 
 
 def test_matching_topk_still_reports_every_selected_score() -> None:

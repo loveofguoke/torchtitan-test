@@ -1194,11 +1194,15 @@ class ComparisonResult:
     boundary_local_passed: bool = False
     boundary_propagation_checked: bool = False
     boundary_propagation: str = ""
+    execution_order: int | None = None
+    execution_order_source: str = "semantic fallback"
     actual_topk_scores: str = ""
     expected_topk_scores: str = ""
     precision_band: str = ""
     explosion: bool = False
     growth_ratio: float | None = None
+    trend_from: str = ""
+    trend_previous_error: float | None = None
 
 
 class ParityRecorder:
@@ -1315,8 +1319,32 @@ class ParityRecorder:
             if canonical:
                 if result.component == "router_indices":
                     return f"{canonical}.indices"
+                if result.component == "q_residual":
+                    return re.sub(r"\.q_norm$", ".q_residual", canonical)
+                if result.component == "indexer_scores":
+                    canonical = re.sub(
+                        r"\.indexer_scores$", ".indexer", canonical
+                    )
+                    return f"{canonical}.scores"
+                if result.component == "router_scores":
+                    canonical = re.sub(
+                        r"\.router_scores$", ".router", canonical
+                    )
+                    return f"{canonical}.scores"
                 if result.component == "router_weights":
+                    canonical = re.sub(
+                        r"\.router_weights$", ".router", canonical
+                    )
                     return f"{canonical}.weights"
+                if result.component == "expert_load":
+                    canonical = re.sub(
+                        r"\.expert_load$", ".router", canonical
+                    )
+                    return f"{canonical}.expert_load"
+                if result.component == "moe_input":
+                    return re.sub(
+                        r"\.moe_input$", ".normalized_input", canonical
+                    )
                 return canonical
         if result.parent_path == "layers" and isinstance(result.layer, int):
             return f"layers.{result.layer}"
@@ -1350,6 +1378,22 @@ class ParityRecorder:
             for part in parts
         )
 
+    @classmethod
+    def _reverse_path_key(
+        cls,
+        result: ComparisonResult,
+    ) -> tuple[tuple[int, object], ...]:
+        """Return a naturally descending key without relying on global state."""
+        reversed_parts: list[tuple[int, object]] = []
+        for kind, value in cls._path_key(result):
+            if kind == 0:
+                reversed_parts.append((kind, -int(value)))
+            else:
+                reversed_parts.append(
+                    (kind, tuple(-ord(character) for character in str(value)))
+                )
+        return tuple(reversed_parts)
+
     @staticmethod
     def _phase(result: ComparisonResult) -> int:
         """Keep forward evidence ahead of outputs, backward, and parameters."""
@@ -1364,17 +1408,97 @@ class ParityRecorder:
         return 0
 
     @classmethod
+    def _semantic_forward_order(
+        cls,
+        result: ComparisonResult,
+    ) -> tuple[int, tuple[tuple[int, object], ...]]:
+        """Return GLM forward-dataflow order for old artifacts without events."""
+        path = cls._display_path(result)
+        match = re.match(r"layers\.\d+(?:\.(.*))?$", path)
+        suffix = match.group(1) if match else path
+        if not suffix:
+            return 900, cls._path_key(result)
+        stages = (
+            ("attention_norm", 100),
+            ("attention.normalized_input", 105),
+            ("attention.wq_a", 200),
+            ("attention.q_norm", 210),
+            ("attention.q_residual", 215),
+            ("attention.wq_b", 220),
+            ("attention.wkv_a", 230),
+            ("attention.kv_norm", 240),
+            ("attention.rope", 250),
+            ("attention.wkv_b", 260),
+            ("attention.indexer.wq_b", 300),
+            ("attention.indexer.wk", 310),
+            ("attention.indexer.k_norm", 320),
+            ("attention.indexer.rope", 330),
+            ("attention.indexer.weights_proj", 340),
+            ("attention.indexer.scores", 345),
+            ("attention.indexer", 350),
+            ("attention.inner_attention", 360),
+            ("attention.wo", 370),
+            ("attention", 390),
+            ("ffn_norm", 500),
+            ("moe.normalized_input", 590),
+            ("feed_forward.w1", 600),
+            ("feed_forward.w3", 610),
+            ("feed_forward.w2", 620),
+            ("feed_forward", 690),
+            ("moe.router.gate", 600),
+            ("moe.router.scores", 605),
+            ("moe.router.weights", 608),
+            ("moe.router", 610),
+            ("moe.router.expert_load", 615),
+            ("moe.routed_experts", 620),
+            ("moe.shared_experts", 630),
+            ("moe", 690),
+        )
+        matches = [
+            (len(prefix), stage)
+            for prefix, stage in stages
+            if suffix == prefix
+            or suffix.startswith(f"{prefix}.")
+            or suffix.startswith(f"{prefix}[")
+        ]
+        stage = max(matches)[1] if matches else 800
+        depth = path.count(".")
+        return stage, ((0, -depth), *cls._path_key(result))
+
+    @classmethod
     def _result_key(cls, result: ComparisonResult) -> tuple[Any, ...]:
         path = cls._display_path(result)
         layer_match = re.match(r"layers\.(\d+)(?:\.|$)", path)
         if layer_match:
-            dependency_order = -1 if result.component == "q_residual" else 0
+            phase = cls._phase(result)
+            layer = int(layer_match.group(1))
+            semantic_order = cls._semantic_forward_order(result)
+            if phase in {2, 3}:
+                layer = -layer
+                depth = path.count(".")
+                semantic_order = (
+                    -semantic_order[0],
+                    ((0, depth), *cls._reverse_path_key(result)),
+                )
+            if result.execution_order is not None:
+                dataflow_order: tuple[Any, ...] = (
+                    semantic_order[0],
+                    0,
+                    result.execution_order,
+                    semantic_order[1],
+                )
+            else:
+                dataflow_order = (
+                    semantic_order[0],
+                    1,
+                    semantic_order[1],
+                    cls._path_key(result),
+                )
             return (
-                cls._phase(result),
+                phase,
                 0,
-                int(layer_match.group(1)),
-                dependency_order,
-                cls._path_key(result),
+                layer,
+                dataflow_order,
             )
         return cls._phase(result), 1, 0, 0, cls._path_key(result)
 
@@ -1387,85 +1511,71 @@ class ParityRecorder:
         for result in self.results:
             result.explosion = False
             result.growth_ratio = None
+            result.trend_from = ""
+            result.trend_previous_error = None
         threshold = float(
             os.environ.get("GLM5_PARITY_EXPLOSION_RATIO", "8.0")
         )
-        numerical_floor = torch.finfo(self.precision.dtype).eps * 0.1
-        rows: dict[str, ComparisonResult] = {}
-        for result in self.results:
-            if result.max_abs is None or not isinstance(result.layer, int):
-                continue
-            if self._phase(result) != 0:
-                continue
-            path = self._display_path(result)
-            previous = rows.get(path)
-            if previous is None or result.checkpoint:
-                rows[path] = result
-
-        previous_layer_error = numerical_floor
-        layers = sorted(
-            {
-                result.layer
-                for result in rows.values()
-                if isinstance(result.layer, int)
-            }
-        )
-        for layer in layers:
-            prefix = f"layers.{layer}"
-            sequence = (
-                f"{prefix}.attention_norm",
-                f"{prefix}.attention",
-                f"{prefix}.ffn_norm",
-                f"{prefix}.feed_forward",
-                f"{prefix}.moe",
-                prefix,
-            )
-            baseline = previous_layer_error
-            for path in sequence:
-                result = rows.get(path)
-                if result is None or result.max_abs is None:
+        # Error trend is deliberately a sparse dataflow chain rather than a
+        # hierarchy walk. Leaf trace rows remain useful for localization, but
+        # putting every branch in one trend would compare tensors that do not
+        # feed one another. Forward and activation-gradient phases each get an
+        # independent chain; backward order is supplied by _result_key().
+        for phase in (0, 2):
+            rows: dict[str, ComparisonResult] = {}
+            for result in self.results:
+                if result.max_abs is None or not isinstance(result.layer, int):
                     continue
-                ratio = result.max_abs / max(baseline, numerical_floor)
-                result.growth_ratio = ratio
-                if ratio >= threshold and result.max_abs >= numerical_floor:
-                    result.explosion = True
-                baseline = max(result.max_abs, numerical_floor)
-            layer_result = rows.get(prefix)
-            if layer_result is not None and layer_result.max_abs is not None:
-                previous_layer_error = max(
-                    layer_result.max_abs, numerical_floor
-                )
+                if self._phase(result) != phase:
+                    continue
+                path = self._display_path(result)
+                previous_row = rows.get(path)
+                if previous_row is None or result.checkpoint:
+                    rows[path] = result
 
-        # Component reports often have no decoder-level checkpoints.  In that
-        # case, compare the same logical component across adjacent layers so a
-        # sudden cross-layer increase is still highlighted.
-        component_series: dict[str, dict[int, ComparisonResult]] = {}
-        for result in self.results:
-            if result.max_abs is None or not isinstance(result.layer, int):
-                continue
-            if self._phase(result) != 0:
-                continue
-            path = self._display_path(result)
-            if not path.startswith(f"layers.{result.layer}."):
-                continue
-            series_name = re.sub(r"^layers\.\d+\.", "", path)
-            by_layer = component_series.setdefault(series_name, {})
-            existing = by_layer.get(result.layer)
-            if existing is None or result.checkpoint:
-                by_layer[result.layer] = result
-        for by_layer in component_series.values():
-            previous_error: float | None = None
-            for layer in sorted(by_layer):
-                result = by_layer[layer]
-                if previous_error is not None and result.max_abs is not None:
-                    ratio = result.max_abs / max(
-                        previous_error, numerical_floor
+            anchors = [
+                result
+                for path, result in rows.items()
+                if re.fullmatch(r"layers\.\d+", path)
+                or path.endswith(
+                    (
+                        ".attention_norm",
+                        ".attention",
+                        ".ffn_norm",
+                        ".feed_forward",
+                        ".moe",
                     )
-                    if result.growth_ratio is None or ratio > result.growth_ratio:
-                        result.growth_ratio = ratio
-                    if ratio >= threshold and result.max_abs >= numerical_floor:
-                        result.explosion = True
-                previous_error = max(result.max_abs or 0.0, numerical_floor)
+                )
+            ]
+            previous: ComparisonResult | None = None
+            for result in sorted(anchors, key=self._result_key):
+                if previous is not None and previous.max_abs is not None:
+                    result.trend_from = self._display_path(previous)
+                    result.trend_previous_error = previous.max_abs
+                    if previous.max_abs > 0.0:
+                        result.growth_ratio = result.max_abs / previous.max_abs
+                        result.explosion = (
+                            result.growth_ratio >= threshold
+                            and result.max_abs > previous.max_abs
+                        )
+                previous = result
+
+    @classmethod
+    def _trend_display(cls, result: ComparisonResult) -> str:
+        if result.trend_previous_error is None or not result.trend_from:
+            return "-"
+        current = result.max_abs or 0.0
+        previous = result.trend_previous_error
+        if result.growth_ratio is None:
+            return (
+                f"from {result.trend_from}: {previous:.6g} -> "
+                f"{current:.6g}; ratio unavailable from zero baseline"
+            )
+        label = "ABRUPT GROWTH" if result.explosion else "change"
+        return (
+            f"{label} x{result.growth_ratio:.3g} from "
+            f"{result.trend_from}: {previous:.6g} -> {current:.6g}"
+        )
 
     def summary(self) -> str:
         self.finalize_topk_boundary_verdicts()
@@ -1507,6 +1617,8 @@ class ParityRecorder:
         checkpoint: bool = True,
         actual_dtype: str | None = None,
         expected_dtype: str | None = None,
+        execution_order: int | None = None,
+        execution_order_source: str = "semantic fallback",
     ) -> ComparisonResult:
         actual_dtype = actual_dtype or f"out={str(actual.dtype).removeprefix('torch.')}"
         expected_dtype = expected_dtype or f"out={str(expected.dtype).removeprefix('torch.')}"
@@ -1527,6 +1639,8 @@ class ParityRecorder:
                 expected_summary=f"shape={tuple(expected_cpu.shape)}",
                 actual_dtype=actual_dtype,
                 expected_dtype=expected_dtype,
+                execution_order=execution_order,
+                execution_order_source=execution_order_source,
             )
         else:
             diff = (actual_cpu - expected_cpu).abs()
@@ -1609,6 +1723,8 @@ class ParityRecorder:
                 expected_summary=self._numeric_summary(expected_cpu),
                 actual_dtype=actual_dtype,
                 expected_dtype=expected_dtype,
+                execution_order=execution_order,
+                execution_order_source=execution_order_source,
             )
         self.results.append(result)
         return result
@@ -1629,6 +1745,8 @@ class ParityRecorder:
         checkpoint: bool = True,
         actual_dtype: str | None = None,
         expected_dtype: str | None = None,
+        execution_order: int | None = None,
+        execution_order_source: str = "semantic fallback",
     ) -> ComparisonResult:
         actual_cpu = actual.detach().cpu()
         expected_cpu = expected.detach().cpu()
@@ -1721,6 +1839,8 @@ class ParityRecorder:
                 expected_dtype
                 or f"out={str(expected.dtype).removeprefix('torch.')}"
             ),
+            execution_order=execution_order,
+            execution_order_source=execution_order_source,
         )
         self.results.append(result)
         return result
@@ -2074,7 +2194,7 @@ class ParityRecorder:
     # Keep this logic in the test framework. TorchTitan and backend kernels
     # remain unchanged. Local score geometry decides whether a top-k change is
     # a plausible cutoff-boundary event. This second pass then decides whether
-    # that event is acceptable by auditing continuous downstream checkpoints.
+    # that event is acceptable by auditing its same-layer direct numeric output.
     # ULP values are diagnostic only; they are never a fixed pass/fail budget.
     # ------------------------------------------------------------------
     @staticmethod
@@ -2082,7 +2202,7 @@ class ParityRecorder:
         return result.component in {"indexer", "router", "router_indices"}
 
     @classmethod
-    def _is_downstream_result(
+    def _is_direct_topk_downstream(
         cls,
         boundary: ComparisonResult,
         candidate: ComparisonResult,
@@ -2091,56 +2211,33 @@ class ParityRecorder:
             return False
         if not candidate.checkpoint:
             return False
-        if candidate.scope != boundary.scope:
-            return False
         if candidate.scope in {"parameters", "fixture", "fixture_model"}:
             return False
         if cls._is_topk_result(candidate):
             return False
-        if isinstance(boundary.layer, int) and isinstance(candidate.layer, int):
-            if candidate.layer < boundary.layer:
-                return False
-        boundary_phase = cls._phase(boundary)
-        candidate_phase = cls._phase(candidate)
-        if candidate_phase > boundary_phase:
-            return True
         if not isinstance(boundary.layer, int):
             return False
-        if candidate.layer > boundary.layer:
-            return True
+        if candidate.layer != boundary.layer:
+            return False
         path = cls._display_path(candidate)
         layer_prefix = f"layers.{boundary.layer}"
         if boundary.component == "indexer":
-            return (
-                path == f"{layer_prefix}.attention"
-                or path.startswith(f"{layer_prefix}.attention.")
-                or path == layer_prefix
-                or path.startswith(f"{layer_prefix}.ffn_norm")
-                or path.startswith(f"{layer_prefix}.moe")
-                or path.startswith(f"{layer_prefix}.feed_forward")
-            )
-        return path == layer_prefix or path.startswith(
-            f"{layer_prefix}.moe"
-        )
+            return path == f"{layer_prefix}.attention"
+        return path in {
+            f"{layer_prefix}.moe",
+            f"{layer_prefix}.feed_forward",
+        }
 
     @staticmethod
-    def _has_causally_related_error_position(
+    def _shares_affected_token(
         boundary: ComparisonResult,
         candidate: ComparisonResult,
     ) -> bool:
-        """Match same-token or later causal errors in the same batch."""
+        """Return whether a direct output error covers the changed token."""
         if boundary.mismatch_coordinates and candidate.mismatch_coordinates:
-            same_layer = (
-                isinstance(boundary.layer, int)
-                and candidate.layer == boundary.layer
-            )
             return any(
                 boundary_batch == candidate_batch
-                and (
-                    boundary_position == candidate_position
-                    if same_layer
-                    else candidate_position >= boundary_position
-                )
+                and boundary_position == candidate_position
                 for boundary_batch, boundary_position in (
                     boundary.mismatch_coordinates
                 )
@@ -2150,16 +2247,10 @@ class ParityRecorder:
             )
         if not boundary.mismatch_positions or not candidate.mismatch_positions:
             return True
-        if isinstance(boundary.layer, int) and candidate.layer == boundary.layer:
-            return bool(
-                set(boundary.mismatch_positions).intersection(
-                    candidate.mismatch_positions
-                )
+        return bool(
+            set(boundary.mismatch_positions).intersection(
+                candidate.mismatch_positions
             )
-        return any(
-            candidate_position >= boundary_position
-            for boundary_position in boundary.mismatch_positions
-            for candidate_position in candidate.mismatch_positions
         )
 
     @classmethod
@@ -2170,7 +2261,7 @@ class ParityRecorder:
         return f"{path} (maximum absolute error {result.max_abs:.8g})"
 
     def finalize_topk_boundary_verdicts(self) -> None:
-        """Combine local cutoff evidence with downstream numerical impact."""
+        """Combine cutoff evidence with the same-layer direct-output result."""
         self._annotate_explosions()
         for boundary in self.results:
             if not boundary.boundary_local_passed:
@@ -2184,13 +2275,13 @@ class ParityRecorder:
             downstream = [
                 candidate
                 for candidate in self.results
-                if self._is_downstream_result(boundary, candidate)
+                if self._is_direct_topk_downstream(boundary, candidate)
             ]
             related_downstream = [
                 candidate
                 for candidate in downstream
                 if candidate.passed
-                or self._has_causally_related_error_position(
+                or self._shares_affected_token(
                     boundary, candidate
                 )
             ]
@@ -2224,17 +2315,18 @@ class ParityRecorder:
                     for candidate in harmful[:6]
                 )
                 boundary.boundary_propagation = (
-                    "Downstream impact: NOT ACCEPTABLE\n"
-                    f"Checked {len(related_downstream)} related continuous "
-                    "checkpoints. "
+                    "Direct same-layer output: NOT ACCEPTABLE\n"
+                    f"Checked {len(related_downstream)} direct numeric "
+                    "output checkpoint(s). "
                     f"{len(failed)} failed their numerical tolerance and "
                     f"{len(growth_warnings)} showed abrupt relative error "
                     "growth.\n"
                     f"Affected checkpoints: {examples}\n"
                     "Final decision: FAIL. This boundary event cannot receive "
-                    "a weak pass because related downstream numerical errors "
-                    "are outside tolerance. This is association evidence, not "
-                    "a claim that the top-k change alone caused every error."
+                    "a weak pass because its direct module output is outside "
+                    "tolerance at the changed token. This identifies where "
+                    "the discrepancy becomes important; it does not establish "
+                    "that the top-k node is the root cause."
                 )
             elif related_downstream:
                 boundary.passed = True
@@ -2259,12 +2351,12 @@ class ParityRecorder:
                     else ""
                 )
                 boundary.boundary_propagation = (
-                    "Downstream impact: ACCEPTABLE\n"
-                    f"Checked {len(related_downstream)} related continuous "
-                    "checkpoints after this top-k decision. All passed their "
-                    "configured numerical tolerance."
+                    "Direct same-layer output: ACCEPTABLE\n"
+                    f"Checked {len(related_downstream)} direct numeric output "
+                    "checkpoint(s). All passed their configured numerical "
+                    "tolerance."
                     f"{growth_note}{unrelated_note}\n"
-                    "Largest downstream difference: "
+                    "Largest direct-output difference: "
                     f"{self._format_downstream_checkpoint(largest)}.\n"
                     "Final decision: BOUNDARY_PASS."
                 )
@@ -2273,21 +2365,19 @@ class ParityRecorder:
                 boundary.boundary_passed = True
                 if downstream:
                     boundary.boundary_propagation = (
-                        "Downstream impact: NO RELATED POSITIONAL EVIDENCE\n"
-                        "Later continuous failures occur only at other "
-                        "sequence positions, so they are not attributed to "
-                        "this boundary event. Final decision: BOUNDARY_PASS "
-                        "based on local evidence; review those failures "
+                        "Direct same-layer output: NO MATCHING TOKEN FAILURE\n"
+                        "The direct output fails only at other sequence "
+                        "positions, so this top-k boundary event keeps its "
+                        "local BOUNDARY_PASS. Review the output failure "
                         "independently."
                     )
                 else:
                     boundary.boundary_propagation = (
-                        "Downstream impact: NOT AVAILABLE IN THIS SECTION\n"
+                        "Direct same-layer output: NOT CAPTURED\n"
                         "The local cutoff change is numerically explainable, "
-                        "but this report section contains no later continuous "
-                        "checkpoint. Final decision: BOUNDARY_PASS based on "
-                        "local evidence; confirm propagation in the "
-                        "end-to-end section."
+                        "but this report section has no attention or MoE/FFN "
+                        "output checkpoint for this layer. Final decision: "
+                        "BOUNDARY_PASS based on local evidence only."
                     )
             if boundary.precision_band and boundary.boundary_propagation not in (
                 boundary.precision_band
@@ -2308,6 +2398,8 @@ class ParityRecorder:
         level: int = 0,
         node_kind: str = "activation",
         checkpoint: bool = True,
+        execution_order: int | None = None,
+        execution_order_source: str = "semantic fallback",
     ) -> ComparisonResult:
         """Record a missing hook/output instead of silently dropping a row."""
         result = ComparisonResult(
@@ -2325,6 +2417,8 @@ class ParityRecorder:
             checkpoint=checkpoint,
             actual_summary="present" if "actual=True" in detail else "missing",
             expected_summary="present" if "expected=True" in detail else "missing",
+            execution_order=execution_order,
+            execution_order_source=execution_order_source,
         )
         self.results.append(result)
         return result
@@ -2406,11 +2500,7 @@ class ParityRecorder:
                     if status == "FAIL"
                     else f"\033[36m{status}\033[0m"
                 )
-            trend = (
-                f"EXPLODE x{result.growth_ratio:.3g}"
-                if result.explosion and result.growth_ratio is not None
-                else "-"
-            )
+            trend = self._trend_display(result)
             lines.append(
                 " | ".join(
                     (
@@ -2495,11 +2585,7 @@ class ParityRecorder:
                 else "fail" if status == "FAIL" else "trace"
             )
             row_class = " class='explosion-row'" if result.explosion else ""
-            trend = (
-                f"EXPLODE x{result.growth_ratio:.3g}"
-                if result.explosion and result.growth_ratio is not None
-                else "-"
-            )
+            trend = self._trend_display(result)
             rows.append(
                 f"<tr{row_class}>"
                 + cell(self._display_path(result))
@@ -2755,7 +2841,8 @@ class ParityRecorder:
         )
         return (
             "<div class='error-chart'><h3>Max-abs error by layer</h3>"
-            "<p>Log scale. Red markers identify configured explosion points.</p>"
+            "<p>Log scale. Red markers identify abrupt-growth diagnostics; "
+            "they do not change numeric PASS/FAIL.</p>"
             + "".join(svg)
             + f"<div class='error-chart-legend'>{legend}</div></div>"
         )
@@ -2782,7 +2869,7 @@ class ParityRecorder:
                 "inside that instability interval, both K/K+1 margins are "
                 "covered, the complete score row passes scale-aware BF16 "
                 "tolerance, replayed scores reproduce both top-k sets, and "
-                "available downstream checkpoints show no harmful propagation."
+                "the same-layer direct numeric output remains within tolerance."
                 "</li>"
                 "</ul></details>"
             )
@@ -2797,8 +2884,18 @@ class ParityRecorder:
             "explicit compute dtypes where the implementation declares one. "
             "BOUNDARY_PASS means BF16 top-k differences are confined to the "
             "observed K/K+1 instability band, the score row passes scale-aware "
-            "BF16 tolerance, and available downstream checkpoints remain "
-            "numerically acceptable. ULP values are diagnostic only.</p>"
+            "BF16 tolerance, and the same-layer direct attention or MoE/FFN "
+            "output remains numerically acceptable. ULP values are diagnostic "
+            "only.</p>"
+            "<p class='metric-note'><strong>Row and trend order:</strong> "
+            "forward rows follow GLM input-to-output dataflow, so internal "
+            "module outputs appear before their parent output and each layer "
+            "output appears last. Activation-gradient rows follow reverse "
+            "execution. Captured hook order resolves events within a semantic "
+            "stage; legacy artifacts use the same GLM semantic order as a "
+            "fallback. Trend connects only major numeric checkpoints and is "
+            "diagnostic: numeric PASS/FAIL still comes only from the configured "
+            "absolute/relative tolerance.</p>"
             f"{topk_help}{self.html_error_curve()}{self.html_table()}</section>"
         )
 
@@ -3223,6 +3320,9 @@ class EndpointTrace:
     )
     expert_load: dict[str, dict[int, torch.Tensor]] = field(default_factory=dict)
     moe_inputs: dict[str, dict[int, torch.Tensor]] = field(default_factory=dict)
+    execution_orders: dict[str, dict[tuple[str, int], int]] = field(
+        default_factory=dict
+    )
 
     @staticmethod
     @contextmanager
@@ -3243,6 +3343,19 @@ class EndpointTrace:
             trace.router_scores[label] = {}
             trace.expert_load[label] = {}
             trace.moe_inputs[label] = {}
+            trace.execution_orders[label] = {}
+
+            def record_order(
+                component: str,
+                layer_index: int,
+                *,
+                label=label,
+            ) -> None:
+                key = (component, layer_index)
+                if key not in trace.execution_orders[label]:
+                    trace.execution_orders[label][key] = len(
+                        trace.execution_orders[label]
+                    )
             layers = model.model.layers if endpoint.implementation == "hf" else model.layers
             for layer_index in layer_indices:
                 layer = (
@@ -3260,12 +3373,14 @@ class EndpointTrace:
                     layer_index=layer_index,
                     implementation=endpoint.implementation,
                 ) -> None:
+                    record_order("decoder_block", layer_index, label=label)
                     value = output[0] if implementation == "hf" else output
                     trace.blocks[label][layer_index] = _first_tensor(value).detach().cpu()
 
                 def capture_indexer(
                     _module, _inputs, output, *, label=label, layer_index=layer_index
                 ) -> None:
+                    record_order("indexer", layer_index, label=label)
                     trace.indexer[label][layer_index] = _first_tensor(output).detach().cpu()
 
                 handles.append(layer.register_forward_hook(capture_block))
@@ -3307,6 +3422,7 @@ class EndpointTrace:
                     def capture_hf_router(
                         _module, inputs, output, *, label=label, layer_index=layer_index
                     ) -> None:
+                        record_order("router", layer_index, label=label)
                         batch_size, sequence_length = inputs[0].shape[:2]
                         indices = output[2].view(batch_size, sequence_length, -1)
                         weights = output[1].view(batch_size, sequence_length, -1)
@@ -3333,6 +3449,7 @@ class EndpointTrace:
                     def capture_titan_router(
                         _module, _inputs, output, *, label=label, layer_index=layer_index
                     ) -> None:
+                        record_order("router", layer_index, label=label)
                         indices = output[1]
                         scores_for_choice = output[2]
                         expert_bias = (
@@ -3373,6 +3490,10 @@ class RecursiveModuleTrace:
     activations: dict[str, dict[str, torch.Tensor]] = field(default_factory=dict)
     gradients: dict[str, dict[str, torch.Tensor]] = field(default_factory=dict)
     dtype_flows: dict[str, dict[str, str]] = field(default_factory=dict)
+    execution_orders: dict[str, dict[str, int]] = field(default_factory=dict)
+    gradient_execution_orders: dict[str, dict[str, int]] = field(
+        default_factory=dict
+    )
 
     @staticmethod
     @contextmanager
@@ -3384,11 +3505,27 @@ class RecursiveModuleTrace:
     ) -> Iterator["RecursiveModuleTrace"]:
         trace = RecursiveModuleTrace()
         handles = []
+
+        def capture_gradient(
+            gradient: torch.Tensor,
+            *,
+            label: str,
+            path: str,
+        ) -> torch.Tensor:
+            if path not in trace.gradient_execution_orders[label]:
+                trace.gradient_execution_orders[label][path] = len(
+                    trace.gradient_execution_orders[label]
+                )
+            trace.gradients[label][path] = gradient.detach().cpu()
+            return gradient
+
         for endpoint, model in endpoints.items():
             label = endpoint.label
             trace.activations[label] = {}
             trace.gradients[label] = {}
             trace.dtype_flows[label] = {}
+            trace.execution_orders[label] = {}
+            trace.gradient_execution_orders[label] = {}
             layers = model.model.layers if endpoint.implementation == "hf" else model.layers
             for layer_index in layer_indices:
                 layer = (
@@ -3414,6 +3551,10 @@ class RecursiveModuleTrace:
                     ) -> None:
                         for suffix, value in _tensor_leaves(output):
                             output_path = path + suffix
+                            if output_path not in trace.execution_orders[label]:
+                                trace.execution_orders[label][output_path] = len(
+                                    trace.execution_orders[label]
+                                )
                             trace.activations[label][output_path] = value.detach().cpu()
                             trace.dtype_flows[label][output_path] = _dtype_flow(
                                 _module, _inputs, value
@@ -3422,8 +3563,8 @@ class RecursiveModuleTrace:
                                 value.register_hook(
                                     lambda gradient,
                                     label=label,
-                                    path=output_path: trace.gradients[label].__setitem__(
-                                        path, gradient.detach().cpu()
+                                    path=output_path: capture_gradient(
+                                        gradient, label=label, path=path
                                     )
                                 )
 
@@ -3453,6 +3594,10 @@ class RecursiveModuleTrace:
                     ) -> None:
                         for branch, value in _tensor_leaves(output):
                             output_path = path + branch
+                            if output_path not in trace.execution_orders[label]:
+                                trace.execution_orders[label][output_path] = len(
+                                    trace.execution_orders[label]
+                                )
                             trace.activations[label][output_path] = value.detach().cpu()
                             trace.dtype_flows[label][output_path] = _dtype_flow(
                                 _module, _inputs, value
@@ -3461,8 +3606,8 @@ class RecursiveModuleTrace:
                                 value.register_hook(
                                     lambda gradient,
                                     label=label,
-                                    path=output_path: trace.gradients[label].__setitem__(
-                                        path, gradient.detach().cpu()
+                                    path=output_path: capture_gradient(
+                                        gradient, label=label, path=path
                                     )
                                 )
 
@@ -5054,7 +5199,9 @@ class TestGlm5Parity(
             if component_filter is not None
             else None
         )
-        logical_values: dict[str, tuple[str, torch.Tensor, str]] = {}
+        logical_values: dict[
+            str, tuple[str, torch.Tensor, str, int | None]
+        ] = {}
         for endpoint_path, value in trace.activations[label].items():
             logical_path = self._logical_activation_path(endpoint, endpoint_path)
             base_path = logical_path.split("[", 1)[0]
@@ -5070,9 +5217,15 @@ class TestGlm5Parity(
                     endpoint_path,
                     value,
                     trace.dtype_flows[label].get(endpoint_path, ""),
+                    trace.execution_orders[label].get(endpoint_path),
                 ),
             )
-        for logical_path, (endpoint_path, value, dtype_flow) in sorted(
+        for logical_path, (
+            endpoint_path,
+            value,
+            dtype_flow,
+            execution_order,
+        ) in sorted(
             logical_values.items()
         ):
             base_path = logical_path.split("[", 1)[0]
@@ -5141,10 +5294,20 @@ class TestGlm5Parity(
                     )
                     or (skip_filter_root and filter_root)
                 ),
+                tags=(
+                    {
+                        "execution_order": str(execution_order),
+                        "execution_order_source": "captured forward hook",
+                    }
+                    if execution_order is not None
+                    else None
+                ),
             )
         if not include_gradients:
             return
-        logical_gradients: dict[str, tuple[str, torch.Tensor]] = {}
+        logical_gradients: dict[
+            str, tuple[str, torch.Tensor, int | None]
+        ] = {}
         for endpoint_path, value in trace.gradients[label].items():
             logical_path = self._logical_activation_path(endpoint, endpoint_path)
             base_path = logical_path.split("[", 1)[0]
@@ -5153,8 +5316,15 @@ class TestGlm5Parity(
                 if base_path.endswith((".attention", ".moe", ".feed_forward"))
                 else logical_path
             )
-            logical_gradients.setdefault(target_path, (endpoint_path, value))
-        for logical_path, (endpoint_path, value) in sorted(
+            logical_gradients.setdefault(
+                target_path,
+                (
+                    endpoint_path,
+                    value,
+                    trace.gradient_execution_orders[label].get(endpoint_path),
+                ),
+            )
+        for logical_path, (endpoint_path, value, execution_order) in sorted(
             logical_gradients.items()
         ):
             base_path = logical_path.split("[", 1)[0]
@@ -5180,6 +5350,14 @@ class TestGlm5Parity(
                 ),
                 checkpoint=checkpoint,
                 compare=not base_path.endswith(".moe.router"),
+                tags=(
+                    {
+                        "execution_order": str(execution_order),
+                        "execution_order_source": "captured backward hook",
+                    }
+                    if execution_order is not None
+                    else None
+                ),
             )
 
     def _capture_component_case(self, case: ParityCase) -> None:
@@ -5530,6 +5708,18 @@ class TestGlm5Parity(
                         positions_key
                         if value_kind == "discrete" and value.ndim == 3
                         else ""
+                    ),
+                    tags=(
+                        {
+                            "execution_order": str(execution_order),
+                            "execution_order_source": "captured forward hook",
+                        }
+                        if (
+                            execution_order := trace.execution_orders[
+                                label
+                            ].get((component, layer))
+                        ) is not None
+                        else None
                     ),
                 )
 
@@ -6063,6 +6253,20 @@ class TestGlm5Parity(
         expected_dtype = expected_metadata.dtype_flow or (
             f"out={str(expected_tensor.dtype).removeprefix('torch.')}"
         )
+        order_values = [
+            int(value)
+            for value in (
+                actual_metadata.tags.get("execution_order"),
+                expected_metadata.tags.get("execution_order"),
+            )
+            if value is not None
+        ]
+        execution_order = min(order_values) if order_values else None
+        execution_order_source = (
+            "captured forward hook"
+            if execution_order is not None
+            else "semantic fallback for legacy artifact"
+        )
         if metadata.value_kind == "discrete":
             positions = None
             positions_key = (
@@ -6087,6 +6291,8 @@ class TestGlm5Parity(
                 checkpoint=metadata.checkpoint,
                 actual_dtype=actual_dtype,
                 expected_dtype=expected_dtype,
+                execution_order=execution_order,
+                execution_order_source=execution_order_source,
             )
             actual_scores = None
             expected_scores = None
@@ -6203,6 +6409,8 @@ class TestGlm5Parity(
             checkpoint=metadata.checkpoint,
             actual_dtype=actual_dtype,
             expected_dtype=expected_dtype,
+            execution_order=execution_order,
+            execution_order_source=execution_order_source,
         )
 
     def _offline_report_path(
@@ -6625,7 +6833,9 @@ class TestGlm5Parity(
             and normalized_filter not in TOP_LEVEL_COMPONENTS
             and "." not in normalized_filter
         )
-        logical: dict[str, dict[str, tuple[str, torch.Tensor, str]]] = {}
+        logical: dict[
+            str, dict[str, tuple[str, torch.Tensor, str, int | None]]
+        ] = {}
         for endpoint in (spec.actual, spec.expected):
             label = endpoint.label
             for endpoint_path, value in trace.activations[label].items():
@@ -6634,12 +6844,13 @@ class TestGlm5Parity(
                     endpoint_path,
                     value,
                     trace.dtype_flows[label].get(endpoint_path, ""),
+                    trace.execution_orders[label].get(endpoint_path),
                 )
 
         # HF composition modules may return tuples while TorchTitan returns a
         # tensor.  Compare the first tensor leaf under the common module path.
         normalized_logical: dict[
-            str, dict[str, tuple[str, torch.Tensor, str]]
+            str, dict[str, tuple[str, torch.Tensor, str, int | None]]
         ] = {}
         for logical_path, values in logical.items():
             base_path = logical_path.split("[", 1)[0]
@@ -6728,6 +6939,14 @@ class TestGlm5Parity(
                         f"trace-only missing actual={actual_value is not None}, "
                         f"expected={expected_value is not None}"
                     ),
+                    execution_order=(
+                        actual_value[3]
+                        if actual_value is not None
+                        else expected_value[3]
+                        if expected_value is not None
+                        else None
+                    ),
+                    execution_order_source="captured forward hook",
                 )
                 continue
             actual_tensor = actual_value[1]
@@ -6758,6 +6977,12 @@ class TestGlm5Parity(
                     checkpoint=checkpoint,
                     actual_dtype=actual_value[2],
                     expected_dtype=expected_value[2],
+                    execution_order=min(
+                        value
+                        for value in (actual_value[3], expected_value[3])
+                        if value is not None
+                    ),
+                    execution_order_source="captured forward hook",
                 )
                 continue
             if actual_tensor.dtype in {
@@ -6785,6 +7010,12 @@ class TestGlm5Parity(
                     checkpoint=checkpoint,
                     actual_dtype=actual_value[2],
                     expected_dtype=expected_value[2],
+                    execution_order=min(
+                        value
+                        for value in (actual_value[3], expected_value[3])
+                        if value is not None
+                    ),
+                    execution_order_source="captured forward hook",
                 )
                 continue
             recorder.tensor(
@@ -6802,6 +7033,12 @@ class TestGlm5Parity(
                 checkpoint=checkpoint,
                 actual_dtype=actual_value[2],
                 expected_dtype=expected_value[2],
+                execution_order=min(
+                    value
+                    for value in (actual_value[3], expected_value[3])
+                    if value is not None
+                ),
+                execution_order_source="captured forward hook",
             )
 
     def _record_recursive_gradient_trace(
@@ -6837,13 +7074,21 @@ class TestGlm5Parity(
             and normalized_filter not in TOP_LEVEL_COMPONENTS
             and "." not in normalized_filter
         )
-        logical: dict[str, dict[str, tuple[str, torch.Tensor]]] = {}
+        logical: dict[
+            str, dict[str, tuple[str, torch.Tensor, int | None]]
+        ] = {}
         for endpoint in (spec.actual, spec.expected):
             label = endpoint.label
             for endpoint_path, value in trace.gradients[label].items():
                 logical_path = self._logical_activation_path(endpoint, endpoint_path)
-                logical.setdefault(logical_path, {})[label] = (endpoint_path, value)
-        normalized_logical: dict[str, dict[str, tuple[str, torch.Tensor]]] = {}
+                logical.setdefault(logical_path, {})[label] = (
+                    endpoint_path,
+                    value,
+                    trace.gradient_execution_orders[label].get(endpoint_path),
+                )
+        normalized_logical: dict[
+            str, dict[str, tuple[str, torch.Tensor, int | None]]
+        ] = {}
         for logical_path, values in logical.items():
             base_path = logical_path.split("[", 1)[0]
             target_path = (
@@ -6910,6 +7155,14 @@ class TestGlm5Parity(
                         f"gradient trace missing actual={actual_value is not None}, "
                         f"expected={expected_value is not None}"
                     ),
+                    execution_order=(
+                        actual_value[2]
+                        if actual_value is not None
+                        else expected_value[2]
+                        if expected_value is not None
+                        else None
+                    ),
+                    execution_order_source="captured backward hook",
                 )
                 continue
             recorder.tensor(
@@ -6925,6 +7178,12 @@ class TestGlm5Parity(
                 level=level,
                 node_kind=node_kind,
                 checkpoint=checkpoint,
+                execution_order=min(
+                    value
+                    for value in (actual_value[2], expected_value[2])
+                    if value is not None
+                ),
+                execution_order_source="captured backward hook",
             )
 
     def _run_routed_experts_on_input(
@@ -7155,6 +7414,13 @@ class TestGlm5Parity(
                     parent_path="layers",
                     level=2,
                     node_kind="layer_checkpoint",
+                    execution_order=min(
+                        trace.execution_orders[label][
+                            ("decoder_block", layer)
+                        ]
+                        for label in (spec.actual.label, spec.expected.label)
+                    ),
+                    execution_order_source="captured forward hook",
                 )
 
             actual_indexer = trace.indexer[spec.actual.label].get(layer)
@@ -7189,6 +7455,11 @@ class TestGlm5Parity(
                     parent_path=f"layers.{layer}.attention",
                     level=4,
                     node_kind="discrete_checkpoint",
+                    execution_order=min(
+                        trace.execution_orders[label][("indexer", layer)]
+                        for label in (spec.actual.label, spec.expected.label)
+                    ),
+                    execution_order_source="captured forward hook",
                 )
 
             actual_router = trace.router[spec.actual.label].get(layer)
@@ -7224,6 +7495,11 @@ class TestGlm5Parity(
                     parent_path=f"layers.{layer}.moe",
                     level=4,
                     node_kind="discrete_checkpoint",
+                    execution_order=min(
+                        trace.execution_orders[label][("router", layer)]
+                        for label in (spec.actual.label, spec.expected.label)
+                    ),
+                    execution_order_source="captured forward hook",
                 )
 
                 actual_weights = trace.router_weights[spec.actual.label].get(layer)
