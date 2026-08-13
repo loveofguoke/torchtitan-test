@@ -65,7 +65,8 @@ CONFIG = FormalExperimentConfig(
                 relative_absolute=0.005,
             ),
             all_loss=AnyOfErrorLimit(
-                absolute=0.005,
+                absolute=0.01,
+                relative_absolute=0.01,
             ),
             loss_quantiles=(
                 QuantileLimit(0.99, 0.01),
@@ -73,7 +74,7 @@ CONFIG = FormalExperimentConfig(
                 QuantileLimit(0.9999, 0.05),
             ),
             warmup_steps=100,
-            outlier_fraction=0.005,
+            outlier_fraction=0.0,
             minimum_observations=1000,
             required_reference_repeats=2,
             required_candidate_repeats=2,

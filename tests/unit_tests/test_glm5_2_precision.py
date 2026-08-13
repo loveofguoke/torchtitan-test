@@ -14,10 +14,12 @@ from tests.glm5_2_precision.artifacts import (
     TrainingMetric,
 )
 from tests.glm5_2_precision.report import compare_and_write_report
+from tests.glm5_2_precision.migrate_legacy_outputs import compact_scenario_name
 from tests.glm5_2_precision.standards import (
     AnyOfErrorLimit,
     MigrationStandard,
     PrecisionStandard,
+    QuantileLimit,
     SelfConsistencyStandard,
     compute_error_metrics,
     evaluate_exact_pair,
@@ -60,6 +62,22 @@ def test_first_loss_is_evaluated_before_warmup() -> None:
     first_loss = next(item for item in evaluation.criteria if item.name == "First loss")
     assert not first_loss.passed
     assert evaluation.loss.metrics.absolute == 0.0
+
+
+def test_loss_quantiles_are_diagnostic_only() -> None:
+    evaluation = evaluate_migration_pair(
+        reference_loss={1: 1.0, 2: 1.0},
+        candidate_loss={1: 1.001, 2: 1.001},
+        reference_grad_norm={1: 1.0, 2: 1.0},
+        candidate_grad_norm={1: 1.0, 2: 1.0},
+        standard=MigrationStandard(
+            loss_quantiles=(QuantileLimit(0.99, 0.0),),
+            minimum_observations=2,
+        ),
+    )
+
+    assert evaluation.passed
+    assert all("P99" not in item.name for item in evaluation.criteria)
 
 
 def test_exact_self_consistency_uses_float_bits() -> None:
@@ -208,8 +226,6 @@ def test_compare_writes_html_and_json_report(tmp_path: Path) -> None:
             "world_size": topology.world_size,
         },
     }
-    runtime_log = tmp_path / "runtime.log"
-    runtime_log.write_text("training completed\n", encoding="utf-8")
     for repeat in (1, 2):
         PrecisionArtifactWriter(
             _artifact_directory(tmp_path, config, "reference", reference, repeat)
@@ -217,7 +233,6 @@ def test_compare_writes_html_and_json_report(tmp_path: Path) -> None:
             metadata={"role": "reference", "repeat": repeat},
             training_contract=contract,
             metrics=_metrics(),
-            attachments={"runtime.log": runtime_log},
         )
     for repeat in (1, 2):
         PrecisionArtifactWriter(
@@ -225,14 +240,49 @@ def test_compare_writes_html_and_json_report(tmp_path: Path) -> None:
         ).write(
             metadata={"role": "candidate", "repeat": repeat},
             training_contract=contract,
-            metrics=_metrics(loss_offset=0.001),
-            attachments={"runtime.log": runtime_log},
+            metrics=_metrics(loss_offset=0.001 if repeat == 1 else 0.0011),
         )
 
     report = compare_and_write_report(tmp_path, config)
     assert report.is_file()
-    assert "Formal GLM 5.2 precision benchmark" in report.read_text(encoding="utf-8")
+    report_text = report.read_text(encoding="utf-8")
+    assert "Formal GLM 5.2 precision benchmark" in report_text
+    assert "Repeat-run diagnostics" in report_text
+    assert "Historical customer standards (reference only)" in report_text
+    assert "step 1" in report_text
     summary = json.loads(
         (report.parent / "precision_summary.json").read_text(encoding="utf-8")
     )
     assert summary["passed"]
+    assert not summary["candidate_reproducible_loss"]
+    assert not summary["strict_reproducibility_required"]
+
+
+def test_storage_name_and_capture_paths_are_compact(tmp_path: Path) -> None:
+    topology = ParallelTopology("single", 1)
+    config = FormalExperimentConfig(
+        name="glm5-2-gpu-npu-training",
+        kind="migration",
+        reference=TrainingEndpoint("gpu-reference", "cuda", "0", topology),
+        candidate=TrainingEndpoint("npu-candidate", "npu", "0", topology),
+    )
+
+    assert config.storage_name == (
+        "migration-cuda-npu-single-bf16-random-s1000-b16-seq128-seed61"
+    )
+    from tests.glm5_2_precision.workflow import _artifact_directory
+
+    assert _artifact_directory(
+        tmp_path, config, "candidate", config.candidate, 1
+    ).name == "candidate-r1"
+
+
+def test_legacy_scenario_name_maps_to_current_storage_name() -> None:
+    legacy = (
+        "glm5-2-gpu-npu-training-migration-cuda-single-vs-npu-single-"
+        "mixed-bfloat16-random-seed-steps1000-global-batch16-seq128-seed61"
+    )
+
+    assert compact_scenario_name(legacy) == (
+        "migration-cuda-npu-single-bf16-random-s1000-b16-seq128-seed61"
+    )

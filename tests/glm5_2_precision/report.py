@@ -16,6 +16,7 @@ from .artifacts import PrecisionArtifactReader
 from .standards import (
     CriterionResult,
     PairEvaluation,
+    compute_error_metrics,
     evaluate_exact_pair,
     evaluate_migration_pair,
     exact_series_match,
@@ -30,9 +31,12 @@ class CandidateEvaluation:
     reproducible_reference_grad_norm: bool
     reproducible_loss: bool
     reproducible_grad_norm: bool
+    strict_reproducibility_required: bool = False
 
     @property
     def passed(self) -> bool:
+        if not self.strict_reproducibility_required:
+            return self.pair.passed
         return (
             self.pair.passed
             and self.reproducible_reference_loss
@@ -50,6 +54,10 @@ def _format_float(value: float) -> str:
     return f"{value:.9g}"
 
 
+def _format_exact_float(value: float) -> str:
+    return f"{value:.17g}"
+
+
 def _line_chart(
     *,
     title: str,
@@ -58,16 +66,19 @@ def _line_chart(
     candidate: Sequence[float],
     reference_label: str,
     candidate_label: str,
+    warmup_steps: int = 0,
 ) -> str:
-    width, height = 900, 300
-    left, right, top, bottom = 70, 20, 35, 45
+    width, height = 960, 330
+    left, right, top, bottom = 110, 35, 45, 55
     values = [*reference, *candidate]
     minimum = min(values)
     maximum = max(values)
     if minimum == maximum:
         padding = max(abs(minimum) * 0.05, 1e-12)
-        minimum -= padding
-        maximum += padding
+    else:
+        padding = max((maximum - minimum) * 0.08, abs(maximum) * 1e-6, 1e-12)
+    minimum -= padding
+    maximum += padding
     min_step, max_step = min(steps), max(steps)
     if min_step == max_step:
         max_step += 1
@@ -94,12 +105,26 @@ def _line_chart(
             f'<text x="{left-8}" y="{grid_y+4:.2f}" text-anchor="end">'
             f'{_escape(_format_float(value))}</text>'
         )
+    warmup = ""
+    if warmup_steps > 0:
+        num_warmup = min(warmup_steps, len(steps))
+        if num_warmup:
+            warmup_end = x(steps[num_warmup - 1])
+            warmup = (
+                f'<rect x="{left}" y="{top}" width="{max(warmup_end-left, 1):.2f}" '
+                f'height="{height-top-bottom}" class="warmup"/>'
+                f'<line x1="{warmup_end:.2f}" y1="{top}" x2="{warmup_end:.2f}" '
+                f'y2="{height-bottom}" class="warmup-boundary"/>'
+                f'<text x="{left+8}" y="{top+17}" class="warmup-label">'
+                f'Warmup: first {num_warmup} steps</text>'
+            )
     return f"""
     <section class="chart-card">
       <h3>{_escape(title)}</h3>
       <div class="legend"><span class="reference-line"></span>{_escape(reference_label)}
       <span class="candidate-line"></span>{_escape(candidate_label)}</div>
       <svg viewBox="0 0 {width} {height}" role="img" aria-label="{_escape(title)}">
+        {warmup}
         {''.join(grid)}
         <line x1="{left}" y1="{height-bottom}" x2="{width-right}" y2="{height-bottom}" class="axis"/>
         <polyline points="{points(reference)}" class="series reference"/>
@@ -108,6 +133,129 @@ def _line_chart(
         <text x="{width-right}" y="{height-15}" text-anchor="end">step {max(steps)}</text>
       </svg>
     </section>"""
+
+
+def _reference_standards_table(evaluation: PairEvaluation) -> str:
+    loss = evaluation.loss.metrics
+    p99 = loss.quantiles.get(0.99, float("nan"))
+    p999 = loss.quantiles.get(0.999, float("nan"))
+    p9999 = loss.quantiles.get(0.9999, float("nan"))
+    rows = (
+        (
+            "Customer 1",
+            "Random init: single-card mean absolute < 0.01; 8-card < 0.03; "
+            "multi-node < 0.05. Converged MoE: every-step max absolute < 0.01.",
+            f"mean absolute={_format_float(loss.absolute)}; "
+            f"max absolute={_format_float(loss.max_absolute)}",
+        ),
+        (
+            "Customer 2",
+            "1000-step loss mean relative error < 0.2%.",
+            f"mean relative={loss.relative_normal:.6%}",
+        ),
+        (
+            "Customer 3",
+            "After warmup: cumulative mean absolute < 0.005; "
+            "P99 <= 0.01, P99.9 <= 0.01, P99.99 <= 0.05.",
+            f"mean absolute={_format_float(loss.absolute)}; "
+            f"P99={_format_float(p99)}; P99.9={_format_float(p999)}; "
+            f"P99.99={_format_float(p9999)}",
+        ),
+        (
+            "Customer 4",
+            "5000 steps or 12 hours: mean absolute <= 0.01-0.02 OR "
+            "mean relative <= 1%; warmup and up to 0.5% outliers may be excluded.",
+            f"mean absolute={_format_float(loss.absolute)}; "
+            f"mean relative={loss.relative_normal:.6%}",
+        ),
+    )
+    body = "".join(
+        f"<tr><td>{_escape(customer)}</td><td>{_escape(standard)}</td>"
+        f"<td>{_escape(observed)}</td></tr>"
+        for customer, standard, observed in rows
+    )
+    return f"""
+    <h3>Historical customer standards (reference only)</h3>
+    <p class="note">These examples provide context and do not affect the formal
+    migration PASS/FAIL result above.</p>
+    <table><thead><tr><th>Source</th><th>Reference standard</th><th>Observed</th>
+    </tr></thead><tbody>{body}</tbody></table>"""
+
+
+def _repeat_diagnostics_table(
+    *,
+    endpoint_name: str,
+    artifacts: Sequence[PrecisionArtifactReader],
+) -> str:
+    if len(artifacts) < 2:
+        return ""
+    baseline = artifacts[0]
+    rows: list[str] = []
+    details: list[str] = []
+    for repeat, artifact in enumerate(artifacts[1:], start=2):
+        for series_name, left, right in (
+            ("loss", baseline.loss_series(), artifact.loss_series()),
+            (
+                "global grad norm",
+                baseline.grad_norm_series(),
+                artifact.grad_norm_series(),
+            ),
+        ):
+            if set(left) != set(right):
+                raise ValueError("repeat metric steps differ")
+            steps = sorted(left)
+            metrics = compute_error_metrics(
+                [left[step] for step in steps],
+                [right[step] for step in steps],
+            )
+            num_changed = sum(
+                float.hex(left[step]) != float.hex(right[step]) for step in steps
+            )
+            changed_steps = [
+                step
+                for step in steps
+                if float.hex(left[step]) != float.hex(right[step])
+            ]
+            if changed_steps:
+                first_step = changed_steps[0]
+                first_summary = (
+                    f"step {first_step}: run 1={_format_exact_float(left[first_step])}, "
+                    f"run {repeat}={_format_exact_float(right[first_step])}, "
+                    "absolute="
+                    f"{_format_exact_float(abs(left[first_step]-right[first_step]))}"
+                )
+                detail_rows = "".join(
+                    f"<tr><td>{step}</td>"
+                    f"<td>{_format_exact_float(left[step])}</td>"
+                    f"<td>{_format_exact_float(right[step])}</td>"
+                    f"<td>{_format_exact_float(abs(left[step]-right[step]))}</td>"
+                    f"<td><code>{_escape(float.hex(left[step]))}</code></td>"
+                    f"<td><code>{_escape(float.hex(right[step]))}</code></td></tr>"
+                    for step in changed_steps
+                )
+                details.append(
+                    f"<details><summary>{_escape(endpoint_name)} run 1 vs run "
+                    f"{repeat}, {_escape(series_name)}: {len(changed_steps)} differing "
+                    f"steps</summary><table><thead><tr><th>Step</th><th>Run 1</th>"
+                    f"<th>Run {repeat}</th><th>Absolute difference</th>"
+                    f"<th>Run 1 bits</th><th>Run {repeat} bits</th></tr></thead>"
+                    f"<tbody>{detail_rows}</tbody></table></details>"
+                )
+            else:
+                first_summary = "none"
+            rows.append(
+                f"<tr><td>{_escape(endpoint_name)}</td><td>run 1 vs run {repeat}</td>"
+                f"<td>{_escape(series_name)}</td><td>{num_changed}/{len(steps)}</td>"
+                f"<td>{_escape(first_summary)}</td>"
+                f"<td>{_format_float(metrics.max_absolute)}</td>"
+                f"<td>{_format_float(metrics.absolute)}</td>"
+                f"<td>{metrics.relative_absolute:.6%}</td></tr>"
+            )
+    return f"""
+    <table><thead><tr><th>Endpoint</th><th>Runs</th><th>Series</th>
+    <th>Bitwise-changed steps</th><th>First difference</th><th>Max absolute</th>
+    <th>Mean absolute</th><th>Mean absolute relative</th></tr></thead>
+    <tbody>{''.join(rows)}</tbody></table>{''.join(details)}"""
 
 
 def _histogram(errors: Sequence[float], title: str) -> str:
@@ -176,11 +324,6 @@ def _metrics_table(evaluation: PairEvaluation) -> str:
 
 def _criteria_table(
     criteria: Sequence[CriterionResult],
-    *,
-    reproducible_reference_loss: bool,
-    reproducible_reference_grad_norm: bool,
-    reproducible_loss: bool,
-    reproducible_grad_norm: bool,
 ) -> str:
     rows = [
         "<tr>"
@@ -191,25 +334,6 @@ def _criteria_table(
         "</tr>"
         for item in criteria
     ]
-    for name, passed in (
-        ("Reference repeat loss zero error", reproducible_reference_loss),
-        (
-            "Reference repeat global grad norm zero error",
-            reproducible_reference_grad_norm,
-        ),
-        ("Candidate repeat loss zero error", reproducible_loss),
-        ("Candidate repeat global grad norm zero error", reproducible_grad_norm),
-    ):
-        rows.append(
-            "<tr>"
-            f'<td><span class="status {"pass" if passed else "fail"}">'
-            f'{"PASS" if passed else "FAIL"}</span></td>'
-            f"<td>{_escape(name)}</td>"
-            f"<td>{'identical' if passed else 'different'}</td>"
-            "<td>bitwise-identical float series</td>"
-            "<td>Repeated runs verify deterministic reproducibility.</td>"
-            "</tr>"
-        )
     return f"""
     <table><thead><tr><th>Result</th><th>Criterion</th><th>Observed</th>
     <th>Required</th><th>Meaning</th></tr></thead><tbody>{''.join(rows)}</tbody></table>"""
@@ -352,12 +476,19 @@ def compare_and_write_report(root: Path, config: Any) -> Path:
         )
         for candidate in candidates[1:]
     )
+    strict_reproducibility_required = (
+        config.kind == "self_consistency"
+        and not config.standard.self_consistency.randomness_impacted
+    )
+    migration_standard = (
+        config.standard.migration
+        if config.kind == "migration"
+        else config.standard.self_consistency.migration_fallback
+    )
 
     evaluations: list[CandidateEvaluation] = []
     for candidate in candidates:
-        if config.kind == "self_consistency" and not (
-            config.standard.self_consistency.randomness_impacted
-        ):
+        if strict_reproducibility_required:
             pair = evaluate_exact_pair(
                 reference_loss=reference.loss_series(),
                 candidate_loss=candidate.loss_series(),
@@ -365,11 +496,6 @@ def compare_and_write_report(root: Path, config: Any) -> Path:
                 candidate_grad_norm=candidate.grad_norm_series(),
             )
         else:
-            migration_standard = (
-                config.standard.migration
-                if config.kind == "migration"
-                else config.standard.self_consistency.migration_fallback
-            )
             pair = evaluate_migration_pair(
                 reference_loss=reference.loss_series(),
                 candidate_loss=candidate.loss_series(),
@@ -385,6 +511,7 @@ def compare_and_write_report(root: Path, config: Any) -> Path:
                 reproducible_reference_grad_norm=reproducible_reference_grad_norm,
                 reproducible_loss=reproducible_loss,
                 reproducible_grad_norm=reproducible_grad_norm,
+                strict_reproducibility_required=strict_reproducibility_required,
             )
         )
 
@@ -425,24 +552,33 @@ def compare_and_write_report(root: Path, config: Any) -> Path:
     sections: list[str] = []
     for run_index, evaluation in enumerate(evaluations, start=1):
         pair = evaluation.pair
+        candidate = evaluation.artifact
+        full_loss_steps = tuple(sorted(reference.loss_series()))
+        full_grad_steps = tuple(sorted(reference.grad_norm_series()))
+        if full_loss_steps != tuple(sorted(candidate.loss_series())):
+            raise ValueError("reference and candidate loss steps differ")
+        if full_grad_steps != tuple(sorted(candidate.grad_norm_series())):
+            raise ValueError("reference and candidate grad norm steps differ")
         sections.append(
             f"""
             <section id="candidate-{run_index}">
               <h2>Candidate repeat {run_index}</h2>
-              {_criteria_table(pair.criteria,
-                 reproducible_reference_loss=reproducible_reference_loss,
-                 reproducible_reference_grad_norm=reproducible_reference_grad_norm,
-                 reproducible_loss=reproducible_loss,
-                 reproducible_grad_norm=reproducible_grad_norm)}
+              <h3>Formal decision criteria</h3>
+              {_criteria_table(pair.criteria)}
               <h3>Error metrics</h3>{_metrics_table(pair)}
-              {_line_chart(title="Training loss", steps=pair.loss.steps,
-                 reference=pair.loss.reference, candidate=pair.loss.candidate,
+              {_reference_standards_table(pair)}
+              {_line_chart(title="Training loss", steps=full_loss_steps,
+                 reference=tuple(reference.loss_series()[step] for step in full_loss_steps),
+                 candidate=tuple(candidate.loss_series()[step] for step in full_loss_steps),
                  reference_label=config.reference.name,
-                 candidate_label=f"{config.candidate.name} repeat {run_index}")}
-              {_line_chart(title="Global grad norm", steps=pair.grad_norm.steps,
-                 reference=pair.grad_norm.reference, candidate=pair.grad_norm.candidate,
+                 candidate_label=f"{config.candidate.name} repeat {run_index}",
+                 warmup_steps=migration_standard.warmup_steps)}
+              {_line_chart(title="Global grad norm", steps=full_grad_steps,
+                 reference=tuple(reference.grad_norm_series()[step] for step in full_grad_steps),
+                 candidate=tuple(candidate.grad_norm_series()[step] for step in full_grad_steps),
                  reference_label=config.reference.name,
-                 candidate_label=f"{config.candidate.name} repeat {run_index}")}
+                 candidate_label=f"{config.candidate.name} repeat {run_index}",
+                 warmup_steps=migration_standard.warmup_steps)}
               {_histogram(pair.loss.metrics.absolute_errors,
                  "Loss absolute-error distribution")}
               {_histogram(pair.grad_norm.metrics.absolute_errors,
@@ -463,7 +599,7 @@ def compare_and_write_report(root: Path, config: Any) -> Path:
             f"<ul>{links}</ul></section>"
         )
 
-    report_directory = root / config.report_root / config.scenario_name
+    report_directory = root / config.report_root / config.storage_name
     report_directory.mkdir(parents=True, exist_ok=True)
     report_path = report_directory / "precision_report.html"
     summary_path = report_directory / "precision_summary.json"
@@ -475,7 +611,11 @@ def compare_and_write_report(root: Path, config: Any) -> Path:
         "reference_reproducible_grad_norm": reproducible_reference_grad_norm,
         "candidate_reproducible_loss": reproducible_loss,
         "candidate_reproducible_grad_norm": reproducible_grad_norm,
-        "repeat_criteria": [asdict(item) for item in repeat_criteria],
+        "strict_reproducibility_required": strict_reproducibility_required,
+        "repeat_diagnostics": [
+            {**asdict(item), "decides_formal_result": strict_reproducibility_required}
+            for item in repeat_criteria
+        ],
         "candidate_runs": [
             {
                 "repeat": index,
@@ -516,17 +656,24 @@ th,td{{padding:9px 10px;border-right:1px solid var(--line);border-bottom:1px sol
 th:last-child,td:last-child{{border-right:0}} tr:last-child td{{border-bottom:0}}
 thead th{{position:sticky;top:41px;z-index:10;background:#eef2f7}} pre{{white-space:pre-wrap;margin:0;font-size:12px}}
 .status{{display:inline-block;padding:3px 8px;border-radius:999px;color:#fff;font-weight:700}} .status.pass{{background:var(--pass)}} .status.fail{{background:var(--fail)}}
-.chart-card{{border:1px solid var(--line);border-radius:10px;padding:12px;margin:18px 0}} svg{{width:100%;height:auto}}
+.chart-card{{border:1px solid var(--line);border-radius:10px;padding:12px;margin:18px 0;overflow-x:auto}} svg{{width:100%;min-width:760px;height:auto;overflow:visible}}
 .grid{{stroke:#e5e7eb;stroke-width:1}} .axis{{stroke:#64748b;stroke-width:1.2}} .series{{fill:none;stroke-width:2}} .series.reference{{stroke:#155eef}} .series.candidate{{stroke:#e34a33}}
 .bars rect{{fill:#7c3aed;opacity:.8}} .legend{{color:var(--muted)}} .legend span{{display:inline-block;width:22px;border-top:3px solid;margin:0 7px 3px 18px}} .reference-line{{border-color:#155eef!important}} .candidate-line{{border-color:#e34a33!important}}
+.warmup{{fill:#f59e0b;opacity:.13}} .warmup-boundary{{stroke:#d97706;stroke-width:1.4;stroke-dasharray:5 4}} .warmup-label{{fill:#92400e;font-weight:700}} .note{{color:var(--muted)}} details{{margin:10px 0}} summary{{cursor:pointer;font-weight:700}}
 </style></head><body>
-<nav><a href="#summary">Summary</a><a href="#contract">Training contract</a>{''.join(f'<a href="#candidate-{index}">Candidate {index}</a>' for index in range(1, len(evaluations)+1))}</nav>
+<nav><a href="#summary">Summary</a><a href="#repeat-diagnostics">Repeat diagnostics</a><a href="#contract">Training contract</a>{''.join(f'<a href="#candidate-{index}">Candidate {index}</a>' for index in range(1, len(evaluations)+1))}</nav>
 <main><section class="hero" id="summary"><h1>Formal GLM 5.2 precision benchmark</h1>
 <p><span class="overall">{'PASS' if overall_passed else 'FAIL'}</span></p>
 <p><b>Scenario:</b> {_escape(config.scenario_name)}<br><b>Experiment:</b> {_escape(config.kind)}<br>
 <b>Reference:</b> {_escape(config.reference.name)} ({_escape(config.reference.device_type)}, {_escape(config.reference.topology.name)})<br>
 <b>Candidate:</b> {_escape(config.candidate.name)} ({_escape(config.candidate.device_type)}, {_escape(config.candidate.topology.name)})</p>
 <p>Formal decisions use full-precision JSONL loss and global grad norm. Console-rounded values and exploratory traces never decide this result.</p></section>
+<section id="repeat-diagnostics"><h2>Repeat-run diagnostics</h2>
+<p class="note">Bitwise repeatability is reported separately. It is diagnostic and
+does not affect PASS/FAIL for BF16 migration-tolerance experiments. It becomes a
+formal requirement only when strict zero-error self-consistency is configured.</p>
+{_repeat_diagnostics_table(endpoint_name=config.reference.name, artifacts=references)}
+{_repeat_diagnostics_table(endpoint_name=config.candidate.name, artifacts=candidates)}</section>
 <section id="contract"><h2>Training contract</h2>{_config_table(reference, candidates[0])}
 <h2>Runtime and source metadata</h2>{_metadata_table(reference, candidates[0])}</section>
 {''.join(sections)}{exploratory}</main></body></html>""",

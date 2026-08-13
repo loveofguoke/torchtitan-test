@@ -297,6 +297,39 @@ class FormalExperimentConfig:
             f"seq{self.training.sequence_length}-seed{self.training.seed}"
         )
 
+    @property
+    def storage_name(self) -> str:
+        """Return a compact, human-readable directory and rendezvous name."""
+
+        if self.kind == "migration":
+            experiment = (
+                f"migration-{self.reference.device_type}-"
+                f"{self.candidate.device_type}-{self.reference.topology.slug}"
+            )
+        else:
+            experiment = (
+                f"self-{self.reference.device_type}-"
+                f"{self.reference.topology.slug}-"
+                f"{self.candidate.topology.slug}"
+            )
+        checkpoint = (
+            "random" if self.training.checkpoint_kind == "random_seed" else "converged"
+        )
+        precision = {
+            "mixed-bfloat16": "bf16",
+            "mixed-float32": "fp32",
+            "full-bf16": "full-bf16",
+        }.get(self.training.precision_name, self.training.precision_name)
+        value = _slug(
+            f"{experiment}-{precision}-{checkpoint}-s{self.training.steps}-"
+            f"b{self.training.global_batch_size}-seq{self.training.sequence_length}-"
+            f"seed{self.training.seed}"
+        )
+        if len(value) <= 112:
+            return value
+        digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:10]
+        return f"{value[:101].rstrip('-')}-{digest}"
+
 
 def _directory_digest(path: Path) -> str:
     if not path.exists():
@@ -378,7 +411,7 @@ def _root(script_path: str) -> Path:
 
 
 def _fixture_directory(root: Path, config: FormalExperimentConfig) -> Path:
-    return root / config.fixture_root / config.scenario_name
+    return root / config.fixture_root / config.storage_name
 
 
 def _artifact_directory(
@@ -388,8 +421,8 @@ def _artifact_directory(
     endpoint: TrainingEndpoint,
     repeat: int,
 ) -> Path:
-    name = _slug(f"{role}-{endpoint.name}-{endpoint.topology.slug}-run-{repeat}")
-    return root / config.artifact_root / config.scenario_name / name
+    name = _slug(f"{role}-r{repeat}")
+    return root / config.artifact_root / config.storage_name / name
 
 
 def _run_directory(
@@ -399,10 +432,10 @@ def _run_directory(
     endpoint: TrainingEndpoint,
     repeat: int,
 ) -> Path:
-    name = _slug(f"{role}-{endpoint.name}-{endpoint.topology.slug}-run-{repeat}")
+    name = _slug(f"{role}-r{repeat}")
     if endpoint.num_nodes > 1:
         name = f"{name}-node-{endpoint.node_rank}"
-    return root / config.run_root / config.scenario_name / name
+    return root / config.run_root / config.storage_name / name
 
 
 def _seed_checkpoint_path(fixture_directory: Path) -> Path:
@@ -439,6 +472,7 @@ def _base_training_args(
         "--metrics.enable_tensorboard",
         "--metrics.disable_color_printing",
         "--metrics.save_tb_folder=tensorboard",
+        "--debug.no-enable-structured-logging",
     ]
     if config.deterministic:
         args.append("--debug.deterministic")
@@ -500,7 +534,7 @@ def _torchrun_command(
         f"--nproc_per_node={endpoint.num_processes_per_node}",
         "--rdzv_backend=c10d",
         f"--rdzv_endpoint={endpoint.rendezvous_endpoint}",
-        f"--rdzv_id={config.scenario_name}",
+        f"--rdzv_id={config.storage_name}",
         f"--local-ranks-filter={metrics_rank % endpoint.num_processes_per_node}",
         "--role=rank",
         "--tee=3",
@@ -568,7 +602,7 @@ def prepare_fixture(
         relative_checkpoint = "checkpoint"
         shutil.copytree(checkpoint_path, fixture_directory / relative_checkpoint)
     else:
-        output = fixture_directory / "seed_generation"
+        output = fixture_directory / ".seed_generation"
         environment = os.environ.copy()
         environment.update(endpoint.environment)
         environment[endpoint.visible_devices_env] = endpoint.visible_devices.split(",")[0]
@@ -616,7 +650,9 @@ def prepare_fixture(
         matches = list(output.rglob("step-0"))
         if len(matches) != 1:
             raise RuntimeError(f"expected one step-0 seed checkpoint, found {matches}")
-        relative_checkpoint = matches[0].relative_to(fixture_directory).as_posix()
+        relative_checkpoint = "checkpoint"
+        shutil.move(str(matches[0]), fixture_directory / relative_checkpoint)
+        shutil.rmtree(output)
 
     local_checkpoint = fixture_directory / relative_checkpoint
     manifest = {
@@ -719,10 +755,6 @@ def capture_endpoint(
         metadata=metadata,
         training_contract=training_contract,
         metrics=metrics,
-        attachments={
-            "runtime.log": runtime_log,
-            "raw_metrics.jsonl": metrics_path,
-        },
     )
 
 

@@ -54,13 +54,14 @@ The reusable default migration standard follows the internal guidance:
 - all retained losses: mean absolute `<= 0.01` OR mean absolute relative
   `<= 1%`;
 - global grad norm signed mean relative error in `[-5%, 5%]`;
-- both reference and candidate are captured at least twice, with exactly equal
-  loss and grad norm series within each endpoint.
+- both reference and candidate are captured at least twice. Repeat-run bitwise
+  equality is reported as a diagnostic; BF16 formal decisions use the migration
+  tolerances above.
 
-The example migration script selects the documented strict customer profile:
-cumulative mean absolute loss error `<= 0.005` after warmup, P99/P99.9/P99.99
-tail limits, and optional removal of the largest 0.5% step errors. All
-thresholds live in `standards.py` or in the experiment script's
+The example migration script uses the internal migration standard above after
+the configured warmup. P99/P99.9/P99.99 and the four historical customer
+profiles remain visible as supplemental diagnostics, but do not decide formal
+PASS/FAIL. All thresholds live in `standards.py` or in the experiment script's
 `PrecisionStandard`; none are hard-coded in report or decision code.
 
 ## Reproducible training contract
@@ -179,7 +180,8 @@ Export `ASCEND_RT_VISIBLE_DEVICES` instead for NPU self-consistency. When a
 change does not affect randomness, set `randomness_impacted=False`; the formal
 standard then requires bitwise-identical reference/candidate loss and grad norm.
 Parallel decomposition changes reduction order, so the supplied example uses
-the migration fallback standard while still requiring exact candidate repeats.
+the migration fallback standard. Exact repeatability remains visible as a
+diagnostic and does not fail this BF16 self-consistency experiment.
 
 ## Multi-node capture
 
@@ -203,12 +205,34 @@ present at the same repository-relative location on every node.
 
 ## Outputs
 
-- `precision_fixtures/`: shared seed or converged checkpoint plus checksums;
-- `precision_runs/`: local TensorBoard files, structured logs, and raw capture;
-- `precision_artifacts/`: small checksummed offline artifacts, including the
-  exact JSONL series and runtime log;
+- `precision_fixtures/`: synchronized seed or converged checkpoint plus
+  checksums; keep this directory in Git when another environment needs it;
+- `precision_runs/`: ignored local working files, including TensorBoard output,
+  runtime logs, and the raw metric stream;
+- `precision_artifacts/`: synchronized checksummed comparison inputs. Each
+  capture contains only `manifest.json`, normalized `metrics.jsonl`, and
+  `training_contract.json`;
 - `precision_reports/`: a self-contained HTML report and machine-readable JSON
-  summary.
+  summary; it is generated locally and ignored by default.
+
+Directory names omit the model name and redundant endpoint labels. For example:
+`migration-cuda-npu-single-bf16-random-s1000-b16-seq128-seed61/candidate-r1`.
+The full descriptive scenario remains in manifests and reports.
+
+Existing outputs made by an older version can be renamed without rerunning:
+
+```bash
+# Preview every fixture, capture, run, and report migration.
+python tests/glm5_2_precision/migrate_legacy_outputs.py
+
+# Apply after reviewing the paths.
+python tests/glm5_2_precision/migrate_legacy_outputs.py --apply
+```
+
+The converter also removes redundant artifact attachments. Local raw metrics
+and runtime logs remain under the ignored `precision_runs/` directory.
+If artifacts were copied through a system that converted line endings, add
+`--repair-artifacts` to recompute checksums without changing metric values.
 
 The model checkpoint is large; synchronize fixtures with a shared filesystem,
 `rsync`, or another binary transfer tool rather than ordinary Git. Formal
