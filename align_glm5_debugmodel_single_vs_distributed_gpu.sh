@@ -11,11 +11,14 @@ GPU_DEVICES=${GPU_DEVICES:-${CUDA_VISIBLE_DEVICES:-0,1,2,3}}
 REFERENCE_GPU=${REFERENCE_GPU:-${GPU_DEVICES%%,*}}
 PRECISION=${PRECISION:-bf16}
 STEPS=${STEPS:-1000}
+TOPOLOGY=${TOPOLOGY:-fsdp4}
 FORCE=${FORCE:-0}
 
-BENCHMARK=tests/glm5_2_precision/single_vs_fsdp4_gpu_benchmark.py
+BENCHMARK=tests/glm5_2_precision/single_vs_distributed_gpu_benchmark.py
 COMMON_ARGS=(
     --device cuda
+    --reference-topology single
+    --candidate-topology "$TOPOLOGY"
     --reference-visible-devices "$REFERENCE_GPU"
     --candidate-visible-devices "$GPU_DEVICES"
     --precision "$PRECISION"
