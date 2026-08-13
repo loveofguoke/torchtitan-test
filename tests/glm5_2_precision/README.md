@@ -94,32 +94,37 @@ Configure `CONFIG` once in `migration_benchmark.py`. Each command derives its
 fixture, artifact, run, and report directory from the experiment kind, devices,
 topology, and precision.
 
-Single-card fixture and the two GPU reference repetitions:
+The standard `CUDA_VISIBLE_DEVICES` and `ASCEND_RT_VISIBLE_DEVICES` exports are
+the primary device selection interface. CLI visibility overrides are retained
+only for automation. `--capture` runs every configured repetition by default;
+use `--repeat N` only to rerun or debug one repetition.
+
+The fixture is not owned by reference or candidate. `--data` uses whichever
+accelerator visibility variable is exported. If neither or both are exported,
+the command stops instead of assuming an endpoint; `--data-device cuda|npu`
+is the explicit override for that uncommon case.
+
+The shared fixture can be generated on either endpoint. For example, generate
+it on NPU and capture both NPU candidate repetitions:
 
 ```bash
-python tests/glm5_2_precision/migration_benchmark.py \
-  --data --topology single --reference-visible-devices 7
+export ASCEND_RT_VISIBLE_DEVICES=4
 
 python tests/glm5_2_precision/migration_benchmark.py \
-  --capture reference --repeat 1 --topology single \
-  --reference-visible-devices 7
+  --data --topology single
 
 python tests/glm5_2_precision/migration_benchmark.py \
-  --capture reference --repeat 2 --topology single \
-  --reference-visible-devices 7
+  --capture candidate --topology single
 ```
 
-Synchronize the scenario directory under `precision_fixtures/` to the NPU
-server. Then run the two required candidate repetitions:
+Synchronize the scenario directory under `precision_fixtures/` to the GPU
+server, then capture both GPU reference repetitions:
 
 ```bash
-python tests/glm5_2_precision/migration_benchmark.py \
-  --capture candidate --repeat 1 --topology single \
-  --candidate-visible-devices 4
+export CUDA_VISIBLE_DEVICES=7
 
 python tests/glm5_2_precision/migration_benchmark.py \
-  --capture candidate --repeat 2 --topology single \
-  --candidate-visible-devices 4
+  --capture reference --topology single
 ```
 
 Synchronize all small scenario directories under `precision_artifacts/` to one
@@ -135,9 +140,9 @@ Choose any registered multi-card topology without copying the script:
 ```bash
 python tests/glm5_2_precision/migration_benchmark.py --list-topologies
 python tests/glm5_2_precision/migration_benchmark.py \
-  --capture reference --repeat 1 --topology fsdp8
+  --capture reference --topology fsdp8
 python tests/glm5_2_precision/migration_benchmark.py \
-  --capture candidate --repeat 1 --topology fsdp2-tp4-ep8
+  --capture candidate --topology fsdp2-tp4-ep8
 ```
 
 The final two commands illustrate topology selection only; a migration pair
@@ -154,29 +159,23 @@ Select both topologies from one file:
 
 ```bash
 python tests/glm5_2_precision/self_consistency_benchmark.py \
-  --data --device cuda --reference-topology single \
+  --data --reference-topology single \
   --candidate-topology fsdp8
 
 python tests/glm5_2_precision/self_consistency_benchmark.py \
-  --capture reference --repeat 1 --device cuda \
-  --reference-topology single --candidate-topology fsdp8
-python tests/glm5_2_precision/self_consistency_benchmark.py \
-  --capture reference --repeat 2 --device cuda \
+  --capture reference \
   --reference-topology single --candidate-topology fsdp8
 
 python tests/glm5_2_precision/self_consistency_benchmark.py \
-  --capture candidate --repeat 1 --device cuda \
-  --reference-topology single --candidate-topology fsdp8
-python tests/glm5_2_precision/self_consistency_benchmark.py \
-  --capture candidate --repeat 2 --device cuda \
+  --capture candidate \
   --reference-topology single --candidate-topology fsdp8
 
 python tests/glm5_2_precision/self_consistency_benchmark.py \
-  --compare --device cuda --reference-topology single \
+  --compare --reference-topology single \
   --candidate-topology fsdp8
 ```
 
-Replace `--device cuda` with `--device npu` for NPU self-consistency. When a
+Export `ASCEND_RT_VISIBLE_DEVICES` instead for NPU self-consistency. When a
 change does not affect randomness, set `randomness_impacted=False`; the formal
 standard then requires bitwise-identical reference/candidate loss and grad norm.
 Parallel decomposition changes reduction order, so the supplied example uses

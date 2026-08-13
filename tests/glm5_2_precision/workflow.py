@@ -546,6 +546,7 @@ def prepare_fixture(
     root: Path,
     config: FormalExperimentConfig,
     *,
+    endpoint: TrainingEndpoint,
     force: bool,
 ) -> Path:
     fixture_directory = _fixture_directory(root, config)
@@ -568,7 +569,6 @@ def prepare_fixture(
         shutil.copytree(checkpoint_path, fixture_directory / relative_checkpoint)
     else:
         output = fixture_directory / "seed_generation"
-        endpoint = config.reference
         environment = os.environ.copy()
         environment.update(endpoint.environment)
         environment[endpoint.visible_devices_env] = endpoint.visible_devices.split(",")[0]
@@ -752,6 +752,55 @@ def _apply_endpoint_overrides(
     return replace(endpoint, **values)
 
 
+def _endpoint_from_process_environment(
+    endpoint: TrainingEndpoint,
+) -> TrainingEndpoint:
+    """Use the standard accelerator visibility variable when it is exported."""
+
+    visible_devices = os.environ.get(endpoint.visible_devices_env)
+    if not visible_devices:
+        return endpoint
+    return replace(endpoint, visible_devices=visible_devices)
+
+
+def _fixture_endpoint_from_environment(
+    config: FormalExperimentConfig,
+    requested_device: str | None,
+) -> TrainingEndpoint:
+    if requested_device is not None:
+        matching = [
+            endpoint
+            for endpoint in (config.reference, config.candidate)
+            if endpoint.device_type == requested_device
+        ]
+        if not matching:
+            raise ValueError(
+                f"the experiment has no {requested_device!r} execution backend"
+            )
+        return matching[0]
+    npu_visible = os.environ.get("ASCEND_RT_VISIBLE_DEVICES")
+    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if npu_visible and cuda_visible:
+        raise ValueError(
+            "both ASCEND_RT_VISIBLE_DEVICES and CUDA_VISIBLE_DEVICES are set; "
+            "unset one or use --data-device to choose the fixture backend"
+        )
+    if npu_visible:
+        for endpoint in (config.reference, config.candidate):
+            if endpoint.device_type == "npu":
+                return endpoint
+        raise ValueError("the experiment has no NPU endpoint")
+    if cuda_visible:
+        for endpoint in (config.reference, config.candidate):
+            if endpoint.device_type == "cuda":
+                return endpoint
+        raise ValueError("the experiment has no CUDA endpoint")
+    raise ValueError(
+        "fixture backend is ambiguous; export CUDA_VISIBLE_DEVICES or "
+        "ASCEND_RT_VISIBLE_DEVICES, or pass --data-device"
+    )
+
+
 def run_formal_cli(
     base_config: FormalExperimentConfig,
     script_path: str,
@@ -771,7 +820,16 @@ def run_formal_cli(
     )
     actions.add_argument("--compare", action="store_true", help="generate report")
     actions.add_argument("--list-topologies", action="store_true")
-    parser.add_argument("--repeat", type=int, default=1)
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        help="capture only one repeat; omitted captures every configured repeat",
+    )
+    parser.add_argument(
+        "--data-device",
+        choices=("cuda", "npu"),
+        help="fixture backend override; normally inferred from the exported visibility variable",
+    )
     parser.add_argument("--topology", choices=sorted(topology_registry))
     parser.add_argument("--reference-topology", choices=sorted(topology_registry))
     parser.add_argument("--candidate-topology", choices=sorted(topology_registry))
@@ -800,7 +858,7 @@ def run_formal_cli(
     candidate_topology = topology_registry.get(args.candidate_topology) or shared_topology
     shared_device = args.device
     reference = _apply_endpoint_overrides(
-        base_config.reference,
+        _endpoint_from_process_environment(base_config.reference),
         topology=reference_topology,
         device_type=args.reference_device or shared_device,
         visible_devices=args.reference_visible_devices,
@@ -809,7 +867,7 @@ def run_formal_cli(
         rendezvous_endpoint=args.rdzv_endpoint,
     )
     candidate = _apply_endpoint_overrides(
-        base_config.candidate,
+        _endpoint_from_process_environment(base_config.candidate),
         topology=candidate_topology,
         device_type=args.candidate_device or shared_device,
         visible_devices=args.candidate_visible_devices,
@@ -845,20 +903,33 @@ def run_formal_cli(
     root = _root(script_path)
 
     if args.data:
-        path = prepare_fixture(root, config, force=args.force)
-        print(f"Prepared fixture: {path}")
-    elif args.capture:
-        path = capture_endpoint(
+        fixture_endpoint = _fixture_endpoint_from_environment(
+            config, args.data_device
+        )
+        path = prepare_fixture(
             root,
             config,
-            role=args.capture,
-            repeat=args.repeat,
+            endpoint=fixture_endpoint,
             force=args.force,
         )
-        if path is None:
-            print("Capture completed; this node does not own the metrics artifact.")
-        else:
-            print(f"Captured artifact: {path}")
+        print(f"Prepared fixture: {path}")
+    elif args.capture:
+        endpoint = config.reference if args.capture == "reference" else config.candidate
+        repeats = (args.repeat,) if args.repeat is not None else range(1, endpoint.repeats + 1)
+        for repeat in repeats:
+            path = capture_endpoint(
+                root,
+                config,
+                role=args.capture,
+                repeat=repeat,
+                force=args.force,
+            )
+            if path is None:
+                print(
+                    f"Repeat {repeat} completed; this node does not own the metrics artifact."
+                )
+            else:
+                print(f"Captured repeat {repeat}: {path}")
     else:
         from .report import compare_and_write_report
 

@@ -28,6 +28,8 @@ from tests.glm5_2_precision.workflow import (
     FormalTrainingConfig,
     ParallelTopology,
     TrainingEndpoint,
+    _endpoint_from_process_environment,
+    _fixture_endpoint_from_environment,
 )
 
 
@@ -114,6 +116,52 @@ def test_topology_validates_rank_product() -> None:
     assert "--parallelism.tensor_parallel_degree=4" in topology.command_args()
     with pytest.raises(ValueError, match="dense ranks"):
         ParallelTopology("invalid", 8, data_parallel_shard_degree=2)
+
+
+def test_endpoint_uses_exported_visible_devices(monkeypatch: pytest.MonkeyPatch) -> None:
+    endpoint = TrainingEndpoint(
+        "npu", "npu", "0,1,2,3,4,5,6,7", ParallelTopology("single", 1)
+    )
+    monkeypatch.setenv("ASCEND_RT_VISIBLE_DEVICES", "4")
+
+    resolved = _endpoint_from_process_environment(endpoint)
+
+    assert resolved.visible_devices == "4"
+
+
+def test_fixture_backend_is_inferred_without_endpoint_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    topology = ParallelTopology("single", 1)
+    config = FormalExperimentConfig(
+        name="fixture-backend",
+        kind="migration",
+        reference=TrainingEndpoint("gpu", "cuda", "0", topology, repeats=2),
+        candidate=TrainingEndpoint("npu", "npu", "0", topology, repeats=2),
+    )
+    monkeypatch.setenv("ASCEND_RT_VISIBLE_DEVICES", "4")
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+
+    endpoint = _fixture_endpoint_from_environment(config, None)
+
+    assert endpoint.device_type == "npu"
+
+
+def test_fixture_backend_requires_unambiguous_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    topology = ParallelTopology("single", 1)
+    config = FormalExperimentConfig(
+        name="fixture-backend",
+        kind="migration",
+        reference=TrainingEndpoint("gpu", "cuda", "0", topology, repeats=2),
+        candidate=TrainingEndpoint("npu", "npu", "0", topology, repeats=2),
+    )
+    monkeypatch.delenv("ASCEND_RT_VISIBLE_DEVICES", raising=False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+
+    with pytest.raises(ValueError, match="fixture backend is ambiguous"):
+        _fixture_endpoint_from_environment(config, None)
 
 
 def test_compare_writes_html_and_json_report(tmp_path: Path) -> None:
