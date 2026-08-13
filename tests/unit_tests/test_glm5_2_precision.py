@@ -1,0 +1,190 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+
+from dataclasses import asdict
+import json
+from pathlib import Path
+
+import pytest
+
+from tests.glm5_2_precision.artifacts import (
+    PrecisionArtifactError,
+    PrecisionArtifactReader,
+    PrecisionArtifactWriter,
+    TrainingMetric,
+)
+from tests.glm5_2_precision.report import compare_and_write_report
+from tests.glm5_2_precision.standards import (
+    AnyOfErrorLimit,
+    MigrationStandard,
+    PrecisionStandard,
+    SelfConsistencyStandard,
+    compute_error_metrics,
+    evaluate_exact_pair,
+    evaluate_migration_pair,
+)
+from tests.glm5_2_precision.workflow import (
+    FormalExperimentConfig,
+    FormalTrainingConfig,
+    ParallelTopology,
+    TrainingEndpoint,
+)
+
+
+def test_documented_error_formulas() -> None:
+    metrics = compute_error_metrics([1.0, 2.0], [0.5, 3.0])
+
+    assert metrics.normal == pytest.approx(-0.25)
+    assert metrics.absolute == pytest.approx(0.75)
+    assert metrics.relative_normal == pytest.approx(0.0)
+    assert metrics.relative_absolute == pytest.approx(0.5)
+    assert metrics.max_absolute == pytest.approx(1.0)
+
+
+def test_first_loss_is_evaluated_before_warmup() -> None:
+    evaluation = evaluate_migration_pair(
+        reference_loss={1: 1.0, 2: 1.0, 3: 1.0},
+        candidate_loss={1: 1.1, 2: 1.0, 3: 1.0},
+        reference_grad_norm={1: 1.0, 2: 1.0, 3: 1.0},
+        candidate_grad_norm={1: 1.0, 2: 1.0, 3: 1.0},
+        standard=MigrationStandard(
+            first_loss=AnyOfErrorLimit(absolute=0.05),
+            all_loss=AnyOfErrorLimit(absolute=0.0),
+            warmup_steps=1,
+            minimum_observations=3,
+        ),
+    )
+
+    first_loss = next(item for item in evaluation.criteria if item.name == "First loss")
+    assert not first_loss.passed
+    assert evaluation.loss.metrics.absolute == 0.0
+
+
+def test_exact_self_consistency_uses_float_bits() -> None:
+    exact = evaluate_exact_pair(
+        reference_loss={1: 1.0},
+        candidate_loss={1: 1.0},
+        reference_grad_norm={1: 2.0},
+        candidate_grad_norm={1: 2.0},
+    )
+    changed = evaluate_exact_pair(
+        reference_loss={1: 1.0},
+        candidate_loss={1: 1.0 + 1e-12},
+        reference_grad_norm={1: 2.0},
+        candidate_grad_norm={1: 2.0},
+    )
+
+    assert exact.passed
+    assert not changed.passed
+
+
+def _metrics(loss_offset: float = 0.0) -> tuple[TrainingMetric, ...]:
+    return tuple(
+        TrainingMetric(
+            step=step,
+            loss=2.0 - step * 0.1 + loss_offset,
+            global_max_loss=2.0 - step * 0.1 + loss_offset,
+            grad_norm=1.0 + step * 0.01,
+            extras={"lr": 0.001},
+        )
+        for step in range(1, 5)
+    )
+
+
+def test_artifact_checksums(tmp_path: Path) -> None:
+    path = PrecisionArtifactWriter(tmp_path / "artifact").write(
+        metadata={"role": "reference"},
+        training_contract={"seed": 61},
+        metrics=_metrics(),
+    )
+    reader = PrecisionArtifactReader(path)
+    assert reader.loss_series()[1] == pytest.approx(1.9)
+
+    with (path / "metrics.jsonl").open("a", encoding="utf-8") as stream:
+        stream.write("corruption\n")
+    with pytest.raises(PrecisionArtifactError, match="checksum mismatch"):
+        PrecisionArtifactReader(path)
+
+
+def test_topology_validates_rank_product() -> None:
+    topology = ParallelTopology(
+        "fsdp2-tp4", 8, data_parallel_shard_degree=2, tensor_parallel_degree=4
+    )
+    assert "--parallelism.data_parallel_shard_degree=2" in topology.command_args()
+    assert "--parallelism.tensor_parallel_degree=4" in topology.command_args()
+    with pytest.raises(ValueError, match="dense ranks"):
+        ParallelTopology("invalid", 8, data_parallel_shard_degree=2)
+
+
+def test_compare_writes_html_and_json_report(tmp_path: Path) -> None:
+    topology = ParallelTopology("single", 1)
+    reference = TrainingEndpoint(
+        "gpu", "cuda", "0", topology, repeats=2
+    )
+    candidate = TrainingEndpoint(
+        "npu", "npu", "0", topology, repeats=2
+    )
+    standard = PrecisionStandard(
+        migration=MigrationStandard(
+            warmup_steps=0,
+            minimum_observations=4,
+            required_candidate_repeats=2,
+        ),
+        self_consistency=SelfConsistencyStandard(
+            randomness_impacted=True,
+            required_candidate_repeats=2,
+        ),
+    )
+    config = FormalExperimentConfig(
+        name="synthetic",
+        kind="migration",
+        reference=reference,
+        candidate=candidate,
+        training=FormalTrainingConfig(steps=4, global_batch_size=2),
+        standard=standard,
+        artifact_root="artifacts",
+        report_root="reports",
+    )
+    from tests.glm5_2_precision.workflow import _artifact_directory
+
+    contract = {
+        "scenario_name": config.scenario_name,
+        "training": {
+            **asdict(config.training),
+            "converged_checkpoint": None,
+        },
+        "checkpoint_sha256": "checkpoint",
+        "data_sha256": {"data": "digest"},
+        "topology": {
+            "name": topology.name,
+            "world_size": topology.world_size,
+        },
+    }
+    runtime_log = tmp_path / "runtime.log"
+    runtime_log.write_text("training completed\n", encoding="utf-8")
+    for repeat in (1, 2):
+        PrecisionArtifactWriter(
+            _artifact_directory(tmp_path, config, "reference", reference, repeat)
+        ).write(
+            metadata={"role": "reference", "repeat": repeat},
+            training_contract=contract,
+            metrics=_metrics(),
+            attachments={"runtime.log": runtime_log},
+        )
+    for repeat in (1, 2):
+        PrecisionArtifactWriter(
+            _artifact_directory(tmp_path, config, "candidate", candidate, repeat)
+        ).write(
+            metadata={"role": "candidate", "repeat": repeat},
+            training_contract=contract,
+            metrics=_metrics(loss_offset=0.001),
+            attachments={"runtime.log": runtime_log},
+        )
+
+    report = compare_and_write_report(tmp_path, config)
+    assert report.is_file()
+    assert "Formal GLM 5.2 precision benchmark" in report.read_text(encoding="utf-8")
+    summary = json.loads(
+        (report.parent / "precision_summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["passed"]

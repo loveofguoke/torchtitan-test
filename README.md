@@ -66,3 +66,17 @@ scenario configuration, suite version, test plan, and exact fixture checksums.
 
 See [tests/glm5_2_parity/README.md](tests/glm5_2_parity/README.md) for paired,
 fixture, capture, and CPU comparison commands.
+
+## GLM-5.2 formal training precision
+
+The formal benchmark is separate from exploratory tensor parity. It records
+full-precision loss and global grad norm for long, deterministic training runs,
+supports single-card, DDP, FSDP, TP, PP, EP, combined, and multi-node
+topologies, and produces a CPU-only offline report with curves, four error
+metrics, max absolute error, distributions, thresholds, and repeatability
+checks.
+
+See
+[tests/glm5_2_precision/README.md](tests/glm5_2_precision/README.md) for the
+`--data`, `--capture`, and `--compare` workflows for migration and distributed
+self-consistency.
