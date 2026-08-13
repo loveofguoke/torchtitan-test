@@ -1,0 +1,47 @@
+TorchTitan backend: npu
+[rank0]:W0813 18:11:37.724000 139612 site-packages/torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+[rank0]:W0813 18:11:37.876000 139612 site-packages/torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+[rank0]:[titan] 2026-08-13 18:11:39,347 - root - INFO - torchtitan version: 0.2.2 (0.0.0 means __version__ is not defined correctly).
+[rank0]:[titan] 2026-08-13 18:11:39,348 - root - WARNING - initial_load_model_only=True has no effect without an initial_load_path.
+[rank0]:I0813 18:11:39.491000 139612 site-packages/torch_npu/utils/patch_getenv.py:15] get env RANK = 0
+[rank0]:I0813 18:11:39.493000 139612 site-packages/torch_npu/utils/patch_getenv.py:15] get env LOCAL_RANK = 0
+[rank0]:[titan] 2026-08-13 18:11:39,491 - root - WARNING - initial_load_model_only=True has no effect without an initial_load_path.
+[rank0]:[titan] 2026-08-13 18:11:39,493 - torchtitan.observability.structured_logger.jsonl_handler - INFO - Structured logging -> JSONL: /workspace/h50064611/torchtitan-test/distributed_runs/glm5_debugmodel_4card/fixtures/.pp2_fsdp2_ep2_fp32.tmp-b5gtokt4/seed_run/structured_logs/training.global_rank_0.20260813-181139-VMIN12.jsonl
+[rank0]:I0813 18:11:40.652000 139612 site-packages/torch_npu/utils/patch_getenv.py:15] get env WORLD_SIZE = 1
+[rank0]:[titan] 2026-08-13 18:11:40,651 - root - WARNING - ENV[TORCH_NCCL_ASYNC_ERROR_HANDLING] = 1 will be overridden to 3 based on job config
+[rank0]:[titan] 2026-08-13 18:11:40,656 - root - INFO - [GC] Initial GC collection took 0.00 seconds
+[rank0]:I0813 18:11:40.652000 139612 site-packages/torch_npu/utils/patch_getenv.py:15] get env MASTER_ADDR = localhost.localdomain
+[rank0]:I0813 18:11:40.652000 139612 site-packages/torch_npu/utils/patch_getenv.py:15] get env MASTER_PORT = 38455
+[rank0]:I0813 18:11:40.653000 139612 site-packages/torch_npu/utils/patch_getenv.py:15] get env TORCHELASTIC_USE_AGENT_STORE = True
+[rank0]:[W813 18:11:40.140307590 ProcessGroupHCCL.cpp:1235] Warning: The watchdog timeout 300000ms(which is set by init_process_group) is less than or equal to HCCL execution timeout 1836000ms! The plog may not be recorded. (function ProcessGroupHCCL)
+[rank0]:[titan] 2026-08-13 18:11:40,665 - root - INFO - Building glm5 debugmodel
+[rank0]:[titan] 2026-08-13 18:11:40,827 - root - INFO - NPU capacity: Ascend910B2 with 60.96GiB memory
+[rank0]:[titan] 2026-08-13 18:11:40,829 - root - WARNING - Error running lspci: [Errno 2] No such file or directory: 'lspci', fallback to use device_name
+[rank0]:[titan] 2026-08-13 18:11:40,830 - root - INFO - Total parameter count: dense 3,251,712, sparse 5,314,560, vision 0, active 5,027,328
+[rank0]:[titan] 2026-08-13 18:11:40,830 - root - INFO - [34mModel glm5 debugmodel [31msize: 8,566,272 total parameters[39m
+[rank0]:[titan] 2026-08-13 18:11:42,079 - root - WARNING - Error running lspci: [Errno 2] No such file or directory: 'lspci', fallback to use device_name
+[rank0]:[titan] 2026-08-13 18:11:42,080 - root - INFO - Peak FLOPS used for computing MFU: 3.539e+14
+[rank0]:[titan] 2026-08-13 18:11:42,080 - root - INFO - NPU memory usage for model: 0.00GiB(0.00%)
+[rank0]:[titan] 2026-08-13 18:11:42,082 - root - INFO - Optimizer AdamW (model_part=0): 83 params [.*] {'fused': True, 'foreach': False, 'lr': 0.0008, 'betas': (0.9, 0.95), 'eps': 1e-08, 'weight_decay': 0.1}
+[rank0]:[titan] 2026-08-13 18:11:42,083 - root - WARNING - Warmup steps (200) exceed total steps (10). Adjusting warmup steps to 10.
+[rank0]:[titan] 2026-08-13 18:11:42,084 - root - INFO - Loading tokenizer from tokenizer.json
+[rank0]:[titan] 2026-08-13 18:11:42,096 - root - INFO - Preparing c4_test dataset from /workspace/h50064611/torchtitan-test/distributed_runs/glm5_debugmodel_4card/fixtures/.pp2_fsdp2_ep2_fp32.tmp-b5gtokt4/data
+[rank0]:[titan] 2026-08-13 18:11:42,336 - root - WARNING - model.safetensors.index.json not found at hf_assets_path: /workspace/h50064611/torchtitan-test/distributed_runs/glm5_debugmodel_4card/fixtures/.pp2_fsdp2_ep2_fp32.tmp-b5gtokt4/hf_assets/model.safetensors.index.json.                     Defaulting to saving a single safetensors file if checkpoint is saved in HF format
+[rank0]:[titan] 2026-08-13 18:11:42,336 - root - WARNING - initial_load_model_only=True has no effect without an initial_load_path.
+[rank0]:[titan] 2026-08-13 18:11:42,337 - root - INFO - Checkpointing active. Checkpoints will be loaded from and saved to /workspace/h50064611/torchtitan-test/distributed_runs/glm5_debugmodel_4card/fixtures/.pp2_fsdp2_ep2_fp32.tmp-b5gtokt4/seed_run/checkpoint
+[rank0]:[titan] 2026-08-13 18:11:42,338 - root - INFO - Trainer is initialized with local batch size 2, global batch size 2, gradient accumulation steps 1, sequence length 128, total steps 10 (warmup 200)
+[rank0]:[titan] 2026-08-13 18:11:42,338 - root - INFO - Saving the checkpoint.
+[rank0]:[titan] 2026-08-13 18:11:42,339 - root - INFO - Saving a model only checkpoint in torch.float32 at last step, step 0.
+[rank0]:
+[rank0]:Generating train split: 0 examples [00:00, ? examples/s]
+[rank0]:Generating train split: 2000 examples [00:00, 83269.06 examples/s]
+[rank0]:/root/miniconda3/envs/torchtitan/lib/python3.12/site-packages/torchdata/stateful_dataloader/stateful_dataloader.py:379: UserWarning: 'set_vital' is deprecated, please do not call
+[rank0]:  torch.set_vital("Dataloader", "enabled", "True")  # type: ignore[attr-defined]
+[rank0]:[rank0]:[W813 18:11:42.839058790 NPUCachingAllocator.cpp:177] Warning: The current CANN and Soc versions require processing for 32 padding size, with memory allocation. (function operator())
+[rank0]:/root/miniconda3/envs/torchtitan/lib/python3.12/site-packages/torch_npu/distributed/distributed_c10d.py:221: UserWarning: HCCL doesn't support gather at the moment. Implemented with allgather instead.
+[rank0]:  warnings.warn(
+[rank0]:[titan] 2026-08-13 18:11:42,840 - root - INFO - [GC] GC collection invoked by checkpointer. took 0.01 seconds
+[rank0]:[titan] 2026-08-13 18:11:42,840 - root - INFO - Last step checkpoint completed in 0.50s
+[rank0]:[titan] 2026-08-13 18:11:42,840 - root - INFO - Created seed checkpoint
+[rank0]:[titan] 2026-08-13 18:11:42,841 - root - INFO - Destroying the purge thread.
+[rank0]:[titan] 2026-08-13 18:11:42,843 - root - INFO - Process group destroyed

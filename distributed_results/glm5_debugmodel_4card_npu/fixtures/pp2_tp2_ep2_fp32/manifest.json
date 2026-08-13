@@ -1,0 +1,82 @@
+{
+  "environment": {
+    "ASCEND_RT_VISIBLE_DEVICES": "4",
+    "hostname": "localhost.localdomain",
+    "platform": "Linux-6.6.0-145.3.18.151.oe2403sp3.aarch64-aarch64-with-glibc2.38",
+    "python": "3.12.13 | packaged by Anaconda, Inc. | (main, Jul  9 2026, 14:27:41) [GCC 14.3.0]",
+    "torch": "2.14.0.dev20260719+cpu",
+    "torch-npu": "2.14.0",
+    "torchtitan": "0.2.2",
+    "torchtitanturbo": "0.1.0"
+  },
+  "files": [
+    {
+      "path": "checkpoint/.metadata",
+      "sha256": "062f41b80d8b97cd31952c7f6f349082e8f3a56c180433b0f9cb37d173c476e5",
+      "size": 22771
+    },
+    {
+      "path": "checkpoint/__0_0.distcp",
+      "sha256": "bfbac76bb13a548cfcda39ac1142ecef6ab5987f3c98c0a75d477272e01b3591",
+      "size": 34400710
+    },
+    {
+      "path": "data/data.json",
+      "sha256": "07a274d2f6c903fd1c491260be302f99383930d31656f50de33ef467af6643b1",
+      "size": 4750981
+    },
+    {
+      "path": "hf_assets/tokenizer.json",
+      "sha256": "a9eb477ec2c2520fa45c2e73078e930ca57d316fe8cce2f45842ac3cc48f5271",
+      "size": 40769
+    },
+    {
+      "path": "hf_assets/tokenizer_config.json",
+      "sha256": "acf745f72b6b8f4dd11ee38fa1931022978d408c0a3477495c8ab27086082697",
+      "size": 4503
+    },
+    {
+      "path": "prepare.log",
+      "sha256": "442e644e282cb5edfd5ccd53ebd11f389e435bb8184be1763804903d72b63194",
+      "size": 6650
+    }
+  ],
+  "fixture_digest": "739a3bd5cfc30f6ace2cc0663d60d76f42161ebed4945b5d2d4df99f55c2c8d6",
+  "prepare_wall_time_seconds": 26.636078690178692,
+  "prepared_with_backend": "npu",
+  "scenario": {
+    "config": "glm5_debugmodel",
+    "dataset_source": "../../../../torchtitan/pytorch-torchtitan-glm5/tests/assets/c4_test",
+    "deterministic": true,
+    "hf_assets_source": "../../../../torchtitan/pytorch-torchtitan-glm5/tests/assets/tokenizer",
+    "module": "glm5",
+    "name": "glm5-debugmodel-pp2-tp2-ep2-fp32",
+    "performance_warmup_steps": 5,
+    "seed": 42,
+    "seed_args": [],
+    "steps": 20,
+    "tolerances": {
+      "default": {
+        "atol": 0.0001,
+        "rtol": 0.0001
+      },
+      "grad_norm": {
+        "atol": 0.001,
+        "rtol": 0.001
+      }
+    },
+    "training_args": [
+      "--training.local_batch_size=4",
+      "--training.global_batch_size=16",
+      "--training.seq_len=128",
+      "--parallelism.pipeline_parallel_degree=2",
+      "--parallelism.data_parallel_shard_degree=1",
+      "--parallelism.tensor_parallel_degree=2",
+      "--parallelism.expert_parallel_degree=2"
+    ],
+    "world_size": 4
+  },
+  "scenario_digest": "5d581eed0b1d64d48d7ba7ba70a8c89dfd09c5f034cf29befb6a8cf616935531",
+  "schema": "torchtitan.distributed-fixture",
+  "schema_version": 1
+}
