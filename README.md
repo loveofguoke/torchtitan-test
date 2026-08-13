@@ -80,3 +80,13 @@ See
 [tests/glm5_2_precision/README.md](tests/glm5_2_precision/README.md) for the
 `--data`, `--capture`, and `--compare` workflows for migration and distributed
 self-consistency.
+
+## Distributed GPU/NPU training comparison
+
+The distributed workflow packages the exact dataset, tokenizer assets, and
+seed checkpoint into checksummed fixtures that can be copied between GPU and
+NPU machines. Each backend records per-step loss, gradient norm, throughput,
+step time, and memory metrics for an offline precision and performance report.
+
+See [distributed/README.md](distributed/README.md) for the four-card scenario
+matrix and the prepare, capture, and compare commands.

@@ -1,0 +1,22 @@
+{
+  "name": "glm5-debugmodel-4card-base-fp32",
+  "module": "glm5",
+  "config": "glm5_debugmodel",
+  "world_size": 4,
+  "steps": 20,
+  "performance_warmup_steps": 5,
+  "seed": 42,
+  "deterministic": true,
+  "dataset_source": "../../../../torchtitan/pytorch-torchtitan-glm5/tests/assets/c4_test",
+  "hf_assets_source": "../../../../torchtitan/pytorch-torchtitan-glm5/tests/assets/tokenizer",
+  "seed_args": [],
+  "training_args": [
+    "--training.local_batch_size=4",
+    "--training.global_batch_size=16",
+    "--training.seq_len=128"
+  ],
+  "tolerances": {
+    "default": {"atol": 0.0001, "rtol": 0.0001},
+    "grad_norm": {"atol": 0.001, "rtol": 0.001}
+  }
+}
