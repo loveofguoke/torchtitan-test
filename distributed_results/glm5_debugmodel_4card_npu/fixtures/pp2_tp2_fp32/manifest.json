@@ -1,0 +1,81 @@
+{
+  "environment": {
+    "ASCEND_RT_VISIBLE_DEVICES": "4",
+    "hostname": "localhost.localdomain",
+    "platform": "Linux-6.6.0-145.3.18.151.oe2403sp3.aarch64-aarch64-with-glibc2.38",
+    "python": "3.12.13 | packaged by Anaconda, Inc. | (main, Jul  9 2026, 14:27:41) [GCC 14.3.0]",
+    "torch": "2.14.0.dev20260719+cpu",
+    "torch-npu": "2.14.0",
+    "torchtitan": "0.2.2",
+    "torchtitanturbo": "0.1.0"
+  },
+  "files": [
+    {
+      "path": "checkpoint/.metadata",
+      "sha256": "40b580d97f8396bc0bc822ff8e148aa2708788db0ea0f9d9618f28893c4e122f",
+      "size": 22767
+    },
+    {
+      "path": "checkpoint/__0_0.distcp",
+      "sha256": "bfbac76bb13a548cfcda39ac1142ecef6ab5987f3c98c0a75d477272e01b3591",
+      "size": 34400710
+    },
+    {
+      "path": "data/data.json",
+      "sha256": "07a274d2f6c903fd1c491260be302f99383930d31656f50de33ef467af6643b1",
+      "size": 4750981
+    },
+    {
+      "path": "hf_assets/tokenizer.json",
+      "sha256": "a9eb477ec2c2520fa45c2e73078e930ca57d316fe8cce2f45842ac3cc48f5271",
+      "size": 40769
+    },
+    {
+      "path": "hf_assets/tokenizer_config.json",
+      "sha256": "acf745f72b6b8f4dd11ee38fa1931022978d408c0a3477495c8ab27086082697",
+      "size": 4503
+    },
+    {
+      "path": "prepare.log",
+      "sha256": "91b21d1a26f0fef76ccf3ab97c26f142cf29f5c37539d9b6b84f35cd8653c3a6",
+      "size": 6634
+    }
+  ],
+  "fixture_digest": "91d6b7c160c4d60cc31ae37203409e31b857d353cb6964e4121e29d23cea43ef",
+  "prepare_wall_time_seconds": 27.776463999878615,
+  "prepared_with_backend": "npu",
+  "scenario": {
+    "config": "glm5_debugmodel",
+    "dataset_source": "../../../../torchtitan/pytorch-torchtitan-glm5/tests/assets/c4_test",
+    "deterministic": true,
+    "hf_assets_source": "../../../../torchtitan/pytorch-torchtitan-glm5/tests/assets/tokenizer",
+    "module": "glm5",
+    "name": "glm5-debugmodel-pp2-tp2-fp32",
+    "performance_warmup_steps": 5,
+    "seed": 42,
+    "seed_args": [],
+    "steps": 20,
+    "tolerances": {
+      "default": {
+        "atol": 0.0001,
+        "rtol": 0.0001
+      },
+      "grad_norm": {
+        "atol": 0.001,
+        "rtol": 0.001
+      }
+    },
+    "training_args": [
+      "--training.local_batch_size=4",
+      "--training.global_batch_size=16",
+      "--training.seq_len=128",
+      "--parallelism.pipeline_parallel_degree=2",
+      "--parallelism.data_parallel_shard_degree=1",
+      "--parallelism.tensor_parallel_degree=2"
+    ],
+    "world_size": 4
+  },
+  "scenario_digest": "ff67f91dde340175681e0692177c39af701a645f166b6d54a9e6d1d64c25c28b",
+  "schema": "torchtitan.distributed-fixture",
+  "schema_version": 1
+}

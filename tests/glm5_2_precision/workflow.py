@@ -114,10 +114,11 @@ class ParallelTopology:
 
 
 def standard_topologies() -> dict[str, ParallelTopology]:
-    """Return reusable single-card and eight-card GLM topology definitions."""
+    """Return reusable single-card and distributed GLM topology definitions."""
 
     return {
         "single": ParallelTopology("single", 1),
+        "fsdp4": ParallelTopology("fsdp4", 4, data_parallel_shard_degree=4),
         "ddp8": ParallelTopology(
             "ddp8", 8, data_parallel_replicate_degree=8
         ),

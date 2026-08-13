@@ -1,0 +1,10 @@
+{
+  "extends": "_base_fp32.json",
+  "name": "glm5-debugmodel-pp4-fp32",
+  "training_args_append": [
+    "--parallelism.data_parallel_shard_degree=1",
+    "--parallelism.pipeline_parallel_degree=4",
+    "--parallelism.pipeline_parallel_first_stage_less_layers=0",
+    "--parallelism.pipeline_parallel_last_stage_less_layers=0"
+  ]
+}

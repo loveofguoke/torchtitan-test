@@ -1,0 +1,9 @@
+{
+  "extends": "_base_fp32.json",
+  "name": "glm5-debugmodel-fsdp2-tp2-ep2-fp32",
+  "training_args_append": [
+    "--parallelism.data_parallel_shard_degree=2",
+    "--parallelism.tensor_parallel_degree=2",
+    "--parallelism.expert_parallel_degree=2"
+  ]
+}
