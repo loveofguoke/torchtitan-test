@@ -236,6 +236,7 @@ class FormalTrainingConfig:
     checkpoint_kind: CheckpointKind = "random_seed"
     converged_checkpoint: str | None = None
     data_paths: tuple[str, ...] = ("tests/assets/c4_test", "tests/assets/tokenizer")
+    fixed_global_batches: bool = False
     exploratory_steps: tuple[int, ...] = ()
     extra_args: tuple[str, ...] = ()
 
@@ -291,11 +292,13 @@ class FormalExperimentConfig:
             f"{self.reference.device_type}-{self.reference.topology.slug}-vs-"
             f"{self.candidate.device_type}-{self.candidate.topology.slug}"
         )
+        input_suffix = "-fixed-inputs" if self.training.fixed_global_batches else ""
         return _slug(
             f"{self.name}-{self.kind}-{sides}-{self.training.precision_name}-"
             f"{self.training.checkpoint_kind}-steps{self.training.steps}-"
             f"global-batch{self.training.global_batch_size}-"
             f"seq{self.training.sequence_length}-seed{self.training.seed}"
+            f"{input_suffix}"
         )
 
 
@@ -561,6 +564,31 @@ def prepare_fixture(
     data_digests = {
         path: _directory_digest(root / path) for path in config.training.data_paths
     }
+    fixed_batches_relative_path = None
+    fixed_batches_sha256 = None
+    if config.training.fixed_global_batches:
+        if len(config.training.data_paths) != 2:
+            raise ValueError(
+                "fixed global batches require dataset and tokenizer data paths"
+            )
+        from .fixed_batches import materialize_fixed_batches
+
+        fixed_batches_relative_path = "fixed_global_batches.safetensors"
+        fixed_batches_path = fixture_directory / fixed_batches_relative_path
+        print(
+            "Materializing topology-invariant global batches: "
+            f"{fixed_batches_path}"
+        )
+        materialize_fixed_batches(
+            fixed_batches_path,
+            dataset_path=root / config.training.data_paths[0],
+            tokenizer_path=root / config.training.data_paths[1],
+            steps=config.training.steps,
+            global_batch_size=config.training.global_batch_size,
+            sequence_length=config.training.sequence_length,
+        )
+        fixed_batches_sha256 = _directory_digest(fixed_batches_path)
+        print(f"Materialized fixed batch digest: {fixed_batches_sha256}")
     if config.training.checkpoint_kind == "converged":
         checkpoint_path = Path(config.training.converged_checkpoint or "").resolve()
         if not checkpoint_path.is_dir():
@@ -628,6 +656,8 @@ def prepare_fixture(
         "checkpoint_relative_path": relative_checkpoint,
         "checkpoint_sha256": _directory_digest(local_checkpoint),
         "data_sha256": data_digests,
+        "fixed_batches_relative_path": fixed_batches_relative_path,
+        "fixed_batches_sha256": fixed_batches_sha256,
         "training": _normalized_training(config.training),
     }
     _write_json(fixture_directory / "fixture.json", manifest)
@@ -665,6 +695,23 @@ def capture_endpoint(
     environment[endpoint.visible_devices_env] = endpoint.visible_devices
     environment["TORCHTITAN_DEVICE"] = endpoint.torchtitan_device
     environment["GLM5_PRECISION_METRICS_PATH"] = str(metrics_path)
+    if config.training.fixed_global_batches:
+        from .fixed_batches import FIXED_BATCHES_ENV
+
+        fixture_manifest = json.loads(
+            (_fixture_directory(root, config) / "fixture.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        fixed_batches_path = _fixture_directory(root, config) / str(
+            fixture_manifest["fixed_batches_relative_path"]
+        )
+        expected_digest = fixture_manifest["fixed_batches_sha256"]
+        if not fixed_batches_path.is_file():
+            raise FileNotFoundError(fixed_batches_path)
+        if _directory_digest(fixed_batches_path) != expected_digest:
+            raise RuntimeError(f"fixed batch checksum mismatch: {fixed_batches_path}")
+        environment[FIXED_BATCHES_ENV] = str(fixed_batches_path)
     metrics_rank = (
         0
         if endpoint.topology.pipeline_parallel_degree == 1
@@ -705,6 +752,7 @@ def capture_endpoint(
         "training": _normalized_training(config.training),
         "checkpoint_sha256": fixture_manifest["checkpoint_sha256"],
         "data_sha256": fixture_manifest["data_sha256"],
+        "fixed_batches_sha256": fixture_manifest.get("fixed_batches_sha256"),
         "topology": asdict(endpoint.topology),
     }
     metadata = {

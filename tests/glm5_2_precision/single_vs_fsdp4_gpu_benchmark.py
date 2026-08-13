@@ -64,6 +64,7 @@ CONFIG = FormalExperimentConfig(
         training_dtype="float32",
         mixed_precision_param="bfloat16",
         checkpoint_kind="random_seed",
+        fixed_global_batches=True,
         exploratory_steps=(),
     ),
     standard=PrecisionStandard(

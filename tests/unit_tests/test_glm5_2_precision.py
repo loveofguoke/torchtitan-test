@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 
 import pytest
+import torch
+from safetensors.torch import save_file
 
 from tests.glm5_2_precision.artifacts import (
     PrecisionArtifactError,
@@ -13,6 +15,7 @@ from tests.glm5_2_precision.artifacts import (
     PrecisionArtifactWriter,
     TrainingMetric,
 )
+from tests.glm5_2_precision.fixed_batches import FixedGlobalBatchDataLoader
 from tests.glm5_2_precision.report import compare_and_write_report
 from tests.glm5_2_precision.standards import (
     AnyOfErrorLimit,
@@ -114,6 +117,67 @@ def test_topology_validates_rank_product() -> None:
     assert "--parallelism.tensor_parallel_degree=4" in topology.command_args()
     with pytest.raises(ValueError, match="dense ranks"):
         ParallelTopology("invalid", 8, data_parallel_shard_degree=2)
+
+
+def test_fixed_global_batches_are_identical_across_dp_degrees(
+    tmp_path: Path,
+) -> None:
+    steps = 2
+    global_batch_size = 16
+    sequence_length = 3
+    rows = steps * global_batch_size
+    base = torch.arange(rows * sequence_length, dtype=torch.int64).reshape(
+        rows, sequence_length
+    )
+    path = tmp_path / "fixed.safetensors"
+    save_file(
+        {"input": base, "positions": base + 100, "labels": base + 200},
+        path,
+        metadata={
+            "steps": str(steps),
+            "global_batch_size": str(global_batch_size),
+            "sequence_length": str(sequence_length),
+        },
+    )
+
+    single = FixedGlobalBatchDataLoader(
+        path,
+        dp_world_size=1,
+        dp_rank=0,
+        local_batch_size=2,
+        sequence_length=sequence_length,
+    )
+    single_iterator = iter(single)
+    distributed = [
+        iter(
+            FixedGlobalBatchDataLoader(
+                path,
+                dp_world_size=4,
+                dp_rank=rank,
+                local_batch_size=2,
+                sequence_length=sequence_length,
+            )
+        )
+        for rank in range(4)
+    ]
+
+    for _step in range(steps):
+        single_batches = [next(single_iterator) for _wave in range(8)]
+        distributed_batches = [
+            next(rank_iterator)
+            for _wave in range(2)
+            for rank_iterator in distributed
+        ]
+        for key in ("input", "positions"):
+            single_step = torch.cat([batch[0][key] for batch in single_batches])
+            distributed_step = torch.cat(
+                [batch[0][key] for batch in distributed_batches]
+            )
+            assert torch.equal(single_step, distributed_step)
+        assert torch.equal(
+            torch.cat([batch[1] for batch in single_batches]),
+            torch.cat([batch[1] for batch in distributed_batches]),
+        )
 
 
 def test_compare_writes_html_and_json_report(tmp_path: Path) -> None:

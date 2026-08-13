@@ -78,6 +78,10 @@ def main() -> None:
 
     _install_jsonl_metrics_capture()
 
+    from tests.glm5_2_precision.fixed_batches import install_fixed_batch_dataloader
+
+    install_fixed_batch_dataloader()
+
     from torchtitan.train import main as train_main
 
     train_main()
