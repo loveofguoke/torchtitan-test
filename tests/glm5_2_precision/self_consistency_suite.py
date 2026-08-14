@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 from typing import Any, Sequence
 
+from .artifacts import PrecisionArtifactError, PrecisionArtifactReader
 from .report import compare_and_write_report
 from .workflow import (
     FormalExperimentConfig,
@@ -20,9 +21,20 @@ from .workflow import (
     _endpoint_from_process_environment,
     _fixture_endpoint_from_environment,
     _root,
+    _run_directory,
     capture_endpoint,
     prepare_fixture,
 )
+
+
+def _artifact_is_complete(path: Path) -> bool:
+    """Return whether an artifact exists and passes its checksum contract."""
+
+    try:
+        PrecisionArtifactReader(path)
+    except (OSError, ValueError, PrecisionArtifactError):
+        return False
+    return True
 
 
 def _training_with_precision(config: FormalExperimentConfig, precision: str | None):
@@ -297,15 +309,31 @@ def run_suite_cli(
                     endpoint,
                     repeat,
                 )
-                if args.capture_all and artifact.is_dir() and not args.force:
+                artifact_complete = _artifact_is_complete(artifact)
+                if args.capture_all and artifact_complete and not args.force:
                     print(f"Skip completed {name} repeat {repeat}: {artifact}")
                     continue
+                retry_incomplete = False
+                if args.capture_all and not args.force and endpoint.num_nodes == 1:
+                    run_directory = _run_directory(
+                        root,
+                        config,
+                        "candidate",
+                        endpoint,
+                        repeat,
+                    )
+                    retry_incomplete = run_directory.exists() or artifact.exists()
+                    if retry_incomplete:
+                        print(
+                            f"Retry incomplete {name} repeat {repeat}; "
+                            f"replacing stale run output: {run_directory}"
+                        )
                 path = capture_endpoint(
                     root,
                     config,
                     role="candidate",
                     repeat=repeat,
-                    force=args.force,
+                    force=args.force or retry_incomplete,
                 )
                 print(f"Captured {name} repeat {repeat}: {path}")
         return
