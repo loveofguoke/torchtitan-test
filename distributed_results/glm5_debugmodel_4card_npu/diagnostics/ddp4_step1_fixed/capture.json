@@ -1,0 +1,216 @@
+{
+  "backend": "npu",
+  "command": [
+    "/workspace/h50064611/torchtitan-test/distributed/diagnostics/run_ddp_step.sh",
+    "--dump_folder=/workspace/h50064611/torchtitan-test/distributed_diagnostics/ddp4_step1_npu_fixed2/run",
+    "--training.steps=1",
+    "--metrics.enable_tensorboard",
+    "--metrics.log_freq=1",
+    "--metrics.disable_color_printing",
+    "--debug.seed=42",
+    "--debug.deterministic",
+    "--checkpoint.enable",
+    "--checkpoint.load_only",
+    "--checkpoint.initial_load_path=/workspace/h50064611/torchtitan-test/distributed_runs/glm5_debugmodel_4card/fixtures/ddp4_fp32/checkpoint",
+    "--dataloader.dataset_path=/workspace/h50064611/torchtitan-test/distributed_runs/glm5_debugmodel_4card/fixtures/ddp4_fp32/data",
+    "--hf_assets_path=/workspace/h50064611/torchtitan-test/distributed_runs/glm5_debugmodel_4card/fixtures/ddp4_fp32/hf_assets",
+    "--training.local_batch_size=4",
+    "--training.global_batch_size=16",
+    "--training.seq_len=128",
+    "--parallelism.data_parallel_replicate_degree=4",
+    "--parallelism.data_parallel_shard_degree=1"
+  ],
+  "files": [
+    {
+      "path": "rank-000.json",
+      "sha256": "da458f1a18570088dce5fc9ac640abe271a66a0460bdacf05f6c4d43a9195305",
+      "size": 137887
+    },
+    {
+      "path": "rank-000.safetensors",
+      "sha256": "b59e652734c595c531906f5c0ea8deb0eb56cb434fed682b4f1936ecc99469c2",
+      "size": 47733148
+    },
+    {
+      "path": "rank-001.json",
+      "sha256": "3d37a79ec2c8e93d0c9c1d04fce4796f8a7c1383fa203790b06e73cc4f08ce35",
+      "size": 33841
+    },
+    {
+      "path": "rank-001.safetensors",
+      "sha256": "cd9d053d740bfd92674d3f9b4e675daf1aa971d5ad8161854356ebc4d43f4226",
+      "size": 12752076
+    },
+    {
+      "path": "rank-002.json",
+      "sha256": "efcc251e049477258b4b8dd4c97f2bbabeb35da0964486a33af69a6ef7579509",
+      "size": 33829
+    },
+    {
+      "path": "rank-002.safetensors",
+      "sha256": "07a4d055c5bcf12db2c86e6770d614ab75c30c831e96d0b3d387956ccb1d5017",
+      "size": 12752076
+    },
+    {
+      "path": "rank-003.json",
+      "sha256": "d19f9e49dbd1342645d73eea121f4bb72ffb220069b921976393dbb71c8cd8a6",
+      "size": 33839
+    },
+    {
+      "path": "rank-003.safetensors",
+      "sha256": "aa1f12686798266fa5161757597500730af7a151a364bad2c079fc2f81a7332a",
+      "size": 12752076
+    },
+    {
+      "path": "run/structured_logs/training.global_rank_0.20260814-170413-7GMPBH.jsonl",
+      "sha256": "e908e2fe3486c8829909f237f95d80c63609b0258c332b1ebcbffc079ffe34a8",
+      "size": 168192
+    },
+    {
+      "path": "run/structured_logs/training.global_rank_1.20260814-170413-NMO13F.jsonl",
+      "sha256": "59dae4e614284f6d1fd58b34c93695c9aba0441858cef9c5d654df7211eb8001",
+      "size": 168189
+    },
+    {
+      "path": "run/structured_logs/training.global_rank_2.20260814-170413-N34BXQ.jsonl",
+      "sha256": "064124d710dcc327c49e6491ebbd738e0798b95419ee172e723ceffde2c1357e",
+      "size": 168177
+    },
+    {
+      "path": "run/structured_logs/training.global_rank_3.20260814-170413-IW2U1R.jsonl",
+      "sha256": "d74ae0ca41931513e105c19b2bf7b23b8e8723df68f4367036e599a1c2aec7f9",
+      "size": 168180
+    },
+    {
+      "path": "run/tb/20260814-1704/events.out.tfevents.1786698261.localhost.localdomain.206099.0",
+      "sha256": "dbaf2583e3ac62829e3f8d5b8bd287f2b0575f5764e9b74c0bf2fb95e091931f",
+      "size": 1056
+    },
+    {
+      "path": "runtime.log",
+      "sha256": "c9bd51ec8a5764b75fc266e3b372dab84f458af4bb06ad107aaa5aebaf4412bf",
+      "size": 8069
+    }
+  ],
+  "fixed_inputs_digest": "b7dd2502cead23e6bee859a036b48dea92518908fa8a0570a2dd630d8fe8d881",
+  "fixed_inputs_file": "glm5_debugmodel_ddp4_step1.safetensors",
+  "fixture_digest": "489902f8f9907298b690148c41c15edc75220753d7ce3e435d2006bddce7ec98",
+  "input_verification": {
+    "passed": true,
+    "rows": [
+      {
+        "exact": true,
+        "global_rows": [
+          0,
+          4
+        ],
+        "key": "input.input",
+        "rank": 0
+      },
+      {
+        "exact": true,
+        "global_rows": [
+          0,
+          4
+        ],
+        "key": "input.positions",
+        "rank": 0
+      },
+      {
+        "exact": true,
+        "global_rows": [
+          0,
+          4
+        ],
+        "key": "labels",
+        "rank": 0
+      },
+      {
+        "exact": true,
+        "global_rows": [
+          4,
+          8
+        ],
+        "key": "input.input",
+        "rank": 1
+      },
+      {
+        "exact": true,
+        "global_rows": [
+          4,
+          8
+        ],
+        "key": "input.positions",
+        "rank": 1
+      },
+      {
+        "exact": true,
+        "global_rows": [
+          4,
+          8
+        ],
+        "key": "labels",
+        "rank": 1
+      },
+      {
+        "exact": true,
+        "global_rows": [
+          8,
+          12
+        ],
+        "key": "input.input",
+        "rank": 2
+      },
+      {
+        "exact": true,
+        "global_rows": [
+          8,
+          12
+        ],
+        "key": "input.positions",
+        "rank": 2
+      },
+      {
+        "exact": true,
+        "global_rows": [
+          8,
+          12
+        ],
+        "key": "labels",
+        "rank": 2
+      },
+      {
+        "exact": true,
+        "global_rows": [
+          12,
+          16
+        ],
+        "key": "input.input",
+        "rank": 3
+      },
+      {
+        "exact": true,
+        "global_rows": [
+          12,
+          16
+        ],
+        "key": "input.positions",
+        "rank": 3
+      },
+      {
+        "exact": true,
+        "global_rows": [
+          12,
+          16
+        ],
+        "key": "labels",
+        "rank": 3
+      }
+    ]
+  },
+  "scenario_digest": "94ca48110fdf6d31e35d02625ff7b414e1cfc429c0620765d9fdd85666948fb6",
+  "schema": "torchtitan.ddp-step-diagnostic-capture",
+  "schema_version": 1,
+  "wall_time_seconds": 38.57388343010098,
+  "world_size": 4
+}

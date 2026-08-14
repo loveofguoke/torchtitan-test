@@ -1,0 +1,53 @@
+W0814 17:04:03.064000 206018 site-packages/torch/distributed/run.py:874] 
+W0814 17:04:03.064000 206018 site-packages/torch/distributed/run.py:874] *****************************************
+W0814 17:04:03.064000 206018 site-packages/torch/distributed/run.py:874] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0814 17:04:03.064000 206018 site-packages/torch/distributed/run.py:874] *****************************************
+[rank0]:W0814 17:04:11.308000 206099 site-packages/torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+[rank0]:W0814 17:04:11.470000 206099 site-packages/torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+[rank0]:[titan] 2026-08-14 17:04:13,049 - root - INFO - torchtitan version: 0.2.2 (0.0.0 means __version__ is not defined correctly).
+[rank0]:[titan] 2026-08-14 17:04:13,050 - root - WARNING - initial_load_model_only=True has no effect without an initial_load_path.
+[rank0]:I0814 17:04:13.192000 206099 site-packages/torch_npu/utils/patch_getenv.py:15] get env RANK = 0
+[rank0]:[titan] 2026-08-14 17:04:13,194 - torchtitan.observability.structured_logger.jsonl_handler - INFO - Structured logging -> JSONL: /workspace/h50064611/torchtitan-test/distributed_diagnostics/ddp4_step1_npu_fixed2/run/structured_logs/training.global_rank_0.20260814-170413-7GMPBH.jsonl
+[rank0]:I0814 17:04:13.194000 206099 site-packages/torch_npu/utils/patch_getenv.py:15] get env LOCAL_RANK = 0
+[rank0]:[titan] 2026-08-14 17:04:21,511 - root - WARNING - ENV[TORCH_NCCL_ASYNC_ERROR_HANDLING] = 1 will be overridden to 3 based on job config
+[rank0]:I0814 17:04:21.511000 206099 site-packages/torch_npu/utils/patch_getenv.py:15] get env WORLD_SIZE = 4
+[rank0]:I0814 17:04:21.512000 206099 site-packages/torch_npu/utils/patch_getenv.py:15] get env MASTER_ADDR = localhost.localdomain
+[rank0]:I0814 17:04:21.512000 206099 site-packages/torch_npu/utils/patch_getenv.py:15] get env MASTER_PORT = 45213
+[rank0]:[titan] 2026-08-14 17:04:21,515 - root - INFO - Building device mesh with parallelism: pp=1, dp_replicate=4, dp_shard=1, cp=1, tp=1, ep=1
+[rank0]:[titan] 2026-08-14 17:04:21,543 - root - INFO - Successfully created meshes with active dimensions: ['batch', 'loss', 'dp_replicate']
+[rank0]:I0814 17:04:21.512000 206099 site-packages/torch_npu/utils/patch_getenv.py:15] get env TORCHELASTIC_USE_AGENT_STORE = True
+[rank0]:[W814 17:04:21.999488010 ProcessGroupHCCL.cpp:1235] Warning: The watchdog timeout 300000ms(which is set by init_process_group) is less than or equal to HCCL execution timeout 1836000ms! The plog may not be recorded. (function ProcessGroupHCCL)
+[rank0]:[titan] 2026-08-14 17:04:21,544 - root - INFO - [GC] Initial GC collection took 0.00 seconds
+[rank0]:[titan] 2026-08-14 17:04:21,544 - root - INFO - Deterministic algorithm enabled (expect perf degradation).
+[rank0]:[titan] 2026-08-14 17:04:21,582 - root - INFO - Building glm5 debugmodel
+[rank0]:[titan] 2026-08-14 17:04:21,660 - root - INFO - TensorBoard logging enabled. Logs will be saved at /workspace/h50064611/torchtitan-test/distributed_diagnostics/ddp4_step1_npu_fixed2/run/tb/20260814-1704
+[rank0]:[titan] 2026-08-14 17:04:21,745 - root - INFO - NPU capacity: Ascend910B2 with 60.96GiB memory
+[rank0]:[titan] 2026-08-14 17:04:21,747 - root - WARNING - Error running lspci: [Errno 2] No such file or directory: 'lspci', fallback to use device_name
+[rank0]:[titan] 2026-08-14 17:04:21,748 - root - INFO - Total parameter count: dense 3,251,712, sparse 5,314,560, vision 0, active 5,027,328
+[rank0]:[titan] 2026-08-14 17:04:21,748 - root - INFO - Model glm5 debugmodel size: 8,566,272 total parameters
+[rank0]:[rank0]:[W814 17:04:22.510722110 NPUCachingAllocator.cpp:177] Warning: The current CANN and Soc versions require processing for 32 padding size, with memory allocation. (function operator())
+[rank0]:[titan] 2026-08-14 17:04:22,015 - root - INFO - Applied HSDP to the model
+[rank0]:[titan] 2026-08-14 17:04:22,768 - root - WARNING - Error running lspci: [Errno 2] No such file or directory: 'lspci', fallback to use device_name
+[rank0]:[titan] 2026-08-14 17:04:22,769 - root - INFO - Peak FLOPS used for computing MFU: 3.539e+14
+[rank0]:[titan] 2026-08-14 17:04:22,769 - root - INFO - NPU memory usage for model: 0.05GiB(0.08%)
+[rank0]:[titan] 2026-08-14 17:04:22,770 - root - INFO - Optimizer AdamW (model_part=0): 83 params [.*] {'fused': True, 'foreach': False, 'lr': 0.0008, 'betas': (0.9, 0.95), 'eps': 1e-08, 'weight_decay': 0.1}
+[rank0]:[titan] 2026-08-14 17:04:22,771 - root - WARNING - Warmup steps (200) exceed total steps (1). Adjusting warmup steps to 1.
+[rank0]:[titan] 2026-08-14 17:04:22,772 - root - INFO - Loading tokenizer from tokenizer.json
+[rank0]:[titan] 2026-08-14 17:04:22,781 - root - WARNING - model.safetensors.index.json not found at hf_assets_path: /workspace/h50064611/torchtitan-test/distributed_runs/glm5_debugmodel_4card/fixtures/ddp4_fp32/hf_assets/model.safetensors.index.json.                     Defaulting to saving a single safetensors file if checkpoint is saved in HF format
+[rank0]:[titan] 2026-08-14 17:04:22,785 - root - INFO - Checkpointing active. Checkpoints will be loaded from and saved to /workspace/h50064611/torchtitan-test/distributed_diagnostics/ddp4_step1_npu_fixed2/run/checkpoint
+[rank0]:[titan] 2026-08-14 17:04:22,785 - root - INFO - Trainer is initialized with local batch size 4, global batch size 16, gradient accumulation steps 1, sequence length 128, total steps 1 (warmup 200)
+[rank0]:[titan] 2026-08-14 17:04:22,787 - root - INFO - Loading the checkpoint from /workspace/h50064611/torchtitan-test/distributed_runs/glm5_debugmodel_4card/fixtures/ddp4_fp32/checkpoint.
+[rank0]:/root/miniconda3/envs/torchtitan/lib/python3.12/site-packages/torch_npu/distributed/distributed_c10d.py:221: UserWarning: HCCL doesn't support gather at the moment. Implemented with allgather instead.
+[rank0]:  warnings.warn(
+[rank0]:[titan] 2026-08-14 17:04:23,901 - root - INFO - [GC] GC collection for checkpoint loading. took 0.02 seconds
+[rank0]:[titan] 2026-08-14 17:04:23,902 - root - INFO - Finished loading the checkpoint in 1.11 seconds.
+[rank0]:[titan] 2026-08-14 17:04:23,902 - root - INFO - Training starts at step 1
+[rank0]:[rank0]:[W814 17:04:24.188567180 VariableFallbackKernel.cpp:249] Warning: CAUTION: The operator 'aten::_assert_async.msg' is not currently supported on the NPU backend and will fall back to run on the CPU. This may have performance implications. (function npu_cpu_fallback)
+[rank0]:[rank0]:[W814 17:04:24.373736880 ArgSortKernelNpuOpApi.cpp:45] Warning: Warning: kernel [ArgSort] can not support dtype int32 or int64 on AiCore, Now this kernel is running on AiCpu.If you are more concerned about high-performance execution,please cast dtype to float32. (function operator())
+[rank0]:[titan] 2026-08-14 17:04:26,167 - root - INFO - step:  1  loss:  8.24008  grad_norm:  1.3356  memory:  0.18GiB(0.30%)  tps: 116  tflops: 0.00  mfu: 0.00%
+[rank0]:[rank0]:I0814 17:04:26.328000 206099 site-packages/torch_npu/utils/patch_getenv.py:15] get env TORCHTITAN_DEVICE = npu
+[rank0]:[titan] 2026-08-14 17:04:26,337 - root - INFO - Synchronizing and adjusting timeout for all ProcessGroups to 0:01:40
+[rank0]:[titan] 2026-08-14 17:04:26,338 - root - INFO - Sleeping 2 seconds for other ranks to complete
+[rank0]:[titan] 2026-08-14 17:04:28,339 - root - INFO - Training completed
+[rank0]:[titan] 2026-08-14 17:04:28,339 - root - INFO - Destroying the purge thread.
+[rank0]:[titan] 2026-08-14 17:04:28,496 - root - INFO - Process group destroyed
