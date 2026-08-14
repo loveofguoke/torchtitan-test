@@ -14,7 +14,7 @@ FORCE=${FORCE:-0}
 RESUME=${RESUME:-1}
 RESET=${RESET:-0}
 CONTINUE_ON_ERROR=${CONTINUE_ON_ERROR:-1}
-TOPOLOGIES=${TOPOLOGIES:-"ddp4 hsdp2x2 tp4 pp4 fsdp2-tp2 pp2-fsdp2 pp2-tp2 fsdp4-ep2 fsdp4-ep4 fsdp2-tp2-ep2 pp2-fsdp2-ep2 pp2-tp2-ep2"}
+TOPOLOGIES=${TOPOLOGIES:-"ddp4 hsdp2x2 tp4 pp4-gpipe fsdp2-tp2 pp2-fsdp2 pp2-tp2 fsdp4-ep2 fsdp4-ep4 fsdp2-tp2-ep2 pp2-fsdp2-ep2 pp2-tp2-ep2"}
 SHARED_REFERENCE_GROUP=${SHARED_REFERENCE_GROUP:-four-gpu-matrix}
 
 if [[ "$FORCE" != "0" && "$FORCE" != "1" ]]; then

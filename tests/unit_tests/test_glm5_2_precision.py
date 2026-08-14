@@ -291,6 +291,18 @@ def test_matrix_candidates_share_reference_but_keep_separate_reports(
     assert fsdp_config.report_subdirectory == "fsdp4"
 
 
+def test_four_stage_pipeline_uses_gpipe_for_two_microbatches() -> None:
+    from tests.glm5_2_precision.single_vs_distributed_gpu_benchmark import (
+        TOPOLOGIES,
+    )
+
+    assert "pp4" not in TOPOLOGIES
+    topology = TOPOLOGIES["pp4-gpipe"]
+    assert topology.pipeline_parallel_degree == 4
+    assert topology.pipeline_parallel_schedule == "GPipe"
+    assert "--parallelism.pipeline_parallel_schedule=GPipe" in topology.command_args()
+
+
 def _resumable_config(root: Path) -> FormalExperimentConfig:
     (root / "data").mkdir()
     (root / "data" / "sample.txt").write_text("data\n", encoding="utf-8")

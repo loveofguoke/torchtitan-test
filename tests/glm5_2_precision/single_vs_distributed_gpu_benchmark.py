@@ -43,10 +43,11 @@ TOPOLOGIES = {
         data_parallel_shard_degree=2,
     ),
     "tp4": ParallelTopology("tp4", 4, tensor_parallel_degree=4),
-    "pp4": ParallelTopology(
-        "pp4",
+    "pp4-gpipe": ParallelTopology(
+        "pp4-gpipe",
         4,
         pipeline_parallel_degree=4,
+        pipeline_parallel_schedule="GPipe",
         extra_args=(
             "--parallelism.pipeline_parallel_first_stage_less_layers=0",
             "--parallelism.pipeline_parallel_last_stage_less_layers=0",
