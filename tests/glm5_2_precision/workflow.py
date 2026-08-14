@@ -19,6 +19,13 @@ from typing import Any, Literal, Sequence
 
 from .artifacts import PrecisionArtifactWriter, read_captured_metrics
 from .standards import PrecisionStandard
+from .token_data import (
+    INPUT_MAPPING,
+    load_token_plan,
+    sha256_file,
+    step_series_digest,
+    validate_runtime_input_contract,
+)
 
 
 ExperimentKind = Literal["migration", "self_consistency"]
@@ -125,7 +132,7 @@ def standard_topologies() -> dict[str, ParallelTopology]:
         "tp8": ParallelTopology("tp8", 8, tensor_parallel_degree=8),
         "pp8": ParallelTopology("pp8", 8, pipeline_parallel_degree=8),
         "ep8": ParallelTopology(
-            "fsdp8-ep8",
+            "ep8",
             8,
             data_parallel_shard_degree=8,
             expert_parallel_degree=8,
@@ -307,11 +314,7 @@ class FormalExperimentConfig:
                 f"{self.candidate.device_type}-{self.reference.topology.slug}"
             )
         else:
-            experiment = (
-                f"self-{self.reference.device_type}-"
-                f"{self.reference.topology.slug}-"
-                f"{self.candidate.topology.slug}"
-            )
+            experiment = f"self-{self.reference.device_type}"
         checkpoint = (
             "random" if self.training.checkpoint_kind == "random_seed" else "converged"
         )
@@ -421,7 +424,11 @@ def _artifact_directory(
     endpoint: TrainingEndpoint,
     repeat: int,
 ) -> Path:
-    name = _slug(f"{role}-r{repeat}")
+    name = (
+        _slug(f"{endpoint.topology.slug}-r{repeat}")
+        if config.kind == "self_consistency" and role == "candidate"
+        else _slug(f"{role}-r{repeat}")
+    )
     return root / config.artifact_root / config.storage_name / name
 
 
@@ -432,7 +439,11 @@ def _run_directory(
     endpoint: TrainingEndpoint,
     repeat: int,
 ) -> Path:
-    name = _slug(f"{role}-r{repeat}")
+    name = (
+        _slug(f"{endpoint.topology.slug}-r{repeat}")
+        if config.kind == "self_consistency" and role == "candidate"
+        else _slug(f"{role}-r{repeat}")
+    )
     if endpoint.num_nodes > 1:
         name = f"{name}-node-{endpoint.node_rank}"
     return root / config.run_root / config.storage_name / name
@@ -451,6 +462,23 @@ def _seed_checkpoint_path(fixture_directory: Path) -> Path:
     if _directory_digest(checkpoint_path) != manifest["checkpoint_sha256"]:
         raise RuntimeError(f"fixture checkpoint checksum mismatch: {checkpoint_path}")
     return checkpoint_path
+
+
+def _token_plan_path(fixture_directory: Path) -> Path:
+    manifest_path = fixture_directory / "fixture.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(
+            f"fixture is not prepared; run --data first: {manifest_path}"
+        )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    relative_path = manifest.get("token_plan_relative_path")
+    if not relative_path:
+        raise RuntimeError(
+            "fixture has no fixed token plan; recreate it with --data --force"
+        )
+    token_plan_path = fixture_directory / relative_path
+    load_token_plan(token_plan_path)
+    return token_plan_path
 
 
 def _base_training_args(
@@ -595,6 +623,42 @@ def prepare_fixture(
     data_digests = {
         path: _directory_digest(root / path) for path in config.training.data_paths
     }
+    token_plan_relative_path = "token_plan"
+    token_plan_path = fixture_directory / token_plan_relative_path
+    token_plan_environment = os.environ.copy()
+    token_plan_environment.update(endpoint.environment)
+    token_plan_environment[endpoint.visible_devices_env] = (
+        endpoint.visible_devices.split(",")[0]
+    )
+    token_plan_environment["TORCHTITAN_DEVICE"] = endpoint.torchtitan_device
+    token_plan_environment["GLM5_PRECISION_TOKEN_PLAN_OUTPUT"] = str(token_plan_path)
+    token_plan_environment["GLM5_PRECISION_TOKEN_PLAN_STEPS"] = str(
+        config.training.steps
+    )
+    token_plan_environment["GLM5_PRECISION_TOKEN_PLAN_GLOBAL_BATCH_SIZE"] = str(
+        config.training.global_batch_size
+    )
+    token_plan_environment["GLM5_PRECISION_TOKEN_PLAN_SEQUENCE_LENGTH"] = str(
+        config.training.sequence_length
+    )
+    token_plan_command = [
+        sys.executable,
+        "-m",
+        "tests.glm5_2_precision.generate_token_plan",
+        "--module",
+        config.training.module,
+        "--config",
+        config.training.config,
+        *config.training.extra_args,
+    ]
+    _run_process(
+        token_plan_command,
+        root=root,
+        environment=token_plan_environment,
+        log_path=fixture_directory / "token_generation.log",
+    )
+    token_plan = load_token_plan(token_plan_path)
+    data_digests["fixed_token_plan"] = sha256_file(token_plan_path / "manifest.json")
     if config.training.checkpoint_kind == "converged":
         checkpoint_path = Path(config.training.converged_checkpoint or "").resolve()
         if not checkpoint_path.is_dir():
@@ -658,11 +722,21 @@ def prepare_fixture(
     manifest = {
         "schema": "torchtitan.glm5_2.precision_fixture",
         "schema_version": 1,
-        "scenario_name": config.scenario_name,
+        "scenario_name": config.storage_name,
+        "scenario_description": config.scenario_name,
         "checkpoint_kind": config.training.checkpoint_kind,
         "checkpoint_relative_path": relative_checkpoint,
         "checkpoint_sha256": _directory_digest(local_checkpoint),
         "data_sha256": data_digests,
+        "token_plan_relative_path": token_plan_relative_path,
+        "token_plan": {
+            "mapping": INPUT_MAPPING,
+            "manifest_sha256": data_digests["fixed_token_plan"],
+            "steps": token_plan.steps,
+            "global_batch_size": token_plan.global_batch_size,
+            "sequence_length": token_plan.sequence_length,
+            "step_series_sha256": step_series_digest(token_plan.step_sha256),
+        },
         "training": _normalized_training(config.training),
     }
     _write_json(fixture_directory / "fixture.json", manifest)
@@ -678,11 +752,28 @@ def capture_endpoint(
     force: bool,
 ) -> Path | None:
     endpoint = config.reference if role == "reference" else config.candidate
+    metrics_rank = (
+        0
+        if endpoint.topology.pipeline_parallel_degree == 1
+        or endpoint.topology.pipeline_parallel_schedule == "ZBVZeroBubble"
+        else (
+            endpoint.topology.world_size
+            // endpoint.topology.pipeline_parallel_degree
+        )
+        * (endpoint.topology.pipeline_parallel_degree - 1)
+    )
+    metrics_node_rank = metrics_rank // endpoint.num_processes_per_node
     if not 1 <= repeat <= endpoint.repeats:
         raise ValueError(f"repeat must be in [1, {endpoint.repeats}]")
-    checkpoint_path = _seed_checkpoint_path(_fixture_directory(root, config))
+    fixture_directory = _fixture_directory(root, config)
+    checkpoint_path = _seed_checkpoint_path(fixture_directory)
+    token_plan_path = _token_plan_path(fixture_directory)
     artifact_directory = _artifact_directory(root, config, role, endpoint, repeat)
-    if artifact_directory.exists() and not force:
+    if (
+        endpoint.node_rank == metrics_node_rank
+        and artifact_directory.exists()
+        and not force
+    ):
         raise FileExistsError(
             f"capture already exists; pass --force to replace it: {artifact_directory}"
         )
@@ -700,14 +791,31 @@ def capture_endpoint(
     environment[endpoint.visible_devices_env] = endpoint.visible_devices
     environment["TORCHTITAN_DEVICE"] = endpoint.torchtitan_device
     environment["GLM5_PRECISION_METRICS_PATH"] = str(metrics_path)
-    metrics_rank = (
-        0
-        if endpoint.topology.pipeline_parallel_degree == 1
-        or endpoint.topology.pipeline_parallel_schedule == "ZBVZeroBubble"
-        else (
-            endpoint.topology.world_size // endpoint.topology.pipeline_parallel_degree
+    # Every node writes unique global-rank files into one shared directory. The
+    # metrics-owning node validates the complete world before publishing an
+    # artifact, so a missing or incorrectly mapped node cannot pass silently.
+    input_contract_directory = (
+        root
+        / config.run_root
+        / config.storage_name
+        / (
+            f"{_artifact_directory(root, config, role, endpoint, repeat).name}"
+            "-input-contract"
         )
-        * (endpoint.topology.pipeline_parallel_degree - 1)
+    )
+    input_contract_directory.mkdir(parents=True, exist_ok=True)
+    environment["GLM5_PRECISION_TOKEN_PLAN_PATH"] = str(token_plan_path)
+    environment["GLM5_PRECISION_INPUT_CONTRACT_DIR"] = str(
+        input_contract_directory
+    )
+    environment["GLM5_PRECISION_GLOBAL_BATCH_SIZE"] = str(
+        config.training.global_batch_size
+    )
+    environment["GLM5_PRECISION_TRAINING_LOCAL_BATCH_SIZE"] = str(
+        config.training.local_batch_size
+    )
+    environment["GLM5_PRECISION_TENSOR_PARALLEL_DEGREE"] = str(
+        endpoint.topology.tensor_parallel_degree
     )
     environment["LOG_RANK"] = str(metrics_rank)
     command = _torchrun_command(
@@ -724,7 +832,6 @@ def capture_endpoint(
         log_path=runtime_log,
     )
 
-    metrics_node_rank = metrics_rank // endpoint.num_processes_per_node
     if endpoint.node_rank != metrics_node_rank:
         return None
     metrics = read_captured_metrics(metrics_path)
@@ -733,14 +840,30 @@ def capture_endpoint(
             f"captured {len(metrics)} metric steps, expected {config.training.steps}"
         )
     fixture_manifest = json.loads(
-        (_fixture_directory(root, config) / "fixture.json").read_text(encoding="utf-8")
+        (fixture_directory / "fixture.json").read_text(encoding="utf-8")
+    )
+    input_contract = validate_runtime_input_contract(
+        contract_directory=input_contract_directory,
+        plan=load_token_plan(token_plan_path),
+        steps=config.training.steps,
+        global_batch_size=config.training.global_batch_size,
+        training_local_batch_size=config.training.local_batch_size,
+        dp_world_size=endpoint.topology.data_parallel_degree,
+        tensor_parallel_degree=endpoint.topology.tensor_parallel_degree,
+        pipeline_parallel_degree=endpoint.topology.pipeline_parallel_degree,
+        node_rank=0,
+        num_processes_per_node=endpoint.topology.world_size,
     )
     training_contract = {
-        "scenario_name": config.scenario_name,
+        "scenario_name": config.storage_name,
         "training": _normalized_training(config.training),
         "checkpoint_sha256": fixture_manifest["checkpoint_sha256"],
         "data_sha256": fixture_manifest["data_sha256"],
-        "topology": asdict(endpoint.topology),
+        "token_plan": fixture_manifest["token_plan"],
+        "topology": {
+            **asdict(endpoint.topology),
+            "input_contract": input_contract,
+        },
     }
     metadata = {
         "experiment_kind": config.kind,
@@ -755,6 +878,9 @@ def capture_endpoint(
         metadata=metadata,
         training_contract=training_contract,
         metrics=metrics,
+        attachments={
+            "input_contract.json": input_contract_directory / "summary.json"
+        },
     )
 
 

@@ -388,6 +388,33 @@ def _validate_contracts(
         raise ValueError("reference and candidate use different training contracts")
     if experiment_kind == "migration" and left_topology != right_topology:
         raise ValueError("migration artifacts use different parallel topologies")
+    left_input = left_topology.get("input_contract")
+    right_input = right_topology.get("input_contract")
+    if left_input is None or right_input is None:
+        if experiment_kind == "self_consistency" and left_topology != right_topology:
+            raise ValueError(
+                "self-consistency artifacts do not contain a fixed-token input "
+                "contract; recreate the fixture and captures with the current "
+                "framework"
+            )
+        return
+    for label, value in (("reference", left_input), ("candidate", right_input)):
+        if (
+            not value.get("valid")
+            or value.get("mapping") != "optimizer-step-global-slot-v1"
+        ):
+            raise ValueError(f"{label} artifact has an invalid input contract")
+    comparable_keys = (
+        "mapping",
+        "steps",
+        "global_batch_size",
+        "training_local_batch_size",
+        "token_plan_step_series_sha256",
+    )
+    if any(left_input.get(key) != right_input.get(key) for key in comparable_keys):
+        raise ValueError(
+            "reference and candidate did not execute the same fixed token plan"
+        )
 
 
 def _artifact_paths(root: Path, config: Any) -> tuple[list[Path], list[Path]]:
@@ -424,7 +451,12 @@ def _artifact_paths(root: Path, config: Any) -> tuple[list[Path], list[Path]]:
     return references, candidates
 
 
-def compare_and_write_report(root: Path, config: Any) -> Path:
+def compare_and_write_report(
+    root: Path,
+    config: Any,
+    *,
+    report_directory: Path | None = None,
+) -> Path:
     reference_paths, candidate_paths = _artifact_paths(root, config)
     references = [PrecisionArtifactReader(path) for path in reference_paths]
     reference = references[0]
@@ -599,7 +631,10 @@ def compare_and_write_report(root: Path, config: Any) -> Path:
             f"<ul>{links}</ul></section>"
         )
 
-    report_directory = root / config.report_root / config.storage_name
+    if report_directory is None:
+        report_directory = root / config.report_root / config.storage_name
+        if config.kind == "self_consistency":
+            report_directory /= config.candidate.topology.slug
     report_directory.mkdir(parents=True, exist_ok=True)
     report_path = report_directory / "precision_report.html"
     summary_path = report_directory / "precision_summary.json"

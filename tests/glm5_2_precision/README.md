@@ -67,8 +67,11 @@ PASS/FAIL. All thresholds live in `standards.py` or in the experiment script's
 ## Reproducible training contract
 
 `--data` creates one unsharded TorchTitan seed checkpoint with
-`checkpoint.create_seed_checkpoint`. Both endpoints load that synchronized
-checkpoint. The fixture manifest records checkpoint and local dataset/tokenizer
+`checkpoint.create_seed_checkpoint`. It also runs the configured text loader and
+tokenizer once with `dp_world_size=1`, then stores a fixed token plan with shape
+`[steps, global_batch_size, sequence_length + 1]` plus positions and per-step
+SHA-256 digests. Both endpoints load that synchronized checkpoint and token plan.
+The fixture manifest records checkpoint, token plan, and local dataset/tokenizer
 SHA-256 digests. Captures also fix:
 
 - model module and config;
@@ -79,8 +82,13 @@ SHA-256 digests. Captures also fix:
 - parallel topology;
 - any extra TorchTitan arguments.
 
-The global batch size is fixed across topologies. Gradient accumulation makes a
-single-card run consume the same global batch size as a data-parallel run.
+The runtime test dataloader maps each optimizer step's global sample slots onto
+the current DP rank, gradient-accumulation group, and PP microbatch. Therefore a
+single-card run, DDP/FSDP/EP run, and mixed TP/PP topology consume exactly the
+same ordered global token batch at every optimizer step; only ownership changes.
+Every rank writes an input-contract stream. Capture verifies every slot and token
+hash against the fixture before it creates a portable artifact. A comparison is
+rejected if either side lacks a valid fixed-token contract.
 Comparison rejects artifacts with different common contracts; migration also
 requires identical parallel topology. Self-consistency intentionally permits
 different topologies.
@@ -88,6 +96,10 @@ different topologies.
 Full-precision scalar values are captured before console formatting by wrapping
 TorchTitan's TensorBoard logger. The runtime package is imported, not copied or
 modified. NPU capture imports TorchTitanTurbo before TorchTitan training begins.
+
+Because the token plan is now part of the formal data contract, fixtures made by
+an earlier framework version cannot be reused for new captures. Recreate the
+fixture once with `--data --force`, then rerun reference and candidate captures.
 
 ## Migration workflow
 
@@ -155,33 +167,129 @@ BF16 mixed-precision parameters; `full-bf16` sets the full training dtype.
 
 ## Distributed self-consistency
 
-The self-consistency script defaults to CUDA single-card versus CUDA FSDP8.
-Select both topologies from one file:
+The CUDA self-consistency suite shares one fixture and one single-card
+reference across every distributed topology. Prepare and capture the reference
+only once:
+
+```bash
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+
+python tests/glm5_2_precision/self_consistency_benchmark.py \
+  --data
+
+python tests/glm5_2_precision/self_consistency_benchmark.py \
+  --capture reference
+```
+
+Run candidates independently so completed work is preserved and can be
+compared immediately:
 
 ```bash
 python tests/glm5_2_precision/self_consistency_benchmark.py \
-  --data --reference-topology single \
-  --candidate-topology fsdp8
+  --capture candidate --topology ddp8
 
 python tests/glm5_2_precision/self_consistency_benchmark.py \
-  --capture reference \
-  --reference-topology single --candidate-topology fsdp8
+  --capture candidate --topology fsdp8
 
 python tests/glm5_2_precision/self_consistency_benchmark.py \
-  --capture candidate \
-  --reference-topology single --candidate-topology fsdp8
-
-python tests/glm5_2_precision/self_consistency_benchmark.py \
-  --compare --reference-topology single \
-  --candidate-topology fsdp8
+  --capture candidate --topology fsdp2-tp4
 ```
 
-Export `ASCEND_RT_VISIBLE_DEVICES` instead for NPU self-consistency. When a
-change does not affect randomness, set `randomness_impacted=False`; the formal
-standard then requires bitwise-identical reference/candidate loss and grad norm.
-Parallel decomposition changes reduction order, so the supplied example uses
-the migration fallback standard. Exact repeatability remains visible as a
-diagnostic and does not fail this BF16 self-consistency experiment.
+Or run every configured candidate sequentially:
+
+```bash
+python tests/glm5_2_precision/self_consistency_benchmark.py --capture-all
+```
+
+Every candidate consumes all eight visible GPUs, so `--capture-all` runs them
+sequentially rather than concurrently. It skips completed topology/repeat
+artifacts, making the command safe to resume after an interruption.
+
+Compare every completed candidate against the shared single-card reference:
+
+```bash
+python tests/glm5_2_precision/self_consistency_benchmark.py --compare
+```
+
+The suite report shows uncompleted topologies as `NOT RUN` and labels a clean
+incomplete run `PARTIAL PASS`; only a complete clean suite receives `PASS`.
+Add `--require-all` for a final deliverable that must contain all configured
+topologies. Use `--topologies ddp8,fsdp8,tp8` to capture or compare a subset.
+The complete built-in candidate list is:
+
+```text
+ddp8
+fsdp8
+tp8
+pp8
+ep8
+fsdp2-tp4
+fsdp4-tp2
+fsdp2-pp4
+fsdp2-tp2-pp2
+fsdp2-tp4-ep8
+```
+
+The storage layout is shared by the entire suite:
+
+```text
+precision_artifacts/self-cuda-bf16-random-s1000-b16-seq128-seed61/
+  reference-r1/
+  reference-r2/
+  ddp8-r1/
+  ddp8-r2/
+  fsdp8-r1/
+  ...
+```
+
+Each detailed topology report and the suite summary are generated together:
+
+```text
+precision_reports/self-cuda-bf16-random-s1000-b16-seq128-seed61/
+  suite_report.html
+  suite_summary.json
+  ddp8/precision_report.html
+  fsdp8/precision_report.html
+  ...
+```
+
+The previous one-pair command remains available through the workflow module,
+but the suite CLI is the recommended interface for GPU distributed baselines.
+
+To list the exact topology settings:
+
+```bash
+python tests/glm5_2_precision/self_consistency_benchmark.py --list-topologies
+```
+
+To run only repeat 2 for one topology:
+
+```bash
+python tests/glm5_2_precision/self_consistency_benchmark.py \
+  --capture candidate --topology fsdp8 --repeat 2
+```
+
+To regenerate an existing capture explicitly:
+
+```bash
+python tests/glm5_2_precision/self_consistency_benchmark.py \
+  --capture candidate --topology fsdp8 --force
+```
+
+For the final suite report:
+
+```bash
+python tests/glm5_2_precision/self_consistency_benchmark.py \
+  --compare --require-all
+```
+
+Parallel decomposition changes reduction order, so the supplied BF16 suite
+uses migration tolerances instead of requiring bitwise equality. Repeat-run
+bitwise differences remain visible as diagnostics.
+
+For NPU self-consistency, use a separate suite configuration and export
+`ASCEND_RT_VISIBLE_DEVICES`; do not mix CUDA and NPU candidates into this CUDA
+self-consistency suite.
 
 ## Multi-node capture
 
@@ -192,26 +300,29 @@ on both nodes with a shared rendezvous endpoint and the appropriate node rank:
 ```bash
 python tests/glm5_2_precision/migration_benchmark.py \
   --capture reference --repeat 1 --topology fsdp16 \
-  --num-nodes 2 --node-rank 0 --rdzv-endpoint host0:29500
+  --num-nodes 2 --node-rank 1 --rdzv-endpoint host0:29500
 
 python tests/glm5_2_precision/migration_benchmark.py \
   --capture reference --repeat 1 --topology fsdp16 \
-  --num-nodes 2 --node-rank 1 --rdzv-endpoint host0:29500
+  --num-nodes 2 --node-rank 0 --rdzv-endpoint host0:29500
 ```
 
-Only the node owning TorchTitan's metrics rank writes the portable artifact.
-Each node keeps a separate runtime directory. The synchronized fixture must be
-present at the same repository-relative location on every node.
+The synchronized fixture must be present at the same repository-relative
+location on every node, and `precision_runs/` must be on shared storage. Every
+node writes its global-rank input-contract records to the same scenario
+directory; only the node owning TorchTitan's metrics rank validates the complete
+world and writes the portable artifact. Missing rank records fail capture.
 
 ## Outputs
 
-- `precision_fixtures/`: synchronized seed or converged checkpoint plus
-  checksums; keep this directory in Git when another environment needs it;
+- `precision_fixtures/`: synchronized seed or converged checkpoint, fixed token
+  plan, and checksums; keep this directory in Git when another environment needs
+  it;
 - `precision_runs/`: ignored local working files, including TensorBoard output,
   runtime logs, and the raw metric stream;
 - `precision_artifacts/`: synchronized checksummed comparison inputs. Each
-  capture contains only `manifest.json`, normalized `metrics.jsonl`, and
-  `training_contract.json`;
+  capture contains `manifest.json`, normalized `metrics.jsonl`,
+  `training_contract.json`, and a compact validated input-contract summary;
 - `precision_reports/`: a self-contained HTML report and machine-readable JSON
   summary; it is generated locally and ignored by default.
 
@@ -229,8 +340,9 @@ python tests/glm5_2_precision/migrate_legacy_outputs.py
 python tests/glm5_2_precision/migrate_legacy_outputs.py --apply
 ```
 
-The converter also removes redundant artifact attachments. Local raw metrics
-and runtime logs remain under the ignored `precision_runs/` directory.
+The converter removes redundant runtime-log and raw-metric attachments while
+preserving a current artifact's compact input-contract summary. Local raw
+metrics and runtime logs remain under the ignored `precision_runs/` directory.
 If artifacts were copied through a system that converted line endings, add
 `--repair-artifacts` to recompute checksums without changing metric values.
 

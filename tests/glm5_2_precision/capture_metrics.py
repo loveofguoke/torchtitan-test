@@ -76,6 +76,9 @@ def main() -> None:
     elif device_type != "gpu":
         raise ValueError(f"TORCHTITAN_DEVICE must be gpu or npu, got {device_type!r}")
 
+    from .fixed_token_dataloader import install_fixed_token_dataloader
+
+    install_fixed_token_dataloader()
     _install_jsonl_metrics_capture()
 
     from torchtitan.train import main as train_main

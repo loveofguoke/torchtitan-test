@@ -4,6 +4,7 @@
 from dataclasses import asdict
 import json
 from pathlib import Path
+import struct
 
 import pytest
 
@@ -15,6 +16,7 @@ from tests.glm5_2_precision.artifacts import (
 )
 from tests.glm5_2_precision.report import compare_and_write_report
 from tests.glm5_2_precision.migrate_legacy_outputs import compact_scenario_name
+from tests.glm5_2_precision.self_consistency_suite import compare_suite
 from tests.glm5_2_precision.standards import (
     AnyOfErrorLimit,
     MigrationStandard,
@@ -24,6 +26,18 @@ from tests.glm5_2_precision.standards import (
     compute_error_metrics,
     evaluate_exact_pair,
     evaluate_migration_pair,
+)
+from tests.glm5_2_precision.token_data import (
+    INPUT_MAPPING,
+    TOKEN_PLAN_SCHEMA,
+    TOKEN_PLAN_VERSION,
+    global_slots_for_batch,
+    load_token_plan,
+    sample_digest,
+    sha256_file,
+    step_digest,
+    step_series_digest,
+    validate_runtime_input_contract,
 )
 from tests.glm5_2_precision.workflow import (
     FormalExperimentConfig,
@@ -136,6 +150,133 @@ def test_topology_validates_rank_product() -> None:
         ParallelTopology("invalid", 8, data_parallel_shard_degree=2)
 
 
+def test_fixed_token_mapping_preserves_one_global_batch_across_dp_degrees() -> None:
+    single = [
+        slot
+        for batch in range(8)
+        for slot in global_slots_for_batch(
+            batch_in_step=batch,
+            dp_rank=0,
+            dp_world_size=1,
+            global_batch_size=16,
+            training_local_batch_size=2,
+            dataloader_batch_size=2,
+        )
+    ]
+    distributed = [
+        slot
+        for dp_rank in range(8)
+        for slot in global_slots_for_batch(
+            batch_in_step=0,
+            dp_rank=dp_rank,
+            dp_world_size=8,
+            global_batch_size=16,
+            training_local_batch_size=2,
+            dataloader_batch_size=2,
+        )
+    ]
+    pipeline = [
+        slot
+        for batch in range(16)
+        for slot in global_slots_for_batch(
+            batch_in_step=batch,
+            dp_rank=0,
+            dp_world_size=1,
+            global_batch_size=16,
+            training_local_batch_size=2,
+            dataloader_batch_size=1,
+        )
+    ]
+
+    assert single == list(range(16))
+    assert distributed == list(range(16))
+    assert pipeline == list(range(16))
+
+
+def _write_synthetic_token_plan(path: Path) -> tuple[str, ...]:
+    path.mkdir()
+    tokens = []
+    positions = []
+    sample_hashes = []
+    for slot in range(4):
+        token_values = (slot, slot + 1, slot + 2)
+        position_values = (0, 1)
+        token_bytes = struct.pack("<3i", *token_values)
+        position_bytes = struct.pack("<2i", *position_values)
+        tokens.append(token_bytes)
+        positions.append(position_bytes)
+        sample_hashes.append(sample_digest(token_bytes, position_bytes))
+    (path / "tokens.i32").write_bytes(b"".join(tokens))
+    (path / "positions.i32").write_bytes(b"".join(positions))
+    step_hashes = (step_digest(sample_hashes),)
+    (path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema": TOKEN_PLAN_SCHEMA,
+                "schema_version": TOKEN_PLAN_VERSION,
+                "steps": 1,
+                "global_batch_size": 4,
+                "sequence_length": 2,
+                "sample_sha256": sample_hashes,
+                "step_sha256": step_hashes,
+                "files": {
+                    "tokens": {
+                        "name": "tokens.i32",
+                        "sha256": sha256_file(path / "tokens.i32"),
+                    },
+                    "positions": {
+                        "name": "positions.i32",
+                        "sha256": sha256_file(path / "positions.i32"),
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return tuple(sample_hashes)
+
+
+def test_runtime_input_contract_validates_dp_and_tp_replicas(tmp_path: Path) -> None:
+    token_plan_path = tmp_path / "token-plan"
+    sample_hashes = _write_synthetic_token_plan(token_plan_path)
+    plan = load_token_plan(token_plan_path)
+    contract_path = tmp_path / "contract"
+    contract_path.mkdir()
+    for global_rank in range(4):
+        dp_rank = (global_rank // 2) % 2
+        slots = (dp_rank * 2, dp_rank * 2 + 1)
+        record = {
+            "global_rank": global_rank,
+            "dp_rank": dp_rank,
+            "step": 1,
+            "dataloader_batch_size": 2,
+            "global_slots": slots,
+            "sample_sha256": [sample_hashes[slot] for slot in slots],
+        }
+        (contract_path / f"rank-{global_rank}.jsonl").write_text(
+            json.dumps(record) + "\n", encoding="utf-8"
+        )
+
+    summary = validate_runtime_input_contract(
+        contract_directory=contract_path,
+        plan=plan,
+        steps=1,
+        global_batch_size=4,
+        training_local_batch_size=2,
+        dp_world_size=2,
+        tensor_parallel_degree=2,
+        pipeline_parallel_degree=1,
+        node_rank=0,
+        num_processes_per_node=4,
+    )
+
+    assert summary["valid"]
+    assert summary["mapping"] == INPUT_MAPPING
+    assert summary["token_plan_step_series_sha256"] == step_series_digest(
+        plan.step_sha256
+    )
+
+
 def test_endpoint_uses_exported_visible_devices(monkeypatch: pytest.MonkeyPatch) -> None:
     endpoint = TrainingEndpoint(
         "npu", "npu", "0,1,2,3,4,5,6,7", ParallelTopology("single", 1)
@@ -224,6 +365,15 @@ def test_compare_writes_html_and_json_report(tmp_path: Path) -> None:
         "topology": {
             "name": topology.name,
             "world_size": topology.world_size,
+            "input_contract": {
+                "valid": True,
+                "mapping": INPUT_MAPPING,
+                "steps": 4,
+                "global_batch_size": 2,
+                "training_local_batch_size": 2,
+                "dp_world_size": 1,
+                "token_plan_step_series_sha256": "token-plan",
+            },
         },
     }
     for repeat in (1, 2):
@@ -286,3 +436,110 @@ def test_legacy_scenario_name_maps_to_current_storage_name() -> None:
     assert compact_scenario_name(legacy) == (
         "migration-cuda-npu-single-bf16-random-s1000-b16-seq128-seed61"
     )
+
+
+def test_self_consistency_suite_reuses_reference_and_reports_partial_results(
+    tmp_path: Path,
+) -> None:
+    topologies = {
+        "single": ParallelTopology("single", 1),
+        "ddp8": ParallelTopology(
+            "ddp8", 8, data_parallel_replicate_degree=8
+        ),
+        "fsdp8": ParallelTopology("fsdp8", 8, data_parallel_shard_degree=8),
+    }
+    reference = TrainingEndpoint(
+        "single", "cuda", "0,1,2,3,4,5,6,7", topologies["single"], repeats=2
+    )
+    candidate = TrainingEndpoint(
+        "distributed", "cuda", "0,1,2,3,4,5,6,7", topologies["ddp8"], repeats=2
+    )
+    standard = PrecisionStandard(
+        self_consistency=SelfConsistencyStandard(
+            randomness_impacted=True,
+            migration_fallback=MigrationStandard(
+                minimum_observations=4,
+                required_reference_repeats=2,
+                required_candidate_repeats=2,
+            ),
+        )
+    )
+    config = FormalExperimentConfig(
+        name="suite",
+        kind="self_consistency",
+        reference=reference,
+        candidate=candidate,
+        training=FormalTrainingConfig(steps=4, global_batch_size=2),
+        standard=standard,
+        artifact_root="artifacts",
+        report_root="reports",
+    )
+    from tests.glm5_2_precision.workflow import _artifact_directory
+
+    assert config.storage_name == (
+        "self-cuda-bf16-random-s4-b2-seq128-seed61"
+    )
+    assert _artifact_directory(
+        tmp_path, config, "candidate", config.candidate, 1
+    ).name == "ddp8-r1"
+
+    base_contract = {
+        "scenario_name": config.storage_name,
+        "training": {**asdict(config.training), "converged_checkpoint": None},
+        "checkpoint_sha256": "checkpoint",
+        "data_sha256": {"data": "digest"},
+    }
+    input_contract = {
+        "valid": True,
+        "mapping": INPUT_MAPPING,
+        "steps": 4,
+        "global_batch_size": 2,
+        "training_local_batch_size": 2,
+        "token_plan_step_series_sha256": "token-plan",
+    }
+    for repeat in (1, 2):
+        PrecisionArtifactWriter(
+            _artifact_directory(
+                tmp_path, config, "reference", config.reference, repeat
+            )
+        ).write(
+            metadata={"role": "reference", "repeat": repeat},
+            training_contract={
+                **base_contract,
+                "topology": {
+                    **asdict(topologies["single"]),
+                    "input_contract": {**input_contract, "dp_world_size": 1},
+                },
+            },
+            metrics=_metrics(),
+        )
+        PrecisionArtifactWriter(
+            _artifact_directory(
+                tmp_path, config, "candidate", config.candidate, repeat
+            )
+        ).write(
+            metadata={"role": "candidate", "repeat": repeat},
+            training_contract={
+                **base_contract,
+                "topology": {
+                    **asdict(topologies["ddp8"]),
+                    "input_contract": {**input_contract, "dp_world_size": 8},
+                },
+            },
+            metrics=_metrics(loss_offset=0.001),
+        )
+
+    report = compare_suite(
+        tmp_path,
+        config,
+        topologies=topologies,
+        selected=("ddp8", "fsdp8"),
+        precision=None,
+        require_all=False,
+    )
+    text = report.read_text(encoding="utf-8")
+    assert "ddp8" in text
+    assert "fsdp8" in text
+    assert "NOT RUN" in text
+    assert "PARTIAL PASS" in text
+    assert (report.parent / "ddp8" / "precision_report.html").is_file()

@@ -18,13 +18,25 @@ from tests.glm5_2_precision.workflow import (  # noqa: E402
     FormalExperimentConfig,
     FormalTrainingConfig,
     TrainingEndpoint,
-    run_formal_cli,
     standard_topologies,
 )
+from tests.glm5_2_precision.self_consistency_suite import run_suite_cli  # noqa: E402
 
 
 TOPOLOGIES = standard_topologies()
 ALL_DEVICES = "0,1,2,3,4,5,6,7"
+CANDIDATE_TOPOLOGIES = (
+    "ddp8",
+    "fsdp8",
+    "tp8",
+    "pp8",
+    "ep8",
+    "fsdp2-tp4",
+    "fsdp4-tp2",
+    "fsdp2-pp4",
+    "fsdp2-tp2-pp2",
+    "fsdp2-tp4-ep8",
+)
 
 CONFIG = FormalExperimentConfig(
     name="glm5-2-distributed-self-consistency",
@@ -75,4 +87,9 @@ CONFIG = FormalExperimentConfig(
 
 
 if __name__ == "__main__":
-    run_formal_cli(CONFIG, __file__, topologies=TOPOLOGIES)
+    run_suite_cli(
+        CONFIG,
+        __file__,
+        topologies=TOPOLOGIES,
+        candidate_topologies=CANDIDATE_TOPOLOGIES,
+    )

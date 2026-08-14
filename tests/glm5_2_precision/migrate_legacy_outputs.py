@@ -81,10 +81,7 @@ def compact_scenario_name(legacy_name: str) -> str:
             f"{values['candidate_device']}-{topology}"
         )
     else:
-        experiment = (
-            f"self-{values['reference_device']}-"
-            f"{values['reference_topology']}-{values['candidate_topology']}"
-        )
+        experiment = f"self-{values['reference_device']}"
     precision = {
         "mixed-bfloat16": "bf16",
         "mixed-float32": "fp32",
@@ -99,11 +96,17 @@ def compact_scenario_name(legacy_name: str) -> str:
     )
 
 
-def _compact_capture_name(name: str) -> str:
+def _compact_capture_name(
+    name: str,
+    *,
+    candidate_topology: str | None = None,
+) -> str:
     match = CAPTURE_NAME.fullmatch(name)
     if match is None:
         raise ValueError(f"unrecognized legacy capture name: {name}")
-    return f"{match.group('role')}-r{match.group('repeat')}"
+    role = match.group("role")
+    prefix = candidate_topology if role == "candidate" and candidate_topology else role
+    return f"{prefix}-r{match.group('repeat')}"
 
 
 def _merge_path(source: Path, destination: Path, *, apply: bool) -> None:
@@ -134,15 +137,26 @@ def _clean_artifact(capture: Path, *, apply: bool) -> None:
     if not all((capture / name).is_file() for name in required):
         raise FileNotFoundError(f"incomplete precision artifact: {capture}")
     manifest = _read_json(manifest_path)
-    manifest["files"] = {
-        name: _digest(capture / name)
-        for name in ("metrics.jsonl", "training_contract.json")
-    }
+    keep = ("metrics.jsonl", "training_contract.json")
+    manifest["files"] = {name: _digest(capture / name) for name in keep}
     if apply:
         _write_json(manifest_path, manifest)
         attachments = capture / "attachments"
         if attachments.exists():
-            _remove_tree(attachments)
+            # Legacy runtime logs and raw metric copies are redundant. Current
+            # compact input-contract summaries are part of the formal artifact.
+            for child in attachments.iterdir():
+                if child.name != "input_contract.json":
+                    _remove_tree(child) if child.is_dir() else child.unlink()
+            summary = attachments / "input_contract.json"
+            if summary.is_file():
+                manifest = _read_json(manifest_path)
+                manifest["files"]["attachments/input_contract.json"] = _digest(
+                    summary
+                )
+                _write_json(manifest_path, manifest)
+            elif attachments.exists() and not any(attachments.iterdir()):
+                attachments.rmdir()
 
 
 def repair_artifact_manifests(root: Path, *, apply: bool) -> int:
@@ -158,9 +172,11 @@ def repair_artifact_manifests(root: Path, *, apply: bool) -> int:
         if not all((capture / name).is_file() for name in required):
             continue
         manifest = _read_json(manifest_path)
-        manifest["files"] = {
-            name: _digest(capture / name) for name in required
-        }
+        files = {name: _digest(capture / name) for name in required}
+        input_contract = capture / "attachments" / "input_contract.json"
+        if input_contract.is_file():
+            files["attachments/input_contract.json"] = _digest(input_contract)
+        manifest["files"] = files
         print(f"{'REPAIR' if apply else 'WOULD REPAIR'} {manifest_path}")
         if apply:
             _write_json(manifest_path, manifest)
@@ -173,10 +189,14 @@ def _migrate_artifact_scenario(
     destination: Path,
     *,
     apply: bool,
+    candidate_topology: str | None,
 ) -> None:
     captures = [item for item in source.iterdir() if item.is_dir()]
     for capture in captures:
-        compact_name = _compact_capture_name(capture.name)
+        compact_name = _compact_capture_name(
+            capture.name,
+            candidate_topology=candidate_topology,
+        )
         _clean_artifact(capture, apply=apply)
         _merge_path(capture, destination / compact_name, apply=apply)
     if apply:
@@ -214,11 +234,15 @@ def _migrate_regular_scenario(
     destination: Path,
     *,
     apply: bool,
+    candidate_topology: str | None,
 ) -> None:
     for item in list(source.iterdir()):
         target_name = item.name
         if item.is_dir() and CAPTURE_NAME.fullmatch(item.name):
-            target_name = _compact_capture_name(item.name)
+            target_name = _compact_capture_name(
+                item.name,
+                candidate_topology=candidate_topology,
+            )
         _merge_path(item, destination / target_name, apply=apply)
     if apply:
         source.rmdir()
@@ -233,16 +257,34 @@ def migrate(root: Path, *, apply: bool) -> list[tuple[Path, Path]]:
         for source in list(output_root.iterdir()):
             if not source.is_dir() or LEGACY_SCENARIO.fullmatch(source.name) is None:
                 continue
+            match = LEGACY_SCENARIO.fullmatch(source.name)
+            assert match is not None
+            values = match.groupdict()
+            candidate_topology = (
+                values["candidate_topology"]
+                if values["kind"] == "self-consistency"
+                else None
+            )
             destination = output_root / compact_scenario_name(source.name)
             changes.append((source, destination))
             print(f"{'MIGRATE' if apply else 'WOULD MIGRATE'} {source}")
             print(f"  -> {destination}")
             if root_name == "precision_artifacts":
-                _migrate_artifact_scenario(source, destination, apply=apply)
+                _migrate_artifact_scenario(
+                    source,
+                    destination,
+                    apply=apply,
+                    candidate_topology=candidate_topology,
+                )
             elif root_name == "precision_fixtures":
                 _migrate_fixture_scenario(source, destination, apply=apply)
             else:
-                _migrate_regular_scenario(source, destination, apply=apply)
+                _migrate_regular_scenario(
+                    source,
+                    destination,
+                    apply=apply,
+                    candidate_topology=candidate_topology,
+                )
     return changes
 
 
