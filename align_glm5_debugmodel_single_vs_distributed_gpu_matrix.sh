@@ -11,9 +11,34 @@ REFERENCE_GPU=${REFERENCE_GPU:-${GPU_DEVICES%%,*}}
 PRECISION=${PRECISION:-bf16}
 STEPS=${STEPS:-800}
 FORCE=${FORCE:-0}
+RESUME=${RESUME:-1}
+RESET=${RESET:-0}
 CONTINUE_ON_ERROR=${CONTINUE_ON_ERROR:-1}
 TOPOLOGIES=${TOPOLOGIES:-"ddp4 hsdp2x2 tp4 pp4 fsdp2-tp2 pp2-fsdp2 pp2-tp2 fsdp4-ep2 fsdp4-ep4 fsdp2-tp2-ep2 pp2-fsdp2-ep2 pp2-tp2-ep2"}
 SHARED_REFERENCE_GROUP=${SHARED_REFERENCE_GROUP:-four-gpu-matrix}
+
+if [[ "$FORCE" != "0" && "$FORCE" != "1" ]]; then
+    echo "FORCE must be 0 or 1; got: $FORCE" >&2
+    exit 2
+fi
+if [[ "$RESUME" != "0" && "$RESUME" != "1" ]]; then
+    echo "RESUME must be 0 or 1; got: $RESUME" >&2
+    exit 2
+fi
+if [[ "$RESET" != "0" && "$RESET" != "1" ]]; then
+    echo "RESET must be 0 or 1; got: $RESET" >&2
+    exit 2
+fi
+if [[ "$FORCE" == "1" ]]; then
+    echo "NOTE: FORCE=1 is ignored by the resumable matrix runner; use RESET=1 to rerun completed work." >&2
+fi
+if [[ "$RESET" == "1" ]]; then
+    WORKER_FORCE=1
+    WORKER_RESUME=0
+else
+    WORKER_FORCE=0
+    WORKER_RESUME=$RESUME
+fi
 
 if [[ "$CONTINUE_ON_ERROR" != "0" && "$CONTINUE_ON_ERROR" != "1" ]]; then
     echo "CONTINUE_ON_ERROR must be 0 or 1; got: $CONTINUE_ON_ERROR" >&2
@@ -34,7 +59,8 @@ run_worker() {
         REFERENCE_GPU="$REFERENCE_GPU" \
         PRECISION="$PRECISION" \
         STEPS="$STEPS" \
-        FORCE="$FORCE" \
+        FORCE="$WORKER_FORCE" \
+        RESUME="$WORKER_RESUME" \
         GLM5_ALIGNMENT_SHARED_REFERENCE_GROUP="$SHARED_REFERENCE_GROUP" \
         "$SCRIPT_DIR/align_glm5_debugmodel_single_vs_distributed_gpu.sh" "$action"
 }

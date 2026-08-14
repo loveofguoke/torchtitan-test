@@ -17,7 +17,11 @@ import subprocess
 import sys
 from typing import Any, Literal, Sequence
 
-from .artifacts import PrecisionArtifactWriter, read_captured_metrics
+from .artifacts import (
+    PrecisionArtifactReader,
+    PrecisionArtifactWriter,
+    read_captured_metrics,
+)
 from .standards import PrecisionStandard
 
 
@@ -437,6 +441,95 @@ def _seed_checkpoint_path(fixture_directory: Path) -> Path:
     return checkpoint_path
 
 
+def _validate_fixture_for_resume(
+    root: Path,
+    config: FormalExperimentConfig,
+    fixture_directory: Path,
+) -> dict[str, Any]:
+    manifest_path = fixture_directory / "fixture.json"
+    if not manifest_path.is_file():
+        raise RuntimeError(f"fixture manifest not found: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    expected = {
+        "schema": "torchtitan.glm5_2.precision_fixture",
+        "schema_version": 1,
+        "scenario_name": config.scenario_name,
+        "checkpoint_kind": config.training.checkpoint_kind,
+        "training": _normalized_training(config.training),
+    }
+    for name, value in expected.items():
+        if manifest.get(name) != value:
+            raise RuntimeError(
+                f"fixture {name} mismatch: {manifest.get(name)!r} != {value!r}"
+            )
+    observed_data = {
+        path: _directory_digest(root / path) for path in config.training.data_paths
+    }
+    if manifest.get("data_sha256") != observed_data:
+        raise RuntimeError("fixture source data checksum mismatch")
+    _seed_checkpoint_path(fixture_directory)
+    fixed_relative = manifest.get("fixed_batches_relative_path")
+    fixed_digest = manifest.get("fixed_batches_sha256")
+    if config.training.fixed_global_batches:
+        if not fixed_relative or not fixed_digest:
+            raise RuntimeError("fixture fixed global batches are missing")
+        fixed_path = fixture_directory / str(fixed_relative)
+        if not fixed_path.is_file():
+            raise RuntimeError(f"fixture fixed global batches not found: {fixed_path}")
+        if _directory_digest(fixed_path) != fixed_digest:
+            raise RuntimeError("fixture fixed global batch checksum mismatch")
+    return manifest
+
+
+def _training_contract(
+    config: FormalExperimentConfig,
+    endpoint: TrainingEndpoint,
+    fixture_manifest: dict[str, Any],
+) -> dict[str, Any]:
+    value = {
+        "scenario_name": config.scenario_name,
+        "training": _normalized_training(config.training),
+        "checkpoint_sha256": fixture_manifest["checkpoint_sha256"],
+        "data_sha256": fixture_manifest["data_sha256"],
+        "fixed_batches_sha256": fixture_manifest.get("fixed_batches_sha256"),
+        "topology": asdict(endpoint.topology),
+    }
+    return json.loads(json.dumps(value))
+
+
+def _validate_capture_for_resume(
+    artifact_directory: Path,
+    *,
+    config: FormalExperimentConfig,
+    endpoint: TrainingEndpoint,
+    role: Literal["reference", "candidate"],
+    repeat: int,
+    fixture_manifest: dict[str, Any],
+) -> None:
+    artifact = PrecisionArtifactReader(artifact_directory)
+    expected_metadata = {
+        "role": role,
+        "repeat": repeat,
+        "endpoint_name": endpoint.name,
+        "device_type": endpoint.device_type,
+    }
+    for name, value in expected_metadata.items():
+        if artifact.metadata.get(name) != value:
+            raise RuntimeError(
+                f"capture {name} mismatch: {artifact.metadata.get(name)!r} != {value!r}"
+            )
+    expected_contract = _training_contract(config, endpoint, fixture_manifest)
+    if artifact.training_contract != expected_contract:
+        raise RuntimeError("capture training contract mismatch")
+    expected_steps = list(range(1, config.training.steps + 1))
+    observed_steps = [metric.step for metric in artifact.metrics]
+    if observed_steps != expected_steps:
+        raise RuntimeError(
+            f"capture steps are incomplete: expected 1..{config.training.steps}, "
+            f"observed {len(observed_steps)} steps"
+        )
+
+
 def _base_training_args(
     config: FormalTrainingConfig,
     *,
@@ -468,7 +561,9 @@ def _normalized_training(config: FormalTrainingConfig) -> dict[str, Any]:
     # The source location is not part of the experiment identity. Captures load
     # the synchronized fixture checkpoint and compare its digest instead.
     value["converged_checkpoint"] = None
-    return value
+    # Normalize tuples and other JSON-compatible containers exactly as they are
+    # represented after reading a persisted fixture or artifact contract.
+    return json.loads(json.dumps(value))
 
 
 def _torchrun_command(
@@ -564,14 +659,29 @@ def prepare_fixture(
     config: FormalExperimentConfig,
     *,
     force: bool,
+    resume: bool = False,
 ) -> Path:
     fixture_directory = _fixture_directory(root, config)
     if fixture_directory.exists():
-        if not force:
+        if resume:
+            try:
+                _validate_fixture_for_resume(root, config, fixture_directory)
+            except Exception as error:
+                print(
+                    "Existing fixture is incomplete or invalid; rebuilding it: "
+                    f"{error}"
+                )
+                shutil.rmtree(fixture_directory)
+            else:
+                print(f"Skipping completed fixture: {fixture_directory}")
+                return fixture_directory
+        elif not force:
             raise FileExistsError(
-                f"fixture already exists; pass --force to replace it: {fixture_directory}"
+                "fixture already exists; pass --resume to reuse it or --force to "
+                f"replace it: {fixture_directory}"
             )
-        shutil.rmtree(fixture_directory)
+        else:
+            shutil.rmtree(fixture_directory)
     fixture_directory.mkdir(parents=True)
 
     data_digests = {
@@ -684,19 +794,45 @@ def capture_endpoint(
     role: Literal["reference", "candidate"],
     repeat: int,
     force: bool,
+    resume: bool = False,
 ) -> Path | None:
     endpoint = config.reference if role == "reference" else config.candidate
     if not 1 <= repeat <= endpoint.repeats:
         raise ValueError(f"repeat must be in [1, {endpoint.repeats}]")
-    checkpoint_path = _seed_checkpoint_path(_fixture_directory(root, config))
+    fixture_directory = _fixture_directory(root, config)
+    checkpoint_path = _seed_checkpoint_path(fixture_directory)
+    fixture_manifest = json.loads(
+        (fixture_directory / "fixture.json").read_text(encoding="utf-8")
+    )
     artifact_directory = _artifact_directory(root, config, role, endpoint, repeat)
-    if artifact_directory.exists() and not force:
-        raise FileExistsError(
-            f"capture already exists; pass --force to replace it: {artifact_directory}"
-        )
+    if artifact_directory.exists():
+        if resume:
+            try:
+                _validate_capture_for_resume(
+                    artifact_directory,
+                    config=config,
+                    endpoint=endpoint,
+                    role=role,
+                    repeat=repeat,
+                    fixture_manifest=fixture_manifest,
+                )
+            except Exception as error:
+                print(
+                    "Existing capture is incomplete or invalid; rerunning it: "
+                    f"{error}"
+                )
+                shutil.rmtree(artifact_directory)
+            else:
+                print(f"Skipping completed capture: {artifact_directory}")
+                return artifact_directory
+        elif not force:
+            raise FileExistsError(
+                "capture already exists; pass --resume to reuse it or --force to "
+                f"replace it: {artifact_directory}"
+            )
     run_directory = _run_directory(root, config, role, endpoint, repeat)
     if run_directory.exists():
-        if not force:
+        if not force and not resume:
             raise FileExistsError(f"run output already exists: {run_directory}")
         shutil.rmtree(run_directory)
     run_directory.mkdir(parents=True)
@@ -757,17 +893,7 @@ def capture_endpoint(
         raise RuntimeError(
             f"captured {len(metrics)} metric steps, expected {config.training.steps}"
         )
-    fixture_manifest = json.loads(
-        (_fixture_directory(root, config) / "fixture.json").read_text(encoding="utf-8")
-    )
-    training_contract = {
-        "scenario_name": config.scenario_name,
-        "training": _normalized_training(config.training),
-        "checkpoint_sha256": fixture_manifest["checkpoint_sha256"],
-        "data_sha256": fixture_manifest["data_sha256"],
-        "fixed_batches_sha256": fixture_manifest.get("fixed_batches_sha256"),
-        "topology": asdict(endpoint.topology),
-    }
+    training_contract = _training_contract(config, endpoint, fixture_manifest)
     metadata = {
         "experiment_kind": config.kind,
         "role": role,
@@ -851,7 +977,15 @@ def run_formal_cli(
         help="override the training and mixed-precision dtypes",
     )
     parser.add_argument("--force", action="store_true")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="reuse validated completed work and rerun only incomplete captures",
+    )
     args = parser.parse_args()
+
+    if args.force and args.resume:
+        parser.error("--force and --resume are mutually exclusive")
 
     if args.list_topologies:
         for name, topology in topology_registry.items():
@@ -907,7 +1041,7 @@ def run_formal_cli(
     root = _root(script_path)
 
     if args.data:
-        path = prepare_fixture(root, config, force=args.force)
+        path = prepare_fixture(root, config, force=args.force, resume=args.resume)
         print(f"Prepared fixture: {path}")
     elif args.capture:
         path = capture_endpoint(
@@ -916,6 +1050,7 @@ def run_formal_cli(
             role=args.capture,
             repeat=args.repeat,
             force=args.force,
+            resume=args.resume,
         )
         if path is None:
             print("Capture completed; this node does not own the metrics artifact.")

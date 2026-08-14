@@ -13,6 +13,7 @@ PRECISION=${PRECISION:-bf16}
 STEPS=${STEPS:-1000}
 TOPOLOGY=${TOPOLOGY:-fsdp4}
 FORCE=${FORCE:-0}
+RESUME=${RESUME:-0}
 
 BENCHMARK=tests/glm5_2_precision/single_vs_distributed_gpu_benchmark.py
 COMMON_ARGS=(
@@ -41,6 +42,18 @@ if [[ "$FORCE" == "1" ]]; then
     COMMON_ARGS+=(--force)
 elif [[ "$FORCE" != "0" ]]; then
     echo "FORCE must be 0 or 1; got: $FORCE" >&2
+    exit 2
+fi
+
+if [[ "$RESUME" == "1" ]]; then
+    COMMON_ARGS+=(--resume)
+elif [[ "$RESUME" != "0" ]]; then
+    echo "RESUME must be 0 or 1; got: $RESUME" >&2
+    exit 2
+fi
+
+if [[ "$FORCE" == "1" && "$RESUME" == "1" ]]; then
+    echo "FORCE and RESUME cannot both be 1" >&2
     exit 2
 fi
 

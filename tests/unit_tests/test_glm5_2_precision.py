@@ -289,3 +289,147 @@ def test_matrix_candidates_share_reference_but_keep_separate_reports(
     )
     assert ddp_config.report_subdirectory == "ddp4"
     assert fsdp_config.report_subdirectory == "fsdp4"
+
+
+def _resumable_config(root: Path) -> FormalExperimentConfig:
+    (root / "data").mkdir()
+    (root / "data" / "sample.txt").write_text("data\n", encoding="utf-8")
+    (root / "tokenizer").mkdir()
+    (root / "tokenizer" / "tokenizer.txt").write_text(
+        "tokenizer\n", encoding="utf-8"
+    )
+    topology = ParallelTopology("single", 1)
+    endpoint = TrainingEndpoint("endpoint", "cuda", "0", topology, repeats=2)
+    return FormalExperimentConfig(
+        name="resume",
+        kind="self_consistency",
+        reference=endpoint,
+        candidate=endpoint,
+        training=FormalTrainingConfig(
+            steps=4,
+            global_batch_size=2,
+            data_paths=("data", "tokenizer"),
+        ),
+    )
+
+
+def _write_resumable_fixture(root: Path, config: FormalExperimentConfig) -> Path:
+    from tests.glm5_2_precision.workflow import (
+        _directory_digest,
+        _fixture_directory,
+        _normalized_training,
+    )
+
+    fixture = _fixture_directory(root, config)
+    checkpoint = fixture / "checkpoint"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "model.bin").write_bytes(b"checkpoint")
+    manifest = {
+        "schema": "torchtitan.glm5_2.precision_fixture",
+        "schema_version": 1,
+        "scenario_name": config.scenario_name,
+        "checkpoint_kind": config.training.checkpoint_kind,
+        "checkpoint_relative_path": "checkpoint",
+        "checkpoint_sha256": _directory_digest(checkpoint),
+        "data_sha256": {
+            path: _directory_digest(root / path)
+            for path in config.training.data_paths
+        },
+        "fixed_batches_relative_path": None,
+        "fixed_batches_sha256": None,
+        "training": _normalized_training(config.training),
+    }
+    (fixture / "fixture.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    return fixture
+
+
+def test_resume_skips_valid_fixture_and_capture(tmp_path: Path) -> None:
+    from tests.glm5_2_precision.workflow import (
+        _artifact_directory,
+        _training_contract,
+        capture_endpoint,
+        prepare_fixture,
+    )
+
+    config = _resumable_config(tmp_path)
+    fixture = _write_resumable_fixture(tmp_path, config)
+    manifest = json.loads((fixture / "fixture.json").read_text(encoding="utf-8"))
+    artifact_path = _artifact_directory(
+        tmp_path, config, "reference", config.reference, 1
+    )
+    PrecisionArtifactWriter(artifact_path).write(
+        metadata={
+            "role": "reference",
+            "repeat": 1,
+            "endpoint_name": config.reference.name,
+            "device_type": config.reference.device_type,
+        },
+        training_contract=_training_contract(config, config.reference, manifest),
+        metrics=_metrics(),
+    )
+
+    assert prepare_fixture(tmp_path, config, force=False, resume=True) == fixture
+    assert capture_endpoint(
+        tmp_path,
+        config,
+        role="reference",
+        repeat=1,
+        force=False,
+        resume=True,
+    ) == artifact_path
+
+
+def test_resume_replaces_incomplete_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.glm5_2_precision import workflow
+
+    config = _resumable_config(tmp_path)
+    _write_resumable_fixture(tmp_path, config)
+    artifact_path = workflow._artifact_directory(
+        tmp_path, config, "candidate", config.candidate, 1
+    )
+    artifact_path.mkdir(parents=True)
+    (artifact_path / "partial.txt").write_text("partial", encoding="utf-8")
+    run_path = workflow._run_directory(
+        tmp_path, config, "candidate", config.candidate, 1
+    )
+    run_path.mkdir(parents=True)
+    (run_path / "stale.txt").write_text("stale", encoding="utf-8")
+
+    def fake_run_process(command, *, root, environment, log_path) -> None:
+        del command, root
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("completed\n", encoding="utf-8")
+        metrics_path = Path(environment["GLM5_PRECISION_METRICS_PATH"])
+        with metrics_path.open("w", encoding="utf-8") as stream:
+            for metric in _metrics():
+                stream.write(
+                    json.dumps(
+                        {
+                            "step": metric.step,
+                            "metrics": {
+                                "loss_metrics/global_avg_loss": metric.loss,
+                                "loss_metrics/global_max_loss": metric.global_max_loss,
+                                "grad_norm": metric.grad_norm,
+                            },
+                        }
+                    )
+                    + "\n"
+                )
+
+    monkeypatch.setattr(workflow, "_run_process", fake_run_process)
+    result = workflow.capture_endpoint(
+        tmp_path,
+        config,
+        role="candidate",
+        repeat=1,
+        force=False,
+        resume=True,
+    )
+
+    assert result == artifact_path
+    assert PrecisionArtifactReader(artifact_path).metrics[-1].step == 4
+    assert not (run_path / "stale.txt").exists()
