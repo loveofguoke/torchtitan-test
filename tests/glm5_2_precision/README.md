@@ -185,6 +185,11 @@ Run candidates independently so completed work is preserved and can be
 compared immediately:
 
 ```bash
+export CUDA_VISIBLE_DEVICES=0,1
+python tests/glm5_2_precision/self_consistency_benchmark.py \
+  --capture candidate --topology ddp2
+
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 python tests/glm5_2_precision/self_consistency_benchmark.py \
   --capture candidate --topology ddp8
 
@@ -201,9 +206,11 @@ Or run every configured candidate sequentially:
 python tests/glm5_2_precision/self_consistency_benchmark.py --capture-all
 ```
 
-Every candidate consumes all eight visible GPUs, so `--capture-all` runs them
-sequentially rather than concurrently. It skips completed topology/repeat
-artifacts, making the command safe to resume after an interruption.
+Candidates run sequentially rather than concurrently. `--capture-all` requires
+enough visible devices for the largest selected topology. Individual captures
+only validate the endpoint being executed, so a single-card reference needs one
+visible device and `ddp2` needs two. Completed topology/repeat artifacts are
+skipped, making the command safe to resume after an interruption.
 
 Compare every completed candidate against the shared single-card reference:
 
@@ -218,6 +225,7 @@ topologies. Use `--topologies ddp8,fsdp8,tp8` to capture or compare a subset.
 The complete built-in candidate list is:
 
 ```text
+ddp2
 ddp8
 fsdp8
 tp8

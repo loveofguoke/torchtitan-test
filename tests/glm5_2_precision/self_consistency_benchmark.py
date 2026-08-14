@@ -26,6 +26,7 @@ from tests.glm5_2_precision.self_consistency_suite import run_suite_cli  # noqa:
 TOPOLOGIES = standard_topologies()
 ALL_DEVICES = "0,1,2,3,4,5,6,7"
 CANDIDATE_TOPOLOGIES = (
+    "ddp2",
     "ddp8",
     "fsdp8",
     "tp8",

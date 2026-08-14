@@ -53,11 +53,14 @@ def _suite_config(
     topology: ParallelTopology,
     *,
     precision: str | None,
+    environment_role: str | None = None,
 ) -> FormalExperimentConfig:
-    reference = _endpoint_from_process_environment(base.reference)
-    candidate = _endpoint_from_process_environment(
-        replace(base.candidate, topology=topology)
-    )
+    reference = base.reference
+    candidate = replace(base.candidate, topology=topology)
+    if environment_role == "reference":
+        reference = _endpoint_from_process_environment(reference)
+    elif environment_role == "candidate":
+        candidate = _endpoint_from_process_environment(candidate)
     return replace(
         base,
         reference=reference,
@@ -256,7 +259,17 @@ def run_suite_cli(
     if args.topology:
         selected = (args.topology,)
     root = _root(script_path)
-    first = _suite_config(base, topologies[selected[0]], precision=args.precision)
+    environment_role = None
+    if args.data or args.capture == "reference":
+        environment_role = "reference"
+    elif args.capture == "candidate" or args.capture_all:
+        environment_role = "candidate"
+    first = _suite_config(
+        base,
+        topologies[selected[0]],
+        precision=args.precision,
+        environment_role=environment_role,
+    )
 
     if args.data:
         endpoint = _fixture_endpoint_from_environment(first, "cuda")
@@ -284,7 +297,12 @@ def run_suite_cli(
         raise ValueError("--capture candidate requires one --topology")
     if args.capture == "candidate" or args.capture_all:
         for name in selected:
-            config = _suite_config(base, topologies[name], precision=args.precision)
+            config = _suite_config(
+                base,
+                topologies[name],
+                precision=args.precision,
+                environment_role="candidate",
+            )
             endpoint = config.candidate
             repeats = (
                 (args.repeat,) if args.repeat else range(1, endpoint.repeats + 1)

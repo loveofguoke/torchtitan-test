@@ -130,6 +130,9 @@ def standard_topologies() -> dict[str, ParallelTopology]:
 
     return {
         "single": ParallelTopology("single", 1),
+        "ddp2": ParallelTopology(
+            "ddp2", 2, data_parallel_replicate_degree=2
+        ),
         "ddp8": ParallelTopology(
             "ddp8", 8, data_parallel_replicate_degree=8
         ),
