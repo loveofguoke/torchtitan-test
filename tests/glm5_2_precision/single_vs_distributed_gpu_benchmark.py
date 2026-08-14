@@ -148,6 +148,9 @@ CONFIG = FormalExperimentConfig(
             required_candidate_repeats=2,
         )
     ),
+    shared_reference_group=(
+        os.environ.get("GLM5_ALIGNMENT_SHARED_REFERENCE_GROUP") or None
+    ),
 )
 
 

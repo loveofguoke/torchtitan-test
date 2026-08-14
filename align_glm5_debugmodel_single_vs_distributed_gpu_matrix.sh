@@ -13,6 +13,7 @@ STEPS=${STEPS:-800}
 FORCE=${FORCE:-0}
 CONTINUE_ON_ERROR=${CONTINUE_ON_ERROR:-1}
 TOPOLOGIES=${TOPOLOGIES:-"ddp4 hsdp2x2 tp4 pp4 fsdp2-tp2 pp2-fsdp2 pp2-tp2 fsdp4-ep2 fsdp4-ep4 fsdp2-tp2-ep2 pp2-fsdp2-ep2 pp2-tp2-ep2"}
+SHARED_REFERENCE_GROUP=${SHARED_REFERENCE_GROUP:-four-gpu-matrix}
 
 if [[ "$CONTINUE_ON_ERROR" != "0" && "$CONTINUE_ON_ERROR" != "1" ]]; then
     echo "CONTINUE_ON_ERROR must be 0 or 1; got: $CONTINUE_ON_ERROR" >&2
@@ -25,29 +26,76 @@ if [[ "${#TOPOLOGY_LIST[@]}" -eq 0 ]]; then
     exit 2
 fi
 
-failed=()
-for index in "${!TOPOLOGY_LIST[@]}"; do
-    topology=${TOPOLOGY_LIST[$index]}
-    echo
-    echo "===== [$((index + 1))/${#TOPOLOGY_LIST[@]}] single vs $topology ($PRECISION, $STEPS steps) ====="
-    if ! TOPOLOGY="$topology" \
+run_worker() {
+    local topology=$1
+    local action=$2
+    TOPOLOGY="$topology" \
         GPU_DEVICES="$GPU_DEVICES" \
         REFERENCE_GPU="$REFERENCE_GPU" \
         PRECISION="$PRECISION" \
         STEPS="$STEPS" \
         FORCE="$FORCE" \
-        "$SCRIPT_DIR/align_glm5_debugmodel_single_vs_distributed_gpu.sh" "$ACTION"; then
-        failed+=("$topology")
-        echo "FAILED: $topology" >&2
-        if [[ "$CONTINUE_ON_ERROR" == "0" ]]; then
-            exit 1
-        fi
-    fi
-done
+        GLM5_ALIGNMENT_SHARED_REFERENCE_GROUP="$SHARED_REFERENCE_GROUP" \
+        "$SCRIPT_DIR/align_glm5_debugmodel_single_vs_distributed_gpu.sh" "$action"
+}
 
-echo
-if [[ "${#failed[@]}" -gt 0 ]]; then
-    echo "Failed topologies: ${failed[*]}" >&2
-    exit 1
-fi
-echo "All topologies completed successfully."
+run_shared_stage() {
+    local action=$1
+    local topology=${TOPOLOGY_LIST[0]}
+    echo
+    echo "===== shared single stage: $action ($PRECISION, $STEPS steps) ====="
+    run_worker "$topology" "$action"
+}
+
+run_candidate_stage() {
+    local action=$1
+    local failed=()
+    local index topology
+    for index in "${!TOPOLOGY_LIST[@]}"; do
+        topology=${TOPOLOGY_LIST[$index]}
+        echo
+        echo "===== [$((index + 1))/${#TOPOLOGY_LIST[@]}] single vs $topology: $action ($PRECISION, $STEPS steps) ====="
+        if [[ "$action" == "all-candidates" ]]; then
+            if run_worker "$topology" capture-candidate; then
+                run_worker "$topology" compare || status=$?
+            else
+                status=$?
+            fi
+        else
+            run_worker "$topology" "$action" || status=$?
+        fi
+        if [[ "${status:-0}" -ne 0 ]]; then
+            failed+=("$topology")
+            echo "FAILED: $topology" >&2
+            if [[ "$CONTINUE_ON_ERROR" == "0" ]]; then
+                exit 1
+            fi
+        fi
+        unset status
+    done
+
+    echo
+    if [[ "${#failed[@]}" -gt 0 ]]; then
+        echo "Failed topologies: ${failed[*]}" >&2
+        return 1
+    fi
+    echo "All candidate topologies completed stage: $action"
+}
+
+case "$ACTION" in
+    prepare|capture-reference|capture-reference-1|capture-reference-2)
+        run_shared_stage "$ACTION"
+        ;;
+    capture-candidate|capture-candidate-1|capture-candidate-2|compare)
+        run_candidate_stage "$ACTION"
+        ;;
+    all)
+        run_shared_stage prepare
+        run_shared_stage capture-reference
+        run_candidate_stage all-candidates
+        ;;
+    *)
+        echo "Usage: $0 [all|prepare|capture-reference[-1|-2]|capture-candidate[-1|-2]|compare]" >&2
+        exit 2
+        ;;
+esac

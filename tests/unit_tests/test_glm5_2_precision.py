@@ -252,3 +252,40 @@ def test_compare_writes_html_and_json_report(tmp_path: Path) -> None:
         (report.parent / "precision_summary.json").read_text(encoding="utf-8")
     )
     assert summary["passed"]
+
+
+def test_matrix_candidates_share_reference_but_keep_separate_reports(
+    tmp_path: Path,
+) -> None:
+    from tests.glm5_2_precision.workflow import _artifact_directory
+
+    single = ParallelTopology("single", 1)
+    ddp4 = ParallelTopology("ddp4", 4, data_parallel_replicate_degree=4)
+    fsdp4 = ParallelTopology("fsdp4", 4, data_parallel_shard_degree=4)
+    reference = TrainingEndpoint("reference", "cuda", "0", single, repeats=2)
+    common = {
+        "name": "synthetic",
+        "kind": "self_consistency",
+        "reference": reference,
+        "shared_reference_group": "four-gpu-matrix",
+    }
+    ddp_config = FormalExperimentConfig(
+        **common,
+        candidate=TrainingEndpoint("candidate", "cuda", "0,1,2,3", ddp4),
+    )
+    fsdp_config = FormalExperimentConfig(
+        **common,
+        candidate=TrainingEndpoint("candidate", "cuda", "0,1,2,3", fsdp4),
+    )
+
+    assert ddp_config.scenario_name == fsdp_config.scenario_name
+    assert _artifact_directory(
+        tmp_path, ddp_config, "reference", reference, 1
+    ) == _artifact_directory(tmp_path, fsdp_config, "reference", reference, 1)
+    assert _artifact_directory(
+        tmp_path, ddp_config, "candidate", ddp_config.candidate, 1
+    ) != _artifact_directory(
+        tmp_path, fsdp_config, "candidate", fsdp_config.candidate, 1
+    )
+    assert ddp_config.report_subdirectory == "ddp4"
+    assert fsdp_config.report_subdirectory == "fsdp4"

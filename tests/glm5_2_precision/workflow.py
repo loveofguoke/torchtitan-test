@@ -278,6 +278,7 @@ class FormalExperimentConfig:
     report_root: str = "precision_reports"
     run_root: str = "precision_runs"
     exploratory_reports: tuple[str, ...] = ()
+    shared_reference_group: str | None = None
 
     def __post_init__(self) -> None:
         if self.kind == "migration":
@@ -288,10 +289,16 @@ class FormalExperimentConfig:
 
     @property
     def scenario_name(self) -> str:
-        sides = (
-            f"{self.reference.device_type}-{self.reference.topology.slug}-vs-"
-            f"{self.candidate.device_type}-{self.candidate.topology.slug}"
-        )
+        if self.shared_reference_group:
+            sides = (
+                f"{self.reference.device_type}-{self.reference.topology.slug}-vs-"
+                f"{self.candidate.device_type}-{self.shared_reference_group}"
+            )
+        else:
+            sides = (
+                f"{self.reference.device_type}-{self.reference.topology.slug}-vs-"
+                f"{self.candidate.device_type}-{self.candidate.topology.slug}"
+            )
         input_suffix = "-fixed-inputs" if self.training.fixed_global_batches else ""
         return _slug(
             f"{self.name}-{self.kind}-{sides}-{self.training.precision_name}-"
@@ -300,6 +307,12 @@ class FormalExperimentConfig:
             f"seq{self.training.sequence_length}-seed{self.training.seed}"
             f"{input_suffix}"
         )
+
+    @property
+    def report_subdirectory(self) -> str | None:
+        if self.shared_reference_group:
+            return self.candidate.topology.slug
+        return None
 
 
 def _directory_digest(path: Path) -> str:

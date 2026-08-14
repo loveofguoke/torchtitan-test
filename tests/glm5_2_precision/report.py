@@ -464,6 +464,8 @@ def compare_and_write_report(root: Path, config: Any) -> Path:
         )
 
     report_directory = root / config.report_root / config.scenario_name
+    if config.report_subdirectory:
+        report_directory /= config.report_subdirectory
     report_directory.mkdir(parents=True, exist_ok=True)
     report_path = report_directory / "precision_report.html"
     summary_path = report_directory / "precision_summary.json"
