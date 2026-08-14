@@ -17,7 +17,12 @@ import subprocess
 import sys
 from typing import Any, Literal, Sequence
 
-from .artifacts import PrecisionArtifactWriter, read_captured_metrics
+from .artifacts import (
+    PrecisionArtifactError,
+    PrecisionArtifactReader,
+    PrecisionArtifactWriter,
+    read_captured_metrics,
+)
 from .standards import PrecisionStandard
 from .token_data import (
     INPUT_MAPPING,
@@ -769,18 +774,30 @@ def capture_endpoint(
     checkpoint_path = _seed_checkpoint_path(fixture_directory)
     token_plan_path = _token_plan_path(fixture_directory)
     artifact_directory = _artifact_directory(root, config, role, endpoint, repeat)
-    if (
-        endpoint.node_rank == metrics_node_rank
-        and artifact_directory.exists()
-        and not force
-    ):
-        raise FileExistsError(
-            f"capture already exists; pass --force to replace it: {artifact_directory}"
-        )
+    artifact_complete = False
+    if endpoint.node_rank == metrics_node_rank and artifact_directory.exists():
+        try:
+            PrecisionArtifactReader(artifact_directory)
+            artifact_complete = True
+        except (KeyError, OSError, TypeError, ValueError, PrecisionArtifactError):
+            artifact_complete = False
+        if artifact_complete and not force:
+            print(f"Skip completed capture: {artifact_directory}")
+            return artifact_directory
     run_directory = _run_directory(root, config, role, endpoint, repeat)
     if run_directory.exists():
-        if not force:
+        retry_incomplete = (
+            not artifact_complete
+            and endpoint.num_nodes == 1
+            and endpoint.node_rank == metrics_node_rank
+        )
+        if not force and not retry_incomplete:
             raise FileExistsError(f"run output already exists: {run_directory}")
+        if retry_incomplete and not force:
+            print(
+                "Retry incomplete capture; replacing stale run output: "
+                f"{run_directory}"
+            )
         shutil.rmtree(run_directory)
     run_directory.mkdir(parents=True)
     metrics_path = run_directory / "raw_metrics.jsonl"
