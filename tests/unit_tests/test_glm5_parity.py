@@ -62,6 +62,7 @@ from tests.glm5_2_parity.artifacts import (
     runtime_metadata,
     tensor_digest,
 )
+from tests.glm5_2_parity.report_theme import PARITY_REPORT_CSS
 
 _TRANSFORMERS_IMPORT_ERROR: Exception | None = None
 try:
@@ -2876,7 +2877,7 @@ class ParityRecorder:
         return (
             f"<section id='{escape(section_id)}'>"
             f"<h2>{escape(self.title)}</h2>"
-            f"<p class='{failed_class}'>{escape(self.summary())}</p>"
+            f"<p class='section-summary {failed_class}'>{escape(self.summary())}</p>"
             "<p class='metric-note'>mean_rel is symmetric: "
             "2*|actual-expected|/(|actual|+|expected|). "
             "rel_l2 is ||actual-expected||2/||expected||2. "
@@ -2904,44 +2905,20 @@ class ParityRecorder:
         output_path = path or os.environ.get("GLM5_PARITY_REPORT")
         if output_path:
             if output_path.lower().endswith(".html"):
+                overall_class = "fail" if self.failed else "pass"
+                overall_label = "FAIL" if self.failed else "PASS"
                 html_report = (
-                    "<!doctype html><html><head><meta charset='utf-8'>"
-                    "<style>body{font-family:monospace}"
-                    ".column-controls{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}"
-                    ".column-controls button{cursor:pointer;padding:4px 10px;"
-                    "border:1px solid #94a3b8;border-radius:4px;background:#e2e8f0;"
-                    "color:#1e293b}"
-                    ".column-controls button[aria-pressed='true']{background:#2563eb;"
-                    "border-color:#1d4ed8;color:#fff}"
-                    ".parity-table-scroll{max-height:72vh;overflow:auto;border:1px solid #bbb}"
-                    ".parity-table{border-collapse:separate;border-spacing:0;width:100%}"
-                    ".parity-table th,.parity-table td{border:0;border-right:1px solid #bbb;"
-                    "border-bottom:1px solid #bbb;padding:4px 8px;text-align:left}"
-                    ".parity-table thead th{position:sticky;top:0;z-index:2;background:#f5f5f5}"
-                    ".parity-table td:first-child{white-space:nowrap}"
-                    ".hide-path .col-path,.hide-dtype .col-dtype,"
-                    ".hide-value .col-value,.hide-topk .col-topk,"
-                    ".hide-metric .col-metric,"
-                    ".hide-diagnostic .col-diagnostic{display:none}"
-                    ".expandable-cell{min-width:220px;max-width:520px}"
-                    ".expandable-cell summary{cursor:pointer;font-weight:bold}"
-                    ".expandable-cell pre{white-space:pre-wrap;overflow-wrap:anywhere;"
-                    "line-height:1.5;padding:10px;background:#f8fafc;border-radius:4px}"
-                    ".pass{color:#087f23;font-weight:bold}.fail{color:#b00020;font-weight:bold}"
-                    ".boundary{color:#b45309;font-weight:bold}"
-                    ".trace{color:#007c91;font-weight:bold}"
-                    ".explosion-row{background:#fff1d6}.axis{stroke:#333}.grid{stroke:#ddd}"
-                    ".error-chart svg{width:100%;max-width:920px}"
-                    ".error-chart-legend{display:grid;grid-template-columns:"
-                    "repeat(auto-fit,minmax(240px,1fr));gap:6px 18px;max-width:920px}"
-                    ".error-chart-legend-item{display:flex;align-items:center;gap:8px;"
-                    "min-width:0;overflow-wrap:anywhere}"
-                    ".error-chart-swatch{width:22px;height:3px;flex:0 0 22px}"
-                    ".topk-help{margin:14px 0;padding:8px 12px;border:1px solid #cbd5e1;"
-                    "background:#f8fafc}.topk-help li{margin:6px 0}"
-                    "</style></head><body>"
-                    f"<h1>GLM-5 parity report</h1>{self.html_section('result')}"
-                    "</body></html>\n"
+                    "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
+                    "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+                    f"<title>{escape(self.title)} parity report</title>"
+                    f"<style>{PARITY_REPORT_CSS}</style></head><body>"
+                    "<nav class='report-toc'><strong>Exploratory parity</strong>"
+                    "<a href='#summary'>Summary</a><a href='#result'>Results</a></nav>"
+                    "<main><section class='hero' id='summary'>"
+                    "<h1>Exploratory GLM 5.2 parity report</h1>"
+                    f"<p><span class='overall {overall_class}'>{overall_label}</span></p>"
+                    f"<p>{escape(self.title)}</p></section>"
+                    f"{self.html_section('result')}</main></body></html>\n"
                 )
                 with open(output_path, "w", encoding="utf-8") as file:
                     file.write(html_report)
@@ -2992,8 +2969,8 @@ class ParitySuiteReport:
                 (f"section-{index}-{safe_id or 'result'}", section)
             )
         links = "".join(
-            f"<li><a href='#{escape(anchor)}'>"
-            f"{escape(section.recorder.title)}</a></li>"
+            f"<a href='#{escape(anchor)}'>"
+            f"{escape(section.recorder.title)}</a>"
             for anchor, section in anchored_sections
         )
         sections = "".join(
@@ -3009,63 +2986,52 @@ class ParitySuiteReport:
             for category, name, value in self.configuration
         )
         configuration = (
-            "<details open><summary>Effective test configuration</summary>"
+            "<section id='configuration'><h2>Effective test configuration</h2>"
+            "<details open><summary>Show effective values</summary>"
             "<div class='configuration-scroll'><table class='configuration'><thead><tr>"
             "<th>category</th><th>parameter</th><th>effective value</th>"
             "</tr></thead><tbody>"
-            f"{configuration_rows}</tbody></table></div></details>"
+            f"{configuration_rows}</tbody></table></div></details></section>"
+        )
+        results = [
+            result
+            for section in self.sections
+            for result in section.recorder.results
+        ]
+        status_counts = {"PASS": 0, "BOUNDARY_PASS": 0, "FAIL": 0, "TRACE": 0}
+        for section in self.sections:
+            for result in section.recorder.results:
+                status_counts[section.recorder._status(result)] += 1
+        overall_class = "fail" if self.failed else "pass"
+        overall_label = "FAIL" if self.failed else "PASS"
+        summary_cards = "".join(
+            f"<div class='summary-card'><span>{escape(label)}</span>"
+            f"<b>{value}</b></div>"
+            for label, value in (
+                ("Sections", len(self.sections)),
+                ("Rows", len(results)),
+                ("Pass", status_counts["PASS"]),
+                ("Boundary pass", status_counts["BOUNDARY_PASS"]),
+                ("Fail", status_counts["FAIL"]),
+                ("Trace", status_counts["TRACE"]),
+            )
         )
         document = (
-            "<!doctype html><html><head><meta charset='utf-8'>"
-            "<style>"
-            "body{font-family:ui-monospace,Consolas,monospace;margin:24px}"
-            ".report-toc{padding:8px 16px;border:1px solid #bbb;background:#f8f8f8}"
-            ".report-toc h2{margin:4px 0 8px}.report-toc ul{display:flex;gap:18px;flex-wrap:wrap;list-style:none;padding:0}"
-            "section{margin:36px 0;scroll-margin-top:16px}table{border-collapse:collapse;width:100%}"
-            "th,td{border:1px solid #bbb;padding:4px 8px;text-align:left}"
-            "thead th{position:sticky;top:0;z-index:2;background:#f5f5f5}"
-            "details{margin:20px 0}summary{font-weight:bold;cursor:pointer}"
-            ".configuration{width:auto;min-width:720px;margin-top:10px}"
-            ".configuration-scroll{max-height:72vh;overflow:auto}"
-            ".column-controls{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}"
-            ".column-controls button{cursor:pointer;padding:4px 10px;"
-            "border:1px solid #94a3b8;border-radius:4px;background:#e2e8f0;"
-            "color:#1e293b}"
-            ".column-controls button[aria-pressed='true']{background:#2563eb;"
-            "border-color:#1d4ed8;color:#fff}"
-            ".parity-table-scroll{max-height:72vh;overflow:auto;border:1px solid #bbb}"
-            ".parity-table{border-collapse:separate;border-spacing:0;width:100%}"
-            ".parity-table th,.parity-table td{border:0;border-right:1px solid #bbb;"
-            "border-bottom:1px solid #bbb;padding:4px 8px;text-align:left}"
-            ".parity-table thead th{position:sticky;top:0;z-index:2;background:#f5f5f5}"
-            ".parity-table td:first-child{white-space:nowrap}"
-            ".hide-path .col-path,.hide-dtype .col-dtype,"
-            ".hide-value .col-value,.hide-topk .col-topk,"
-            ".hide-metric .col-metric,"
-            ".hide-diagnostic .col-diagnostic{display:none}"
-            ".expandable-cell{min-width:220px;max-width:520px}"
-            ".expandable-cell summary{cursor:pointer;font-weight:bold}"
-            ".expandable-cell pre{white-space:pre-wrap;overflow-wrap:anywhere;"
-            "line-height:1.5;padding:10px;background:#f8fafc;border-radius:4px}"
-            ".pass{color:#087f23;font-weight:bold}"
-            ".boundary{color:#b45309;font-weight:bold}"
-            ".fail{color:#b00020;font-weight:bold}"
-            ".trace{color:#007c91;font-weight:bold}"
-            ".explosion-row{background:#fff1d6}"
-            ".axis{stroke:#333}.grid{stroke:#ddd}"
-            ".error-chart{overflow-x:auto}.error-chart svg{width:100%;min-width:700px;max-width:920px}"
-            ".error-chart-legend{display:grid;grid-template-columns:"
-            "repeat(auto-fit,minmax(240px,1fr));gap:6px 18px;max-width:920px}"
-            ".error-chart-legend-item{display:flex;align-items:center;gap:8px;"
-            "min-width:0;overflow-wrap:anywhere}"
-            ".error-chart-swatch{width:22px;height:3px;flex:0 0 22px}"
-            ".topk-help{margin:14px 0;padding:8px 12px;border:1px solid #cbd5e1;"
-            "background:#f8fafc}.topk-help li{margin:6px 0}"
-            "</style></head><body>"
-            f"<h1>{escape(self.title)}</h1>"
+            "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+            f"<title>{escape(self.title)} parity report</title>"
+            f"<style>{PARITY_REPORT_CSS}</style></head><body>"
             "<nav id='report-contents' class='report-toc' aria-label='Report contents'>"
-            f"<h2>Contents</h2><ul>{links}</ul></nav>{configuration}"
-            f"{sections}</body></html>\n"
+            "<strong>Exploratory parity</strong><a href='#summary'>Summary</a>"
+            f"<a href='#configuration'>Configuration</a>{links}</nav><main>"
+            "<section class='hero' id='summary'>"
+            "<h1>Exploratory GLM 5.2 parity report</h1>"
+            f"<p><span class='overall {overall_class}'>{overall_label}</span></p>"
+            f"<p><b>Scenario:</b> {escape(self.title)}</p>"
+            "<p>This report traces component-level forward and backward behavior. "
+            "It is diagnostic and complements the formal multi-step loss and grad-norm benchmark.</p>"
+            f"<div class='summary-grid'>{summary_cards}</div></section>"
+            f"{configuration}{sections}</main></body></html>\n"
         )
         with open(path, "w", encoding="utf-8") as file:
             file.write(document)

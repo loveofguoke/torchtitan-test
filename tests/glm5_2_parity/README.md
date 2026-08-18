@@ -63,6 +63,11 @@ the optional execution-order tags are absent.
 HTML result tables keep their header visible inside a bounded scroll area.
 Buttons above each table independently fold path, dtype, value, metric, and
 diagnostic column groups without hiding the component or status columns.
+The exploratory report now follows the formal precision report's visual
+hierarchy: linked contents, a summary hero and status cards, card-style charts,
+consistent status colors, and sticky headers for every table. Trace
+content and top-k boundary diagnostics are unchanged. Existing captures can be
+reused; rerun only `compare` to render the updated HTML.
 
 ## Existing paired command
 
