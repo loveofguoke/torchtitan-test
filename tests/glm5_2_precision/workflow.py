@@ -252,6 +252,7 @@ class FormalTrainingConfig:
     data_paths: tuple[str, ...] = ("tests/assets/c4_test", "tests/assets/tokenizer")
     exploratory_steps: tuple[int, ...] = ()
     extra_args: tuple[str, ...] = ()
+    fixture_steps: int | None = None
 
     def __post_init__(self) -> None:
         positive = (
@@ -270,12 +271,20 @@ class FormalTrainingConfig:
             raise ValueError("exploratory_steps must be within the training step range")
         if tuple(sorted(set(self.exploratory_steps))) != self.exploratory_steps:
             raise ValueError("exploratory_steps must be sorted and unique")
+        if self.fixture_steps is not None and self.fixture_steps < self.steps:
+            raise ValueError("fixture_steps must be greater than or equal to steps")
 
     @property
     def precision_name(self) -> str:
         if self.training_dtype == "bfloat16":
             return "full-bf16"
         return f"mixed-{self.mixed_precision_param}"
+
+    @property
+    def token_plan_steps(self) -> int:
+        """Return the shared plan length; runs may consume a shorter prefix."""
+
+        return self.steps if self.fixture_steps is None else self.fixture_steps
 
 
 @dataclass(frozen=True)
@@ -341,6 +350,8 @@ class FormalExperimentConfig:
     report_root: str = "precision_reports"
     run_root: str = "precision_runs"
     exploratory_reports: tuple[str, ...] = ()
+    shared_fixture: bool = False
+    fixture_name: str | None = None
 
     def __post_init__(self) -> None:
         if self.kind == "migration":
@@ -350,6 +361,14 @@ class FormalExperimentConfig:
             raise ValueError("self-consistency requires the same device type")
         training_topology_plan(self.training, self.reference.topology)
         training_topology_plan(self.training, self.candidate.topology)
+        if (
+            self.shared_fixture
+            and self.training.checkpoint_kind == "converged"
+            and not self.fixture_name
+        ):
+            raise ValueError(
+                "shared converged-checkpoint experiments require fixture_name"
+            )
 
     @property
     def scenario_name(self) -> str:
@@ -392,6 +411,25 @@ class FormalExperimentConfig:
             return value
         digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:10]
         return f"{value[:101].rstrip('-')}-{digest}"
+
+    @property
+    def fixture_storage_name(self) -> str:
+        """Return a topology/device-independent shared fixture identity."""
+
+        if not self.shared_fixture:
+            return self.storage_name
+        if self.fixture_name:
+            return _slug(self.fixture_name)
+        checkpoint = (
+            "random" if self.training.checkpoint_kind == "random_seed" else "converged"
+        )
+        return _slug(
+            f"{self.training.module}-{self.training.config}-"
+            f"{self.training.precision_name}-{checkpoint}-"
+            f"s{self.training.token_plan_steps}-"
+            f"b{self.training.global_batch_size}-"
+            f"seq{self.training.sequence_length}-seed{self.training.seed}"
+        )
 
 
 def _directory_digest(path: Path) -> str:
@@ -513,7 +551,60 @@ def _root(script_path: str) -> Path:
 
 
 def _fixture_directory(root: Path, config: FormalExperimentConfig) -> Path:
-    return root / config.fixture_root / config.storage_name
+    return root / config.fixture_root / config.fixture_storage_name
+
+
+def _validate_shared_fixture(
+    fixture_directory: Path,
+    config: FormalExperimentConfig,
+) -> None:
+    """Reject accidental reuse when fixture-defining inputs are incompatible."""
+
+    manifest_path = fixture_directory / "fixture.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"shared fixture manifest not found: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    plan = load_token_plan(fixture_directory / manifest["token_plan_relative_path"])
+    expected = config.training
+    mismatches: list[str] = []
+    if plan.steps != expected.token_plan_steps:
+        mismatches.append(
+            f"token-plan steps {plan.steps} != {expected.token_plan_steps}"
+        )
+    if plan.global_batch_size != expected.global_batch_size:
+        mismatches.append(
+            "token-plan global batch "
+            f"{plan.global_batch_size} != {expected.global_batch_size}"
+        )
+    if plan.sequence_length != expected.sequence_length:
+        mismatches.append(
+            f"token-plan sequence length {plan.sequence_length} != "
+            f"{expected.sequence_length}"
+        )
+    if manifest.get("checkpoint_kind") != expected.checkpoint_kind:
+        mismatches.append(
+            f"checkpoint kind {manifest.get('checkpoint_kind')!r} != "
+            f"{expected.checkpoint_kind!r}"
+        )
+    recorded = manifest.get("fixture_contract") or manifest.get("training", {})
+    for key in (
+        "module",
+        "config",
+        "seed",
+        "training_dtype",
+        "mixed_precision_param",
+        "mixed_precision_reduce",
+    ):
+        if key in recorded and recorded[key] != getattr(expected, key):
+            mismatches.append(
+                f"{key} {recorded[key]!r} != {getattr(expected, key)!r}"
+            )
+    if mismatches:
+        raise ValueError(
+            f"shared fixture is incompatible: {fixture_directory}: "
+            + "; ".join(mismatches)
+        )
+    _seed_checkpoint_path(fixture_directory)
 
 
 def _artifact_directory(
@@ -699,6 +790,10 @@ def prepare_fixture(
     fixture_directory = _fixture_directory(root, config)
     if fixture_directory.exists():
         if not force:
+            if config.shared_fixture:
+                _validate_shared_fixture(fixture_directory, config)
+                print(f"Reuse shared fixture: {fixture_directory}")
+                return fixture_directory
             raise FileExistsError(
                 f"fixture already exists; pass --force to replace it: {fixture_directory}"
             )
@@ -718,7 +813,7 @@ def prepare_fixture(
     token_plan_environment["TORCHTITAN_DEVICE"] = endpoint.torchtitan_device
     token_plan_environment["GLM5_PRECISION_TOKEN_PLAN_OUTPUT"] = str(token_plan_path)
     token_plan_environment["GLM5_PRECISION_TOKEN_PLAN_STEPS"] = str(
-        config.training.steps
+        config.training.token_plan_steps
     )
     token_plan_environment["GLM5_PRECISION_TOKEN_PLAN_GLOBAL_BATCH_SIZE"] = str(
         config.training.global_batch_size
@@ -823,6 +918,19 @@ def prepare_fixture(
             "step_series_sha256": step_series_digest(token_plan.step_sha256),
         },
         "training": _normalized_training(config.training),
+        "fixture_contract": {
+            "module": config.training.module,
+            "config": config.training.config,
+            "checkpoint_kind": config.training.checkpoint_kind,
+            "seed": config.training.seed,
+            "training_dtype": config.training.training_dtype,
+            "mixed_precision_param": config.training.mixed_precision_param,
+            "mixed_precision_reduce": config.training.mixed_precision_reduce,
+            "global_batch_size": config.training.global_batch_size,
+            "sequence_length": config.training.sequence_length,
+            "token_plan_steps": config.training.token_plan_steps,
+            "data_paths": list(config.training.data_paths),
+        },
     }
     _write_json(fixture_directory / "fixture.json", manifest)
     return fixture_directory

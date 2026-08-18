@@ -69,8 +69,11 @@ PASS/FAIL. All thresholds live in `standards.py` or in the experiment script's
 `--data` creates one unsharded TorchTitan seed checkpoint with
 `checkpoint.create_seed_checkpoint`. It also runs the configured text loader and
 tokenizer once with `dp_world_size=1`, then stores a fixed token plan with shape
-`[steps, global_batch_size, sequence_length + 1]` plus positions and per-step
-SHA-256 digests. Both endpoints load that synchronized checkpoint and token plan.
+`[fixture_steps, global_batch_size, sequence_length + 1]` plus positions and
+per-step SHA-256 digests. `fixture_steps` defaults to the run length, but the
+standard benchmarks set it to the longest planned run. A shorter run consumes
+the first `steps` entries and records the SHA-256 digest of that exact prefix.
+Both endpoints load that synchronized checkpoint and token plan.
 The fixture manifest records checkpoint, token plan, and local dataset/tokenizer
 SHA-256 digests. Captures also fix:
 
@@ -81,6 +84,12 @@ SHA-256 digests. Captures also fix:
 - training, parameter, and reduction dtypes;
 - parallel topology;
 - any extra TorchTitan arguments.
+
+When `shared_fixture=True`, the fixture identity is derived only from the model
+configuration, precision, checkpoint kind, seed, global batch, sequence length,
+and `fixture_steps`. Device type, parallel topology, local batch, clipping, and
+repeat number are deliberately excluded. Compatible `--data` calls reuse the
+existing fixture after validating its checkpoint and token-plan contract.
 
 The runtime test dataloader maps each optimizer step's global sample slots onto
 the current DP rank, gradient-accumulation group, and PP microbatch. Therefore a
@@ -97,9 +106,9 @@ Full-precision scalar values are captured before console formatting by wrapping
 TorchTitan's TensorBoard logger. The runtime package is imported, not copied or
 modified. NPU capture imports TorchTitanTurbo before TorchTitan training begins.
 
-Because the token plan is now part of the formal data contract, fixtures made by
-an earlier framework version cannot be reused for new captures. Recreate the
-fixture once with `--data --force`, then rerun reference and candidate captures.
+Fixtures without a fixed token plan still cannot be reused. Existing fixed-token
+fixtures remain readable; new shared fixtures additionally record a compact
+fixture contract so incompatible reuse fails before capture.
 
 ## Migration workflow
 
@@ -134,7 +143,7 @@ python tests/glm5_2_precision/migration_benchmark.py \
   --capture candidate --topology single
 ```
 
-Synchronize the scenario directory under `precision_fixtures/` to the GPU
+Synchronize the canonical directory under `precision_shared_fixtures/` to the GPU
 server, then capture both GPU reference repetitions:
 
 ```bash

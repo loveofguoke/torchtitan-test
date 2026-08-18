@@ -69,6 +69,7 @@ CONFIG = FormalExperimentConfig(
         training_dtype="float32",
         mixed_precision_param="bfloat16",
         checkpoint_kind="random_seed",
+        fixture_steps=5000,
         exploratory_steps=(),
     ),
     standard=PrecisionStandard(
@@ -87,6 +88,8 @@ CONFIG = FormalExperimentConfig(
             required_candidate_repeats=2,
         )
     ),
+    fixture_root="precision_shared_fixtures",
+    shared_fixture=True,
 )
 
 

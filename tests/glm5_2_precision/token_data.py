@@ -253,7 +253,7 @@ def validate_runtime_input_contract(
             "input-contract rank files do not match the local torchrun ranks: "
             f"observed={sorted(files)}, expected={sorted(expected_names)}"
         )
-    if plan.steps != steps or plan.global_batch_size != global_batch_size:
+    if plan.steps < steps or plan.global_batch_size != global_batch_size:
         raise TokenDataError("runtime training dimensions do not match the token plan")
 
     replica_records: dict[tuple[int, int], tuple[tuple[int, ...], tuple[str, ...]]] = {}
@@ -342,7 +342,10 @@ def validate_runtime_input_contract(
         "dp_world_size": dp_world_size,
         "pipeline_parallel_degree": pipeline_parallel_degree,
         "validated_global_ranks": list(expected_global_ranks),
-        "token_plan_step_series_sha256": step_series_digest(plan.step_sha256),
+        "token_plan_total_steps": plan.steps,
+        "token_plan_step_series_sha256": step_series_digest(
+            plan.step_sha256[:steps]
+        ),
     }
     (directory / "summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n",

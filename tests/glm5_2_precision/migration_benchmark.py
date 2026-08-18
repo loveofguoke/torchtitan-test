@@ -57,6 +57,7 @@ CONFIG = FormalExperimentConfig(
         training_dtype="float32",
         mixed_precision_param="bfloat16",
         checkpoint_kind="random_seed",
+        fixture_steps=5000,
         # Add a few steps here when sampled parameter/activation diagnostics
         # are needed. Formal PASS/FAIL remains based on loss and grad norm.
         exploratory_steps=(),
@@ -83,6 +84,8 @@ CONFIG = FormalExperimentConfig(
             required_candidate_repeats=2,
         )
     ),
+    fixture_root="precision_shared_fixtures",
+    shared_fixture=True,
 )
 
 

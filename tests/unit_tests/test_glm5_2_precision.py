@@ -299,13 +299,15 @@ def test_fixed_token_mapping_preserves_one_global_batch_across_dp_degrees() -> N
     assert pipeline == list(range(16))
 
 
-def _write_synthetic_token_plan(path: Path) -> tuple[str, ...]:
+def _write_synthetic_token_plan(
+    path: Path, *, steps: int = 1
+) -> tuple[str, ...]:
     path.mkdir()
     tokens = []
     positions = []
     sample_hashes = []
-    for slot in range(4):
-        token_values = (slot, slot + 1, slot + 2)
+    for sample in range(steps * 4):
+        token_values = (sample, sample + 1, sample + 2)
         position_values = (0, 1)
         token_bytes = struct.pack("<3i", *token_values)
         position_bytes = struct.pack("<2i", *position_values)
@@ -314,13 +316,16 @@ def _write_synthetic_token_plan(path: Path) -> tuple[str, ...]:
         sample_hashes.append(sample_digest(token_bytes, position_bytes))
     (path / "tokens.i32").write_bytes(b"".join(tokens))
     (path / "positions.i32").write_bytes(b"".join(positions))
-    step_hashes = (step_digest(sample_hashes),)
+    step_hashes = tuple(
+        step_digest(sample_hashes[step * 4 : (step + 1) * 4])
+        for step in range(steps)
+    )
     (path / "manifest.json").write_text(
         json.dumps(
             {
                 "schema": TOKEN_PLAN_SCHEMA,
                 "schema_version": TOKEN_PLAN_VERSION,
-                "steps": 1,
+                "steps": steps,
                 "global_batch_size": 4,
                 "sequence_length": 2,
                 "sample_sha256": sample_hashes,
@@ -380,6 +385,48 @@ def test_runtime_input_contract_validates_dp_and_tp_replicas(tmp_path: Path) -> 
     assert summary["mapping"] == INPUT_MAPPING
     assert summary["token_plan_step_series_sha256"] == step_series_digest(
         plan.step_sha256
+    )
+
+
+def test_runtime_input_contract_accepts_longer_token_plan_prefix(
+    tmp_path: Path,
+) -> None:
+    token_plan_path = tmp_path / "token-plan"
+    sample_hashes = _write_synthetic_token_plan(token_plan_path, steps=2)
+    plan = load_token_plan(token_plan_path)
+    contract_path = tmp_path / "contract"
+    contract_path.mkdir()
+    for global_rank in range(4):
+        dp_rank = (global_rank // 2) % 2
+        slots = (dp_rank * 2, dp_rank * 2 + 1)
+        record = {
+            "global_rank": global_rank,
+            "dp_rank": dp_rank,
+            "step": 1,
+            "dataloader_batch_size": 2,
+            "global_slots": slots,
+            "sample_sha256": [sample_hashes[slot] for slot in slots],
+        }
+        (contract_path / f"rank-{global_rank}.jsonl").write_text(
+            json.dumps(record) + "\n", encoding="utf-8"
+        )
+
+    summary = validate_runtime_input_contract(
+        contract_directory=contract_path,
+        plan=plan,
+        steps=1,
+        global_batch_size=4,
+        training_local_batch_size=2,
+        dp_world_size=2,
+        tensor_parallel_degree=2,
+        pipeline_parallel_degree=1,
+        node_rank=0,
+        num_processes_per_node=4,
+    )
+
+    assert summary["token_plan_total_steps"] == 2
+    assert summary["token_plan_step_series_sha256"] == step_series_digest(
+        plan.step_sha256[:1]
     )
 
 
@@ -532,6 +579,41 @@ def test_storage_name_and_capture_paths_are_compact(tmp_path: Path) -> None:
     assert _artifact_directory(
         tmp_path, config, "candidate", config.candidate, 1
     ).name == "candidate-r1"
+
+
+def test_shared_fixture_name_is_topology_independent() -> None:
+    single = ParallelTopology("single", 1)
+    fsdp8 = ParallelTopology("fsdp8", 8, data_parallel_shard_degree=8)
+    training = FormalTrainingConfig(steps=10, fixture_steps=1000)
+    common = {
+        "name": "shared",
+        "kind": "migration",
+        "training": training,
+        "shared_fixture": True,
+    }
+    first = FormalExperimentConfig(
+        **common,
+        reference=TrainingEndpoint("gpu", "cuda", "0", single),
+        candidate=TrainingEndpoint("npu", "npu", "0", single),
+    )
+    second = FormalExperimentConfig(
+        **common,
+        reference=TrainingEndpoint(
+            "gpu", "cuda", "0,1,2,3,4,5,6,7", fsdp8
+        ),
+        candidate=TrainingEndpoint(
+            "npu", "npu", "0,1,2,3,4,5,6,7", fsdp8
+        ),
+    )
+
+    assert first.fixture_storage_name == second.fixture_storage_name
+    assert "s1000" in first.fixture_storage_name
+    assert first.storage_name != second.storage_name
+
+
+def test_fixture_steps_cannot_be_shorter_than_training() -> None:
+    with pytest.raises(ValueError, match="fixture_steps"):
+        FormalTrainingConfig(steps=100, fixture_steps=10)
 
 
 def test_legacy_scenario_name_maps_to_current_storage_name() -> None:
