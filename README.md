@@ -80,3 +80,15 @@ See
 [tests/glm5_2_precision/README.md](tests/glm5_2_precision/README.md) for the
 `--data`, `--capture`, and `--compare` workflows for migration and distributed
 self-consistency.
+
+## Stability and checkpoint validation
+
+The stability soak test records step progress, duration, finite loss, and
+finite global grad norm for single-card or distributed GPU/NPU training. See
+[tests/glm5_2_stability/README.md](tests/glm5_2_stability/README.md).
+
+The checkpoint test compares uninterrupted training with a real process
+restart at an intermediate full DCP checkpoint. It verifies exact fixed-token
+data continuation, loss and grad norm, trainer/dataloader/scheduler state, and
+the final model and optimizer state. See
+[tests/glm5_2_checkpoint/README.md](tests/glm5_2_checkpoint/README.md).

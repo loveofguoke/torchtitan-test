@@ -1,0 +1,430 @@
+#!/usr/bin/env python3
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+
+"""Reusable single-node GLM 5.2 training stability benchmark."""
+
+from __future__ import annotations
+
+import argparse
+from dataclasses import asdict
+from datetime import datetime, timezone
+import html
+import json
+import math
+import os
+from pathlib import Path
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from tests.glm5_2_precision.workflow import (  # noqa: E402
+    FormalTrainingConfig,
+    ParallelTopology,
+    standard_topologies,
+    training_topology_plan,
+)
+
+
+LOSS_KEY = "loss_metrics/global_avg_loss"
+MAX_LOSS_KEY = "loss_metrics/global_max_loss"
+GRAD_NORM_KEY = "grad_norm"
+DEFAULT_STEPS = 20_000
+DEFAULT_MINIMUM_HOURS = 1.0
+DEFAULT_STALL_TIMEOUT_MINUTES = 20.0
+
+
+def _precision_training(precision: str, **overrides: Any) -> FormalTrainingConfig:
+    values: dict[str, Any] = {
+        "steps": overrides["steps"],
+        "local_batch_size": overrides["local_batch_size"],
+        "global_batch_size": overrides["global_batch_size"],
+        "sequence_length": overrides["sequence_length"],
+        "seed": overrides["seed"],
+        "deterministic": True,
+    }
+    if precision == "fp32":
+        values.update(training_dtype="float32", mixed_precision_param="float32")
+    elif precision == "full-bf16":
+        values.update(training_dtype="bfloat16", mixed_precision_param="bfloat16")
+    else:
+        values.update(training_dtype="float32", mixed_precision_param="bfloat16")
+    return FormalTrainingConfig(**values)
+
+
+def _device_from_environment(requested: str | None) -> tuple[str, str, str]:
+    cuda = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+    npu = os.environ.get("ASCEND_RT_VISIBLE_DEVICES", "").strip()
+    if requested == "cuda":
+        if not cuda:
+            raise ValueError("CUDA_VISIBLE_DEVICES must be exported for CUDA stability")
+        return "cuda", "CUDA_VISIBLE_DEVICES", cuda
+    if requested == "npu":
+        if not npu:
+            raise ValueError(
+                "ASCEND_RT_VISIBLE_DEVICES must be exported for NPU stability"
+            )
+        return "npu", "ASCEND_RT_VISIBLE_DEVICES", npu
+    if bool(cuda) == bool(npu):
+        raise ValueError(
+            "export exactly one visibility variable or pass --device cuda|npu"
+        )
+    return (
+        ("cuda", "CUDA_VISIBLE_DEVICES", cuda)
+        if cuda
+        else ("npu", "ASCEND_RT_VISIBLE_DEVICES", npu)
+    )
+
+
+def _metrics_rank(topology: ParallelTopology) -> int:
+    if (
+        topology.pipeline_parallel_degree == 1
+        or topology.pipeline_parallel_schedule == "ZBVZeroBubble"
+    ):
+        return 0
+    return (
+        topology.world_size // topology.pipeline_parallel_degree
+    ) * (topology.pipeline_parallel_degree - 1)
+
+
+def _command(
+    *,
+    training: FormalTrainingConfig,
+    topology: ParallelTopology,
+    dump_folder: Path,
+) -> list[str]:
+    torchrun = shutil.which("torchrun") or str(
+        Path(sys.executable).with_name("torchrun")
+    )
+    rank = _metrics_rank(topology)
+    return [
+        torchrun,
+        f"--nproc_per_node={topology.world_size}",
+        "--rdzv_backend=c10d",
+        "--rdzv_endpoint=localhost:0",
+        f"--local-ranks-filter={rank}",
+        "--role=rank",
+        "--tee=3",
+        "-m",
+        "tests.glm5_2_stability.capture_metrics",
+        "--module",
+        training.module,
+        "--config",
+        training.config,
+        f"--dump_folder={dump_folder}",
+        f"--training.steps={training.steps}",
+        f"--training.local_batch_size={training.local_batch_size}",
+        f"--training.global_batch_size={training.global_batch_size}",
+        f"--training.seq_len={training.sequence_length}",
+        f"--training.dtype={training.training_dtype}",
+        f"--training.mixed_precision_param={training.mixed_precision_param}",
+        f"--training.mixed_precision_reduce={training.mixed_precision_reduce}",
+        f"--debug.seed={training.seed}",
+        "--debug.deterministic",
+        "--debug.no-enable-structured-logging",
+        "--metrics.log_freq=1",
+        "--metrics.enable_tensorboard",
+        "--metrics.disable_color_printing",
+        "--metrics.save_tb_folder=tensorboard",
+        *topology.command_args(),
+    ]
+
+
+def _metric_progress(path: Path) -> tuple[int, int]:
+    if not path.is_file():
+        return 0, 0
+    lines = path.read_text(encoding="utf-8").splitlines()
+    valid_count = 0
+    last_step = 0
+    for line in lines:
+        try:
+            last_step = int(json.loads(line)["step"])
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            # The monitor can observe the final line between append and flush.
+            # Final report parsing remains strict and diagnoses malformed data.
+            break
+        valid_count += 1
+    return valid_count, last_step
+
+
+def _stop_process(process: subprocess.Popen[Any]) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        process.terminate()
+    else:
+        os.killpg(process.pid, signal.SIGTERM)
+    try:
+        process.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        if os.name == "nt":
+            process.kill()
+        else:
+            os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+
+
+def _read_metrics(path: Path) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    if not path.is_file():
+        return records
+    for line_number, line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        try:
+            record = json.loads(line)
+            values = record["metrics"]
+            for key in (LOSS_KEY, MAX_LOSS_KEY, GRAD_NORM_KEY):
+                value = float(values[key])
+                if not math.isfinite(value):
+                    raise ValueError(f"non-finite {key}")
+            records.append(record)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            raise RuntimeError(
+                f"invalid stability metric at {path}:{line_number}: {error}"
+            ) from error
+    return records
+
+
+def _write_report(
+    *,
+    report_path: Path,
+    summary_path: Path,
+    summary: dict[str, Any],
+) -> None:
+    summary_path.write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    status = summary["status"]
+    status_color = {
+        "PASS": "#17803d",
+        "INSUFFICIENT_DURATION": "#b7791f",
+    }.get(status, "#b42318")
+    rows = "".join(
+        f"<tr><th>{html.escape(str(key))}</th>"
+        f"<td>{html.escape(str(value))}</td></tr>"
+        for key, value in summary.items()
+        if key not in {"command", "metric_ranges"}
+    )
+    ranges = "".join(
+        f"<tr><th>{html.escape(key)}</th><td>{value['minimum']:.9g}</td>"
+        f"<td>{value['maximum']:.9g}</td><td>{value['final']:.9g}</td></tr>"
+        for key, value in summary.get("metric_ranges", {}).items()
+    )
+    report_path.write_text(
+        f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{html.escape(summary['run_name'])}</title><style>
+body{{font:14px/1.45 system-ui,sans-serif;max-width:1200px;margin:auto;padding:24px;color:#17202a}}
+.status{{display:inline-block;background:{status_color};color:white;padding:6px 12px;border-radius:999px;font-weight:800}}
+table{{border-collapse:collapse;width:100%;margin:18px 0}}th,td{{border:1px solid #d8dee9;padding:8px;text-align:left}}
+th{{background:#eef2f7}}pre{{white-space:pre-wrap;background:#f8fafc;padding:12px;border:1px solid #d8dee9;border-radius:8px}}
+</style></head><body><h1>GLM 5.2 training stability report</h1>
+<p><span class="status">{html.escape(status)}</span></p>
+<p>PASS requires normal process exit, every requested step, finite loss and grad norm, no detected stall, and the configured minimum wall-clock duration.</p>
+<table>{rows}</table><h2>Metric ranges</h2>
+<table><thead><tr><th>Metric</th><th>Minimum</th><th>Maximum</th><th>Final</th></tr></thead><tbody>{ranges}</tbody></table>
+<h2>Command</h2><pre>{html.escape(' '.join(summary['command']))}</pre>
+</body></html>""",
+        encoding="utf-8",
+    )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--device", choices=("cuda", "npu"))
+    parser.add_argument("--topology", default="single", choices=standard_topologies())
+    parser.add_argument("--precision", default="bf16", choices=("fp32", "bf16", "full-bf16"))
+    parser.add_argument("--steps", type=int, default=DEFAULT_STEPS)
+    parser.add_argument("--minimum-hours", type=float, default=DEFAULT_MINIMUM_HOURS)
+    parser.add_argument(
+        "--stall-timeout-minutes",
+        type=float,
+        default=DEFAULT_STALL_TIMEOUT_MINUTES,
+    )
+    parser.add_argument("--local-batch-size", type=int, default=8)
+    parser.add_argument("--global-batch-size", type=int, default=64)
+    parser.add_argument("--sequence-length", type=int, default=128)
+    parser.add_argument("--seed", type=int, default=61)
+    parser.add_argument("--force", action="store_true")
+    args = parser.parse_args()
+    if args.steps < 1 or args.minimum_hours < 0 or args.stall_timeout_minutes <= 0:
+        raise ValueError("steps and timing limits must be positive")
+
+    root = Path(__file__).resolve().parents[2]
+    topology = standard_topologies()[args.topology]
+    training = _precision_training(
+        args.precision,
+        steps=args.steps,
+        local_batch_size=args.local_batch_size,
+        global_batch_size=args.global_batch_size,
+        sequence_length=args.sequence_length,
+        seed=args.seed,
+    )
+    batch_schedule = training_topology_plan(training, topology)
+    device, visible_env, visible_devices = _device_from_environment(args.device)
+    visible_count = len([value for value in visible_devices.split(",") if value.strip()])
+    if visible_count < topology.world_size:
+        raise ValueError(
+            f"topology {topology.name} needs {topology.world_size} visible devices, "
+            f"but {visible_env} contains {visible_count}"
+        )
+
+    run_name = (
+        f"stability-{device}-{topology.slug}-{args.precision}-"
+        f"s{training.steps}-b{training.global_batch_size}-"
+        f"seq{training.sequence_length}-seed{training.seed}"
+    )
+    run_directory = root / "stability_runs" / run_name
+    report_directory = root / "stability_reports" / run_name
+    if run_directory.exists() or report_directory.exists():
+        if not args.force:
+            raise FileExistsError(
+                f"stability output exists; pass --force to replace it: {run_name}"
+            )
+        shutil.rmtree(run_directory, ignore_errors=True)
+        shutil.rmtree(report_directory, ignore_errors=True)
+    run_directory.mkdir(parents=True)
+    report_directory.mkdir(parents=True)
+    metrics_path = run_directory / "raw_metrics.jsonl"
+    runtime_log = run_directory / "runtime.log"
+    command = _command(
+        training=training,
+        topology=topology,
+        dump_folder=run_directory / "trainer_output",
+    )
+    environment = os.environ.copy()
+    environment[visible_env] = visible_devices
+    environment["TORCHTITAN_DEVICE"] = "npu" if device == "npu" else "gpu"
+    environment["GLM5_STABILITY_METRICS_PATH"] = str(metrics_path)
+    environment["LOG_RANK"] = str(_metrics_rank(topology))
+
+    print(
+        f"Starting stability run: device={device}, topology={topology.name}, "
+        f"steps={training.steps}, minimum_hours={args.minimum_hours}\n"
+        f"Runtime log: {runtime_log}",
+        flush=True,
+    )
+    started_at = datetime.now(timezone.utc)
+    started = time.monotonic()
+    last_progress = started
+    last_report = started
+    observed_count = 0
+    observed_step = 0
+    stalled = False
+    interrupted = False
+    with runtime_log.open("w", encoding="utf-8") as log:
+        log.write("Command: " + " ".join(command) + "\n\n")
+        log.flush()
+        process = subprocess.Popen(
+            command,
+            cwd=root,
+            env=environment,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=os.name != "nt",
+        )
+        try:
+            while process.poll() is None:
+                time.sleep(5)
+                count, step = _metric_progress(metrics_path)
+                now = time.monotonic()
+                if count > observed_count:
+                    observed_count, observed_step = count, step
+                    last_progress = now
+                if now - last_report >= 60:
+                    print(
+                        f"Stability progress: step={observed_step}/{training.steps}, "
+                        f"elapsed_hours={(now - started) / 3600:.3f}",
+                        flush=True,
+                    )
+                    last_report = now
+                if now - last_progress > args.stall_timeout_minutes * 60:
+                    stalled = True
+                    print(
+                        f"No new metric for {args.stall_timeout_minutes:g} minutes; "
+                        "terminating the stalled run.",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    _stop_process(process)
+                    break
+        except KeyboardInterrupt:
+            interrupted = True
+            _stop_process(process)
+        return_code = process.wait()
+    ended = time.monotonic()
+    ended_at = datetime.now(timezone.utc)
+    records = _read_metrics(metrics_path)
+    steps = [int(record["step"]) for record in records]
+    contiguous = steps == list(range(1, len(steps) + 1))
+    completed = len(records) == training.steps and steps[-1:] == [training.steps]
+    elapsed_seconds = ended - started
+    sufficient_duration = elapsed_seconds >= args.minimum_hours * 3600
+    if interrupted:
+        status = "INTERRUPTED"
+    elif return_code != 0 or stalled or not contiguous or not completed:
+        status = "FAIL"
+    elif not sufficient_duration:
+        status = "INSUFFICIENT_DURATION"
+    else:
+        status = "PASS"
+
+    def metric_range(key: str) -> dict[str, float]:
+        values = [float(record["metrics"][key]) for record in records]
+        return {
+            "minimum": min(values),
+            "maximum": max(values),
+            "final": values[-1],
+        }
+
+    ranges = (
+        {
+            "loss": metric_range(LOSS_KEY),
+            "global_max_loss": metric_range(MAX_LOSS_KEY),
+            "grad_norm": metric_range(GRAD_NORM_KEY),
+        }
+        if records
+        else {}
+    )
+    report_path = report_directory / f"{run_name}.html"
+    summary_path = report_directory / f"{run_name}.json"
+    summary = {
+        "run_name": run_name,
+        "status": status,
+        "device": device,
+        "visible_devices": visible_devices,
+        "topology": asdict(topology),
+        "batch_schedule": asdict(batch_schedule),
+        "requested_steps": training.steps,
+        "completed_metric_steps": len(records),
+        "last_step": steps[-1] if steps else 0,
+        "steps_contiguous": contiguous,
+        "process_return_code": return_code,
+        "stalled": stalled,
+        "minimum_hours": args.minimum_hours,
+        "elapsed_hours": elapsed_seconds / 3600,
+        "average_seconds_per_completed_step": (
+            elapsed_seconds / len(records) if records else None
+        ),
+        "started_at_utc": started_at.isoformat(),
+        "ended_at_utc": ended_at.isoformat(),
+        "runtime_log": str(runtime_log),
+        "raw_metrics": str(metrics_path),
+        "metric_ranges": ranges,
+        "command": command,
+    }
+    _write_report(report_path=report_path, summary_path=summary_path, summary=summary)
+    print(f"Stability status: {status}\nReport: {report_path}", flush=True)
+    return 0 if status == "PASS" else 2 if status == "INSUFFICIENT_DURATION" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -48,11 +48,47 @@ from tests.glm5_2_precision.workflow import (
     FormalTrainingConfig,
     ParallelTopology,
     TrainingEndpoint,
+    _completed_capture_can_be_finalized,
     _endpoint_from_process_environment,
     _fixture_endpoint_from_environment,
     standard_topologies,
     training_topology_plan,
 )
+
+
+def test_completed_capture_can_be_finalized_without_training(tmp_path: Path) -> None:
+    metrics_path = tmp_path / "raw_metrics.jsonl"
+    contract = tmp_path / "input-contract"
+    contract.mkdir()
+    (contract / "summary.json").write_text(
+        json.dumps({"valid": True}) + "\n", encoding="utf-8"
+    )
+    records = [
+        {
+            "step": step,
+            "metrics": {
+                "loss_metrics/global_avg_loss": 1.0,
+                "loss_metrics/global_max_loss": 1.0,
+                "grad_norm": 0.5,
+            },
+        }
+        for step in (1, 2)
+    ]
+    metrics_path.write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+
+    assert _completed_capture_can_be_finalized(
+        metrics_path,
+        contract,
+        expected_steps=2,
+    )
+    assert not _completed_capture_can_be_finalized(
+        metrics_path,
+        contract,
+        expected_steps=3,
+    )
 
 
 def test_documented_error_formulas() -> None:

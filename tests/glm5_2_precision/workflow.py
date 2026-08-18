@@ -429,17 +429,40 @@ def _git_metadata(path: Path) -> dict[str, str]:
 
 
 def _source_metadata(root: Path) -> dict[str, Any]:
-    import importlib.metadata
-    import importlib.util
+    try:
+        from importlib import metadata as package_metadata
+    except (ImportError, ModuleNotFoundError) as error:
+        try:
+            import importlib_metadata as package_metadata
+        except (ImportError, ModuleNotFoundError):
+            package_metadata = None
+        metadata_import_error: Exception | None = error
+    else:
+        metadata_import_error = None
+
+    try:
+        from importlib.util import find_spec
+    except (ImportError, ModuleNotFoundError):
+        find_spec = None
 
     sources: dict[str, Any] = {"torchtitan_test": _git_metadata(root)}
     packages: dict[str, str] = {}
     for package in ("torch", "torchtitan", "torchtitanturbo", "torch_npu"):
+        if package_metadata is None:
+            packages[package] = f"unavailable: {metadata_import_error}"
+        else:
+            try:
+                packages[package] = package_metadata.version(package)
+            except package_metadata.PackageNotFoundError:
+                packages[package] = "not-installed"
+            except Exception as error:
+                packages[package] = f"unavailable: {error}"
+        if find_spec is None:
+            continue
         try:
-            packages[package] = importlib.metadata.version(package)
-        except importlib.metadata.PackageNotFoundError:
-            packages[package] = "not-installed"
-        spec = importlib.util.find_spec(package)
+            spec = find_spec(package)
+        except Exception:
+            continue
         if spec is None:
             continue
         if spec.submodule_search_locations:
@@ -459,6 +482,22 @@ def _source_metadata(root: Path) -> dict[str, Any]:
         if git_root is not None:
             sources[package] = _git_metadata(git_root)
     return {"packages": packages, "sources": sources}
+
+
+def _completed_capture_can_be_finalized(
+    metrics_path: Path,
+    input_contract_directory: Path,
+    *,
+    expected_steps: int,
+) -> bool:
+    """Return whether a finished run only needs artifact publication."""
+
+    if not (input_contract_directory / "summary.json").is_file():
+        return False
+    try:
+        return len(read_captured_metrics(metrics_path)) == expected_steps
+    except (KeyError, OSError, TypeError, ValueError, PrecisionArtifactError):
+        return False
 
 
 def _write_json(path: Path, value: Any) -> None:
@@ -826,32 +865,8 @@ def capture_endpoint(
             print(f"Skip completed capture: {artifact_directory}")
             return artifact_directory
     run_directory = _run_directory(root, config, role, endpoint, repeat)
-    if run_directory.exists():
-        retry_incomplete = (
-            not artifact_complete
-            and endpoint.num_nodes == 1
-            and endpoint.node_rank == metrics_node_rank
-        )
-        if not force and not retry_incomplete:
-            raise FileExistsError(f"run output already exists: {run_directory}")
-        if retry_incomplete and not force:
-            print(
-                "Retry incomplete capture; replacing stale run output: "
-                f"{run_directory}"
-            )
-        shutil.rmtree(run_directory)
-    run_directory.mkdir(parents=True)
     metrics_path = run_directory / "raw_metrics.jsonl"
     runtime_log = run_directory / "runtime.log"
-
-    environment = os.environ.copy()
-    environment.update(endpoint.environment)
-    environment[endpoint.visible_devices_env] = endpoint.visible_devices
-    environment["TORCHTITAN_DEVICE"] = endpoint.torchtitan_device
-    environment["GLM5_PRECISION_METRICS_PATH"] = str(metrics_path)
-    # Every node writes unique global-rank files into one shared directory. The
-    # metrics-owning node validates the complete world before publishing an
-    # artifact, so a missing or incorrectly mapped node cannot pass silently.
     input_contract_directory = (
         root
         / config.run_root
@@ -861,6 +876,42 @@ def capture_endpoint(
             "-input-contract"
         )
     )
+    finalize_existing = False
+    if run_directory.exists():
+        retry_incomplete = (
+            not artifact_complete
+            and endpoint.num_nodes == 1
+            and endpoint.node_rank == metrics_node_rank
+        )
+        if not force and not retry_incomplete:
+            raise FileExistsError(f"run output already exists: {run_directory}")
+        finalize_existing = retry_incomplete and _completed_capture_can_be_finalized(
+            metrics_path,
+            input_contract_directory,
+            expected_steps=config.training.steps,
+        )
+        if finalize_existing and not force:
+            print(
+                "Finalize completed capture without rerunning training: "
+                f"{run_directory}"
+            )
+        elif retry_incomplete and not force:
+            print(
+                "Retry incomplete capture; replacing stale run output: "
+                f"{run_directory}"
+            )
+        if not finalize_existing:
+            shutil.rmtree(run_directory)
+    run_directory.mkdir(parents=True, exist_ok=True)
+
+    environment = os.environ.copy()
+    environment.update(endpoint.environment)
+    environment[endpoint.visible_devices_env] = endpoint.visible_devices
+    environment["TORCHTITAN_DEVICE"] = endpoint.torchtitan_device
+    environment["GLM5_PRECISION_METRICS_PATH"] = str(metrics_path)
+    # Every node writes unique global-rank files into one shared directory. The
+    # metrics-owning node validates the complete world before publishing an
+    # artifact, so a missing or incorrectly mapped node cannot pass silently.
     input_contract_directory.mkdir(parents=True, exist_ok=True)
     environment["GLM5_PRECISION_TOKEN_PLAN_PATH"] = str(token_plan_path)
     environment["GLM5_PRECISION_INPUT_CONTRACT_DIR"] = str(
@@ -888,24 +939,25 @@ def capture_endpoint(
         f"repeat={repeat}/{endpoint.repeats}, device={endpoint.device_type}, "
         f"world_size={endpoint.topology.world_size}"
     )
-    print(
-        f"Starting capture: {capture_label}\nRuntime log: {runtime_log}",
-        flush=True,
-    )
-    try:
-        _run_process(
-            command,
-            root=root,
-            environment=environment,
-            log_path=runtime_log,
-        )
-    except subprocess.CalledProcessError:
+    if not finalize_existing:
         print(
-            f"Capture failed: {capture_label}\nRuntime log: {runtime_log}",
-            file=sys.stderr,
+            f"Starting capture: {capture_label}\nRuntime log: {runtime_log}",
             flush=True,
         )
-        raise
+        try:
+            _run_process(
+                command,
+                root=root,
+                environment=environment,
+                log_path=runtime_log,
+            )
+        except subprocess.CalledProcessError:
+            print(
+                f"Capture failed: {capture_label}\nRuntime log: {runtime_log}",
+                file=sys.stderr,
+                flush=True,
+            )
+            raise
 
     if endpoint.node_rank != metrics_node_rank:
         return None
