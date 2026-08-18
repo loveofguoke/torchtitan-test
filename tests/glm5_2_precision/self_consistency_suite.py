@@ -22,6 +22,7 @@ from .workflow import (
     _root,
     capture_endpoint,
     prepare_fixture,
+    training_topology_plan,
 )
 
 
@@ -245,7 +246,14 @@ def run_suite_cli(
     args = parser.parse_args()
     if args.list_topologies:
         for name in candidate_topologies:
-            print(f"{name}: {asdict(topologies[name])}")
+            topology = topologies[name]
+            batch_schedule = asdict(
+                training_topology_plan(base.training, topology)
+            )
+            print(
+                f"{name}: topology={asdict(topology)}, "
+                f"batch_schedule={batch_schedule}"
+            )
         return
 
     selected = (
@@ -264,12 +272,19 @@ def run_suite_cli(
         environment_role = "reference"
     elif args.capture == "candidate" or args.capture_all:
         environment_role = "candidate"
-    first = _suite_config(
-        base,
-        topologies[selected[0]],
-        precision=args.precision,
-        environment_role=environment_role,
-    )
+    # Construct every selected config before launching the first candidate.
+    # This prevents a late topology validation failure from wasting completed
+    # captures earlier in a long --capture-all sequence.
+    selected_configs = {
+        name: _suite_config(
+            base,
+            topologies[name],
+            precision=args.precision,
+            environment_role=environment_role,
+        )
+        for name in selected
+    }
+    first = selected_configs[selected[0]]
 
     if args.data:
         endpoint = _fixture_endpoint_from_environment(first, "cuda")
@@ -297,12 +312,7 @@ def run_suite_cli(
         raise ValueError("--capture candidate requires one --topology")
     if args.capture == "candidate" or args.capture_all:
         for name in selected:
-            config = _suite_config(
-                base,
-                topologies[name],
-                precision=args.precision,
-                environment_role="candidate",
-            )
+            config = selected_configs[name]
             endpoint = config.candidate
             repeats = (
                 (args.repeat,) if args.repeat else range(1, endpoint.repeats + 1)

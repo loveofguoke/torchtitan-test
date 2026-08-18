@@ -107,6 +107,10 @@ Configure `CONFIG` once in `migration_benchmark.py`. Each command derives its
 fixture, artifact, run, and report directory from the experiment kind, devices,
 topology, and precision.
 
+The built-in migration profile also uses local batch 8 and global batch 64, so
+the same training contract is valid for every registered topology up to eight
+devices, including DP8 and `1F1B` PP8.
+
 The standard `CUDA_VISIBLE_DEVICES` and `ASCEND_RT_VISIBLE_DEVICES` exports are
 the primary device selection interface. CLI visibility overrides are retained
 only for automation. `--capture` runs every configured repetition by default;
@@ -168,8 +172,15 @@ BF16 mixed-precision parameters; `full-bf16` sets the full training dtype.
 ## Distributed self-consistency
 
 The CUDA self-consistency suite shares one fixture and one single-card
-reference across every distributed topology. Prepare and capture the reference
-only once:
+reference across every distributed topology.
+
+The built-in profile uses local batch 8, global batch 64, and PP microbatch
+size 1. These are the smallest common batch settings that support both
+eight-way data parallelism and eight-stage `1F1B` while preserving one shared
+single-card reference. The workflow validates the DP accumulation and PP
+microbatch constraints before starting `torchrun`.
+
+Prepare and capture the reference only once:
 
 ```bash
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
@@ -241,7 +252,7 @@ fsdp2-tp4-ep8
 The storage layout is shared by the entire suite:
 
 ```text
-precision_artifacts/self-cuda-bf16-random-s1000-b16-seq128-seed61/
+precision_artifacts/self-cuda-bf16-random-s1000-b64-seq128-seed61/
   reference-r1/
   reference-r2/
   ddp8-r1/
@@ -253,7 +264,7 @@ precision_artifacts/self-cuda-bf16-random-s1000-b16-seq128-seed61/
 Each detailed topology report and the suite summary are generated together:
 
 ```text
-precision_reports/self-cuda-bf16-random-s1000-b16-seq128-seed61/
+precision_reports/self-cuda-bf16-random-s1000-b64-seq128-seed61/
   suite_report.html
   suite_summary.json
   ddp8/precision_report.html
@@ -335,7 +346,7 @@ world and writes the portable artifact. Missing rank records fail capture.
   summary; it is generated locally and ignored by default.
 
 Directory names omit the model name and redundant endpoint labels. For example:
-`migration-cuda-npu-single-bf16-random-s1000-b16-seq128-seed61/candidate-r1`.
+`migration-cuda-npu-single-bf16-random-s1000-b64-seq128-seed61/candidate-r1`.
 The full descriptive scenario remains in manifests and reports.
 
 Existing outputs made by an older version can be renamed without rerunning:

@@ -279,6 +279,56 @@ class FormalTrainingConfig:
 
 
 @dataclass(frozen=True)
+class TrainingTopologyPlan:
+    """Derived batch schedule for one training topology."""
+
+    gradient_accumulation_steps: int
+    pipeline_microbatches: int
+
+
+def training_topology_plan(
+    training: FormalTrainingConfig,
+    topology: ParallelTopology,
+) -> TrainingTopologyPlan:
+    """Validate and describe the batch schedule before launching workers."""
+
+    data_parallel_batch = training.local_batch_size * topology.data_parallel_degree
+    if training.global_batch_size % data_parallel_batch:
+        raise ValueError(
+            f"topology {topology.name!r} requires global_batch_size to be "
+            "divisible by local_batch_size * data_parallel_degree: "
+            f"{training.global_batch_size} % ({training.local_batch_size} * "
+            f"{topology.data_parallel_degree}) != 0"
+        )
+    if training.local_batch_size % topology.pipeline_parallel_microbatch_size:
+        raise ValueError(
+            f"topology {topology.name!r} requires local_batch_size to be "
+            "divisible by pipeline_parallel_microbatch_size: "
+            f"{training.local_batch_size} % "
+            f"{topology.pipeline_parallel_microbatch_size} != 0"
+        )
+    pipeline_microbatches = (
+        training.local_batch_size
+        // topology.pipeline_parallel_microbatch_size
+    )
+    if (
+        topology.pipeline_parallel_degree > 1
+        and pipeline_microbatches < topology.pipeline_parallel_degree
+    ):
+        raise ValueError(
+            f"topology {topology.name!r} has {pipeline_microbatches} pipeline "
+            f"microbatches but {topology.pipeline_parallel_degree} stages; "
+            "increase local_batch_size or reduce the PP microbatch size"
+        )
+    return TrainingTopologyPlan(
+        gradient_accumulation_steps=(
+            training.global_batch_size // data_parallel_batch
+        ),
+        pipeline_microbatches=pipeline_microbatches,
+    )
+
+
+@dataclass(frozen=True)
 class FormalExperimentConfig:
     name: str
     kind: ExperimentKind
@@ -298,6 +348,8 @@ class FormalExperimentConfig:
                 raise ValueError("migration requires the same parallel topology")
         elif self.reference.device_type != self.candidate.device_type:
             raise ValueError("self-consistency requires the same device type")
+        training_topology_plan(self.training, self.reference.topology)
+        training_topology_plan(self.training, self.candidate.topology)
 
     @property
     def scenario_name(self) -> str:
@@ -532,21 +584,7 @@ def _torchrun_command(
     dump_folder: Path,
     checkpoint_path: Path,
 ) -> list[str]:
-    if (
-        config.training.global_batch_size
-        % (config.training.local_batch_size * endpoint.topology.data_parallel_degree)
-        != 0
-    ):
-        raise ValueError(
-            "global batch size must be divisible by local batch size times data "
-            f"parallel degree for {endpoint.topology.name}"
-        )
-    if (
-        config.training.local_batch_size
-        % endpoint.topology.pipeline_parallel_microbatch_size
-        != 0
-    ):
-        raise ValueError("local batch size must be divisible by PP microbatch size")
+    training_topology_plan(config.training, endpoint.topology)
     if endpoint.num_nodes > 1 and endpoint.rendezvous_endpoint == "localhost:0":
         raise ValueError(
             "multi-node capture requires a shared host:port rendezvous_endpoint"
@@ -845,12 +883,29 @@ def capture_endpoint(
         dump_folder=run_directory / "trainer_output",
         checkpoint_path=checkpoint_path,
     )
-    _run_process(
-        command,
-        root=root,
-        environment=environment,
-        log_path=runtime_log,
+    capture_label = (
+        f"role={role}, topology={endpoint.topology.name}, "
+        f"repeat={repeat}/{endpoint.repeats}, device={endpoint.device_type}, "
+        f"world_size={endpoint.topology.world_size}"
     )
+    print(
+        f"Starting capture: {capture_label}\nRuntime log: {runtime_log}",
+        flush=True,
+    )
+    try:
+        _run_process(
+            command,
+            root=root,
+            environment=environment,
+            log_path=runtime_log,
+        )
+    except subprocess.CalledProcessError:
+        print(
+            f"Capture failed: {capture_label}\nRuntime log: {runtime_log}",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise
 
     if endpoint.node_rank != metrics_node_rank:
         return None
@@ -874,6 +929,10 @@ def capture_endpoint(
         node_rank=0,
         num_processes_per_node=endpoint.topology.world_size,
     )
+    batch_schedule = training_topology_plan(
+        config.training,
+        endpoint.topology,
+    )
     training_contract = {
         "scenario_name": config.storage_name,
         "training": _normalized_training(config.training),
@@ -882,6 +941,7 @@ def capture_endpoint(
         "token_plan": fixture_manifest["token_plan"],
         "topology": {
             **asdict(endpoint.topology),
+            "batch_schedule": asdict(batch_schedule),
             "input_contract": input_contract,
         },
     }
@@ -1029,7 +1089,16 @@ def run_formal_cli(
 
     if args.list_topologies:
         for name, topology in topology_registry.items():
-            print(f"{name}: {asdict(topology)}")
+            try:
+                batch_schedule: dict[str, Any] = asdict(
+                    training_topology_plan(base_config.training, topology)
+                )
+            except ValueError as error:
+                batch_schedule = {"invalid": str(error)}
+            print(
+                f"{name}: topology={asdict(topology)}, "
+                f"batch_schedule={batch_schedule}"
+            )
         return
     shared_topology = topology_registry.get(args.topology)
     reference_topology = topology_registry.get(args.reference_topology) or shared_topology

@@ -46,8 +46,11 @@ CONFIG = FormalExperimentConfig(
     ),
     training=FormalTrainingConfig(
         steps=1000,
-        local_batch_size=2,
-        global_batch_size=16,
+        # Keep one topology-independent profile valid through eight-way DP and
+        # 1F1B PP. This lets any built-in <=8-card migration topology use the
+        # same global samples, local batch, and optimizer-step definition.
+        local_batch_size=8,
+        global_batch_size=64,
         sequence_length=128,
         seed=61,
         deterministic=True,

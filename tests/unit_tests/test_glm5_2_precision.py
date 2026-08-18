@@ -31,6 +31,7 @@ from tests.glm5_2_precision.token_data import (
     INPUT_MAPPING,
     TOKEN_PLAN_SCHEMA,
     TOKEN_PLAN_VERSION,
+    batches_per_optimizer_step,
     global_slots_for_batch,
     load_token_plan,
     sample_digest,
@@ -46,6 +47,8 @@ from tests.glm5_2_precision.workflow import (
     TrainingEndpoint,
     _endpoint_from_process_environment,
     _fixture_endpoint_from_environment,
+    standard_topologies,
+    training_topology_plan,
 )
 
 
@@ -148,6 +151,70 @@ def test_topology_validates_rank_product() -> None:
     assert "--parallelism.tensor_parallel_degree=4" in topology.command_args()
     with pytest.raises(ValueError, match="dense ranks"):
         ParallelTopology("invalid", 8, data_parallel_shard_degree=2)
+
+
+def test_common_eight_card_batch_profile_supports_every_builtin_topology() -> None:
+    training = FormalTrainingConfig(local_batch_size=8, global_batch_size=64)
+
+    for topology in standard_topologies().values():
+        if topology.world_size > 8:
+            continue
+        plan = training_topology_plan(training, topology)
+        assert plan.gradient_accumulation_steps >= 1
+        assert plan.pipeline_microbatches >= topology.pipeline_parallel_degree
+
+
+def test_common_eight_card_profile_preserves_every_global_sample_slot() -> None:
+    training = FormalTrainingConfig(local_batch_size=8, global_batch_size=64)
+
+    for topology in standard_topologies().values():
+        if topology.world_size > 8:
+            continue
+        dataloader_batch_size = (
+            topology.pipeline_parallel_microbatch_size
+            if topology.pipeline_parallel_degree > 1
+            else training.local_batch_size
+        )
+        num_batches = batches_per_optimizer_step(
+            global_batch_size=training.global_batch_size,
+            training_local_batch_size=training.local_batch_size,
+            dataloader_batch_size=dataloader_batch_size,
+            dp_world_size=topology.data_parallel_degree,
+        )
+        slots = sorted(
+            slot
+            for dp_rank in range(topology.data_parallel_degree)
+            for batch in range(num_batches)
+            for slot in global_slots_for_batch(
+                batch_in_step=batch,
+                dp_rank=dp_rank,
+                dp_world_size=topology.data_parallel_degree,
+                global_batch_size=training.global_batch_size,
+                training_local_batch_size=training.local_batch_size,
+                dataloader_batch_size=dataloader_batch_size,
+            )
+        )
+        assert slots == list(range(training.global_batch_size)), topology.name
+
+
+def test_pipeline_batch_validation_happens_before_launch() -> None:
+    pp8 = standard_topologies()["pp8"]
+
+    with pytest.raises(ValueError, match="2 pipeline microbatches but 8 stages"):
+        training_topology_plan(
+            FormalTrainingConfig(local_batch_size=2, global_batch_size=16),
+            pp8,
+        )
+
+
+def test_eight_way_dp_rejects_an_undersized_global_batch() -> None:
+    ddp8 = standard_topologies()["ddp8"]
+
+    with pytest.raises(ValueError, match="global_batch_size"):
+        training_topology_plan(
+            FormalTrainingConfig(local_batch_size=8, global_batch_size=16),
+            ddp8,
+        )
 
 
 def test_fixed_token_mapping_preserves_one_global_batch_across_dp_degrees() -> None:
@@ -469,7 +536,7 @@ def test_self_consistency_suite_reuses_reference_and_reports_partial_results(
         kind="self_consistency",
         reference=reference,
         candidate=candidate,
-        training=FormalTrainingConfig(steps=4, global_batch_size=2),
+        training=FormalTrainingConfig(steps=4, global_batch_size=16),
         standard=standard,
         artifact_root="artifacts",
         report_root="reports",
@@ -477,7 +544,7 @@ def test_self_consistency_suite_reuses_reference_and_reports_partial_results(
     from tests.glm5_2_precision.workflow import _artifact_directory
 
     assert config.storage_name == (
-        "self-cuda-bf16-random-s4-b2-seq128-seed61"
+        "self-cuda-bf16-random-s4-b16-seq128-seed61"
     )
     assert _artifact_directory(
         tmp_path, config, "candidate", config.candidate, 1
@@ -493,7 +560,7 @@ def test_self_consistency_suite_reuses_reference_and_reports_partial_results(
         "valid": True,
         "mapping": INPUT_MAPPING,
         "steps": 4,
-        "global_batch_size": 2,
+        "global_batch_size": 16,
         "training_local_batch_size": 2,
         "token_plan_step_series_sha256": "token-plan",
     }

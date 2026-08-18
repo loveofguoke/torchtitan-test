@@ -58,8 +58,11 @@ CONFIG = FormalExperimentConfig(
     ),
     training=FormalTrainingConfig(
         steps=1000,
-        local_batch_size=2,
-        global_batch_size=16,
+        # One shared reference covers DP8 and 1F1B PP8. Local batch 8 gives
+        # PP8 eight microbatches, while global batch 64 also accommodates the
+        # eight-way data-parallel topologies without changing batch semantics.
+        local_batch_size=8,
+        global_batch_size=64,
         sequence_length=128,
         seed=61,
         deterministic=True,
