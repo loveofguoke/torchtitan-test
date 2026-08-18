@@ -57,7 +57,7 @@ CONFIG = FormalExperimentConfig(
         repeats=2,
     ),
     training=FormalTrainingConfig(
-        steps=1000,
+        steps=5000,
         # One shared reference covers DP8 and 1F1B PP8. Local batch 8 gives
         # PP8 eight microbatches, while global batch 64 also accommodates the
         # eight-way data-parallel topologies without changing batch semantics.

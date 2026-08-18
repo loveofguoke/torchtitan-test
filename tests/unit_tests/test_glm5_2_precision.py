@@ -14,7 +14,10 @@ from tests.glm5_2_precision.artifacts import (
     PrecisionArtifactWriter,
     TrainingMetric,
 )
-from tests.glm5_2_precision.report import compare_and_write_report
+from tests.glm5_2_precision.report import (
+    compare_and_write_report,
+    precision_report_filename,
+)
 from tests.glm5_2_precision.migrate_legacy_outputs import compact_scenario_name
 from tests.glm5_2_precision.self_consistency_suite import compare_suite
 from tests.glm5_2_precision.standards import (
@@ -462,6 +465,7 @@ def test_compare_writes_html_and_json_report(tmp_path: Path) -> None:
 
     report = compare_and_write_report(tmp_path, config)
     assert report.is_file()
+    assert report.name == "migration-cuda-single-vs-npu-single-bf16.html"
     report_text = report.read_text(encoding="utf-8")
     assert "Formal GLM 5.2 precision benchmark" in report_text
     assert "Repeat-run diagnostics" in report_text
@@ -605,8 +609,16 @@ def test_self_consistency_suite_reuses_reference_and_reports_partial_results(
         require_all=False,
     )
     text = report.read_text(encoding="utf-8")
+    assert report.name == "self-cuda-single-vs-distributed-bf16-suite.html"
     assert "ddp8" in text
     assert "fsdp8" in text
     assert "NOT RUN" in text
     assert "PARTIAL PASS" in text
-    assert (report.parent / "ddp8" / "precision_report.html").is_file()
+    assert precision_report_filename(config) == (
+        "self-cuda-single-vs-cuda-ddp8-bf16.html"
+    )
+    assert (
+        report.parent
+        / "ddp8"
+        / precision_report_filename(config)
+    ).is_file()

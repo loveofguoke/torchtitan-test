@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 from typing import Any, Sequence
 
-from .report import compare_and_write_report
+from .report import compare_and_write_report, precision_label
 from .workflow import (
     FormalExperimentConfig,
     ParallelTopology,
@@ -162,7 +162,8 @@ def compare_suite(
             f"<td>{max_loss_absolute:.9g}</td>"
             f"<td>{max_loss_relative:.6%}</td>"
             f"<td>{max_grad_relative:.6%}</td>"
-            f'<td><a href="{html.escape(name)}/precision_report.html">details</a></td>'
+            f'<td><a href="{html.escape(name)}/{html.escape(report_path.name)}">'
+            "details</a></td>"
             "</tr>"
         )
     for name in missing:
@@ -195,7 +196,12 @@ def compare_suite(
         json.dumps(suite_summary, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    report = suite_directory / "suite_report.html"
+    suite_report_name = (
+        f"self-{first_config.reference.device_type}-"
+        f"{first_config.reference.topology.slug}-vs-distributed-"
+        f"{precision_label(first_config)}-suite.html"
+    )
+    report = suite_directory / suite_report_name
     report.write_text(
         f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">

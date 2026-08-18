@@ -43,7 +43,7 @@ CONFIG = PairedParityConfig(
     ),
     report_root="parity_reports",
     log_root="parity_reports/logs",
-    report_name="paired.html",
+    report_name="titan_vs_hf_gpu_fp32_paired.html",
 )
 
 

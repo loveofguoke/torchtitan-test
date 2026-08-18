@@ -46,6 +46,27 @@ class CandidateEvaluation:
         )
 
 
+def precision_label(config: Any) -> str:
+    return {
+        "mixed-bfloat16": "bf16",
+        "mixed-float32": "fp32",
+        "full-bf16": "full-bf16",
+    }.get(config.training.precision_name, config.training.precision_name)
+
+
+def precision_report_filename(config: Any) -> str:
+    """Return a portable report name that identifies both compared endpoints."""
+
+    reference = config.reference
+    candidate = config.candidate
+    experiment = "self" if config.kind == "self_consistency" else config.kind
+    return (
+        f"{experiment}-{reference.device_type}-{reference.topology.slug}-vs-"
+        f"{candidate.device_type}-{candidate.topology.slug}-"
+        f"{precision_label(config)}.html"
+    )
+
+
 def _escape(value: Any) -> str:
     return html.escape(str(value))
 
@@ -636,7 +657,7 @@ def compare_and_write_report(
         if config.kind == "self_consistency":
             report_directory /= config.candidate.topology.slug
     report_directory.mkdir(parents=True, exist_ok=True)
-    report_path = report_directory / "precision_report.html"
+    report_path = report_directory / precision_report_filename(config)
     summary_path = report_directory / "precision_summary.json"
     summary = {
         "scenario_name": config.scenario_name,
