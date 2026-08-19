@@ -114,6 +114,21 @@ python release_artifacts.py download \
   migration-cuda-npu-single-bf16-random-s5000-b64-seq128-seed61
 ```
 
+On machines where `gh` cannot download because of certificate validation,
+retain `gh` for uploads and select the `wget` download backend:
+
+```bash
+python release_artifacts.py download \
+  migration-cuda-npu-single-bf16-random-s5000-b64-seq128-seed61 \
+  --backend wget
+```
+
+The `wget` backend uses `--no-check-certificate`, so it should only be used on
+a trusted network for this known GitHub repository. Both backends verify the
+downloaded archive against its release SHA-256 asset, extract it into the
+original repository-relative directories, and remove the temporary archive and
+checksum file automatically.
+
 The download refuses to replace existing files by default. Add `--overwrite`
 only when the local copies are intentionally being refreshed. Use
 `--repo OWNER/REPO` before the subcommand to select a repository other than

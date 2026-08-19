@@ -99,6 +99,49 @@ def _visible_devices(device: str) -> list[str] | None:
     return [part.strip() for part in value.split(",") if part.strip()]
 
 
+def _profiling_preflight(output_directory: Path, device: str) -> dict[str, Any]:
+    """Record official environment and storage recommendations."""
+
+    warnings = []
+    effective_umask = None
+    if os.name == "posix":
+        effective_umask = os.umask(0)
+        os.umask(effective_umask)
+        if effective_umask & 0o027 != 0o027:
+            warnings.append(
+                f"umask {effective_umask:04o} is weaker than the recommended 0027"
+            )
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            warnings.append("profiling as root is not recommended")
+    output_parent = output_directory.parent
+    storage = shutil.disk_usage(output_parent)
+    if output_parent.is_symlink():
+        warnings.append("profiler output parent is a symbolic link")
+    if device == "npu" and not any(
+        os.environ.get(name)
+        for name in ("ASCEND_HOME_PATH", "ASCEND_OPP_PATH", "ASCEND_TOOLKIT_HOME")
+    ):
+        warnings.append("no standard CANN environment path variable was detected")
+    result = {
+        "effective_umask": (
+            f"{effective_umask:04o}" if effective_umask is not None else None
+        ),
+        "running_as_root": bool(
+            os.name == "posix"
+            and hasattr(os, "geteuid")
+            and os.geteuid() == 0
+        ),
+        "output_parent": str(output_parent.resolve()),
+        "output_parent_is_symlink": output_parent.is_symlink(),
+        "storage_free_bytes_before_capture": storage.free,
+        "storage_total_bytes": storage.total,
+        "warnings": warnings,
+    }
+    for warning in warnings:
+        print(f"Profiler preflight warning: {warning}")
+    return result
+
+
 def _run_name(config: PerformanceConfig, device: str) -> str:
     return _slug(f"{config.name}-{device}-{config.topology}-{config.preset}")
 
@@ -247,6 +290,11 @@ def capture(
     preset: ProfilerPreset,
     force: bool,
 ) -> tuple[Path, Path]:
+    if device == "npu" and os.environ.get("PROF_CONFIG_PATH"):
+        raise ValueError(
+            "PROF_CONFIG_PATH enables dynamic_profile and cannot be combined "
+            "with this scheduled profiler capture"
+        )
     run_name = _run_name(config, device)
     run_parent = root / config.run_root
     artifact_parent = root / config.artifact_root
@@ -256,6 +304,15 @@ def capture(
 
     run_manifest = run_directory / "manifest.json"
     if complete_manifest.is_file() and run_manifest.is_file() and not force:
+        existing = json.loads(complete_manifest.read_text(encoding="utf-8"))
+        if (
+            existing.get("config") != config.as_dict()
+            or existing.get("profiler_environment") != preset.environment()
+        ):
+            raise FileExistsError(
+                f"completed capture uses different settings: {artifact_directory}; "
+                "pass --force or choose a distinct script name"
+            )
         print(f"Skip completed performance capture: {artifact_directory}")
         return run_directory, artifact_directory
     if force:
@@ -281,6 +338,7 @@ def capture(
     environment["LOG_RANK"] = str(
         _metrics_rank(topology.world_size, topology.pp, topology.pp_schedule)
     )
+    preflight = _profiling_preflight(run_directory, device)
     command = _training_command(
         root=root,
         config=config,
@@ -292,6 +350,7 @@ def capture(
         f"preset={config.preset}, output={run_directory}"
     )
     print(f"Runtime log: {runtime_log}")
+    capture_started = time.monotonic()
     try:
         _run_process(
             command,
@@ -306,6 +365,25 @@ def capture(
         )
         raise
 
+    storage_after = shutil.disk_usage(run_directory.parent)
+    output_bytes = sum(
+        path.stat().st_size
+        for path in run_directory.rglob("*")
+        if path.is_file()
+    )
+    preflight.update(
+        {
+            "capture_duration_seconds": time.monotonic() - capture_started,
+            "storage_free_bytes_after_capture": storage_after.free,
+            "run_output_bytes": output_bytes,
+            "recommended_free_bytes_for_same_capture": output_bytes * 20,
+        }
+    )
+    if preflight["storage_free_bytes_before_capture"] < output_bytes * 20:
+        warning = "free storage was below 20 times the captured run size"
+        preflight["warnings"].append(warning)
+        print(f"Profiler preflight warning: {warning}")
+
     manifest = {
         "format_version": 1,
         "run_name": run_name,
@@ -316,6 +394,7 @@ def capture(
         "profiler_environment": preset.environment(),
         "command": command,
         "source": _source_metadata(root),
+        "preflight": preflight,
         "run_directory": str(run_directory),
     }
     _write_json(run_directory / "manifest.json", manifest)
@@ -335,7 +414,13 @@ def _find_profiler_directory(run_directory: Path) -> Path:
     return next((path for path in candidates if path.is_dir()), candidates[0])
 
 
-def offline_parse(run_directory: Path) -> list[str]:
+def offline_parse(
+    run_directory: Path,
+    *,
+    max_process_number: int | None = None,
+) -> list[str]:
+    if max_process_number is not None and max_process_number < 1:
+        raise ValueError("offline parse workers must be positive")
     profiler_directory = _find_profiler_directory(run_directory)
     raw_directories = sorted(
         path
@@ -350,24 +435,22 @@ def offline_parse(run_directory: Path) -> list[str]:
         import torch_npu
     except ImportError as error:
         raise RuntimeError("offline parsing requires torch_npu") from error
-    parsed = []
-    for raw_directory in raw_directories:
-        print(f"Parsing Ascend profiler data: {raw_directory}")
-        torch_npu.profiler.profiler.analyse(profiler_path=str(raw_directory))
-        parsed.append(str(raw_directory))
-    return parsed
+    print(
+        f"Parsing {len(raw_directories)} Ascend profile root(s) under "
+        f"{profiler_directory}"
+    )
+    arguments: dict[str, Any] = {"profiler_path": str(profiler_directory)}
+    if max_process_number is not None:
+        arguments["max_process_number"] = max_process_number
+    torch_npu.profiler.profiler.analyse(**arguments)
+    return [str(path) for path in raw_directories]
 
 
 def run_advisor(run_directory: Path) -> dict[str, Any]:
-    executable = shutil.which("msprof-analyze")
-    if executable is None:
-        raise FileNotFoundError(
-            "msprof-analyze is not installed or is not on PATH"
-        )
     profiler_directory = _find_profiler_directory(run_directory)
     output_directory = run_directory / "advisor"
     command = [
-        executable,
+        _msprof_analyze_executable(),
         "advisor",
         "all",
         "-d",
@@ -375,6 +458,18 @@ def run_advisor(run_directory: Path) -> dict[str, Any]:
         "-o",
         str(output_directory),
     ]
+    return _run_msprof_analyze(
+        run_directory, name="advisor", command=command
+    )
+
+
+def _run_msprof_analyze(
+    run_directory: Path,
+    *,
+    name: str,
+    command: list[str],
+) -> dict[str, Any]:
+    print(f"Running msprof-analyze {name}: {' '.join(command)}")
     result = subprocess.run(command, text=True, capture_output=True, check=False)
     status = {
         "command": command,
@@ -382,10 +477,73 @@ def run_advisor(run_directory: Path) -> dict[str, Any]:
         "stdout": result.stdout,
         "stderr": result.stderr,
     }
-    _write_json(run_directory / "advisor.json", status)
+    _write_json(run_directory / f"{name}.json", status)
     if result.returncode:
         raise subprocess.CalledProcessError(result.returncode, command)
     return status
+
+
+def _msprof_analyze_executable() -> str:
+    executable = shutil.which("msprof-analyze")
+    if executable is None:
+        raise FileNotFoundError(
+            "msprof-analyze is not installed or is not on PATH"
+        )
+    return executable
+
+
+def run_cluster_analysis(run_directory: Path) -> dict[str, Any]:
+    """Build the official multi-rank communication analysis deliverable."""
+
+    profiler_directory = _find_profiler_directory(run_directory)
+    output_directory = run_directory / "cluster"
+    command = [
+        _msprof_analyze_executable(),
+        "cluster",
+        "-m",
+        "all",
+        "-d",
+        str(profiler_directory),
+        "-o",
+        str(output_directory),
+    ]
+    return _run_msprof_analyze(
+        run_directory, name="cluster", command=command
+    )
+
+
+def _comparison_input(run_directory: Path) -> Path:
+    profiler_directory = _find_profiler_directory(run_directory)
+    ascend_roots = sorted(
+        path
+        for path in profiler_directory.rglob("*_ascend_pt")
+        if path.is_dir()
+    )
+    return ascend_roots[0] if len(ascend_roots) == 1 else profiler_directory
+
+
+def run_performance_compare(
+    run_directory: Path,
+    baseline: Path,
+) -> dict[str, Any]:
+    """Compare one profile against an NPU or GPU baseline profile."""
+
+    if not baseline.exists():
+        raise FileNotFoundError(f"performance baseline not found: {baseline}")
+    output_directory = run_directory / "compare"
+    command = [
+        _msprof_analyze_executable(),
+        "compare",
+        "-d",
+        str(_comparison_input(run_directory)),
+        "-bp",
+        str(baseline.resolve()),
+        "-o",
+        str(output_directory),
+    ]
+    return _run_msprof_analyze(
+        run_directory, name="compare", command=command
+    )
 
 
 def analyze(
@@ -394,7 +552,10 @@ def analyze(
     *,
     device: str,
     parse_offline: bool,
+    parse_workers: int | None,
     advisor: bool,
+    cluster: bool,
+    compare_baseline: Path | None,
 ) -> Path:
     run_name = _run_name(config, device)
     run_directory = root / config.run_root / run_name
@@ -403,9 +564,13 @@ def analyze(
     if not manifest_path.is_file():
         raise FileNotFoundError(f"capture artifact not found: {manifest_path}")
     if parse_offline:
-        offline_parse(run_directory)
+        offline_parse(run_directory, max_process_number=parse_workers)
     if advisor:
         run_advisor(run_directory)
+    if cluster:
+        run_cluster_analysis(run_directory)
+    if compare_baseline is not None:
+        run_performance_compare(run_directory, compare_baseline)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     analysis = build_analysis(run_directory)
     _write_json(artifact_directory / "analysis.json", analysis)
@@ -444,9 +609,28 @@ def run_profiler_cli(config: PerformanceConfig, script_path: str) -> None:
     parser.add_argument("--local-batch-size", type=int)
     parser.add_argument("--global-batch-size", type=int)
     parser.add_argument("--sequence-length", type=int)
+    parser.add_argument(
+        "--run-root",
+        help="raw output root; use node-local storage for large cluster captures",
+    )
+    parser.add_argument(
+        "--parse-mode",
+        choices=("sync", "async", "offline"),
+        help=(
+            "Ascend parsing mode: synchronous, asynchronous, or after "
+            "capture"
+        ),
+    )
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--offline-parse", action="store_true")
+    parser.add_argument("--parse-workers", type=int)
     parser.add_argument("--advisor", action="store_true")
+    parser.add_argument("--cluster", action="store_true")
+    parser.add_argument(
+        "--compare-baseline",
+        type=Path,
+        help="GPU trace or NPU profile path for msprof-analyze compare",
+    )
     parser.add_argument("--force", action="store_true")
     parser.add_argument(
         "--extra-train-arg",
@@ -467,6 +651,7 @@ def run_profiler_cli(config: PerformanceConfig, script_path: str) -> None:
         "local_batch_size": args.local_batch_size,
         "global_batch_size": args.global_batch_size,
         "sequence_length": args.sequence_length,
+        "run_root": args.run_root,
     }
     effective = replace(
         config,
@@ -483,8 +668,12 @@ def run_profiler_cli(config: PerformanceConfig, script_path: str) -> None:
         )
         os.environ[variable] = args.visible_devices
     preset = presets[effective.preset]
+    if args.offline and args.parse_mode not in {None, "offline"}:
+        parser.error("--offline conflicts with a non-offline --parse-mode")
     if args.offline:
-        preset = replace(preset, online_parse=False)
+        preset = replace(preset, parse_mode="offline")
+    elif args.parse_mode:
+        preset = replace(preset, parse_mode=args.parse_mode)
 
     if args.capture or args.probe:
         capture(
@@ -499,6 +688,16 @@ def run_profiler_cli(config: PerformanceConfig, script_path: str) -> None:
             root,
             effective,
             device=device,
-            parse_offline=args.offline_parse,
+            parse_offline=(
+                args.offline_parse
+                or (
+                    args.probe
+                    and device == "npu"
+                    and preset.parse_mode == "offline"
+                )
+            ),
+            parse_workers=args.parse_workers,
             advisor=args.advisor,
+            cluster=args.cluster,
+            compare_baseline=args.compare_baseline,
         )

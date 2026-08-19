@@ -7,6 +7,7 @@ from typing import Literal
 
 
 DeviceType = Literal["auto", "cuda", "npu"]
+ParseMode = Literal["sync", "async", "offline"]
 
 
 @dataclass(frozen=True)
@@ -82,16 +83,22 @@ class ProfilerPreset:
     """Top-down Ascend collection detail for a bounded step window."""
 
     name: str
-    level: Literal["level0", "level1", "level2"]
+    level: Literal["level_none", "level0", "level1", "level2"]
     profile_ranks: str = "0"
     record_shapes: bool = False
     profile_memory: bool = False
     with_stack: bool = False
-    online_parse: bool = True
+    with_modules: bool = False
+    parse_mode: ParseMode = "sync"
     aic_metrics: str = "none"
     l2_cache: bool = False
     op_attr: bool = False
+    data_simplification: bool = True
     record_op_args: bool = False
+    gc_detect_threshold: float | None = None
+    host_system: tuple[str, ...] = ()
+    system_io: bool = False
+    system_interconnection: bool = False
 
     def environment(self) -> dict[str, str]:
         prefix = "TORCHTITAN_NPU_PROFILER_"
@@ -101,11 +108,25 @@ class ProfilerPreset:
             prefix + "RECORD_SHAPES": str(self.record_shapes).lower(),
             prefix + "PROFILE_MEMORY": str(self.profile_memory).lower(),
             prefix + "WITH_STACK": str(self.with_stack).lower(),
-            prefix + "ONLINE_PARSE": str(self.online_parse).lower(),
+            prefix + "WITH_MODULES": str(self.with_modules).lower(),
+            prefix + "PARSE_MODE": self.parse_mode,
             prefix + "AIC_METRICS": self.aic_metrics,
             prefix + "L2_CACHE": str(self.l2_cache).lower(),
             prefix + "OP_ATTR": str(self.op_attr).lower(),
+            prefix + "DATA_SIMPLIFICATION": str(
+                self.data_simplification
+            ).lower(),
             prefix + "RECORD_OP_ARGS": str(self.record_op_args).lower(),
+            prefix + "GC_DETECT_THRESHOLD": (
+                str(self.gc_detect_threshold)
+                if self.gc_detect_threshold is not None
+                else "none"
+            ),
+            prefix + "HOST_SYSTEM": ",".join(self.host_system) or "none",
+            prefix + "SYSTEM_IO": str(self.system_io).lower(),
+            prefix + "SYSTEM_INTERCONNECTION": str(
+                self.system_interconnection
+            ).lower(),
         }
 
 
@@ -114,11 +135,20 @@ def profiler_presets() -> dict[str, ProfilerPreset]:
 
     return {
         "overview": ProfilerPreset("overview", "level0"),
+        "comparison": ProfilerPreset("comparison", "level0"),
+        "standard": ProfilerPreset(
+            "standard",
+            "level1",
+            aic_metrics="pipe_utilization",
+        ),
         "distributed": ProfilerPreset(
             "distributed",
             "level1",
             profile_ranks="all",
+            parse_mode="offline",
             aic_metrics="pipe_utilization",
+            data_simplification=False,
+            system_interconnection=True,
         ),
         "kernel": ProfilerPreset(
             "kernel",
@@ -126,6 +156,7 @@ def profiler_presets() -> dict[str, ProfilerPreset]:
             record_shapes=True,
             aic_metrics="arithmetic_utilization",
             l2_cache=True,
+            data_simplification=False,
         ),
         "runtime": ProfilerPreset(
             "runtime",
@@ -133,9 +164,13 @@ def profiler_presets() -> dict[str, ProfilerPreset]:
             record_shapes=True,
             profile_memory=True,
             with_stack=True,
+            with_modules=True,
             aic_metrics="arithmetic_utilization",
             l2_cache=True,
             op_attr=True,
+            data_simplification=False,
+            gc_detect_threshold=1.0,
+            host_system=("cpu", "mem"),
         ),
     }
 

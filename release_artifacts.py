@@ -11,6 +11,7 @@ import sys
 import tarfile
 import tempfile
 from pathlib import Path, PurePosixPath
+from urllib.parse import quote
 
 
 DEFAULT_REPOSITORY = "loveofguoke/torchtitan-test"
@@ -37,6 +38,21 @@ def run_gh(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, check=check, text=True)
 
 
+def run_wget(url: str, output_path: Path) -> None:
+    """Download a public release asset with certificate checks disabled."""
+    if shutil.which("wget") is None:
+        raise RuntimeError("'wget' was not found")
+    command = [
+        "wget",
+        "--no-check-certificate",
+        "--output-document",
+        str(output_path),
+        url,
+    ]
+    print("+", " ".join(command), flush=True)
+    subprocess.run(command, check=True)
+
+
 def validate_experiment_name(experiment: str) -> str:
     """Require one safe directory/tag component."""
     if not experiment or experiment in {".", ".."}:
@@ -48,6 +64,20 @@ def validate_experiment_name(experiment: str) -> str:
             "experiment name must not start with '-' or contain whitespace"
         )
     return experiment
+
+
+def validate_repository(repository: str) -> tuple[str, str]:
+    """Validate and split a GitHub OWNER/REPO identifier."""
+    parts = repository.split("/")
+    if len(parts) != 2 or not all(parts):
+        raise ValueError("repository must use the OWNER/REPO format")
+    invalid_part = any(
+        part in {".", ".."} or any(char.isspace() for char in part)
+        for part in parts
+    )
+    if invalid_part:
+        raise ValueError("repository owner and name must not contain whitespace")
+    return parts[0], parts[1]
 
 
 def find_experiment_paths(repository_root: Path, experiment: str) -> list[Path]:
@@ -173,6 +203,53 @@ def validate_archive_members(
         )
 
 
+def download_assets_with_gh(
+    *,
+    repository: str,
+    experiment: str,
+    archive_name: str,
+    checksum_name: str,
+    download_dir: Path,
+) -> None:
+    run_gh(
+        "release",
+        "download",
+        experiment,
+        "--pattern",
+        archive_name,
+        "--pattern",
+        checksum_name,
+        "--dir",
+        str(download_dir),
+        "--repo",
+        repository,
+    )
+
+
+def download_assets_with_wget(
+    *,
+    repository: str,
+    experiment: str,
+    archive_name: str,
+    checksum_name: str,
+    download_dir: Path,
+) -> None:
+    owner, repository_name = validate_repository(repository)
+    release_url = (
+        f"https://github.com/{quote(owner, safe='')}/"
+        f"{quote(repository_name, safe='')}/releases/download/"
+        f"{quote(experiment, safe='')}"
+    )
+    print(
+        "WARNING: wget backend disables TLS certificate verification.",
+        file=sys.stderr,
+        flush=True,
+    )
+    for asset_name in (archive_name, checksum_name):
+        asset_url = f"{release_url}/{quote(asset_name, safe='')}"
+        run_wget(asset_url, download_dir / asset_name)
+
+
 def download(args: argparse.Namespace) -> None:
     destination = args.destination.resolve()
     destination.mkdir(parents=True, exist_ok=True)
@@ -181,21 +258,21 @@ def download(args: argparse.Namespace) -> None:
     checksum_name = f"{archive_name}.sha256"
 
     with tempfile.TemporaryDirectory(prefix="torchtitan-release-") as temp_dir:
-        run_gh(
-            "release",
-            "download",
-            experiment,
-            "--pattern",
-            archive_name,
-            "--pattern",
-            checksum_name,
-            "--dir",
-            temp_dir,
-            "--repo",
-            args.repo,
+        download_dir = Path(temp_dir)
+        download_assets = (
+            download_assets_with_gh
+            if args.backend == "gh"
+            else download_assets_with_wget
         )
-        archive_path = Path(temp_dir) / archive_name
-        checksum_path = Path(temp_dir) / checksum_name
+        download_assets(
+            repository=args.repo,
+            experiment=experiment,
+            archive_name=archive_name,
+            checksum_name=checksum_name,
+            download_dir=download_dir,
+        )
+        archive_path = download_dir / archive_name
+        checksum_path = download_dir / checksum_name
         expected = checksum_path.read_text(encoding="ascii").split()[0]
         actual = sha256_file(archive_path)
         if actual != expected:
@@ -241,6 +318,15 @@ def build_parser() -> argparse.ArgumentParser:
         "download", help="download and extract an experiment"
     )
     download_parser.add_argument("experiment", help="release/experiment name")
+    download_parser.add_argument(
+        "--backend",
+        choices=("gh", "wget"),
+        default="gh",
+        help=(
+            "release download backend (default: gh); wget disables TLS "
+            "certificate verification"
+        ),
+    )
     download_parser.add_argument(
         "--destination",
         type=Path,

@@ -194,6 +194,94 @@ def extract_top_csv_entries(
     return tables[:8]
 
 
+def inspect_profiler_deliverables(profiler_directory: Path) -> dict[str, Any]:
+    """Classify official Ascend outputs and portable GPU traces."""
+
+    if not profiler_directory.is_dir():
+        return {"ascend_profiles": [], "gpu_traces": [], "insight_ready": False}
+
+    ascend_profiles = []
+    for profile_root in sorted(profiler_directory.rglob("*_ascend_pt")):
+        if not profile_root.is_dir():
+            continue
+        output = profile_root / "ASCEND_PROFILER_OUTPUT"
+        text_files = {
+            name: (output / name).is_file()
+            for name in (
+                "api_statistic.csv",
+                "communication.json",
+                "communication_matrix.json",
+                "data_preprocess.csv",
+                "hccs.csv",
+                "kernel_details.csv",
+                "l2_cache.csv",
+                "memory_record.csv",
+                "nic.csv",
+                "npu_module_mem.csv",
+                "operator_details.csv",
+                "operator_memory.csv",
+                "op_statistic.csv",
+                "pcie.csv",
+                "roce.csv",
+                "soc_pmu.csv",
+                "step_trace_time.csv",
+                "task_time.csv",
+                "trace_view.json",
+            )
+        }
+        database_files = sorted(
+            path.name
+            for pattern in ("analysis.db", "ascend_pytorch_profiler*.db")
+            for path in output.glob(pattern)
+            if path.is_file()
+        )
+        profiler_info_files = sorted(
+            path.name for path in profile_root.glob("profiler_info*.json")
+        )
+        profiler_metadata_files = sorted(
+            path.name for path in profile_root.glob("profiler_metadata*.json")
+        )
+        parsed_text = any(text_files.values())
+        parsed_database = bool(database_files)
+        ascend_profiles.append(
+            {
+                "root": str(profile_root),
+                "relative_root": profile_root.relative_to(
+                    profiler_directory
+                ).as_posix(),
+                "raw_ready": bool(profiler_info_files),
+                "parsed_text": parsed_text,
+                "parsed_database": parsed_database,
+                "insight_ready": parsed_text or parsed_database,
+                "text_files": text_files,
+                "database_files": database_files,
+                "profiler_info_files": profiler_info_files,
+                "profiler_metadata_files": profiler_metadata_files,
+            }
+        )
+
+    gpu_traces = sorted(
+        str(path)
+        for path in profiler_directory.rglob("*.json")
+        if "trace" in path.name.lower()
+        and not any(parent.name.endswith("_ascend_pt") for parent in path.parents)
+    )
+    return {
+        "ascend_profiles": ascend_profiles,
+        "gpu_traces": gpu_traces,
+        "insight_ready": bool(gpu_traces)
+        or any(profile["insight_ready"] for profile in ascend_profiles),
+    }
+
+
+def _read_optional_json(path: Path) -> dict[str, Any] | None:
+    return (
+        json.loads(path.read_text(encoding="utf-8"))
+        if path.is_file()
+        else None
+    )
+
+
 def build_analysis(run_directory: Path) -> dict[str, Any]:
     metrics = summarize_metrics(read_metrics(run_directory / "metrics.jsonl"))
     profiler_directory = run_directory / "trainer_output" / "profiling" / "traces"
@@ -204,12 +292,7 @@ def build_analysis(run_directory: Path) -> dict[str, Any]:
         if profiler_directory.is_dir()
         else {"file_count": 0, "total_bytes": 0, "by_suffix": {}, "largest_files": []}
     )
-    advisor_path = run_directory / "advisor.json"
-    advisor = (
-        json.loads(advisor_path.read_text(encoding="utf-8"))
-        if advisor_path.is_file()
-        else None
-    )
+    deliverables = inspect_profiler_deliverables(profiler_directory)
     return {
         "metrics": metrics,
         "profiler_directory": str(profiler_directory),
@@ -219,7 +302,11 @@ def build_analysis(run_directory: Path) -> dict[str, Any]:
             if profiler_directory.is_dir()
             else []
         ),
-        "advisor": advisor,
+        "deliverables": deliverables,
+        "diagnostics": {
+            name: _read_optional_json(run_directory / f"{name}.json")
+            for name in ("advisor", "cluster", "compare")
+        },
     }
 
 
@@ -410,6 +497,18 @@ def render_html_report(
                 f'<div class="card"><span>{html.escape(label)}</span>'
                 f'<strong>{_format_number(values[statistic])}{suffix}</strong></div>'
             )
+    step_time_series = _find_metric(series, ("end_to_end",))
+    profile_window_seconds = None
+    if step_time_series is not None:
+        profile_window_seconds = sum(
+            value
+            for step, value in step_time_series[1]
+            if profile_start <= step <= profile_end
+        )
+        cards.append(
+            '<div class="card"><span>Profiled step time</span>'
+            f'<strong>{_format_number(profile_window_seconds)} s</strong></div>'
+        )
 
     charts = []
     chart_specs = (
@@ -481,16 +580,107 @@ def render_html_report(
             "<code>--analyze --advisor</code>.</div></section>"
         )
 
-    advisor = analysis.get("advisor")
-    advisor_section = ""
-    if advisor is not None:
-        advisor_section = (
-            '<section><h2>msprof-analyze advisor</h2>'
-            f'<p>Return code: <strong>{advisor.get("return_code")}</strong></p>'
+    diagnostics = analysis.get("diagnostics", {})
+    diagnostic_sections = ""
+    for name in ("advisor", "cluster", "compare"):
+        diagnostic = diagnostics.get(name)
+        if diagnostic is None:
+            continue
+        diagnostic_sections += (
+            f'<section><h2>msprof-analyze {name}</h2>'
+            f'<p>Return code: <strong>{diagnostic.get("return_code")}</strong></p>'
             '<details><summary>Command and output</summary><pre>'
-            f'{html.escape(" ".join(advisor.get("command", [])))}\n\n'
-            f'{html.escape(advisor.get("stdout", ""))}\n'
-            f'{html.escape(advisor.get("stderr", ""))}</pre></details></section>'
+            f'{html.escape(" ".join(diagnostic.get("command", [])))}\n\n'
+            f'{html.escape(diagnostic.get("stdout", ""))}\n'
+            f'{html.escape(diagnostic.get("stderr", ""))}</pre></details></section>'
+        )
+
+    deliverables = analysis.get(
+        "deliverables",
+        {"ascend_profiles": [], "gpu_traces": [], "insight_ready": False},
+    )
+
+    def badge(ready: bool, ready_text: str, missing_text: str) -> str:
+        css_class = "ready" if ready else "pending"
+        text = ready_text if ready else missing_text
+        return f'<span class="status {css_class}">{html.escape(text)}</span>'
+
+    ascend_rows = ""
+    for profile in deliverables["ascend_profiles"]:
+        files = [
+            name for name, present in profile["text_files"].items() if present
+        ] + profile["database_files"] + profile["profiler_metadata_files"]
+        file_details = ", ".join(files) or "No parsed files"
+        ascend_rows += (
+            f'<tr><td><code>{html.escape(profile["relative_root"])}</code>'
+            f'<br><span class="subtle">{html.escape(file_details)}</span></td>'
+            f'<td>{badge(profile["raw_ready"], "captured", "metadata missing")}</td>'
+            f'<td>{badge(profile["parsed_text"], "text ready", "text pending")}</td>'
+            f'<td>{badge(profile["parsed_database"], "DB ready", "DB pending")}</td>'
+            f'<td>{badge(profile["insight_ready"], "ready", "parse required")}</td></tr>'
+        )
+    if not ascend_rows:
+        ascend_rows = '<tr><td colspan="5">No Ascend profile root discovered</td></tr>'
+
+    gpu_trace_items = "".join(
+        f"<li><code>{html.escape(path)}</code></li>"
+        for path in deliverables["gpu_traces"][:20]
+    ) or "<li>No GPU trace discovered</li>"
+
+    has_capture = inventory["file_count"] > 0
+    has_parsed_output = bool(deliverables["gpu_traces"]) or deliverables[
+        "insight_ready"
+    ]
+    pipeline = (
+        badge(has_capture, "1 Capture complete", "1 Capture missing")
+        + badge(has_parsed_output, "2 Parse complete", "2 Parse pending")
+        + badge(
+            (diagnostics.get("advisor") or {}).get("return_code") == 0,
+            "3 Advisor complete",
+            "3 Advisor optional",
+        )
+        + badge(
+            (diagnostics.get("cluster") or {}).get("return_code") == 0,
+            "4 Cluster complete",
+            "4 Cluster optional",
+        )
+        + badge(
+            (diagnostics.get("compare") or {}).get("return_code") == 0,
+            "5 Compare complete",
+            "5 Compare optional",
+        )
+        + badge(
+            deliverables["insight_ready"],
+            "6 Insight ready",
+            "6 Insight pending",
+        )
+    )
+
+    preflight = manifest.get("preflight", {})
+    preflight_rows = ""
+    byte_fields = {
+        "storage_free_bytes_before_capture",
+        "storage_free_bytes_after_capture",
+        "storage_total_bytes",
+        "run_output_bytes",
+        "recommended_free_bytes_for_same_capture",
+    }
+    for key, value in preflight.items():
+        if key == "warnings":
+            continue
+        rendered = _human_bytes(value) if key in byte_fields else str(value)
+        preflight_rows += (
+            f"<tr><th>{html.escape(key)}</th><td>{html.escape(rendered)}</td></tr>"
+        )
+    warning_items = "".join(
+        f"<li>{html.escape(warning)}</li>"
+        for warning in preflight.get("warnings", [])
+    ) or "<li>No preflight warning was recorded.</li>"
+    profile_duration_warning = ""
+    if profile_window_seconds is not None and profile_window_seconds > 300:
+        profile_duration_warning = (
+            '<div class="callout warning">The active profiling window exceeded '
+            "the official five-minute recommendation. Reduce active steps.</div>"
         )
 
     report = f"""<!doctype html>
@@ -510,17 +700,27 @@ th{{background:#f8fafc;position:sticky;top:0}} code{{background:#edf2ff;padding:
 .bars{{display:grid;gap:8px}} .bar-row{{display:grid;grid-template-columns:minmax(180px,2fr) minmax(220px,4fr) 150px;gap:10px;align-items:center}}
 .bar-name{{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}} .bar-track{{height:12px;background:#e8edf6;border-radius:8px;overflow:hidden}} .bar-fill{{height:100%;background:linear-gradient(90deg,#2563eb,#38bdf8)}} .bar-value{{text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}}
 .composition{{height:28px;border-radius:7px;overflow:hidden;display:flex;background:#e8edf6}} .composition>div{{min-width:0}} .legend{{display:flex;flex-wrap:wrap;gap:16px;margin:12px 0}} .legend i{{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px}}
+.pipeline{{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0}} .status{{display:inline-flex;align-items:center;padding:5px 9px;border-radius:999px;font-size:12px;font-weight:650}}
+.status.ready{{background:#dcfce7;color:#166534}} .status.pending{{background:#f1f5f9;color:#64748b}} pre{{white-space:pre-wrap;word-break:break-word}}
+.callout.warning{{background:#fff7ed;color:#9a3412;border:1px solid #fed7aa}}
 @media(max-width:700px){{main{{padding:14px}}.bar-row{{grid-template-columns:1fr}}.bar-value{{text-align:left}}}}
 </style></head><body><main>
 <h1>GLM-5.2 performance probe</h1>
 <p class="subtle">{html.escape(manifest['run_name'])} · {html.escape(manifest['device'])} · {html.escape(manifest['topology'])} · {html.escape(manifest['preset'])}</p>
+<div class="pipeline">{pipeline}</div>
 <div class="cards">{''.join(cards) or '<div class="card"><span>Training metrics</span><strong>Unavailable</strong></div>'}</div>
+{profile_duration_warning}
 {''.join(charts)}
 {composition_section}
 {top_sections}
-{advisor_section}
+{diagnostic_sections}
+<section><h2>Official Ascend deliverables</h2><p class="subtle">Each row is one <code>*_ascend_pt</code> profile root. Text/DB readiness is checked against the official PyTorch Profiler output layout.</p>
+<table><thead><tr><th>Profile root and parsed files</th><th>Raw</th><th>Text</th><th>Database</th><th>MindStudio Insight</th></tr></thead><tbody>{ascend_rows}</tbody></table></section>
+<section><h2>Open in MindStudio Insight</h2><div class="callout">Copy the complete <code>*_ascend_pt</code> directory to a local disk, then import that profile root in MindStudio Insight. Do not select only <code>ASCEND_PROFILER_OUTPUT</code>. For cluster analysis, import the generated <code>cluster_analysis_output</code> directory. This HTML is an experiment index and summary; it does not replace the official Timeline, Communication, Operator, or Memory views.</div>
+<details><summary>GPU trace inputs available for comparison</summary><ul>{gpu_trace_items}</ul></details></section>
 <section><h2>Profiler data inventory</h2><p class="subtle">{inventory['file_count']} files, {_human_bytes(inventory['total_bytes'])}; raw directory: {html.escape(analysis['profiler_directory'])}</p>
 <table><thead><tr><th>Type</th><th>Files</th><th>Size</th></tr></thead><tbody>{suffix_rows}</tbody></table></section>
+<section><h2>Profiling preflight</h2><ul>{warning_items}</ul><table><tbody>{preflight_rows or '<tr><td>No preflight metadata</td></tr>'}</tbody></table></section>
 <section><h2>Effective Ascend profiler controls</h2><table><tbody>{profiler_rows or '<tr><td>No NPU-specific controls</td></tr>'}</tbody></table></section>
 <section><h2>Experiment configuration</h2><table><tbody>{configuration_rows}</tbody></table></section>
 </main></body></html>"""
