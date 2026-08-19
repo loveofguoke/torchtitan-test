@@ -92,3 +92,29 @@ restart at an intermediate full DCP checkpoint. It verifies exact fixed-token
 data continuation, loss and grad norm, trainer/dataloader/scheduler state, and
 the final model and optimizer state. See
 [tests/glm5_2_checkpoint/README.md](tests/glm5_2_checkpoint/README.md).
+
+## Experiment artifact releases
+
+Large generated experiment directories are transferred with GitHub Releases
+instead of Git. Install and authenticate GitHub CLI first (`gh auth login`).
+The release tag, release title, and archive name are derived from the experiment
+directory name. Uploading collects matching directories under the standard
+artifact, fixture, and run roots:
+
+```bash
+python release_artifacts.py upload \
+  migration-cuda-npu-single-bf16-random-s5000-b64-seq128-seed61
+```
+
+If a release with that name already exists, its archive and checksum assets are
+replaced. Download and restore the original repository-relative directories:
+
+```bash
+python release_artifacts.py download \
+  migration-cuda-npu-single-bf16-random-s5000-b64-seq128-seed61
+```
+
+The download refuses to replace existing files by default. Add `--overwrite`
+only when the local copies are intentionally being refreshed. Use
+`--repo OWNER/REPO` before the subcommand to select a repository other than
+`loveofguoke/torchtitan-test`.
