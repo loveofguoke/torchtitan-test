@@ -18,6 +18,17 @@ The workflow is deliberately top-down:
 Start at `overview`. Move to a deeper preset only when the previous report
 locates the bottleneck below that layer.
 
+Topology definitions come from `tests/glm5_2_common`. The benchmark supports
+`--topology all` and `--topologies single,fsdp8,cp8` so one command can capture
+or analyze every selected topology sequentially. The all-topology benchmark
+profile uses local batch 8 and global batch 64; the tiny probe intentionally
+remains a single-card smoke test.
+
+```bash
+python tests/glm5_2_performance/profiler_benchmark.py \
+  --probe --device npu --topology all --preset distributed
+```
+
 ## Quick visual probe
 
 The probe runs ten tiny training steps, profiles a three-step window, and

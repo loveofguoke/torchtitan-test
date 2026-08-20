@@ -400,13 +400,24 @@ def _validate_contracts(
     candidate: PrecisionArtifactReader,
     *,
     experiment_kind: str,
+    allow_endpoint_argument_difference: bool = False,
 ) -> None:
     left = dict(reference.training_contract)
     right = dict(candidate.training_contract)
     left_topology = left.pop("topology")
     right_topology = right.pop("topology")
+    left_endpoint_args = left.pop("endpoint_args", [])
+    right_endpoint_args = right.pop("endpoint_args", [])
     if left != right:
         raise ValueError("reference and candidate use different training contracts")
+    same_role = reference.metadata.get("role") == candidate.metadata.get("role")
+    endpoint_arguments_differ = left_endpoint_args != right_endpoint_args
+    if (
+        not allow_endpoint_argument_difference
+        and endpoint_arguments_differ
+        and (experiment_kind == "migration" or same_role)
+    ):
+        raise ValueError("artifacts use different endpoint arguments")
     if experiment_kind == "migration" and left_topology != right_topology:
         raise ValueError("migration artifacts use different parallel topologies")
     left_input = left_topology.get("input_contract")
@@ -488,12 +499,35 @@ def compare_and_write_report(
     for item in candidates:
         if item.metadata.get("role") != "candidate":
             raise ValueError(f"candidate artifact has role {item.metadata.get('role')!r}")
+    expected_reference_args = list(getattr(config.reference, "extra_args", ()))
+    expected_candidate_args = list(getattr(config.candidate, "extra_args", ()))
+    for item in references:
+        if item.training_contract.get("endpoint_args", []) != expected_reference_args:
+            raise ValueError(
+                "reference artifact execution features do not match this report command"
+            )
+    for item in candidates:
+        if item.training_contract.get("endpoint_args", []) != expected_candidate_args:
+            raise ValueError(
+                "candidate artifact execution features do not match this report command"
+            )
     for other_reference in references[1:]:
         _validate_contracts(
             reference, other_reference, experiment_kind=config.kind
         )
+    for other_candidate in candidates[1:]:
+        _validate_contracts(
+            candidates[0], other_candidate, experiment_kind=config.kind
+        )
     for candidate in candidates:
-        _validate_contracts(reference, candidate, experiment_kind=config.kind)
+        _validate_contracts(
+            reference,
+            candidate,
+            experiment_kind=config.kind,
+            allow_endpoint_argument_difference=getattr(
+                config, "allow_endpoint_argument_difference", False
+            ),
+        )
     for repeat, item in enumerate(references, start=1):
         if int(item.metadata.get("repeat", -1)) != repeat:
             raise ValueError(

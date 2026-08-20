@@ -5,77 +5,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Literal
 
+from tests.glm5_2_common.topology import ParallelTopology, standard_topologies
+
 
 DeviceType = Literal["auto", "cuda", "npu"]
 ParseMode = Literal["sync", "async", "offline"]
-
-
-@dataclass(frozen=True)
-class ParallelTopology:
-    """TorchTitan parallel degrees for one profiling run."""
-
-    name: str
-    world_size: int
-    dp_replicate: int = 1
-    dp_shard: int = 1
-    tp: int = 1
-    pp: int = 1
-    ep: int = 1
-    pp_schedule: str = "1F1B"
-    pp_microbatch_size: int = 1
-
-    def __post_init__(self) -> None:
-        dense_world_size = self.dp_replicate * self.dp_shard * self.tp * self.pp
-        if self.world_size < 1 or dense_world_size != self.world_size:
-            raise ValueError(
-                f"topology {self.name!r} covers {dense_world_size} ranks, "
-                f"not world_size={self.world_size}"
-            )
-        if (self.dp_shard * self.tp) % self.ep:
-            raise ValueError("dp_shard * tp must be divisible by ep")
-
-    def command_args(self) -> list[str]:
-        args = [
-            f"--parallelism.data_parallel_replicate_degree={self.dp_replicate}",
-            f"--parallelism.data_parallel_shard_degree={self.dp_shard}",
-            f"--parallelism.tensor_parallel_degree={self.tp}",
-            f"--parallelism.pipeline_parallel_degree={self.pp}",
-            f"--parallelism.expert_parallel_degree={self.ep}",
-        ]
-        if self.tp > 1:
-            args.append("--parallelism.no-enable-sequence-parallel")
-        if self.pp > 1:
-            args.extend(
-                [
-                    f"--parallelism.pipeline_parallel_schedule={self.pp_schedule}",
-                    "--parallelism.pipeline_parallel_microbatch_size="
-                    f"{self.pp_microbatch_size}",
-                ]
-            )
-        return args
-
-
-def standard_topologies() -> dict[str, ParallelTopology]:
-    """Return the topology names shared by probe and benchmark scripts."""
-
-    return {
-        "single": ParallelTopology("single", 1),
-        "ddp2": ParallelTopology("ddp2", 2, dp_replicate=2),
-        "ddp8": ParallelTopology("ddp8", 8, dp_replicate=8),
-        "fsdp8": ParallelTopology("fsdp8", 8, dp_shard=8),
-        "tp8": ParallelTopology("tp8", 8, tp=8),
-        "pp8": ParallelTopology("pp8", 8, pp=8),
-        "ep8": ParallelTopology("ep8", 8, dp_shard=8, ep=8),
-        "fsdp2-tp4": ParallelTopology("fsdp2-tp4", 8, dp_shard=2, tp=4),
-        "fsdp4-tp2": ParallelTopology("fsdp4-tp2", 8, dp_shard=4, tp=2),
-        "fsdp2-pp4": ParallelTopology("fsdp2-pp4", 8, dp_shard=2, pp=4),
-        "fsdp2-tp2-pp2": ParallelTopology(
-            "fsdp2-tp2-pp2", 8, dp_shard=2, tp=2, pp=2
-        ),
-        "fsdp2-tp4-ep8": ParallelTopology(
-            "fsdp2-tp4-ep8", 8, dp_shard=2, tp=4, ep=8
-        ),
-    }
 
 
 @dataclass(frozen=True)

@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 import os
 import shutil
 import subprocess
 import sys
 import time
-from dataclasses import replace
 from pathlib import Path
 from typing import Any, Sequence
+
+from tests.glm5_2_common.device import resolve_device_type
+from tests.glm5_2_common.topology import select_topologies
 
 from .analysis import build_analysis, render_html_report
 from .config import (
@@ -68,25 +71,7 @@ def _source_metadata(root: Path) -> dict[str, str | None]:
 
 
 def _resolve_device(requested: str) -> str:
-    if requested != "auto":
-        return requested
-    if os.environ.get("ASCEND_RT_VISIBLE_DEVICES") is not None:
-        return "npu"
-    if os.environ.get("CUDA_VISIBLE_DEVICES") is not None:
-        return "cuda"
-    try:
-        import torch
-
-        if getattr(torch, "npu", None) is not None and torch.npu.is_available():
-            return "npu"
-        if torch.cuda.is_available():
-            return "cuda"
-    except ImportError:
-        pass
-    raise RuntimeError(
-        "cannot infer device; export ASCEND_RT_VISIBLE_DEVICES or "
-        "CUDA_VISIBLE_DEVICES, or pass --device"
-    )
+    return resolve_device_type(requested)
 
 
 def _visible_devices(device: str) -> list[str] | None:
@@ -171,9 +156,25 @@ def _training_command(
             f"topology {topology.name} needs {topology.world_size} devices, "
             f"but only {len(visible)} are visible"
         )
-    if config.global_batch_size % topology.dp_replicate:
+    data_parallel_batch = config.local_batch_size * topology.data_parallel_degree
+    if config.global_batch_size % data_parallel_batch:
         raise ValueError(
-            "global_batch_size must be divisible by data-parallel replicate degree"
+            "global_batch_size must be divisible by local_batch_size * "
+            "data_parallel_degree"
+        )
+    if config.local_batch_size % topology.pipeline_parallel_microbatch_size:
+        raise ValueError(
+            "local_batch_size must be divisible by pipeline microbatch size"
+        )
+    pipeline_microbatches = (
+        config.local_batch_size // topology.pipeline_parallel_microbatch_size
+    )
+    if (
+        topology.pipeline_parallel_degree > 1
+        and pipeline_microbatches < topology.pipeline_parallel_degree
+    ):
+        raise ValueError(
+            "local batch does not provide enough pipeline microbatches"
         )
 
     torchrun = shutil.which("torchrun") or str(
@@ -584,7 +585,10 @@ def analyze(
     return report_path
 
 
-def run_profiler_cli(config: PerformanceConfig, script_path: str) -> None:
+def run_profiler_cli(
+    config: PerformanceConfig,
+    script_path: str,
+) -> None:
     topologies = standard_topologies()
     presets = profiler_presets()
     parser = argparse.ArgumentParser(
@@ -599,7 +603,11 @@ def run_profiler_cli(config: PerformanceConfig, script_path: str) -> None:
     actions.add_argument("--capture", action="store_true")
     actions.add_argument("--analyze", action="store_true")
     parser.add_argument("--device", choices=("auto", "cuda", "npu"))
-    parser.add_argument("--topology", choices=tuple(topologies))
+    suite_topologies = tuple(
+        name for name, topology in topologies.items() if topology.world_size <= 8
+    )
+    parser.add_argument("--topology", choices=("all", *suite_topologies))
+    parser.add_argument("--topologies", help="comma-separated topology subset or all")
     parser.add_argument("--preset", choices=tuple(presets))
     parser.add_argument("--visible-devices")
     parser.add_argument("--steps", type=int)
@@ -640,9 +648,10 @@ def run_profiler_cli(config: PerformanceConfig, script_path: str) -> None:
     )
     args = parser.parse_args()
 
+    requested_topology = None if args.topology == "all" else args.topology
     overrides = {
         "device": args.device,
-        "topology": args.topology,
+        "topology": requested_topology,
         "preset": args.preset,
         "steps": args.steps,
         "skip_steps": args.skip_steps,
@@ -675,29 +684,57 @@ def run_profiler_cli(config: PerformanceConfig, script_path: str) -> None:
     elif args.parse_mode:
         preset = replace(preset, parse_mode=args.parse_mode)
 
-    if args.capture or args.probe:
-        capture(
-            root,
-            effective,
-            device=device,
-            preset=preset,
-            force=args.force,
+    selected = select_topologies(
+        available=suite_topologies,
+        topology="all" if args.topology == "all" else requested_topology,
+        topologies=args.topologies,
+        default=(effective.topology,),
+    )
+    reports: list[tuple[str, Path]] = []
+    for topology_name in selected:
+        topology_config = replace(effective, topology=topology_name)
+        print(
+            f"Starting performance topology: {topology_name} "
+            f"({topologies[topology_name].world_size} ranks)",
+            flush=True,
         )
-    if args.analyze or args.probe:
-        analyze(
-            root,
-            effective,
-            device=device,
-            parse_offline=(
-                args.offline_parse
-                or (
-                    args.probe
-                    and device == "npu"
-                    and preset.parse_mode == "offline"
-                )
-            ),
-            parse_workers=args.parse_workers,
-            advisor=args.advisor,
-            cluster=args.cluster,
-            compare_baseline=args.compare_baseline,
+        if args.capture or args.probe:
+            capture(
+                root,
+                topology_config,
+                device=device,
+                preset=preset,
+                force=args.force,
+            )
+        if args.analyze or args.probe:
+            report = analyze(
+                root,
+                topology_config,
+                device=device,
+                parse_offline=(
+                    args.offline_parse
+                    or (
+                        args.probe
+                        and device == "npu"
+                        and preset.parse_mode == "offline"
+                    )
+                ),
+                parse_workers=args.parse_workers,
+                advisor=args.advisor,
+                cluster=args.cluster,
+                compare_baseline=args.compare_baseline,
+            )
+            reports.append((topology_name, report))
+    if len(reports) > 1:
+        links = "".join(
+            f'<li><a href="{path.name}">{name}</a></li>' for name, path in reports
         )
+        index = root / effective.report_root / f"{_slug(effective.name)}-{device}-suite.html"
+        index.write_text(
+            "<!doctype html><html><head><meta charset=\"utf-8\">"
+            "<title>GLM-5.2 performance topology suite</title></head>"
+            "<body><h1>GLM-5.2 performance topology suite</h1>"
+            f"<ul>{links}</ul></body></html>",
+            encoding="utf-8",
+        )
+        print(f"Performance suite report: {index}")

@@ -223,6 +223,7 @@ def validate_runtime_input_contract(
     global_batch_size: int,
     training_local_batch_size: int,
     dp_world_size: int,
+    context_parallel_degree: int,
     tensor_parallel_degree: int,
     pipeline_parallel_degree: int,
     node_rank: int,
@@ -265,10 +266,14 @@ def validate_runtime_input_contract(
                 f"expected {steps}"
             )
         ranks_per_pipeline_stage = (
-            dp_world_size * tensor_parallel_degree
+            dp_world_size
+            * context_parallel_degree
+            * tensor_parallel_degree
         )
         expected_pp_rank = global_rank // ranks_per_pipeline_stage
-        expected_dp_rank = (global_rank // tensor_parallel_degree) % dp_world_size
+        expected_dp_rank = (
+            global_rank // (context_parallel_degree * tensor_parallel_degree)
+        ) % dp_world_size
         for expected_step, record in enumerate(records, start=1):
             if int(record["global_rank"]) != global_rank:
                 raise TokenDataError(f"rank file {global_rank} contains another rank")
@@ -340,6 +345,7 @@ def validate_runtime_input_contract(
         "global_batch_size": global_batch_size,
         "training_local_batch_size": training_local_batch_size,
         "dp_world_size": dp_world_size,
+        "context_parallel_degree": context_parallel_degree,
         "pipeline_parallel_degree": pipeline_parallel_degree,
         "validated_global_ranks": list(expected_global_ranks),
         "token_plan_step_series_sha256": step_series_digest(plan.step_sha256),

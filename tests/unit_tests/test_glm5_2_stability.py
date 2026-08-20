@@ -8,6 +8,7 @@ import pytest
 
 from tests.glm5_2_precision.workflow import standard_topologies, training_topology_plan
 from tests.glm5_2_stability.stability_benchmark import (
+    _command,
     _device_from_environment,
     _precision_training,
     _write_report,
@@ -62,3 +63,23 @@ def test_stability_report_uses_portable_run_name(tmp_path: Path) -> None:
 
     assert report.is_file()
     assert json.loads(summary.read_text(encoding="utf-8"))["status"] == "PASS"
+
+
+def test_stability_command_forwards_graph_arguments() -> None:
+    training = _precision_training(
+        "bf16",
+        steps=20,
+        local_batch_size=8,
+        global_batch_size=64,
+        sequence_length=128,
+        seed=61,
+        extra_args=("--compile.enable", "--compile.backend=inductor"),
+    )
+    command = _command(
+        training=training,
+        topology=standard_topologies()["single"],
+        dump_folder=Path("run"),
+    )
+
+    assert "--compile.enable" in command
+    assert "--compile.backend=inductor" in command

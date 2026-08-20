@@ -282,8 +282,47 @@ def _read_optional_json(path: Path) -> dict[str, Any] | None:
     )
 
 
-def build_analysis(run_directory: Path) -> dict[str, Any]:
-    metrics = summarize_metrics(read_metrics(run_directory / "metrics.jsonl"))
+def _compiler_diagnostics(runtime_log: Path) -> dict[str, Any]:
+    """Summarize compiler health messages without requiring Torch internals."""
+
+    categories = {
+        "graph_breaks": ("graph break", "graph_break"),
+        "recompiles": ("recompiling function", "recompile reason"),
+        "backend_failures": (
+            "backendcompilerfailed",
+            "torch._dynamo.exc",
+            "inductorerror",
+        ),
+    }
+    result: dict[str, Any] = {
+        "compile_markers": 0,
+        **{name: 0 for name in categories},
+        "examples": [],
+    }
+    if not runtime_log.is_file():
+        return result
+    for line in runtime_log.read_text(encoding="utf-8", errors="replace").splitlines():
+        normalized = line.lower()
+        if "compiling each" in normalized and "torch.compile" in normalized:
+            result["compile_markers"] += 1
+        for name, patterns in categories.items():
+            if not any(pattern in normalized for pattern in patterns):
+                continue
+            result[name] += 1
+            if len(result["examples"]) < 12:
+                result["examples"].append(line[:1000])
+            break
+    return result
+
+
+def build_analysis(
+    run_directory: Path,
+    *,
+    metrics_path: Path | None = None,
+) -> dict[str, Any]:
+    metrics = summarize_metrics(
+        read_metrics(metrics_path or run_directory / "metrics.jsonl")
+    )
     profiler_directory = run_directory / "trainer_output" / "profiling" / "traces"
     if not profiler_directory.is_dir():
         profiler_directory = run_directory / "trainer_output" / "profiling"
@@ -303,6 +342,9 @@ def build_analysis(run_directory: Path) -> dict[str, Any]:
             else []
         ),
         "deliverables": deliverables,
+        "compiler_diagnostics": _compiler_diagnostics(
+            run_directory / "runtime.log"
+        ),
         "diagnostics": {
             name: _read_optional_json(run_directory / f"{name}.json")
             for name in ("advisor", "cluster", "compare")
@@ -510,6 +552,22 @@ def render_html_report(
             f'<strong>{_format_number(profile_window_seconds)} s</strong></div>'
         )
 
+    compiler = analysis.get("compiler_diagnostics", {})
+    compile_enabled = any(
+        "--compile." in str(value) for value in config.get("extra_args", [])
+    )
+    if compile_enabled:
+        cards.extend(
+            [
+                '<div class="card"><span>Graph breaks</span>'
+                f'<strong>{compiler.get("graph_breaks", 0)}</strong></div>',
+                '<div class="card"><span>Recompile messages</span>'
+                f'<strong>{compiler.get("recompiles", 0)}</strong></div>',
+                '<div class="card"><span>Backend failures</span>'
+                f'<strong>{compiler.get("backend_failures", 0)}</strong></div>',
+            ]
+        )
+
     charts = []
     chart_specs = (
         (("end_to_end",), "Step time", "#2563eb"),
@@ -544,6 +602,22 @@ def render_html_report(
         f"<td>{html.escape(str(value))}</td></tr>"
         for key, value in manifest.get("profiler_environment", {}).items()
     )
+    compiler_examples = "\n".join(compiler.get("examples", []))
+    compiler_section = ""
+    if compile_enabled:
+        compiler_section = f"""
+<section><h2>torch.compile health</h2>
+<p class="subtle">Counts are diagnostic log lines, not unique FX graphs. Use
+<code>--compiler-diagnostics</code> to enable graph-break and recompile logs.</p>
+<table><tbody>
+<tr><th>Regional compile markers</th><td>{compiler.get('compile_markers', 0)}</td></tr>
+<tr><th>Graph-break messages</th><td>{compiler.get('graph_breaks', 0)}</td></tr>
+<tr><th>Recompile messages</th><td>{compiler.get('recompiles', 0)}</td></tr>
+<tr><th>Backend-failure messages</th><td>{compiler.get('backend_failures', 0)}</td></tr>
+</tbody></table>
+<details><summary>Representative compiler log lines</summary><pre>{html.escape(compiler_examples or 'No compiler diagnostic line was recorded.')}</pre></details>
+</section>"""
+    training_arguments = " ".join(str(value) for value in config.get("extra_args", []))
     inventory = analysis["profiler_inventory"]
     suffix_rows = "".join(
         f"<tr><td>{html.escape(suffix)}</td><td>{values['count']}</td>"
@@ -711,6 +785,7 @@ th{{background:#f8fafc;position:sticky;top:0}} code{{background:#edf2ff;padding:
 <div class="cards">{''.join(cards) or '<div class="card"><span>Training metrics</span><strong>Unavailable</strong></div>'}</div>
 {profile_duration_warning}
 {''.join(charts)}
+{compiler_section}
 {composition_section}
 {top_sections}
 {diagnostic_sections}
@@ -723,6 +798,7 @@ th{{background:#f8fafc;position:sticky;top:0}} code{{background:#edf2ff;padding:
 <section><h2>Profiling preflight</h2><ul>{warning_items}</ul><table><tbody>{preflight_rows or '<tr><td>No preflight metadata</td></tr>'}</tbody></table></section>
 <section><h2>Effective Ascend profiler controls</h2><table><tbody>{profiler_rows or '<tr><td>No NPU-specific controls</td></tr>'}</tbody></table></section>
 <section><h2>Experiment configuration</h2><table><tbody>{configuration_rows}</tbody></table></section>
+<section><h2>Additional training arguments</h2><pre>{html.escape(training_arguments or 'None')}</pre></section>
 </main></body></html>"""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(report, encoding="utf-8")

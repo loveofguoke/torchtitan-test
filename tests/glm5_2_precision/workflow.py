@@ -17,6 +17,8 @@ import subprocess
 import sys
 from typing import Any, Literal, Sequence
 
+from tests.glm5_2_common.topology import ParallelTopology, standard_topologies
+
 from .artifacts import (
     PrecisionArtifactError,
     PrecisionArtifactReader,
@@ -45,146 +47,6 @@ def _slug(value: str) -> str:
 
 
 @dataclass(frozen=True)
-class ParallelTopology:
-    name: str
-    world_size: int
-    data_parallel_replicate_degree: int = 1
-    data_parallel_shard_degree: int = 1
-    tensor_parallel_degree: int = 1
-    pipeline_parallel_degree: int = 1
-    expert_parallel_degree: int = 1
-    pipeline_parallel_schedule: str = "1F1B"
-    pipeline_parallel_microbatch_size: int = 1
-    extra_args: tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        degrees = (
-            self.world_size,
-            self.data_parallel_replicate_degree,
-            self.data_parallel_shard_degree,
-            self.tensor_parallel_degree,
-            self.pipeline_parallel_degree,
-            self.expert_parallel_degree,
-            self.pipeline_parallel_microbatch_size,
-        )
-        if any(degree < 1 for degree in degrees):
-            raise ValueError("parallel degrees and world size must be positive")
-        dense_world_size = (
-            self.data_parallel_replicate_degree
-            * self.data_parallel_shard_degree
-            * self.tensor_parallel_degree
-            * self.pipeline_parallel_degree
-        )
-        if dense_world_size != self.world_size:
-            raise ValueError(
-                f"topology {self.name!r} covers {dense_world_size} dense ranks, "
-                f"not world_size={self.world_size}"
-            )
-        sparse_width = (
-            self.data_parallel_shard_degree * self.tensor_parallel_degree
-        )
-        if sparse_width % self.expert_parallel_degree != 0:
-            raise ValueError(
-                "dp_shard * tp must be divisible by expert_parallel_degree: "
-                f"{sparse_width} % {self.expert_parallel_degree} != 0"
-            )
-
-    @property
-    def slug(self) -> str:
-        return _slug(self.name)
-
-    @property
-    def data_parallel_degree(self) -> int:
-        return (
-            self.data_parallel_replicate_degree
-            * self.data_parallel_shard_degree
-        )
-
-    def command_args(self) -> list[str]:
-        args = [
-            "--parallelism.data_parallel_replicate_degree="
-            f"{self.data_parallel_replicate_degree}",
-            "--parallelism.data_parallel_shard_degree="
-            f"{self.data_parallel_shard_degree}",
-            f"--parallelism.tensor_parallel_degree={self.tensor_parallel_degree}",
-            f"--parallelism.pipeline_parallel_degree={self.pipeline_parallel_degree}",
-            f"--parallelism.expert_parallel_degree={self.expert_parallel_degree}",
-        ]
-        if self.tensor_parallel_degree > 1:
-            args.append("--parallelism.no-enable-sequence-parallel")
-        if self.pipeline_parallel_degree > 1:
-            args.extend(
-                [
-                    "--parallelism.pipeline_parallel_schedule="
-                    f"{self.pipeline_parallel_schedule}",
-                    "--parallelism.pipeline_parallel_microbatch_size="
-                    f"{self.pipeline_parallel_microbatch_size}",
-                ]
-            )
-        args.extend(self.extra_args)
-        return args
-
-
-def standard_topologies() -> dict[str, ParallelTopology]:
-    """Return reusable single-card and eight-card GLM topology definitions."""
-
-    return {
-        "single": ParallelTopology("single", 1),
-        "ddp2": ParallelTopology(
-            "ddp2", 2, data_parallel_replicate_degree=2
-        ),
-        "ddp8": ParallelTopology(
-            "ddp8", 8, data_parallel_replicate_degree=8
-        ),
-        "fsdp8": ParallelTopology("fsdp8", 8, data_parallel_shard_degree=8),
-        "tp8": ParallelTopology("tp8", 8, tensor_parallel_degree=8),
-        "pp8": ParallelTopology("pp8", 8, pipeline_parallel_degree=8),
-        "ep8": ParallelTopology(
-            "ep8",
-            8,
-            data_parallel_shard_degree=8,
-            expert_parallel_degree=8,
-        ),
-        "fsdp2-tp4": ParallelTopology(
-            "fsdp2-tp4",
-            8,
-            data_parallel_shard_degree=2,
-            tensor_parallel_degree=4,
-        ),
-        "fsdp4-tp2": ParallelTopology(
-            "fsdp4-tp2",
-            8,
-            data_parallel_shard_degree=4,
-            tensor_parallel_degree=2,
-        ),
-        "fsdp2-pp4": ParallelTopology(
-            "fsdp2-pp4",
-            8,
-            data_parallel_shard_degree=2,
-            pipeline_parallel_degree=4,
-        ),
-        "fsdp2-tp2-pp2": ParallelTopology(
-            "fsdp2-tp2-pp2",
-            8,
-            data_parallel_shard_degree=2,
-            tensor_parallel_degree=2,
-            pipeline_parallel_degree=2,
-        ),
-        "fsdp2-tp4-ep8": ParallelTopology(
-            "fsdp2-tp4-ep8",
-            8,
-            data_parallel_shard_degree=2,
-            tensor_parallel_degree=4,
-            expert_parallel_degree=8,
-        ),
-        "ddp16": ParallelTopology(
-            "ddp16", 16, data_parallel_replicate_degree=16
-        ),
-        "fsdp16": ParallelTopology("fsdp16", 16, data_parallel_shard_degree=16),
-    }
-
-
-@dataclass(frozen=True)
 class TrainingEndpoint:
     name: str
     device_type: Literal["cuda", "npu"]
@@ -195,6 +57,8 @@ class TrainingEndpoint:
     rendezvous_endpoint: str = "localhost:0"
     repeats: int = 2
     environment: dict[str, str] = field(default_factory=dict)
+    extra_args: tuple[str, ...] = ()
+    entry_module: str = "tests.glm5_2_precision.capture_metrics"
 
     def __post_init__(self) -> None:
         devices = [value.strip() for value in self.visible_devices.split(",") if value]
@@ -341,6 +205,8 @@ class FormalExperimentConfig:
     report_root: str = "precision_reports"
     run_root: str = "precision_runs"
     exploratory_reports: tuple[str, ...] = ()
+    fixture_name: str | None = None
+    allow_endpoint_argument_difference: bool = False
 
     def __post_init__(self) -> None:
         if self.kind == "migration":
@@ -392,6 +258,27 @@ class FormalExperimentConfig:
             return value
         digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:10]
         return f"{value[:101].rstrip('-')}-{digest}"
+
+    @property
+    def fixture_storage_name(self) -> str:
+        """Return the topology-independent identity of synchronized inputs."""
+
+        if self.fixture_name is not None:
+            return _slug(self.fixture_name)
+        training = _normalized_training(self.training)
+        digest = hashlib.sha256(
+            json.dumps(training, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:10]
+        precision = {
+            "mixed-bfloat16": "bf16",
+            "mixed-float32": "fp32",
+            "full-bf16": "full-bf16",
+        }.get(self.training.precision_name, self.training.precision_name)
+        return _slug(
+            f"fixture-{self.training.module}-{precision}-"
+            f"s{self.training.steps}-b{self.training.global_batch_size}-"
+            f"seq{self.training.sequence_length}-seed{self.training.seed}-{digest}"
+        )
 
 
 def _directory_digest(path: Path) -> str:
@@ -513,7 +400,7 @@ def _root(script_path: str) -> Path:
 
 
 def _fixture_directory(root: Path, config: FormalExperimentConfig) -> Path:
-    return root / config.fixture_root / config.storage_name
+    return root / config.fixture_root / config.fixture_storage_name
 
 
 def _artifact_directory(
@@ -652,13 +539,14 @@ def _torchrun_command(
         "--role=rank",
         "--tee=3",
         "-m",
-        "tests.glm5_2_precision.capture_metrics",
+        endpoint.entry_module,
         "--module",
         config.training.module,
         "--config",
         config.training.config,
         *_base_training_args(config.training, dump_folder=dump_folder),
         *endpoint.topology.command_args(),
+        *endpoint.extra_args,
         "--checkpoint.enable",
         "--checkpoint.load_only",
         f"--checkpoint.initial_load_path={checkpoint_path}",
@@ -807,7 +695,7 @@ def prepare_fixture(
     manifest = {
         "schema": "torchtitan.glm5_2.precision_fixture",
         "schema_version": 1,
-        "scenario_name": config.storage_name,
+        "scenario_name": config.fixture_storage_name,
         "scenario_description": config.scenario_name,
         "checkpoint_kind": config.training.checkpoint_kind,
         "checkpoint_relative_path": relative_checkpoint,
@@ -926,6 +814,9 @@ def capture_endpoint(
     environment["GLM5_PRECISION_TENSOR_PARALLEL_DEGREE"] = str(
         endpoint.topology.tensor_parallel_degree
     )
+    environment["GLM5_PRECISION_CONTEXT_PARALLEL_DEGREE"] = str(
+        endpoint.topology.context_parallel_degree
+    )
     environment["LOG_RANK"] = str(metrics_rank)
     command = _torchrun_command(
         root=root,
@@ -976,6 +867,7 @@ def capture_endpoint(
         global_batch_size=config.training.global_batch_size,
         training_local_batch_size=config.training.local_batch_size,
         dp_world_size=endpoint.topology.data_parallel_degree,
+        context_parallel_degree=endpoint.topology.context_parallel_degree,
         tensor_parallel_degree=endpoint.topology.tensor_parallel_degree,
         pipeline_parallel_degree=endpoint.topology.pipeline_parallel_degree,
         node_rank=0,
@@ -991,6 +883,7 @@ def capture_endpoint(
         "checkpoint_sha256": fixture_manifest["checkpoint_sha256"],
         "data_sha256": fixture_manifest["data_sha256"],
         "token_plan": fixture_manifest["token_plan"],
+        "endpoint_args": list(endpoint.extra_args),
         "topology": {
             **asdict(endpoint.topology),
             "batch_schedule": asdict(batch_schedule),
@@ -1006,6 +899,10 @@ def capture_endpoint(
         "node_rank": endpoint.node_rank,
         "source": _source_metadata(root),
     }
+    if "--profiler.enable_profiling" in endpoint.extra_args:
+        metadata["profiler_output"] = str(
+            run_directory / "trainer_output" / "profiling" / "traces"
+        )
     return PrecisionArtifactWriter(artifact_directory).write(
         metadata=metadata,
         training_contract=training_contract,

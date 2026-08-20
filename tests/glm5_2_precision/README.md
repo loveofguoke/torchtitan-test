@@ -108,8 +108,32 @@ fixture, artifact, run, and report directory from the experiment kind, devices,
 topology, and precision.
 
 The built-in migration profile runs 5000 optimizer steps with local batch 8
-and global batch 64, so the same training contract is valid for every
-registered topology up to eight devices, including DP8 and `1F1B` PP8.
+and global batch 64, so the same training contract and one topology-independent
+fixture are valid for every registered topology up to eight devices, including
+DP8 and `1F1B` PP8.
+
+Use `--topology all` to run the complete suite. Data is generated once, each
+server captures all topologies sequentially with one command, and compare writes
+one suite index plus a detailed report per topology:
+
+```bash
+python tests/glm5_2_precision/migration_benchmark.py --data --topology all
+
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+python tests/glm5_2_precision/migration_benchmark.py \
+  --capture reference --topology all
+
+export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+python tests/glm5_2_precision/migration_benchmark.py \
+  --capture candidate --topology all
+
+python tests/glm5_2_precision/migration_benchmark.py \
+  --compare --topology all --require-all
+```
+
+`--topologies single,fsdp8,tp8` selects a subset. Completed captures are skipped,
+so rerunning an interrupted all-topology command resumes at the first incomplete
+topology/repeat.
 
 The standard `CUDA_VISIBLE_DEVICES` and `ASCEND_RT_VISIBLE_DEVICES` exports are
 the primary device selection interface. CLI visibility overrides are retained
@@ -159,11 +183,12 @@ python tests/glm5_2_precision/migration_benchmark.py --list-topologies
 python tests/glm5_2_precision/migration_benchmark.py \
   --capture reference --topology fsdp8
 python tests/glm5_2_precision/migration_benchmark.py \
-  --capture candidate --topology fsdp2-tp4-ep8
+  --capture candidate --topology fsdp8
 ```
 
-The final two commands illustrate topology selection only; a migration pair
-must use the same `--topology` at data, both captures, and compare stages.
+Each migration comparison uses the same topology on both endpoints. `--data`
+is topology-independent, so the one fixture can be reused by all topology
+pairs in the suite.
 
 Use `--precision fp32`, `--precision bf16`, or `--precision full-bf16` to
 override both endpoints consistently. `bf16` means FP32 master training with

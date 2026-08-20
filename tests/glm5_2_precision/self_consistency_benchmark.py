@@ -9,6 +9,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from tests.glm5_2_common.topology import DISTRIBUTED_TOPOLOGY_NAMES  # noqa: E402
 from tests.glm5_2_precision.standards import (  # noqa: E402
     MigrationStandard,
     PrecisionStandard,
@@ -20,24 +21,12 @@ from tests.glm5_2_precision.workflow import (  # noqa: E402
     TrainingEndpoint,
     standard_topologies,
 )
-from tests.glm5_2_precision.self_consistency_suite import run_suite_cli  # noqa: E402
+from tests.glm5_2_precision.topology_suite import run_topology_suite_cli  # noqa: E402
 
 
 TOPOLOGIES = standard_topologies()
 ALL_DEVICES = "0,1,2,3,4,5,6,7"
-CANDIDATE_TOPOLOGIES = (
-    "ddp2",
-    "ddp8",
-    "fsdp8",
-    "tp8",
-    "pp8",
-    "ep8",
-    "fsdp2-tp4",
-    "fsdp4-tp2",
-    "fsdp2-pp4",
-    "fsdp2-tp2-pp2",
-    "fsdp2-tp4-ep8",
-)
+CANDIDATE_TOPOLOGIES = DISTRIBUTED_TOPOLOGY_NAMES
 
 CONFIG = FormalExperimentConfig(
     name="glm5-2-distributed-self-consistency",
@@ -91,9 +80,9 @@ CONFIG = FormalExperimentConfig(
 
 
 if __name__ == "__main__":
-    run_suite_cli(
+    run_topology_suite_cli(
         CONFIG,
         __file__,
         topologies=TOPOLOGIES,
-        candidate_topologies=CANDIDATE_TOPOLOGIES,
+        topology_names=CANDIDATE_TOPOLOGIES,
     )

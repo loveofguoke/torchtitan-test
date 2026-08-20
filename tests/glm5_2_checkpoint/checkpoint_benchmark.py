@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import html
 import json
 import os
@@ -18,6 +18,10 @@ import sys
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from tests.glm5_2_common.cli import run_all_topologies
+from tests.glm5_2_common.device import resolve_accelerator
+from tests.glm5_2_common.topology import DISTRIBUTED_TOPOLOGY_NAMES
 
 from tests.glm5_2_checkpoint.state_compare import (  # noqa: E402
     compare_checkpoints,
@@ -41,6 +45,19 @@ from tests.glm5_2_precision.workflow import (  # noqa: E402
 
 LOSS_KEY = "loss"
 GRAD_NORM_KEY = "grad_norm"
+
+
+def _normalize_run_tag(value: str) -> str:
+    tag = "-".join(
+        part
+        for part in "".join(
+            character if character.isalnum() else "-" for character in value.lower()
+        ).split("-")
+        if part
+    )
+    if not tag:
+        raise ValueError("run-tag must contain a letter or number")
+    return tag
 
 
 class CheckpointFixtureConfig(FormalExperimentConfig):
@@ -68,6 +85,7 @@ def _precision_training(
     global_batch_size: int,
     sequence_length: int,
     seed: int,
+    extra_args: tuple[str, ...] = (),
 ) -> FormalTrainingConfig:
     values: dict[str, Any] = {
         "steps": steps,
@@ -76,6 +94,7 @@ def _precision_training(
         "sequence_length": sequence_length,
         "seed": seed,
         "deterministic": True,
+        "extra_args": extra_args,
     }
     if precision == "fp32":
         values.update(training_dtype="float32", mixed_precision_param="float32")
@@ -87,24 +106,11 @@ def _precision_training(
 
 
 def _device_from_environment(requested: str | None) -> tuple[str, str, str]:
-    cuda = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
-    npu = os.environ.get("ASCEND_RT_VISIBLE_DEVICES", "").strip()
-    if requested == "cuda":
-        if not cuda:
-            raise ValueError("CUDA_VISIBLE_DEVICES must be exported")
-        return "cuda", "CUDA_VISIBLE_DEVICES", cuda
-    if requested == "npu":
-        if not npu:
-            raise ValueError("ASCEND_RT_VISIBLE_DEVICES must be exported")
-        return "npu", "ASCEND_RT_VISIBLE_DEVICES", npu
-    if bool(cuda) == bool(npu):
-        raise ValueError(
-            "export exactly one visibility variable or pass --device cuda|npu"
-        )
+    selection = resolve_accelerator(requested)
     return (
-        ("cuda", "CUDA_VISIBLE_DEVICES", cuda)
-        if cuda
-        else ("npu", "ASCEND_RT_VISIBLE_DEVICES", npu)
+        selection.device_type,
+        selection.visibility_variable,
+        selection.visible_devices,
     )
 
 
@@ -191,6 +197,7 @@ def _checkpoint_command(
         f"--checkpoint.async_mode={async_mode}",
         "--checkpoint.no-last-save-model-only",
         f"--checkpoint.initial_load_path={initial_checkpoint}",
+        *training.extra_args,
     ]
 
 
@@ -221,6 +228,9 @@ def _capture_environment(
     )
     environment["GLM5_PRECISION_TENSOR_PARALLEL_DEGREE"] = str(
         topology.tensor_parallel_degree
+    )
+    environment["GLM5_PRECISION_CONTEXT_PARALLEL_DEGREE"] = str(
+        topology.context_parallel_degree
     )
     environment["LOG_RANK"] = str(_metrics_rank(topology))
     if stop_after is None:
@@ -384,7 +394,10 @@ pre{{white-space:pre-wrap;background:#f8fafc;padding:12px;border:1px solid #d8de
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", choices=("cuda", "npu"))
-    parser.add_argument("--topology", default="single", choices=standard_topologies())
+    suite_topologies = ("single", *DISTRIBUTED_TOPOLOGY_NAMES)
+    parser.add_argument(
+        "--topology", default="single", choices=("all", *suite_topologies)
+    )
     parser.add_argument(
         "--precision", default="bf16", choices=("fp32", "bf16", "full-bf16")
     )
@@ -403,12 +416,26 @@ def main() -> int:
     parser.add_argument("--loss-rtol", type=float, default=0.01)
     parser.add_argument("--grad-relative-limit", type=float, default=0.05)
     parser.add_argument(
+        "--extra-train-arg",
+        action="append",
+        default=[],
+        help="append a raw TorchTitan CLI argument",
+    )
+    parser.add_argument(
+        "--run-tag",
+        help="short label added to output names, for example inductor",
+    )
+    parser.add_argument(
         "--async-mode",
         choices=("disabled", "async", "async_with_pinned_mem"),
         default="disabled",
     )
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
+    if args.topology == "all":
+        return run_all_topologies(
+            __file__, argv=sys.argv[1:], topology_names=suite_topologies
+        )
     if not 0 < args.split_step < args.total_steps:
         raise ValueError("split-step must be between zero and total-steps")
 
@@ -421,6 +448,7 @@ def main() -> int:
         global_batch_size=args.global_batch_size,
         sequence_length=args.sequence_length,
         seed=args.seed,
+        extra_args=tuple(args.extra_train_arg),
     )
     batch_schedule = training_topology_plan(training, topology)
     device, visible_env, visible_devices = _device_from_environment(args.device)
@@ -437,12 +465,13 @@ def main() -> int:
         topology=topology,
         repeats=1,
     )
+    fixture_training = replace(training, extra_args=())
     fixture_config = CheckpointFixtureConfig(
         name="checkpoint",
         kind="self_consistency",
         reference=endpoint,
         candidate=endpoint,
-        training=training,
+        training=fixture_training,
         fixture_root="checkpoint_fixtures",
         artifact_root="checkpoint_artifacts",
         report_root="checkpoint_reports",
@@ -459,6 +488,8 @@ def main() -> int:
         f"b{args.global_batch_size}-q{args.sequence_length}-"
         f"seed{args.seed}-{save_mode}"
     )
+    if args.run_tag:
+        run_name += "-" + _normalize_run_tag(args.run_tag)
     run_root = root / "checkpoint_runs" / run_name
     report_root = root / "checkpoint_reports" / run_name
     if run_root.exists() or report_root.exists():
@@ -471,7 +502,9 @@ def main() -> int:
     run_root.mkdir(parents=True)
     report_root.mkdir(parents=True)
 
-    fixture = root / fixture_config.fixture_root / fixture_config.storage_name
+    fixture = (
+        root / fixture_config.fixture_root / fixture_config.fixture_storage_name
+    )
     if not (fixture / "fixture.json").is_file():
         print(f"Preparing shared seed checkpoint and token plan: {fixture}", flush=True)
         prepare_fixture(root, fixture_config, endpoint=endpoint, force=False)

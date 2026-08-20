@@ -4,6 +4,7 @@
 import json
 from pathlib import Path
 
+from tests.glm5_2_common.cli import _replace_topology
 from tests.glm5_2_checkpoint.checkpoint_benchmark import (
     CheckpointFixtureConfig,
     _checkpoint_command,
@@ -16,6 +17,15 @@ from tests.glm5_2_precision.workflow import (
     standard_topologies,
     training_topology_plan,
 )
+
+
+def test_all_topology_runner_replaces_both_cli_forms() -> None:
+    assert _replace_topology(
+        ["--device", "cuda", "--topology", "all"], "fsdp8"
+    ) == ["--device", "cuda", "--topology=fsdp8"]
+    assert _replace_topology(
+        ["--topology=all", "--force"], "cp8"
+    ) == ["--force", "--topology=cp8"]
 
 
 def test_checkpoint_default_batch_supports_single_and_pp8() -> None:
@@ -86,6 +96,29 @@ def test_checkpoint_phase_keeps_total_training_steps() -> None:
     assert "--training.steps=20" in command
     assert "--checkpoint.interval=10" in command
     assert "--checkpoint.no-last-save-model-only" in command
+
+
+def test_checkpoint_phase_forwards_graph_arguments() -> None:
+    training = _precision_training(
+        "bf16",
+        steps=20,
+        local_batch_size=8,
+        global_batch_size=64,
+        sequence_length=128,
+        seed=61,
+        extra_args=("--compile.enable", "--compile.backend=inductor"),
+    )
+    command = _checkpoint_command(
+        training=training,
+        topology=standard_topologies()["single"],
+        dump_folder=Path("run"),
+        initial_checkpoint=Path("seed"),
+        checkpoint_interval=10,
+        async_mode="disabled",
+    )
+
+    assert "--compile.enable" in command
+    assert "--compile.backend=inductor" in command
 
 
 def test_checkpoint_fixture_name_is_compact() -> None:

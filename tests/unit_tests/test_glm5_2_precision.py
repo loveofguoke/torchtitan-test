@@ -342,7 +342,15 @@ def _write_synthetic_token_plan(path: Path) -> tuple[str, ...]:
     return tuple(sample_hashes)
 
 
-def test_runtime_input_contract_validates_dp_and_tp_replicas(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("context_parallel_degree", "tensor_parallel_degree"),
+    ((1, 2), (2, 1)),
+)
+def test_runtime_input_contract_validates_model_parallel_replicas(
+    tmp_path: Path,
+    context_parallel_degree: int,
+    tensor_parallel_degree: int,
+) -> None:
     token_plan_path = tmp_path / "token-plan"
     sample_hashes = _write_synthetic_token_plan(token_plan_path)
     plan = load_token_plan(token_plan_path)
@@ -370,7 +378,8 @@ def test_runtime_input_contract_validates_dp_and_tp_replicas(tmp_path: Path) -> 
         global_batch_size=4,
         training_local_batch_size=2,
         dp_world_size=2,
-        tensor_parallel_degree=2,
+        context_parallel_degree=context_parallel_degree,
+        tensor_parallel_degree=tensor_parallel_degree,
         pipeline_parallel_degree=1,
         node_rank=0,
         num_processes_per_node=4,
@@ -378,6 +387,7 @@ def test_runtime_input_contract_validates_dp_and_tp_replicas(tmp_path: Path) -> 
 
     assert summary["valid"]
     assert summary["mapping"] == INPUT_MAPPING
+    assert summary["context_parallel_degree"] == context_parallel_degree
     assert summary["token_plan_step_series_sha256"] == step_series_digest(
         plan.step_sha256
     )
@@ -645,7 +655,7 @@ def test_self_consistency_suite_reuses_reference_and_reports_partial_results(
         require_all=False,
     )
     text = report.read_text(encoding="utf-8")
-    assert report.name == "self-cuda-single-vs-distributed-bf16-suite.html"
+    assert report.name == "cuda-vs-cuda-bf16-topology-suite.html"
     assert "ddp8" in text
     assert "fsdp8" in text
     assert "NOT RUN" in text
@@ -658,3 +668,33 @@ def test_self_consistency_suite_reuses_reference_and_reports_partial_results(
         / "ddp8"
         / precision_report_filename(config)
     ).is_file()
+
+
+def test_migration_topologies_share_one_fixture_identity() -> None:
+    topologies = standard_topologies()
+    endpoint = TrainingEndpoint(
+        "reference",
+        "cuda",
+        "0,1,2,3,4,5,6,7",
+        topologies["single"],
+        repeats=1,
+    )
+    base = FormalExperimentConfig(
+        name="migration-suite",
+        kind="migration",
+        reference=endpoint,
+        candidate=endpoint,
+        training=FormalTrainingConfig(
+            steps=8,
+            local_batch_size=8,
+            global_batch_size=64,
+        ),
+    )
+    from tests.glm5_2_precision.topology_suite import topology_config
+
+    single = topology_config(base, topologies["single"], precision=None)
+    fsdp = topology_config(base, topologies["fsdp8"], precision=None)
+
+    assert single.fixture_storage_name == fsdp.fixture_storage_name
+    assert single.storage_name != fsdp.storage_name
+    assert fsdp.reference.topology == fsdp.candidate.topology

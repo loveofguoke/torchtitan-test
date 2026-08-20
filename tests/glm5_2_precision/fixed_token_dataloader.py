@@ -30,6 +30,7 @@ INPUT_CONTRACT_DIR_ENV = "GLM5_PRECISION_INPUT_CONTRACT_DIR"
 GLOBAL_BATCH_SIZE_ENV = "GLM5_PRECISION_GLOBAL_BATCH_SIZE"
 TRAINING_LOCAL_BATCH_SIZE_ENV = "GLM5_PRECISION_TRAINING_LOCAL_BATCH_SIZE"
 TENSOR_PARALLEL_DEGREE_ENV = "GLM5_PRECISION_TENSOR_PARALLEL_DEGREE"
+CONTEXT_PARALLEL_DEGREE_ENV = "GLM5_PRECISION_CONTEXT_PARALLEL_DEGREE"
 
 
 class FixedTokenDataLoader(BaseDataLoader):
@@ -94,8 +95,11 @@ class FixedTokenDataLoader(BaseDataLoader):
         contract_directory.mkdir(parents=True, exist_ok=True)
         self.global_rank = int(os.environ.get("RANK", "0"))
         tensor_parallel_degree = int(os.environ[TENSOR_PARALLEL_DEGREE_ENV])
+        context_parallel_degree = int(os.environ[CONTEXT_PARALLEL_DEGREE_ENV])
         self.pp_rank = self.global_rank // (
-            self.dp_world_size * tensor_parallel_degree
+            self.dp_world_size
+            * context_parallel_degree
+            * tensor_parallel_degree
         )
         self.contract_path = contract_directory / f"rank-{self.global_rank}.jsonl"
         self._contract_stream = self.contract_path.open(

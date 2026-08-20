@@ -139,6 +139,11 @@ class TestPerformanceAnalysis(unittest.TestCase):
                 "Name,Duration(us)\nmatmul,20\nmatmul,30\nall_reduce,10\n",
                 encoding="utf-8",
             )
+            (run / "runtime.log").write_text(
+                "Compiling each TransformerBlock with torch.compile\n"
+                "Graph break from user code\n",
+                encoding="utf-8",
+            )
 
             analysis = build_analysis(run)
             self.assertEqual(analysis["profiler_inventory"]["file_count"], 1)
@@ -152,7 +157,11 @@ class TestPerformanceAnalysis(unittest.TestCase):
                 10.0,
             )
 
-            config = PerformanceConfig(name="test", steps=8)
+            config = PerformanceConfig(
+                name="test",
+                steps=8,
+                extra_args=("--compile.enable",),
+            )
             manifest = {
                 "run_name": "test-npu-single-overview",
                 "device": "npu",
@@ -172,6 +181,8 @@ class TestPerformanceAnalysis(unittest.TestCase):
             self.assertIn("blue region", content)
             self.assertIn("Official Ascend deliverables", content)
             self.assertIn("Open in MindStudio Insight", content)
+            self.assertIn("torch.compile health", content)
+            self.assertIn("Graph-break messages", content)
 
 
 if __name__ == "__main__":

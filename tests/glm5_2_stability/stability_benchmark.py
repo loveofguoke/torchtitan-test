@@ -23,6 +23,10 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from tests.glm5_2_common.cli import run_all_topologies
+from tests.glm5_2_common.device import resolve_accelerator
+from tests.glm5_2_common.topology import DISTRIBUTED_TOPOLOGY_NAMES
+
 from tests.glm5_2_precision.workflow import (  # noqa: E402
     FormalTrainingConfig,
     ParallelTopology,
@@ -39,6 +43,19 @@ DEFAULT_MINIMUM_HOURS = 1.0
 DEFAULT_STALL_TIMEOUT_MINUTES = 20.0
 
 
+def _normalize_run_tag(value: str) -> str:
+    tag = "-".join(
+        part
+        for part in "".join(
+            character if character.isalnum() else "-" for character in value.lower()
+        ).split("-")
+        if part
+    )
+    if not tag:
+        raise ValueError("run-tag must contain a letter or number")
+    return tag
+
+
 def _precision_training(precision: str, **overrides: Any) -> FormalTrainingConfig:
     values: dict[str, Any] = {
         "steps": overrides["steps"],
@@ -47,6 +64,7 @@ def _precision_training(precision: str, **overrides: Any) -> FormalTrainingConfi
         "sequence_length": overrides["sequence_length"],
         "seed": overrides["seed"],
         "deterministic": True,
+        "extra_args": tuple(overrides.get("extra_args", ())),
     }
     if precision == "fp32":
         values.update(training_dtype="float32", mixed_precision_param="float32")
@@ -58,26 +76,11 @@ def _precision_training(precision: str, **overrides: Any) -> FormalTrainingConfi
 
 
 def _device_from_environment(requested: str | None) -> tuple[str, str, str]:
-    cuda = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
-    npu = os.environ.get("ASCEND_RT_VISIBLE_DEVICES", "").strip()
-    if requested == "cuda":
-        if not cuda:
-            raise ValueError("CUDA_VISIBLE_DEVICES must be exported for CUDA stability")
-        return "cuda", "CUDA_VISIBLE_DEVICES", cuda
-    if requested == "npu":
-        if not npu:
-            raise ValueError(
-                "ASCEND_RT_VISIBLE_DEVICES must be exported for NPU stability"
-            )
-        return "npu", "ASCEND_RT_VISIBLE_DEVICES", npu
-    if bool(cuda) == bool(npu):
-        raise ValueError(
-            "export exactly one visibility variable or pass --device cuda|npu"
-        )
+    selection = resolve_accelerator(requested)
     return (
-        ("cuda", "CUDA_VISIBLE_DEVICES", cuda)
-        if cuda
-        else ("npu", "ASCEND_RT_VISIBLE_DEVICES", npu)
+        selection.device_type,
+        selection.visibility_variable,
+        selection.visible_devices,
     )
 
 
@@ -132,6 +135,7 @@ def _command(
         "--metrics.disable_color_printing",
         "--metrics.save_tb_folder=tensorboard",
         *topology.command_args(),
+        *training.extra_args,
     ]
 
 
@@ -239,7 +243,10 @@ th{{background:#eef2f7}}pre{{white-space:pre-wrap;background:#f8fafc;padding:12p
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", choices=("cuda", "npu"))
-    parser.add_argument("--topology", default="single", choices=standard_topologies())
+    suite_topologies = ("single", *DISTRIBUTED_TOPOLOGY_NAMES)
+    parser.add_argument(
+        "--topology", default="single", choices=("all", *suite_topologies)
+    )
     parser.add_argument("--precision", default="bf16", choices=("fp32", "bf16", "full-bf16"))
     parser.add_argument("--steps", type=int, default=DEFAULT_STEPS)
     parser.add_argument("--minimum-hours", type=float, default=DEFAULT_MINIMUM_HOURS)
@@ -252,8 +259,22 @@ def main() -> int:
     parser.add_argument("--global-batch-size", type=int, default=64)
     parser.add_argument("--sequence-length", type=int, default=128)
     parser.add_argument("--seed", type=int, default=61)
+    parser.add_argument(
+        "--extra-train-arg",
+        action="append",
+        default=[],
+        help="append a raw TorchTitan CLI argument",
+    )
+    parser.add_argument(
+        "--run-tag",
+        help="short label added to output names, for example inductor",
+    )
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
+    if args.topology == "all":
+        return run_all_topologies(
+            __file__, argv=sys.argv[1:], topology_names=suite_topologies
+        )
     if args.steps < 1 or args.minimum_hours < 0 or args.stall_timeout_minutes <= 0:
         raise ValueError("steps and timing limits must be positive")
 
@@ -266,6 +287,7 @@ def main() -> int:
         global_batch_size=args.global_batch_size,
         sequence_length=args.sequence_length,
         seed=args.seed,
+        extra_args=tuple(args.extra_train_arg),
     )
     batch_schedule = training_topology_plan(training, topology)
     device, visible_env, visible_devices = _device_from_environment(args.device)
@@ -281,6 +303,8 @@ def main() -> int:
         f"s{training.steps}-b{training.global_batch_size}-"
         f"seq{training.sequence_length}-seed{training.seed}"
     )
+    if args.run_tag:
+        run_name += "-" + _normalize_run_tag(args.run_tag)
     run_directory = root / "stability_runs" / run_name
     report_directory = root / "stability_reports" / run_name
     if run_directory.exists() or report_directory.exists():

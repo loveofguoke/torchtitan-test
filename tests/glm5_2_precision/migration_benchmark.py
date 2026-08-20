@@ -15,17 +15,19 @@ from tests.glm5_2_precision.standards import (  # noqa: E402
     PrecisionStandard,
     QuantileLimit,
 )
+from tests.glm5_2_common.topology import DISTRIBUTED_TOPOLOGY_NAMES  # noqa: E402
+from tests.glm5_2_precision.topology_suite import run_topology_suite_cli  # noqa: E402
 from tests.glm5_2_precision.workflow import (  # noqa: E402
     FormalExperimentConfig,
     FormalTrainingConfig,
     TrainingEndpoint,
-    run_formal_cli,
     standard_topologies,
 )
 
 
 TOPOLOGIES = standard_topologies()
 ALL_DEVICES = "0,1,2,3,4,5,6,7"
+MIGRATION_TOPOLOGIES = ("single", *DISTRIBUTED_TOPOLOGY_NAMES)
 
 CONFIG = FormalExperimentConfig(
     name="glm5-2-gpu-npu-training",
@@ -87,4 +89,9 @@ CONFIG = FormalExperimentConfig(
 
 
 if __name__ == "__main__":
-    run_formal_cli(CONFIG, __file__, topologies=TOPOLOGIES)
+    run_topology_suite_cli(
+        CONFIG,
+        __file__,
+        topologies=TOPOLOGIES,
+        topology_names=MIGRATION_TOPOLOGIES,
+    )
