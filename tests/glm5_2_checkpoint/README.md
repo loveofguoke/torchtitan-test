@@ -42,6 +42,30 @@ sufficient evidence by itself. Frozen model parameters, including the pretrained
 GLM DSA indexer, remain in the model checkpoint but are excluded from this
 optimizer-state audit.
 
+## Prepare synchronized inputs
+
+Checkpoint equivalence requires more than using the same seed. First prepare a
+shared fixture containing the step-0 model checkpoint, a fixed token plan for
+every training step and global-batch position, and their integrity metadata:
+
+```bash
+python tests/glm5_2_checkpoint/checkpoint_benchmark.py \
+  --data --device cuda \
+  --precision bf16 --total-steps 20 \
+  --local-batch-size 8 --global-batch-size 64 \
+  --sequence-length 128 --seed 61
+```
+
+The fixture can instead be generated with `--device npu`. Generate it once on
+either host and synchronize its directory under `checkpoint_fixtures/` when
+different servers participate. The fixture is topology-independent: single,
+DDP, FSDP, TP, PP, EP, and combined topologies reuse it when the precision,
+step count, batch configuration, sequence length, and seed are unchanged.
+
+`--data --force` recreates only the fixture. A benchmark command still prepares
+a missing fixture automatically for backward compatibility, but the explicit
+`--data` phase is recommended for reproducible experiments.
+
 ## Single-card GPU
 
 ```bash
@@ -50,7 +74,9 @@ unset ASCEND_RT_VISIBLE_DEVICES
 
 python tests/glm5_2_checkpoint/checkpoint_benchmark.py \
   --device cuda --topology single \
-  --precision bf16 --total-steps 20 --split-step 10
+  --precision bf16 --total-steps 20 --split-step 10 \
+  --local-batch-size 8 --global-batch-size 64 \
+  --sequence-length 128 --seed 61
 ```
 
 ## Single-card NPU
@@ -61,7 +87,9 @@ unset CUDA_VISIBLE_DEVICES
 
 python tests/glm5_2_checkpoint/checkpoint_benchmark.py \
   --device npu --topology single \
-  --precision bf16 --total-steps 20 --split-step 10
+  --precision bf16 --total-steps 20 --split-step 10 \
+  --local-batch-size 8 --global-batch-size 64 \
+  --sequence-length 128 --seed 61
 ```
 
 ## Distributed topology
@@ -72,6 +100,8 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 python tests/glm5_2_checkpoint/checkpoint_benchmark.py \
   --device cuda --topology fsdp8 \
   --precision bf16 --total-steps 20 --split-step 10 \
+  --local-batch-size 8 --global-batch-size 64 \
+  --sequence-length 128 --seed 61 \
   --failure-mode all
 ```
 

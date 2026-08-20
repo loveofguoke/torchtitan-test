@@ -467,6 +467,44 @@ def _token_plan_path(fixture_directory: Path) -> Path:
     return token_plan_path
 
 
+def resolve_fixture_inputs(
+    root: Path,
+    config: FormalExperimentConfig,
+) -> tuple[Path, Path]:
+    """Resolve and verify the shared seed checkpoint and fixed token plan."""
+
+    fixture_directory = _fixture_directory(root, config)
+    return (
+        _seed_checkpoint_path(fixture_directory),
+        _token_plan_path(fixture_directory),
+    )
+
+
+def fixed_input_environment(
+    *,
+    token_plan_path: Path,
+    input_contract_directory: Path,
+    training: FormalTrainingConfig,
+    topology: ParallelTopology,
+) -> dict[str, str]:
+    """Return the shared fixed-token contract for one training process."""
+
+    return {
+        "GLM5_PRECISION_TOKEN_PLAN_PATH": str(token_plan_path),
+        "GLM5_PRECISION_INPUT_CONTRACT_DIR": str(input_contract_directory),
+        "GLM5_PRECISION_GLOBAL_BATCH_SIZE": str(training.global_batch_size),
+        "GLM5_PRECISION_TRAINING_LOCAL_BATCH_SIZE": str(
+            training.local_batch_size
+        ),
+        "GLM5_PRECISION_TENSOR_PARALLEL_DEGREE": str(
+            topology.tensor_parallel_degree
+        ),
+        "GLM5_PRECISION_CONTEXT_PARALLEL_DEGREE": str(
+            topology.context_parallel_degree
+        ),
+    }
+
+
 def _base_training_args(
     config: FormalTrainingConfig,
     *,
@@ -801,21 +839,13 @@ def capture_endpoint(
     # metrics-owning node validates the complete world before publishing an
     # artifact, so a missing or incorrectly mapped node cannot pass silently.
     input_contract_directory.mkdir(parents=True, exist_ok=True)
-    environment["GLM5_PRECISION_TOKEN_PLAN_PATH"] = str(token_plan_path)
-    environment["GLM5_PRECISION_INPUT_CONTRACT_DIR"] = str(
-        input_contract_directory
-    )
-    environment["GLM5_PRECISION_GLOBAL_BATCH_SIZE"] = str(
-        config.training.global_batch_size
-    )
-    environment["GLM5_PRECISION_TRAINING_LOCAL_BATCH_SIZE"] = str(
-        config.training.local_batch_size
-    )
-    environment["GLM5_PRECISION_TENSOR_PARALLEL_DEGREE"] = str(
-        endpoint.topology.tensor_parallel_degree
-    )
-    environment["GLM5_PRECISION_CONTEXT_PARALLEL_DEGREE"] = str(
-        endpoint.topology.context_parallel_degree
+    environment.update(
+        fixed_input_environment(
+            token_plan_path=token_plan_path,
+            input_contract_directory=input_contract_directory,
+            training=config.training,
+            topology=endpoint.topology,
+        )
     )
     environment["LOG_RANK"] = str(metrics_rank)
     command = _torchrun_command(

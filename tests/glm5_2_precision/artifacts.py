@@ -51,6 +51,7 @@ def _write_json(path: Path, value: Any) -> None:
 
 def read_captured_metrics(path: str | Path) -> tuple[TrainingMetric, ...]:
     records: dict[int, TrainingMetric] = {}
+    record_lines: dict[int, int] = {}
     source = Path(path)
     if not source.is_file():
         raise PrecisionArtifactError(f"captured metrics not found: {source}")
@@ -68,7 +69,10 @@ def read_captured_metrics(path: str | Path) -> tuple[TrainingMetric, ...]:
                 f"metrics line {line_number} is missing {missing}: {source}"
             )
         if step in records:
-            raise PrecisionArtifactError(f"duplicate captured training step {step}")
+            raise PrecisionArtifactError(
+                f"duplicate captured training step {step}: {source}, "
+                f"first line {record_lines[step]}, repeated line {line_number}"
+            )
         extras = {
             key: float(value)
             for key, value in values.items()
@@ -81,6 +85,7 @@ def read_captured_metrics(path: str | Path) -> tuple[TrainingMetric, ...]:
             grad_norm=float(values[GRAD_NORM_KEY]),
             extras=extras,
         )
+        record_lines[step] = line_number
     if not records:
         raise PrecisionArtifactError(f"captured metrics are empty: {source}")
     return tuple(records[step] for step in sorted(records))

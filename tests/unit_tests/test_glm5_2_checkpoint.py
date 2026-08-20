@@ -4,6 +4,7 @@
 import json
 from pathlib import Path
 
+import pytest
 import torch
 
 from tests.glm5_2_common.cli import _replace_topology
@@ -12,6 +13,7 @@ from tests.glm5_2_checkpoint.checkpoint_benchmark import (
     _checkpoint_command,
     _combine_contracts,
     _combine_recovered_contracts,
+    _combine_recovered_metrics,
     _device_from_environment,
     _precision_training,
     _selected_failure_modes,
@@ -103,6 +105,57 @@ def test_recovered_contract_discards_work_after_loaded_checkpoint(
     )["rank-0.jsonl"]
 
     assert [record["step"] for record in records] == [1, 2, 3, 4]
+
+
+def test_recovered_metrics_discard_uncommitted_work_before_replay(
+    tmp_path: Path,
+) -> None:
+    interrupted = tmp_path / "interrupted.jsonl"
+    resumed = tmp_path / "resumed.jsonl"
+    combined = tmp_path / "combined.jsonl"
+    interrupted.write_text(
+        "".join(json.dumps({"step": step}) + "\n" for step in (1, 2, 3)),
+        encoding="utf-8",
+    )
+    resumed.write_text(
+        "".join(json.dumps({"step": step}) + "\n" for step in (3, 4)),
+        encoding="utf-8",
+    )
+
+    _combine_recovered_metrics(
+        interrupted,
+        resumed,
+        combined,
+        restored_step=2,
+    )
+
+    assert [
+        json.loads(line)["step"]
+        for line in combined.read_text(encoding="utf-8").splitlines()
+    ] == [1, 2, 3, 4]
+
+
+def test_recovered_metrics_reject_duplicate_steps_within_one_phase(
+    tmp_path: Path,
+) -> None:
+    interrupted = tmp_path / "interrupted.jsonl"
+    resumed = tmp_path / "resumed.jsonl"
+    interrupted.write_text(
+        "".join(json.dumps({"step": step}) + "\n" for step in (1, 2)),
+        encoding="utf-8",
+    )
+    resumed.write_text(
+        "".join(json.dumps({"step": step}) + "\n" for step in (3, 3, 4)),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="not strictly increasing"):
+        _combine_recovered_metrics(
+            interrupted,
+            resumed,
+            tmp_path / "combined.jsonl",
+            restored_step=2,
+        )
 
 
 def test_all_failure_modes_add_rank_failures_only_for_distributed() -> None:

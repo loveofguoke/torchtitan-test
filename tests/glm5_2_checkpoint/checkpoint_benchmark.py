@@ -47,7 +47,9 @@ from tests.glm5_2_precision.workflow import (  # noqa: E402
     FormalTrainingConfig,
     ParallelTopology,
     TrainingEndpoint,
+    fixed_input_environment,
     prepare_fixture,
+    resolve_fixture_inputs,
     standard_topologies,
     training_topology_plan,
 )
@@ -281,19 +283,13 @@ def _capture_environment(
     environment[visible_env] = visible_devices
     environment["TORCHTITAN_DEVICE"] = "npu" if device == "npu" else "gpu"
     environment["GLM5_PRECISION_METRICS_PATH"] = str(metrics)
-    environment["GLM5_PRECISION_TOKEN_PLAN_PATH"] = str(token_plan)
-    environment["GLM5_PRECISION_INPUT_CONTRACT_DIR"] = str(input_contract)
-    environment["GLM5_PRECISION_GLOBAL_BATCH_SIZE"] = str(
-        training.global_batch_size
-    )
-    environment["GLM5_PRECISION_TRAINING_LOCAL_BATCH_SIZE"] = str(
-        training.local_batch_size
-    )
-    environment["GLM5_PRECISION_TENSOR_PARALLEL_DEGREE"] = str(
-        topology.tensor_parallel_degree
-    )
-    environment["GLM5_PRECISION_CONTEXT_PARALLEL_DEGREE"] = str(
-        topology.context_parallel_degree
+    environment.update(
+        fixed_input_environment(
+            token_plan_path=token_plan,
+            input_contract_directory=input_contract,
+            training=training,
+            topology=topology,
+        )
     )
     environment["LOG_RANK"] = str(_metrics_rank(topology))
     environment[EVENTS_DIR_ENV] = str(events)
@@ -368,12 +364,30 @@ def _combine_recovered_metrics(
 ) -> None:
     records: list[dict[str, Any]] = []
     for path, retain_interrupted in ((interrupted, True), (resumed, False)):
+        seen_steps: set[int] = set()
+        previous_step: int | None = None
         for line in path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
             record = json.loads(line)
-            if retain_interrupted and int(record["step"]) > restored_step:
+            step = int(record["step"])
+            if step in seen_steps or (
+                previous_step is not None and step <= previous_step
+            ):
+                raise RuntimeError(
+                    "checkpoint metric phase is not strictly increasing: "
+                    f"path={path}, previous={previous_step}, current={step}"
+                )
+            seen_steps.add(step)
+            previous_step = step
+            if retain_interrupted and step > restored_step:
                 continue
+            if not retain_interrupted and step <= restored_step:
+                raise RuntimeError(
+                    "resumed metrics include work at or before the restored "
+                    f"checkpoint: path={path}, restored_step={restored_step}, "
+                    f"observed_step={step}"
+                )
             records.append(record)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(
@@ -570,6 +584,11 @@ pre{{white-space:pre-wrap;background:#f8fafc;padding:12px;border:1px solid #d8de
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--data",
+        action="store_true",
+        help="prepare the shared step-0 checkpoint and fixed token plan, then exit",
+    )
     parser.add_argument("--device", choices=("cuda", "npu"))
     suite_topologies = ("single", *DISTRIBUTED_TOPOLOGY_NAMES)
     parser.add_argument(
@@ -635,7 +654,7 @@ def main() -> int:
     )
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
-    if args.topology == "all":
+    if args.topology == "all" and not args.data:
         return run_all_topologies(
             __file__, argv=sys.argv[1:], topology_names=suite_topologies
         )
@@ -653,7 +672,10 @@ def main() -> int:
         )
 
     root = Path(__file__).resolve().parents[2]
-    topology = standard_topologies()[args.topology]
+    # Fixtures contain global inputs and an unsharded seed checkpoint. They are
+    # shared by every topology, so `--data --topology all` prepares only once.
+    topology_name = "single" if args.data else args.topology
+    topology = standard_topologies()[topology_name]
     failure_modes = _selected_failure_modes(
         args.failure_mode or [], world_size=topology.world_size
     )
@@ -701,6 +723,23 @@ def main() -> int:
         report_root="checkpoint_reports",
         run_root="checkpoint_runs",
     )
+    fixture = (
+        root / fixture_config.fixture_root / fixture_config.fixture_storage_name
+    )
+    fixture_manifest = fixture / "fixture.json"
+    if args.data:
+        if fixture_manifest.is_file() and not args.force:
+            print(f"Reuse prepared checkpoint fixture: {fixture}", flush=True)
+            return 0
+        path = prepare_fixture(
+            root,
+            fixture_config,
+            endpoint=endpoint,
+            force=args.force,
+        )
+        print(f"Prepared checkpoint fixture: {path}", flush=True)
+        return 0
+
     save_mode = {
         "disabled": "sync",
         "async": "async",
@@ -729,15 +768,15 @@ def main() -> int:
     run_root.mkdir(parents=True)
     report_root.mkdir(parents=True)
 
-    fixture = (
-        root / fixture_config.fixture_root / fixture_config.fixture_storage_name
-    )
-    if not (fixture / "fixture.json").is_file():
+    if not fixture_manifest.is_file():
+        if fixture.exists():
+            raise RuntimeError(
+                "checkpoint fixture is incomplete; recreate it with --data "
+                f"--force: {fixture}"
+            )
         print(f"Preparing shared seed checkpoint and token plan: {fixture}", flush=True)
         prepare_fixture(root, fixture_config, endpoint=endpoint, force=False)
-    manifest = json.loads((fixture / "fixture.json").read_text(encoding="utf-8"))
-    initial_checkpoint = fixture / manifest["checkpoint_relative_path"]
-    token_plan = fixture / manifest["token_plan_relative_path"]
+    initial_checkpoint, token_plan = resolve_fixture_inputs(root, fixture_config)
 
     common_environment = os.environ.copy()
     baseline_root = run_root / "baseline"

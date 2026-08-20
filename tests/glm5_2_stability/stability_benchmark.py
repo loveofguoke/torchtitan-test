@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 import html
 import json
@@ -28,10 +28,20 @@ from tests.glm5_2_common.device import resolve_accelerator
 from tests.glm5_2_common.topology import DISTRIBUTED_TOPOLOGY_NAMES
 
 from tests.glm5_2_precision.workflow import (  # noqa: E402
+    FormalExperimentConfig,
     FormalTrainingConfig,
     ParallelTopology,
+    TrainingEndpoint,
+    fixed_input_environment,
+    prepare_fixture,
+    resolve_fixture_inputs,
     standard_topologies,
     training_topology_plan,
+)
+from tests.glm5_2_precision.token_data import (  # noqa: E402
+    TokenDataError,
+    load_token_plan,
+    validate_runtime_input_contract,
 )
 
 
@@ -100,6 +110,7 @@ def _command(
     training: FormalTrainingConfig,
     topology: ParallelTopology,
     dump_folder: Path,
+    initial_checkpoint: Path,
 ) -> list[str]:
     torchrun = shutil.which("torchrun") or str(
         Path(sys.executable).with_name("torchrun")
@@ -135,6 +146,9 @@ def _command(
         "--metrics.disable_color_printing",
         "--metrics.save_tb_folder=tensorboard",
         *topology.command_args(),
+        "--checkpoint.enable",
+        "--checkpoint.load_only",
+        f"--checkpoint.initial_load_path={initial_checkpoint}",
         *training.extra_args,
     ]
 
@@ -242,6 +256,11 @@ th{{background:#eef2f7}}pre{{white-space:pre-wrap;background:#f8fafc;padding:12p
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--data",
+        action="store_true",
+        help="prepare the shared step-0 checkpoint and fixed token plan, then exit",
+    )
     parser.add_argument("--device", choices=("cuda", "npu"))
     suite_topologies = ("single", *DISTRIBUTED_TOPOLOGY_NAMES)
     parser.add_argument(
@@ -271,7 +290,7 @@ def main() -> int:
     )
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
-    if args.topology == "all":
+    if args.topology == "all" and not args.data:
         return run_all_topologies(
             __file__, argv=sys.argv[1:], topology_names=suite_topologies
         )
@@ -279,7 +298,10 @@ def main() -> int:
         raise ValueError("steps and timing limits must be positive")
 
     root = Path(__file__).resolve().parents[2]
-    topology = standard_topologies()[args.topology]
+    # Stability fixtures are global-input contracts, not topology-specific
+    # outputs. `--data --topology all` therefore prepares one single-card copy.
+    topology_name = "single" if args.data else args.topology
+    topology = standard_topologies()[topology_name]
     training = _precision_training(
         args.precision,
         steps=args.steps,
@@ -297,6 +319,58 @@ def main() -> int:
             f"topology {topology.name} needs {topology.world_size} visible devices, "
             f"but {visible_env} contains {visible_count}"
         )
+
+    endpoint = TrainingEndpoint(
+        name=device,
+        device_type=device,
+        visible_devices=visible_devices,
+        topology=topology,
+        repeats=1,
+    )
+    fixture_config = FormalExperimentConfig(
+        name="stability",
+        kind="self_consistency",
+        reference=endpoint,
+        candidate=endpoint,
+        training=replace(training, extra_args=()),
+        fixture_root="stability_fixtures",
+        artifact_root="stability_artifacts",
+        report_root="stability_reports",
+        run_root="stability_runs",
+    )
+    fixture_directory = (
+        root / fixture_config.fixture_root / fixture_config.fixture_storage_name
+    )
+    fixture_manifest = fixture_directory / "fixture.json"
+    if args.data:
+        if fixture_manifest.is_file() and not args.force:
+            print(f"Reuse prepared stability fixture: {fixture_directory}")
+            return 0
+        path = prepare_fixture(
+            root,
+            fixture_config,
+            endpoint=endpoint,
+            force=args.force,
+        )
+        print(f"Prepared stability fixture: {path}")
+        return 0
+    if not fixture_manifest.is_file():
+        if fixture_directory.exists():
+            raise RuntimeError(
+                "stability fixture is incomplete; recreate it with --data "
+                f"--force: {fixture_directory}"
+            )
+        print(
+            f"Preparing shared seed checkpoint and token plan: {fixture_directory}",
+            flush=True,
+        )
+        prepare_fixture(
+            root,
+            fixture_config,
+            endpoint=endpoint,
+            force=False,
+        )
+    initial_checkpoint, token_plan = resolve_fixture_inputs(root, fixture_config)
 
     run_name = (
         f"stability-{device}-{topology.slug}-{args.precision}-"
@@ -322,11 +396,20 @@ def main() -> int:
         training=training,
         topology=topology,
         dump_folder=run_directory / "trainer_output",
+        initial_checkpoint=initial_checkpoint,
     )
     environment = os.environ.copy()
     environment[visible_env] = visible_devices
     environment["TORCHTITAN_DEVICE"] = "npu" if device == "npu" else "gpu"
     environment["GLM5_STABILITY_METRICS_PATH"] = str(metrics_path)
+    environment.update(
+        fixed_input_environment(
+            token_plan_path=token_plan,
+            input_contract_directory=run_directory / "input_contract",
+            training=training,
+            topology=topology,
+        )
+    )
     environment["LOG_RANK"] = str(_metrics_rank(topology))
 
     print(
@@ -390,11 +473,40 @@ def main() -> int:
     steps = [int(record["step"]) for record in records]
     contiguous = steps == list(range(1, len(steps) + 1))
     completed = len(records) == training.steps and steps[-1:] == [training.steps]
+    input_contract: dict[str, Any]
+    if return_code == 0 and completed:
+        try:
+            input_contract = validate_runtime_input_contract(
+                contract_directory=run_directory / "input_contract",
+                plan=load_token_plan(token_plan),
+                steps=training.steps,
+                global_batch_size=training.global_batch_size,
+                training_local_batch_size=training.local_batch_size,
+                dp_world_size=topology.data_parallel_degree,
+                context_parallel_degree=topology.context_parallel_degree,
+                tensor_parallel_degree=topology.tensor_parallel_degree,
+                pipeline_parallel_degree=topology.pipeline_parallel_degree,
+                node_rank=0,
+                num_processes_per_node=topology.world_size,
+            )
+        except TokenDataError as error:
+            input_contract = {"valid": False, "error": str(error)}
+    else:
+        input_contract = {
+            "valid": False,
+            "error": "training did not complete every requested step",
+        }
     elapsed_seconds = ended - started
     sufficient_duration = elapsed_seconds >= args.minimum_hours * 3600
     if interrupted:
         status = "INTERRUPTED"
-    elif return_code != 0 or stalled or not contiguous or not completed:
+    elif (
+        return_code != 0
+        or stalled
+        or not contiguous
+        or not completed
+        or not input_contract["valid"]
+    ):
         status = "FAIL"
     elif not sufficient_duration:
         status = "INSUFFICIENT_DURATION"
@@ -442,6 +554,10 @@ def main() -> int:
         "ended_at_utc": ended_at.isoformat(),
         "runtime_log": str(runtime_log),
         "raw_metrics": str(metrics_path),
+        "fixture": str(fixture_directory),
+        "initial_checkpoint": str(initial_checkpoint),
+        "token_plan": str(token_plan),
+        "input_contract": input_contract,
         "metric_ranges": ranges,
         "command": command,
     }

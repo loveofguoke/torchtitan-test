@@ -33,17 +33,29 @@ def _install_jsonl_metrics_capture() -> None:
     if not metrics_path_value:
         raise RuntimeError(f"{METRICS_PATH_ENV} must name the JSONL metrics file")
     metrics_path = Path(metrics_path_value)
+    rank = int(os.environ.get("RANK", "0"))
+    owner_rank = int(os.environ.get("LOG_RANK", "0"))
+    capture_enabled = rank == owner_rank
+    if capture_enabled:
+        # Each launcher process owns one phase file. Truncate stale output from
+        # an earlier failed attempt instead of appending a second copy of steps.
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        metrics_path.write_text("", encoding="utf-8")
 
     from torchtitan.components.metrics import TensorBoardLogger
 
     original_log = TensorBoardLogger.log
+    last_captured_step: int | None = None
 
     def log_with_jsonl(
         self: TensorBoardLogger,
         metrics: dict[str, Any],
         step: int,
     ) -> None:
+        nonlocal last_captured_step
         original_log(self, metrics, step)
+        if not capture_enabled:
+            return
         required = {
             "loss_metrics/global_avg_loss",
             "loss_metrics/global_max_loss",
@@ -51,17 +63,23 @@ def _install_jsonl_metrics_capture() -> None:
         }
         if not required.issubset(metrics):
             return
+        captured_step = int(step)
+        if last_captured_step is not None and captured_step <= last_captured_step:
+            raise RuntimeError(
+                "training metrics must be emitted once in strictly increasing "
+                f"step order: previous={last_captured_step}, current={captured_step}"
+            )
+        last_captured_step = captured_step
         numeric_metrics = {
             key: converted
             for key, value in metrics.items()
             if (converted := _to_float(value)) is not None
         }
         record = {
-            "step": int(step),
-            "rank": int(os.environ.get("RANK", "0")),
+            "step": captured_step,
+            "rank": rank,
             "metrics": numeric_metrics,
         }
-        metrics_path.parent.mkdir(parents=True, exist_ok=True)
         with metrics_path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(record, sort_keys=True, separators=(",", ":")))
             stream.write("\n")

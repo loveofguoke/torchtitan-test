@@ -79,7 +79,10 @@ def test_stability_command_forwards_graph_arguments() -> None:
         training=training,
         topology=standard_topologies()["single"],
         dump_folder=Path("run"),
+        initial_checkpoint=Path("fixture/checkpoint"),
     )
 
     assert "--compile.enable" in command
     assert "--compile.backend=inductor" in command
+    assert "--checkpoint.load_only" in command
+    assert "--checkpoint.initial_load_path=fixture/checkpoint" in command
