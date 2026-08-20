@@ -207,6 +207,8 @@ class FormalExperimentConfig:
     exploratory_reports: tuple[str, ...] = ()
     fixture_name: str | None = None
     allow_endpoint_argument_difference: bool = False
+    storage_name_override: str | None = None
+    topology_subdirectory: bool = False
 
     def __post_init__(self) -> None:
         if self.kind == "migration":
@@ -234,6 +236,12 @@ class FormalExperimentConfig:
     def storage_name(self) -> str:
         """Return a compact, human-readable directory and rendezvous name."""
 
+        if self.storage_name_override is not None:
+            value = _slug(self.storage_name_override)
+            if len(value) <= 112:
+                return value
+            digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:10]
+            return f"{value[:101].rstrip('-')}-{digest}"
         if self.kind == "migration":
             experiment = (
                 f"migration-{self.reference.device_type}-"
@@ -415,7 +423,10 @@ def _artifact_directory(
         if config.kind == "self_consistency" and role == "candidate"
         else _slug(f"{role}-r{repeat}")
     )
-    return root / config.artifact_root / config.storage_name / name
+    directory = root / config.artifact_root / config.storage_name
+    if config.topology_subdirectory:
+        directory /= endpoint.topology.slug
+    return directory / name
 
 
 def _run_directory(
@@ -432,7 +443,10 @@ def _run_directory(
     )
     if endpoint.num_nodes > 1:
         name = f"{name}-node-{endpoint.node_rank}"
-    return root / config.run_root / config.storage_name / name
+    directory = root / config.run_root / config.storage_name
+    if config.topology_subdirectory:
+        directory /= endpoint.topology.slug
+    return directory / name
 
 
 def _seed_checkpoint_path(fixture_directory: Path) -> Path:
@@ -793,14 +807,12 @@ def capture_endpoint(
     run_directory = _run_directory(root, config, role, endpoint, repeat)
     metrics_path = run_directory / "raw_metrics.jsonl"
     runtime_log = run_directory / "runtime.log"
-    input_contract_directory = (
-        root
-        / config.run_root
-        / config.storage_name
-        / (
-            f"{_artifact_directory(root, config, role, endpoint, repeat).name}"
-            "-input-contract"
-        )
+    input_contract_directory = root / config.run_root / config.storage_name
+    if config.topology_subdirectory:
+        input_contract_directory /= endpoint.topology.slug
+    input_contract_directory /= (
+        f"{_artifact_directory(root, config, role, endpoint, repeat).name}"
+        "-input-contract"
     )
     finalize_existing = False
     if run_directory.exists():

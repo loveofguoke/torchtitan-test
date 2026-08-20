@@ -21,7 +21,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from tests.glm5_2_common.cli import run_all_topologies
+from tests.glm5_2_common.cli import archive_previous_output
 from tests.glm5_2_common.device import resolve_accelerator
 from tests.glm5_2_common.topology import DISTRIBUTED_TOPOLOGY_NAMES
 
@@ -36,6 +36,13 @@ from tests.glm5_2_checkpoint.fault_injection import (  # noqa: E402
 from tests.glm5_2_checkpoint.state_compare import (  # noqa: E402
     compare_checkpoints,
     summarize_checkpoint,
+)
+from tests.glm5_2_checkpoint.topology_suite import (  # noqa: E402
+    CHECKPOINT_SCHEMA,
+    checkpoint_member_complete,
+    checkpoint_member_paths,
+    checkpoint_output_names,
+    run_checkpoint_topology_suite,
 )
 from tests.glm5_2_precision.artifacts import read_captured_metrics  # noqa: E402
 from tests.glm5_2_precision.standards import (  # noqa: E402
@@ -57,19 +64,6 @@ from tests.glm5_2_precision.workflow import (  # noqa: E402
 
 LOSS_KEY = "loss"
 GRAD_NORM_KEY = "grad_norm"
-
-
-def _normalize_run_tag(value: str) -> str:
-    tag = "-".join(
-        part
-        for part in "".join(
-            character if character.isalnum() else "-" for character in value.lower()
-        ).split("-")
-        if part
-    )
-    if not tag:
-        raise ValueError("run-tag must contain a letter or number")
-    return tag
 
 
 class CheckpointFixtureConfig(FormalExperimentConfig):
@@ -654,10 +648,6 @@ def main() -> int:
     )
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
-    if args.topology == "all" and not args.data:
-        return run_all_topologies(
-            __file__, argv=sys.argv[1:], topology_names=suite_topologies
-        )
     if not 0 < args.split_step < args.total_steps:
         raise ValueError("split-step must be between zero and total-steps")
     if args.failure_timeout <= 0 or args.restart_delay < 0:
@@ -672,6 +662,29 @@ def main() -> int:
         )
 
     root = Path(__file__).resolve().parents[2]
+    device, visible_env, visible_devices = _device_from_environment(args.device)
+    output_name_args = {
+        "precision": args.precision,
+        "total_steps": args.total_steps,
+        "split_step": args.split_step,
+        "local_batch_size": args.local_batch_size,
+        "global_batch_size": args.global_batch_size,
+        "sequence_length": args.sequence_length,
+        "seed": args.seed,
+        "async_mode": args.async_mode,
+        "comparison": args.comparison,
+        "requested_failure_modes": args.failure_mode or [],
+        "run_tag": args.run_tag,
+    }
+    if args.topology == "all" and not args.data:
+        return run_checkpoint_topology_suite(
+            root,
+            script_path=__file__,
+            argv=sys.argv[1:],
+            topology_names=suite_topologies,
+            device=device,
+            output_name_args=output_name_args,
+        )
     # Fixtures contain global inputs and an unsharded seed checkpoint. They are
     # shared by every topology, so `--data --topology all` prepares only once.
     topology_name = "single" if args.data else args.topology
@@ -697,7 +710,6 @@ def main() -> int:
         extra_args=tuple(args.extra_train_arg),
     )
     batch_schedule = training_topology_plan(training, topology)
-    device, visible_env, visible_devices = _device_from_environment(args.device)
     visible_count = len([item for item in visible_devices.split(",") if item.strip()])
     if visible_count < topology.world_size:
         raise ValueError(
@@ -740,33 +752,45 @@ def main() -> int:
         print(f"Prepared checkpoint fixture: {path}", flush=True)
         return 0
 
-    save_mode = {
-        "disabled": "sync",
-        "async": "async",
-        "async_with_pinned_mem": "pinned",
-    }[args.async_mode]
-    run_name = (
-        f"ckpt-{device}-{topology.slug}-{args.precision}-"
-        f"s{args.total_steps}-k{args.split_step}-"
-        f"b{args.global_batch_size}-q{args.sequence_length}-"
-        f"seed{args.seed}-{save_mode}"
+    suite_name, run_name = checkpoint_output_names(
+        device=device,
+        topology_slug=topology.slug,
+        **output_name_args,
     )
-    if failure_modes != ["graceful"]:
-        mode_name = "all-faults" if len(failure_modes) > 1 else failure_modes[0]
-        run_name += f"-{mode_name}"
-    if args.run_tag:
-        run_name += "-" + _normalize_run_tag(args.run_tag)
-    run_root = root / "checkpoint_runs" / run_name
-    report_root = root / "checkpoint_reports" / run_name
+    run_root, report_root, summary_path, report_path = checkpoint_member_paths(
+        root,
+        suite_name=suite_name,
+        topology_slug=topology.slug,
+        member_name=run_name,
+    )
     if run_root.exists() or report_root.exists():
-        if not args.force:
-            raise FileExistsError(
-                f"checkpoint test output exists; pass --force to replace it: {run_name}"
+        if not args.force and checkpoint_member_complete(
+            summary_path, member_name=run_name
+        ):
+            print(
+                f"Skip completed checkpoint topology: {topology.name}\n"
+                f"Report: {report_path}",
+                flush=True,
             )
-        shutil.rmtree(run_root, ignore_errors=True)
-        shutil.rmtree(report_root, ignore_errors=True)
-    run_root.mkdir(parents=True)
-    report_root.mkdir(parents=True)
+            return 0
+        if args.force:
+            shutil.rmtree(run_root, ignore_errors=True)
+            shutil.rmtree(report_root, ignore_errors=True)
+        else:
+            archived_run = archive_previous_output(run_root)
+            archived_report = archive_previous_output(report_root)
+            archived = [
+                str(path)
+                for path in (archived_run, archived_report)
+                if path is not None
+            ]
+            print(
+                "Retry incomplete or failed checkpoint topology; archived previous "
+                f"output: {', '.join(archived)}",
+                flush=True,
+            )
+    run_root.mkdir(parents=True, exist_ok=True)
+    report_root.mkdir(parents=True, exist_ok=True)
 
     if not fixture_manifest.is_file():
         if fixture.exists():
@@ -1091,7 +1115,7 @@ def main() -> int:
         values["passed"] for values in scenarios.values()
     )
     summary = {
-        "schema": "torchtitan.glm5_2.checkpoint_fault_recovery",
+        "schema": CHECKPOINT_SCHEMA,
         "schema_version": 2,
         "run_name": run_name,
         "passed": bool(passed),
@@ -1124,8 +1148,6 @@ def main() -> int:
             "restart_delay": args.restart_delay,
         },
     }
-    summary_path = report_root / f"{run_name}.json"
-    report_path = report_root / f"{run_name}.html"
     summary_path.write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )

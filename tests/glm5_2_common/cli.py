@@ -7,11 +7,31 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Sequence
 
 
-def _replace_topology(argv: Sequence[str], topology: str) -> list[str]:
+def archive_previous_output(path: Path) -> Path | None:
+    """Move stale experiment output aside without overwriting prior evidence."""
+
+    if not path.exists():
+        return None
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    destination = path.with_name(f".{path.name}.previous-{timestamp}")
+    suffix = 1
+    while destination.exists():
+        destination = path.with_name(
+            f".{path.name}.previous-{timestamp}-{suffix}"
+        )
+        suffix += 1
+    path.rename(destination)
+    return destination
+
+
+def replace_topology(argv: Sequence[str], topology: str) -> list[str]:
+    """Return argv with exactly one topology selection."""
+
     result: list[str] = []
     skip_next = False
     for index, argument in enumerate(argv):
@@ -42,7 +62,7 @@ def run_all_topologies(
         command = [
             sys.executable,
             str(Path(script_path).resolve()),
-            *_replace_topology(argv, topology),
+            *replace_topology(argv, topology),
         ]
         print(f"Starting topology suite member: {topology}", flush=True)
         process = subprocess.run(command, check=False)

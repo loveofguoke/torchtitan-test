@@ -82,3 +82,7 @@ Progress is printed once per minute. By default, a run with no new metric for
 stored under `stability_runs/` and ignored by Git. The portable HTML and JSON
 summaries are stored under `stability_reports/` with device, topology,
 precision, steps, batch size, sequence length, and seed in their names.
+With `--topology all`, every topology is a child of one shared suite directory.
+Completed PASS members are skipped, while incomplete, failed, or
+`INSUFFICIENT_DURATION` members are archived and retried. Use `--force` only
+when completed members must also run again.

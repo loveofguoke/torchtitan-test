@@ -38,6 +38,14 @@ python tests/glm5_2_combination/combination_benchmark.py \
   --require-all
 ```
 
+Each combination identity has one compact suite directory. Topology captures
+are stored below `single/`, `ddp8/`, `fsdp8/`, and the other selected topology
+subdirectories. A valid published artifact is skipped on the next capture;
+stale run output without a valid artifact is replaced and rerun. `--force`
+reruns completed captures. Graph modes, objectives, and profiler settings are
+part of the suite identity, so captures from different feature combinations
+cannot be reused accidentally.
+
 Use `--objectives precision` or `--objectives performance` for an isolated
 experiment. Use `--topology single`, `--topology fsdp8`, or
 `--topologies single,fsdp8,tp8` to select a subset. NPUGraph is selected with

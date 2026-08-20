@@ -9,8 +9,10 @@ import pytest
 from tests.glm5_2_precision.workflow import standard_topologies, training_topology_plan
 from tests.glm5_2_stability.stability_benchmark import (
     _command,
+    _completed_stability_member,
     _device_from_environment,
     _precision_training,
+    _stability_output_names,
     _write_report,
 )
 
@@ -86,3 +88,41 @@ def test_stability_command_forwards_graph_arguments() -> None:
     assert "--compile.backend=inductor" in command
     assert "--checkpoint.load_only" in command
     assert "--checkpoint.initial_load_path=fixture/checkpoint" in command
+
+
+def test_stability_topologies_share_one_suite_name() -> None:
+    common = {
+        "device": "cuda",
+        "precision": "bf16",
+        "steps": 20_000,
+        "local_batch_size": 8,
+        "global_batch_size": 64,
+        "sequence_length": 128,
+        "seed": 61,
+        "run_tag": None,
+    }
+    single_suite, single_member = _stability_output_names(
+        topology_slug="single", **common
+    )
+    fsdp_suite, fsdp_member = _stability_output_names(
+        topology_slug="fsdp8", **common
+    )
+
+    assert single_suite == fsdp_suite
+    assert single_member != fsdp_member
+
+
+def test_only_passed_stability_summary_is_complete(tmp_path: Path) -> None:
+    path = tmp_path / "summary.json"
+    payload = {
+        "schema": "torchtitan.glm5_2.stability",
+        "schema_version": 1,
+        "run_name": "stability-member",
+        "status": "PASS",
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert _completed_stability_member(path, member_name="stability-member")
+
+    payload["status"] = "INSUFFICIENT_DURATION"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert not _completed_stability_member(path, member_name="stability-member")

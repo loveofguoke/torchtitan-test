@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from tests.glm5_2_common.cli import _replace_topology
+from tests.glm5_2_common.cli import replace_topology
 from tests.glm5_2_checkpoint.checkpoint_benchmark import (
     CheckpointFixtureConfig,
     _checkpoint_command,
@@ -21,6 +21,11 @@ from tests.glm5_2_checkpoint.checkpoint_benchmark import (
 from tests.glm5_2_checkpoint.fault_injection import (
     _missing_optimizer_state,
 )
+from tests.glm5_2_checkpoint.topology_suite import (
+    checkpoint_member_complete,
+    checkpoint_member_paths,
+    checkpoint_output_names,
+)
 from tests.glm5_2_precision.workflow import (
     TrainingEndpoint,
     standard_topologies,
@@ -29,10 +34,10 @@ from tests.glm5_2_precision.workflow import (
 
 
 def test_all_topology_runner_replaces_both_cli_forms() -> None:
-    assert _replace_topology(
+    assert replace_topology(
         ["--device", "cuda", "--topology", "all"], "fsdp8"
     ) == ["--device", "cuda", "--topology=fsdp8"]
-    assert _replace_topology(
+    assert replace_topology(
         ["--topology=all", "--force"], "cp8"
     ) == ["--force", "--topology=cp8"]
 
@@ -265,3 +270,76 @@ def test_checkpoint_fixture_name_is_compact() -> None:
     )
 
     assert config.storage_name == "ckpt-cuda-bf16-s20-b64-q128-seed61"
+
+
+def test_checkpoint_topologies_share_one_suite_directory(tmp_path: Path) -> None:
+    common = {
+        "device": "npu",
+        "precision": "bf16",
+        "total_steps": 100,
+        "split_step": 50,
+        "local_batch_size": 8,
+        "global_batch_size": 64,
+        "sequence_length": 128,
+        "seed": 61,
+        "async_mode": "disabled",
+        "comparison": "exact",
+        "requested_failure_modes": ("all",),
+        "run_tag": None,
+    }
+    single_suite, single_member = checkpoint_output_names(
+        topology_slug="single", **common
+    )
+    fsdp_suite, fsdp_member = checkpoint_output_names(
+        topology_slug="fsdp8", **common
+    )
+
+    assert single_suite == fsdp_suite
+    assert single_member != fsdp_member
+    single_run, _, _, _ = checkpoint_member_paths(
+        tmp_path,
+        suite_name=single_suite,
+        topology_slug="single",
+        member_name=single_member,
+    )
+    fsdp_run, _, _, _ = checkpoint_member_paths(
+        tmp_path,
+        suite_name=fsdp_suite,
+        topology_slug="fsdp8",
+        member_name=fsdp_member,
+    )
+    assert single_run.parent == fsdp_run.parent
+    assert single_run.name == "single"
+    assert fsdp_run.name == "fsdp8"
+
+
+def test_checkpoint_member_is_complete_only_for_matching_pass_summary(
+    tmp_path: Path,
+) -> None:
+    summary = tmp_path / "summary.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "schema": "torchtitan.glm5_2.checkpoint_fault_recovery",
+                "schema_version": 2,
+                "run_name": "expected",
+                "passed": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert checkpoint_member_complete(summary, member_name="expected")
+    assert not checkpoint_member_complete(summary, member_name="different")
+    summary.write_text(
+        json.dumps(
+            {
+                "schema": "torchtitan.glm5_2.checkpoint_fault_recovery",
+                "schema_version": 2,
+                "run_name": "expected",
+                "passed": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert not checkpoint_member_complete(summary, member_name="expected")

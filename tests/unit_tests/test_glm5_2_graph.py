@@ -6,9 +6,19 @@ from pathlib import Path
 import pytest
 
 from tests.glm5_2_combination.config import GraphFeatureConfig
+from tests.glm5_2_combination.workflow import (
+    CombinationSelection,
+    _apply_selection,
+)
 from tests.glm5_2_common.execution import TrainingFeature, compose_execution
 from tests.glm5_2_common.topology import select_topologies, standard_topologies
 from tests.glm5_2_performance.analysis import _compiler_diagnostics
+from tests.glm5_2_precision.topology_suite import topology_config
+from tests.glm5_2_precision.workflow import (
+    FormalExperimentConfig,
+    TrainingEndpoint,
+    _artifact_directory,
+)
 
 
 def test_graph_feature_generates_only_compile_arguments() -> None:
@@ -68,3 +78,40 @@ def test_compiler_diagnostics_summarize_runtime_log(tmp_path: Path) -> None:
     assert diagnostics["graph_breaks"] == 1
     assert diagnostics["recompiles"] == 1
     assert diagnostics["backend_failures"] == 1
+
+
+def test_combination_topologies_share_one_suite_root(tmp_path: Path) -> None:
+    topologies = standard_topologies()
+    base = FormalExperimentConfig(
+        name="combined",
+        kind="migration",
+        reference=TrainingEndpoint(
+            "gpu", "cuda", "0", topologies["single"]
+        ),
+        candidate=TrainingEndpoint(
+            "npu", "npu", "0", topologies["single"]
+        ),
+    )
+    selection = CombinationSelection(
+        objectives=frozenset(("precision",)),
+        reference_graph=GraphFeatureConfig("eager"),
+        candidate_graph=GraphFeatureConfig("inductor"),
+        profiler=None,
+    )
+    single = _apply_selection(
+        topology_config(base, topologies["single"], precision="bf16"), selection
+    )
+    fsdp = _apply_selection(
+        topology_config(base, topologies["fsdp8"], precision="bf16"), selection
+    )
+
+    assert single.storage_name == fsdp.storage_name
+    single_path = _artifact_directory(
+        tmp_path, single, "candidate", single.candidate, 1
+    )
+    fsdp_path = _artifact_directory(
+        tmp_path, fsdp, "candidate", fsdp.candidate, 1
+    )
+    assert single_path.parents[1] == fsdp_path.parents[1]
+    assert single_path.parent.name == "single"
+    assert fsdp_path.parent.name == "fsdp8"

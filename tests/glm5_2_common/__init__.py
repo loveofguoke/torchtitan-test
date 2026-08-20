@@ -3,7 +3,7 @@
 
 """Shared GLM 5.2 experiment primitives with no experiment dependencies."""
 
-from .cli import run_all_topologies
+from .cli import archive_previous_output, replace_topology, run_all_topologies
 from .device import AcceleratorSelection, resolve_accelerator, resolve_device_type
 from .execution import ExecutionPlan, TrainingFeature, compose_execution
 from .topology import (
@@ -19,7 +19,9 @@ __all__ = [
     "ExecutionPlan",
     "ParallelTopology",
     "TrainingFeature",
+    "archive_previous_output",
     "compose_execution",
+    "replace_topology",
     "run_all_topologies",
     "resolve_accelerator",
     "resolve_device_type",

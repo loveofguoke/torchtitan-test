@@ -111,6 +111,15 @@ and training configuration unchanged. To run one failure path, use for example
 `--failure-mode sigint` or `--failure-mode rank-sigkill`. Omitting the option
 keeps the original controlled-resume behavior and its command unchanged.
 
+To run the complete topology suite, select `--topology all`. All members use one
+suite directory, with `single/`, `ddp8/`, `fsdp8/`, and the other topology
+subdirectories beneath it. A later invocation skips members whose matching JSON
+summary is complete and PASS, archives incomplete or failed member output, and
+retries those members. `--force` is the only option that reruns completed
+members. If a member fails, the suite writes a partial topology index and stops;
+running the same command again retries that member and then continues with the
+remaining topology directories.
+
 `--interrupt-step` defaults to `split-step + 1`. This deliberately creates
 work that was computed but not committed, so the test verifies replay rather
 than only restarting exactly on a save boundary. `--failure-rank` defaults to

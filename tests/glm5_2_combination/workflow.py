@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass, replace
+import hashlib
 import html
 import json
 from pathlib import Path
@@ -50,6 +51,40 @@ class CombinationSelection:
             raise ValueError("performance objective requires a profiler feature")
 
 
+def _combination_storage_name(
+    config: FormalExperimentConfig,
+    selection: CombinationSelection,
+) -> str:
+    precision = {
+        "mixed-bfloat16": "bf16",
+        "mixed-float32": "fp32",
+        "full-bf16": "full-bf16",
+    }.get(config.training.precision_name, config.training.precision_name)
+    objective = "-".join(sorted(selection.objectives))
+    profiler = selection.profiler.preset.name if selection.profiler else "no-prof"
+    identity = {
+        "objectives": sorted(selection.objectives),
+        "reference_graph": asdict(selection.reference_graph),
+        "candidate_graph": asdict(selection.candidate_graph),
+        "profiler": asdict(selection.profiler) if selection.profiler else None,
+        "reference_extra_args": config.reference.extra_args,
+        "reference_environment": config.reference.environment,
+        "candidate_extra_args": config.candidate.extra_args,
+        "candidate_environment": config.candidate.environment,
+        "training": asdict(config.training),
+    }
+    digest = hashlib.sha256(
+        json.dumps(identity, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:8]
+    return (
+        f"combo-{config.reference.device_type}-{config.candidate.device_type}-"
+        f"{precision}-s{config.training.steps}-b{config.training.global_batch_size}-"
+        f"q{config.training.sequence_length}-seed{config.training.seed}-"
+        f"{selection.reference_graph.mode}-{selection.candidate_graph.mode}-"
+        f"{objective}-{profiler}-{digest}"
+    )
+
+
 def _apply_selection(
     config: FormalExperimentConfig,
     selection: CombinationSelection,
@@ -70,6 +105,7 @@ def _apply_selection(
             environment={**endpoint.environment, **plan.environment()},
             entry_module="tests.glm5_2_combination.capture_metrics",
         )
+    storage_name = _combination_storage_name(config, selection)
     return replace(
         config,
         reference=endpoints["reference"],
@@ -77,7 +113,9 @@ def _apply_selection(
         allow_endpoint_argument_difference=True,
         artifact_root="combination_artifacts",
         run_root="combination_runs",
-        report_root="combination_reports/precision",
+        report_root=f"combination_reports/{storage_name}/precision",
+        storage_name_override=storage_name,
+        topology_subdirectory=True,
     )
 
 
@@ -140,6 +178,7 @@ def _performance_report(
     output = (
         root
         / "combination_reports"
+        / config.storage_name
         / "performance"
         / endpoint.topology.slug
         / f"{run_name}-performance.html"
@@ -158,7 +197,9 @@ def _write_combination_report(
     selection: CombinationSelection,
     require_all: bool,
 ) -> Path:
-    report_root = root / "combination_reports"
+    first_raw = topology_config(base, topologies[selected[0]], precision=precision)
+    first_config = _apply_selection(first_raw, selection)
+    report_root = root / "combination_reports" / first_config.storage_name
     precision_report: Path | None = None
     if "precision" in selection.objectives:
         precision_report = compare_topology_suite(
@@ -217,7 +258,7 @@ def _write_combination_report(
         if precision_report is not None
         else "Precision objective disabled"
     )
-    report = report_root / "combined-experiment-report.html"
+    report = report_root / f"{first_config.storage_name}.html"
     report.write_text(
         f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>GLM-5.2 combined experiment</title>

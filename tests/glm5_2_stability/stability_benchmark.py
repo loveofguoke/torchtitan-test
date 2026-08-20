@@ -23,7 +23,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from tests.glm5_2_common.cli import run_all_topologies
+from tests.glm5_2_common.cli import archive_previous_output, run_all_topologies
 from tests.glm5_2_common.device import resolve_accelerator
 from tests.glm5_2_common.topology import DISTRIBUTED_TOPOLOGY_NAMES
 
@@ -51,6 +51,7 @@ GRAD_NORM_KEY = "grad_norm"
 DEFAULT_STEPS = 20_000
 DEFAULT_MINIMUM_HOURS = 1.0
 DEFAULT_STALL_TIMEOUT_MINUTES = 20.0
+STABILITY_SCHEMA = "torchtitan.glm5_2.stability"
 
 
 def _normalize_run_tag(value: str) -> str:
@@ -254,6 +255,48 @@ th{{background:#eef2f7}}pre{{white-space:pre-wrap;background:#f8fafc;padding:12p
     )
 
 
+def _stability_output_names(
+    *,
+    device: str,
+    topology_slug: str,
+    precision: str,
+    steps: int,
+    local_batch_size: int,
+    global_batch_size: int,
+    sequence_length: int,
+    seed: int,
+    run_tag: str | None,
+) -> tuple[str, str]:
+    suffix = (
+        f"{precision}-s{steps}-l{local_batch_size}-b{global_batch_size}-"
+        f"seq{sequence_length}-seed{seed}"
+    )
+    suite_name = f"stability-{device}-{suffix}"
+    member_name = f"stability-{device}-{topology_slug}-{suffix}"
+    if run_tag:
+        normalized_tag = _normalize_run_tag(run_tag)
+        suite_name += f"-{normalized_tag}"
+        member_name += f"-{normalized_tag}"
+    return suite_name, member_name
+
+
+def _completed_stability_member(
+    summary_path: Path, *, member_name: str
+) -> bool:
+    if not summary_path.is_file():
+        return False
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return False
+    return (
+        summary.get("schema") == STABILITY_SCHEMA
+        and summary.get("schema_version") == 1
+        and summary.get("run_name") == member_name
+        and summary.get("status") == "PASS"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -372,24 +415,50 @@ def main() -> int:
         )
     initial_checkpoint, token_plan = resolve_fixture_inputs(root, fixture_config)
 
-    run_name = (
-        f"stability-{device}-{topology.slug}-{args.precision}-"
-        f"s{training.steps}-b{training.global_batch_size}-"
-        f"seq{training.sequence_length}-seed{training.seed}"
+    suite_name, run_name = _stability_output_names(
+        device=device,
+        topology_slug=topology.slug,
+        precision=args.precision,
+        steps=training.steps,
+        local_batch_size=training.local_batch_size,
+        global_batch_size=training.global_batch_size,
+        sequence_length=training.sequence_length,
+        seed=training.seed,
+        run_tag=args.run_tag,
     )
-    if args.run_tag:
-        run_name += "-" + _normalize_run_tag(args.run_tag)
-    run_directory = root / "stability_runs" / run_name
-    report_directory = root / "stability_reports" / run_name
+    run_directory = root / "stability_runs" / suite_name / topology.slug
+    report_directory = root / "stability_reports" / suite_name / topology.slug
+    report_path = report_directory / f"{run_name}.html"
+    summary_path = report_directory / f"{run_name}.json"
     if run_directory.exists() or report_directory.exists():
-        if not args.force:
-            raise FileExistsError(
-                f"stability output exists; pass --force to replace it: {run_name}"
+        if not args.force and _completed_stability_member(
+            summary_path, member_name=run_name
+        ):
+            print(
+                f"Skip completed stability topology: {topology.name}\n"
+                f"Report: {report_path}",
+                flush=True,
             )
-        shutil.rmtree(run_directory, ignore_errors=True)
-        shutil.rmtree(report_directory, ignore_errors=True)
-    run_directory.mkdir(parents=True)
-    report_directory.mkdir(parents=True)
+            return 0
+        if args.force:
+            shutil.rmtree(run_directory, ignore_errors=True)
+            shutil.rmtree(report_directory, ignore_errors=True)
+        else:
+            archived = [
+                str(path)
+                for path in (
+                    archive_previous_output(run_directory),
+                    archive_previous_output(report_directory),
+                )
+                if path is not None
+            ]
+            print(
+                "Retry incomplete stability topology; archived previous output: "
+                + ", ".join(archived),
+                flush=True,
+            )
+    run_directory.mkdir(parents=True, exist_ok=True)
+    report_directory.mkdir(parents=True, exist_ok=True)
     metrics_path = run_directory / "raw_metrics.jsonl"
     runtime_log = run_directory / "runtime.log"
     command = _command(
@@ -530,9 +599,9 @@ def main() -> int:
         if records
         else {}
     )
-    report_path = report_directory / f"{run_name}.html"
-    summary_path = report_directory / f"{run_name}.json"
     summary = {
+        "schema": STABILITY_SCHEMA,
+        "schema_version": 1,
         "run_name": run_name,
         "status": status,
         "device": device,
