@@ -22,10 +22,16 @@ def _install_stop_after_step() -> None:
 
     from torchtitan.trainer import Trainer
 
+    from tests.glm5_2_checkpoint.fault_injection import (
+        wait_for_completed_checkpoint,
+    )
+
     original_should_continue = Trainer.should_continue_training
 
     def should_continue_until_checkpoint(self: Trainer) -> bool:
-        return self.step < stop_after and original_should_continue(self)
+        return wait_for_completed_checkpoint(
+            self, stop_after
+        ) and original_should_continue(self)
 
     Trainer.should_continue_training = should_continue_until_checkpoint
 
@@ -46,6 +52,11 @@ def main() -> None:
 
     install_fixed_token_dataloader()
     _install_jsonl_metrics_capture()
+    from tests.glm5_2_checkpoint.fault_injection import (
+        install_checkpoint_fault_injection,
+    )
+
+    install_checkpoint_fault_injection()
     _install_stop_after_step()
 
     from torchtitan.train import main as train_main

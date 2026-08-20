@@ -4,13 +4,20 @@
 import json
 from pathlib import Path
 
+import torch
+
 from tests.glm5_2_common.cli import _replace_topology
 from tests.glm5_2_checkpoint.checkpoint_benchmark import (
     CheckpointFixtureConfig,
     _checkpoint_command,
     _combine_contracts,
+    _combine_recovered_contracts,
     _device_from_environment,
     _precision_training,
+    _selected_failure_modes,
+)
+from tests.glm5_2_checkpoint.fault_injection import (
+    _missing_optimizer_state,
 )
 from tests.glm5_2_precision.workflow import (
     TrainingEndpoint,
@@ -73,6 +80,64 @@ def test_resume_contract_combines_process_phases(tmp_path: Path) -> None:
 
     records = _combine_contracts(phase_1, phase_2)["rank-0.jsonl"]
     assert [record["step"] for record in records] == [1, 2]
+
+
+def test_recovered_contract_discards_work_after_loaded_checkpoint(
+    tmp_path: Path,
+) -> None:
+    interrupted = tmp_path / "interrupted"
+    resumed = tmp_path / "resumed"
+    interrupted.mkdir()
+    resumed.mkdir()
+    (interrupted / "rank-0.jsonl").write_text(
+        "".join(json.dumps({"step": step}) + "\n" for step in (1, 2, 3)),
+        encoding="utf-8",
+    )
+    (resumed / "rank-0.jsonl").write_text(
+        "".join(json.dumps({"step": step}) + "\n" for step in (3, 4)),
+        encoding="utf-8",
+    )
+
+    records = _combine_recovered_contracts(
+        interrupted, resumed, restored_step=2
+    )["rank-0.jsonl"]
+
+    assert [record["step"] for record in records] == [1, 2, 3, 4]
+
+
+def test_all_failure_modes_add_rank_failures_only_for_distributed() -> None:
+    assert _selected_failure_modes(["all"], world_size=1) == [
+        "graceful",
+        "sigint",
+        "sigterm",
+        "sigkill",
+        "incomplete",
+    ]
+    assert _selected_failure_modes(["all"], world_size=8)[-2:] == [
+        "rank-error",
+        "rank-sigkill",
+    ]
+
+
+def test_checkpoint_wrapper_reports_only_missing_trainable_optimizer_state() -> None:
+    model = torch.nn.Sequential(
+        torch.nn.Linear(4, 4, bias=False),
+        torch.nn.Linear(4, 4, bias=False),
+        torch.nn.Linear(4, 4, bias=False),
+    )
+    named_parameters = list(model.named_parameters())
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.01)
+    optimizer.param_groups[0]["param_names"] = [
+        name for name, _ in named_parameters
+    ]
+    model[2].weight.requires_grad_(False)
+    model[0].weight.grad = torch.ones_like(model[0].weight)
+    optimizer.step()
+
+    container = type("Container", (), {"optimizers": [optimizer]})()
+    checkpointer = type("Checkpointer", (), {"states": {"optimizer": container}})()
+
+    assert _missing_optimizer_state(checkpointer) == ["1.weight"]
 
 
 def test_checkpoint_phase_keeps_total_training_steps() -> None:

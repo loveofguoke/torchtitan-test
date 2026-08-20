@@ -3,7 +3,7 @@
 This benchmark tests TorchTitan's existing distributed-checkpoint manager. It
 does not implement an alternative checkpoint format.
 
-The test runs two equivalent jobs:
+The default test runs two equivalent jobs:
 
 1. A baseline trains continuously from step 1 to `N`.
 2. A resumed job is configured for the same `N` steps, trains to step `K`,
@@ -20,6 +20,27 @@ The report checks:
 - the fixed-token input sequence after restart is exactly the baseline input;
 - all loss and global grad-norm steps match;
 - the final logical DCP state matches, including model and optimizer tensors.
+- a new process started after normal completion loads the final checkpoint on
+  every rank and exits without repeating a training step.
+
+Use `--failure-mode all` for the fault-recovery suite. It reuses one continuous
+baseline and validates these interruption paths independently:
+
+- controlled normal exit immediately after a completed interval checkpoint;
+- terminal-style `SIGINT` (Ctrl+C), `SIGTERM`, and `SIGKILL` delivered to the
+  complete `torchrun` process group;
+- an uncaught exception or `SIGKILL` on one worker rank for distributed jobs;
+- a higher checkpoint directory that is visible without DCP commit metadata.
+
+Abrupt failures are injected one step after the last complete checkpoint. The
+restart must select the earlier complete step on every rank, discard the
+uncommitted work, replay the same fixed tokens, and converge to the exact same
+logical distributed checkpoint as the uninterrupted baseline. The benchmark
+also audits that every trainable parameter registered with an optimizer has
+persisted state; a directory containing `.metadata` is not treated as
+sufficient evidence by itself. Frozen model parameters, including the pretrained
+GLM DSA indexer, remain in the model checkpoint but are excluded from this
+optimizer-state audit.
 
 ## Single-card GPU
 
@@ -50,8 +71,20 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
 python tests/glm5_2_checkpoint/checkpoint_benchmark.py \
   --device cuda --topology fsdp8 \
-  --precision bf16 --total-steps 20 --split-step 10
+  --precision bf16 --total-steps 20 --split-step 10 \
+  --failure-mode all
 ```
+
+The same command shape works for NPU. Set
+`ASCEND_RT_VISIBLE_DEVICES`, select `--device npu`, and keep the chosen topology
+and training configuration unchanged. To run one failure path, use for example
+`--failure-mode sigint` or `--failure-mode rank-sigkill`. Omitting the option
+keeps the original controlled-resume behavior and its command unchanged.
+
+`--interrupt-step` defaults to `split-step + 1`. This deliberately creates
+work that was computed but not committed, so the test verifies replay rather
+than only restarting exactly on a save boundary. `--failure-rank` defaults to
+rank 1 for distributed jobs and rank 0 for a single-card job.
 
 The default `--comparison exact` is the strict checkpoint criterion. If a
 backend is already known to be non-bitwise deterministic, use
