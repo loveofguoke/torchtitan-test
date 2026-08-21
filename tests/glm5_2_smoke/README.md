@@ -5,6 +5,13 @@ TorchTitanTurbo versions can launch short single-device and distributed GLM
 training jobs. It reuses the canonical topology definitions in
 `tests/glm5_2_common`.
 
+Install the dependencies declared by the current TorchTitan checkout. If
+TorchTitan was installed with `--no-deps`, install its pinned Grain version:
+
+```bash
+python -m pip install 'grain==0.2.18'
+```
+
 Export device visibility once. Device detection is automatic:
 
 ```bash
@@ -41,13 +48,13 @@ replace successful output as well.
 Every run writes `runtime.log`, `manifest.json`, and TorchTitan output below:
 
 ```text
-runs/smoke/<device-and-training-config>/<topology>/
+smoke_runs/<device-and-training-config>/<topology>/
 ```
 
 Direct `run_train.sh` invocations also tee complete terminal output to:
 
 ```text
-runs/train/<module-config-timestamp-pid>/runtime.log
+train_runs/<module-config-timestamp-pid>/runtime.log
 ```
 
 Set `TORCHTITAN_RUN_LOG` when a caller needs an exact log path.

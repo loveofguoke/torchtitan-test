@@ -31,6 +31,17 @@ def _root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def _check_runtime_dependencies() -> None:
+    try:
+        import grain.python  # noqa: F401
+    except ImportError as error:
+        raise RuntimeError(
+            "the current TorchTitan requires grain==0.2.18; install the "
+            "TorchTitan dependencies or run: "
+            "python -m pip install 'grain==0.2.18'"
+        ) from error
+
+
 def _device(requested: str) -> str:
     if requested != "auto":
         return requested
@@ -212,6 +223,7 @@ def main() -> int:
 
     if args.steps < 1:
         parser.error("--steps must be positive")
+    _check_runtime_dependencies()
     device = _device(args.device)
     visible_devices = _visible_devices(device)
     topologies = standard_topologies()
@@ -239,7 +251,7 @@ def main() -> int:
         f"seq{args.sequence_length}-seed{args.seed}"
     )
     root = _root()
-    suite_root = root / "runs" / "smoke" / suite_name
+    suite_root = root / "smoke_runs" / suite_name
     for name in selected:
         _run_topology(
             root=root,

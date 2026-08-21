@@ -21,7 +21,7 @@ RUN_LOG=${TORCHTITAN_RUN_LOG:-}
 if [[ -z "$RUN_LOG" ]]; then
     RUN_STAMP=$(date +%Y%m%d-%H%M%S)
     RUN_NAME=${TORCHTITAN_RUN_NAME:-${MODULE}-${CONFIG}-${RUN_STAMP}-$$}
-    RUN_LOG="$SCRIPT_DIR/runs/train/$RUN_NAME/runtime.log"
+    RUN_LOG="$SCRIPT_DIR/train_runs/$RUN_NAME/runtime.log"
 fi
 mkdir -p "$(dirname -- "$RUN_LOG")"
 RUN_LOG=$(cd -- "$(dirname -- "$RUN_LOG")" && pwd)/$(basename -- "$RUN_LOG")
