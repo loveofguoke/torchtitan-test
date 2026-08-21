@@ -64,6 +64,20 @@ def test_checkpoint_default_batch_supports_single_and_pp8() -> None:
     ).pipeline_microbatches == 8
 
 
+def test_state_fingerprint_handles_scalar_tensor() -> None:
+    fingerprint = _state_fingerprint(
+        {
+            "float_step": torch.tensor(1.0),
+            "integer_step": torch.tensor(2, dtype=torch.int64),
+        }
+    )
+
+    assert fingerprint["tensor_leaf_count"] == 2
+    assert fingerprint["tensor_elements"] == 2
+    assert fingerprint["leaves"]["float_step"]["shape"] == []
+    assert fingerprint["leaves"]["integer_step"]["shape"] == []
+
+
 def test_checkpoint_device_is_inferred_from_visibility(monkeypatch) -> None:
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
     monkeypatch.delenv("ASCEND_RT_VISIBLE_DEVICES", raising=False)

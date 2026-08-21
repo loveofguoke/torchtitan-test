@@ -96,7 +96,7 @@ def _fingerprint_leaf(value: Any) -> dict[str, Any]:
     if isinstance(value, torch.Tensor):
         local = value.to_local() if hasattr(value, "to_local") else value
         local = local.detach().cpu().contiguous()
-        payload = local.view(torch.uint8).numpy()
+        payload = local.reshape(-1).view(torch.uint8).numpy()
         return {
             "kind": "tensor",
             "dtype": str(value.dtype),
