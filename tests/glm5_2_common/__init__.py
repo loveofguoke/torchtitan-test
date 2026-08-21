@@ -10,6 +10,7 @@ from .naming import config_digest, config_name, slug
 from .topology import (
     DISTRIBUTED_TOPOLOGY_NAMES,
     ParallelTopology,
+    training_command_args,
     select_topologies,
     standard_topologies,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "DISTRIBUTED_TOPOLOGY_NAMES",
     "ExecutionPlan",
     "ParallelTopology",
+    "training_command_args",
     "TrainingFeature",
     "archive_previous_output",
     "compose_execution",

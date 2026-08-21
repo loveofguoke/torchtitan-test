@@ -13,7 +13,7 @@ from typing import Any, Iterator
 
 import torch
 
-from torchtitan.components.dataloader import BaseDataLoader
+from torchtitan.components.data.loader import BaseDataLoader
 from torchtitan.components.tokenizer import BaseTokenizer
 
 from .token_data import (
@@ -50,22 +50,25 @@ class FixedTokenDataLoader(BaseDataLoader):
         dp_world_size: int,
         dp_rank: int,
         tokenizer: BaseTokenizer,
-        seq_len: int,
-        local_batch_size: int,
-        snapshot_every_n_steps: int | None = 1,
+        max_context_length: int,
+        num_tokens_per_batch: int,
         **kwargs: Any,
     ) -> None:
-        del tokenizer, snapshot_every_n_steps, kwargs
+        del tokenizer, kwargs
         self.dp_world_size = dp_world_size
         self.dp_rank = dp_rank
-        self.dataloader_batch_size = local_batch_size
+        if num_tokens_per_batch % max_context_length:
+            raise ValueError(
+                "fixed token batches require an integer number of sequences"
+            )
+        self.dataloader_batch_size = num_tokens_per_batch // max_context_length
         self.global_batch_size = config.global_batch_size
         self.training_local_batch_size = config.training_local_batch_size
         self.plan = load_token_plan(config.token_plan_path)
-        if self.plan.sequence_length != seq_len:
+        if self.plan.sequence_length != max_context_length:
             raise ValueError(
                 f"token plan sequence length {self.plan.sequence_length} does not "
-                f"match training sequence length {seq_len}"
+                f"match training sequence length {max_context_length}"
             )
         if self.plan.global_batch_size != self.global_batch_size:
             raise ValueError(
@@ -147,9 +150,9 @@ class FixedTokenDataLoader(BaseDataLoader):
             input_BL = tokens_BQ[:, :-1].to(torch.long)
             labels_BL = tokens_BQ[:, 1:].to(torch.long)
             yield {
-                "input": input_BL,
-                "positions": positions_BL.to(torch.long),
-            }, labels_BL
+                "input": input_BL.reshape(-1),
+                "positions": positions_BL.to(torch.long).reshape(-1),
+            }, labels_BL.reshape(-1)
 
     def _write_step_contract(self, optimizer_step: int) -> None:
         record = {

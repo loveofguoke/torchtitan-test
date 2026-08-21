@@ -116,6 +116,7 @@ class ParallelTopology:
 
     def command_args(self) -> list[str]:
         args = [
+            "--parallelism.spmd_backend=partial_dtensor",
             "--parallelism.data_parallel_replicate_degree="
             f"{self.data_parallel_replicate_degree}",
             "--parallelism.data_parallel_shard_degree="
@@ -128,16 +129,45 @@ class ParallelTopology:
         if self.tensor_parallel_degree > 1:
             args.append("--parallelism.no-enable-sequence-parallel")
         if self.pipeline_parallel_degree > 1:
-            args.extend(
-                [
-                    "--parallelism.pipeline_parallel_schedule="
-                    f"{self.pipeline_parallel_schedule}",
-                    "--parallelism.pipeline_parallel_microbatch_size="
-                    f"{self.pipeline_parallel_microbatch_size}",
-                ]
+            args.append(
+                "--parallelism.pipeline_parallel_schedule="
+                f"{self.pipeline_parallel_schedule}"
             )
         args.extend(self.extra_args)
         return args
+
+
+def training_command_args(
+    *,
+    local_batch_size: int,
+    global_batch_size: int,
+    sequence_length: int,
+    topology: ParallelTopology,
+) -> list[str]:
+    """Translate sample-batch settings to TorchTitan's token-budget CLI."""
+
+    microbatch_size = (
+        topology.pipeline_parallel_microbatch_size
+        if topology.pipeline_parallel_degree > 1
+        else local_batch_size
+    )
+    if local_batch_size % microbatch_size:
+        raise ValueError(
+            "local_batch_size must be divisible by the pipeline microbatch size"
+        )
+    num_pp_microbatches = local_batch_size // microbatch_size
+    args = [
+        "--training.num_tokens_per_microbatch_per_dp_rank="
+        f"{microbatch_size * sequence_length}",
+        "--training.num_tokens_per_train_step="
+        f"{global_batch_size * sequence_length}",
+        f"--training.max_context_length={sequence_length}",
+    ]
+    if topology.pipeline_parallel_degree > 1:
+        args.append(
+            f"--parallelism.num_pp_microbatches={num_pp_microbatches}"
+        )
+    return args
 
 
 def standard_topologies() -> dict[str, ParallelTopology]:

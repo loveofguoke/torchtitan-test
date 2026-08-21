@@ -15,7 +15,7 @@ from typing import Any, Sequence
 
 from tests.glm5_2_common.device import resolve_device_type
 from tests.glm5_2_common.naming import config_name, slug
-from tests.glm5_2_common.topology import select_topologies
+from tests.glm5_2_common.topology import select_topologies, training_command_args
 
 from .analysis import build_analysis, render_html_report
 from .config import (
@@ -258,9 +258,12 @@ def _training_command(
         config.model_config,
         f"--dump_folder={run_directory / 'trainer_output'}",
         f"--training.steps={config.steps}",
-        f"--training.local_batch_size={config.local_batch_size}",
-        f"--training.global_batch_size={config.global_batch_size}",
-        f"--training.seq_len={config.sequence_length}",
+        *training_command_args(
+            local_batch_size=config.local_batch_size,
+            global_batch_size=config.global_batch_size,
+            sequence_length=config.sequence_length,
+            topology=topology,
+        ),
         f"--training.dtype={config.training_dtype}",
         f"--training.mixed_precision_param={config.mixed_precision_param}",
         f"--training.mixed_precision_reduce={config.mixed_precision_reduce}",

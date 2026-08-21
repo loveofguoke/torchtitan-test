@@ -24,7 +24,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tests.glm5_2_common.cli import archive_previous_output
 from tests.glm5_2_common.device import resolve_accelerator
 from tests.glm5_2_common.naming import config_name
-from tests.glm5_2_common.topology import DISTRIBUTED_TOPOLOGY_NAMES
+from tests.glm5_2_common.topology import (
+    DISTRIBUTED_TOPOLOGY_NAMES,
+    training_command_args,
+)
 
 from tests.glm5_2_checkpoint.fault_injection import (  # noqa: E402
     BOUNDARY_STEP_ENV,
@@ -244,9 +247,12 @@ def _checkpoint_command(
         training.config,
         f"--dump_folder={dump_folder}",
         f"--training.steps={training.steps}",
-        f"--training.local_batch_size={training.local_batch_size}",
-        f"--training.global_batch_size={training.global_batch_size}",
-        f"--training.seq_len={training.sequence_length}",
+        *training_command_args(
+            local_batch_size=training.local_batch_size,
+            global_batch_size=training.global_batch_size,
+            sequence_length=training.sequence_length,
+            topology=topology,
+        ),
         f"--training.dtype={training.training_dtype}",
         f"--training.mixed_precision_param={training.mixed_precision_param}",
         f"--training.mixed_precision_reduce={training.mixed_precision_reduce}",

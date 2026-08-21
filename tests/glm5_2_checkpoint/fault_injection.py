@@ -211,7 +211,7 @@ def install_checkpoint_fault_injection() -> None:
     boundary_value = os.environ.get(BOUNDARY_STEP_ENV)
     boundary_step = int(boundary_value) if boundary_value else None
 
-    from torchtitan.components.checkpoint import CheckpointManager
+    from torchtitan.components.checkpointer import CheckpointManager
 
     original_load = CheckpointManager.load
     original_save = CheckpointManager.save

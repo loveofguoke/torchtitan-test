@@ -8,6 +8,7 @@ import struct
 
 import pytest
 
+from tests.glm5_2_common.topology import training_command_args
 from tests.glm5_2_precision.artifacts import (
     PrecisionArtifactError,
     PrecisionArtifactReader,
@@ -188,8 +189,26 @@ def test_topology_validates_rank_product() -> None:
     )
     assert "--parallelism.data_parallel_shard_degree=2" in topology.command_args()
     assert "--parallelism.tensor_parallel_degree=4" in topology.command_args()
+    assert "--parallelism.spmd_backend=partial_dtensor" in topology.command_args()
     with pytest.raises(ValueError, match="dense ranks"):
         ParallelTopology("invalid", 8, data_parallel_shard_degree=2)
+
+
+def test_training_arguments_translate_sample_batches_to_token_budgets() -> None:
+    topology = ParallelTopology(
+        "pp4", 4, pipeline_parallel_degree=4,
+        pipeline_parallel_microbatch_size=1,
+    )
+    args = training_command_args(
+        local_batch_size=8,
+        global_batch_size=64,
+        sequence_length=128,
+        topology=topology,
+    )
+    assert "--training.num_tokens_per_microbatch_per_dp_rank=128" in args
+    assert "--training.num_tokens_per_train_step=8192" in args
+    assert "--training.max_context_length=128" in args
+    assert "--parallelism.num_pp_microbatches=8" in args
 
 
 def test_common_eight_card_batch_profile_supports_every_builtin_topology() -> None:

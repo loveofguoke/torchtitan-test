@@ -17,7 +17,11 @@ import sys
 from typing import Any, Literal, Sequence
 
 from tests.glm5_2_common.naming import config_name, slug
-from tests.glm5_2_common.topology import ParallelTopology, standard_topologies
+from tests.glm5_2_common.topology import (
+    ParallelTopology,
+    standard_topologies,
+    training_command_args,
+)
 
 from .artifacts import (
     PrecisionArtifactError,
@@ -482,14 +486,24 @@ def _stored_training_matches(path: Path, config: FormalExperimentConfig) -> bool
             )
         except (OSError, TypeError, ValueError):
             return False
-    required = (
+    shared_required = (
         f"--training.steps={config.training.steps}",
-        f"--training.local_batch_size={config.training.local_batch_size}",
-        f"--training.global_batch_size={config.training.global_batch_size}",
-        f"--training.seq_len={config.training.sequence_length}",
         f"--training.dtype={config.training.training_dtype}",
         f"--training.mixed_precision_param={config.training.mixed_precision_param}",
         f"--debug.seed={config.training.seed}",
+    )
+    old_batch_args = (
+        f"--training.local_batch_size={config.training.local_batch_size}",
+        f"--training.global_batch_size={config.training.global_batch_size}",
+        f"--training.seq_len={config.training.sequence_length}",
+    )
+    new_batch_args = tuple(
+        training_command_args(
+            local_batch_size=config.training.local_batch_size,
+            global_batch_size=config.training.global_batch_size,
+            sequence_length=config.training.sequence_length,
+            topology=config.reference.topology,
+        )[:3]
     )
     logs = list(path.rglob("runtime.log"))
     if not logs:
@@ -498,7 +512,14 @@ def _stored_training_matches(path: Path, config: FormalExperimentConfig) -> bool
         commands = [log.read_text(encoding="utf-8", errors="replace") for log in logs]
     except OSError:
         return False
-    return all(all(argument in command for argument in required) for command in commands)
+    return all(
+        all(argument in command for argument in shared_required)
+        and (
+            all(argument in command for argument in old_batch_args)
+            or all(argument in command for argument in new_batch_args)
+        )
+        for command in commands
+    )
 
 
 def _adopt_legacy_directory(
@@ -706,13 +727,17 @@ def _base_training_args(
     config: FormalTrainingConfig,
     *,
     dump_folder: Path,
+    topology: ParallelTopology,
 ) -> list[str]:
     args = [
         f"--dump_folder={dump_folder}",
         f"--training.steps={config.steps}",
-        f"--training.local_batch_size={config.local_batch_size}",
-        f"--training.global_batch_size={config.global_batch_size}",
-        f"--training.seq_len={config.sequence_length}",
+        *training_command_args(
+            local_batch_size=config.local_batch_size,
+            global_batch_size=config.global_batch_size,
+            sequence_length=config.sequence_length,
+            topology=topology,
+        ),
         f"--training.dtype={config.training_dtype}",
         f"--training.mixed_precision_param={config.mixed_precision_param}",
         f"--training.mixed_precision_reduce={config.mixed_precision_reduce}",
@@ -779,7 +804,11 @@ def _torchrun_command(
         config.training.module,
         "--config",
         config.training.config,
-        *_base_training_args(config.training, dump_folder=dump_folder),
+        *_base_training_args(
+            config.training,
+            dump_folder=dump_folder,
+            topology=endpoint.topology,
+        ),
         *endpoint.topology.command_args(),
         *endpoint.extra_args,
         "--checkpoint.enable",
@@ -903,7 +932,11 @@ def prepare_fixture(
                 config.training.module,
                 "--config",
                 config.training.config,
-                *_base_training_args(config.training, dump_folder=output),
+                *_base_training_args(
+                    config.training,
+                    dump_folder=output,
+                    topology=ParallelTopology("single", 1),
+                ),
                 "--parallelism.data_parallel_replicate_degree=1",
                 "--parallelism.data_parallel_shard_degree=1",
                 "--parallelism.tensor_parallel_degree=1",
