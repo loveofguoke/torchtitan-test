@@ -200,7 +200,7 @@ def main() -> int:
     parser.add_argument("--device", choices=("auto", "gpu", "npu"), default="auto")
     parser.add_argument("--topology")
     parser.add_argument("--topologies")
-    parser.add_argument("--steps", type=int, default=2)
+    parser.add_argument("--steps", type=int, default=10)
     parser.add_argument("--local-batch-size", type=int, default=1)
     parser.add_argument("--global-batch-size", type=int, default=8)
     parser.add_argument("--sequence-length", type=int, default=128)
