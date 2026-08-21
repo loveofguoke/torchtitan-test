@@ -12,6 +12,7 @@ from tests.glm5_2_combination.workflow import (
 )
 from tests.glm5_2_common.execution import TrainingFeature, compose_execution
 from tests.glm5_2_common.topology import select_topologies, standard_topologies
+from tests.glm5_2_graph.precision_benchmark import CONFIG as GRAPH_CONFIG
 from tests.glm5_2_performance.analysis import _compiler_diagnostics
 from tests.glm5_2_precision.topology_suite import topology_config
 from tests.glm5_2_precision.workflow import (
@@ -39,6 +40,13 @@ def test_npugraphs_is_npu_only() -> None:
     assert "--compile.backend=npugraphs" in GraphFeatureConfig(
         "npugraphs"
     ).feature(device_type="npu").arguments
+
+
+def test_graph_benchmark_compares_npu_eager_and_npu_graph() -> None:
+    assert GRAPH_CONFIG.kind == "self_consistency"
+    assert GRAPH_CONFIG.reference.device_type == "npu"
+    assert GRAPH_CONFIG.candidate.device_type == "npu"
+    assert GRAPH_CONFIG.reference.topology == GRAPH_CONFIG.candidate.topology
 
 
 def test_execution_plan_rejects_cross_feature_option_conflicts() -> None:
