@@ -31,6 +31,12 @@ CONFIG = FormalExperimentConfig(
         steps=1600,
         fixture_steps=5000,
         exploratory_steps=SAMPLE_STEPS,
+        # Stop after the suspected split while preserving the exact LR values
+        # from the original 5000-step trajectory.
+        extra_args=(
+            *BASE_CONFIG.training.extra_args,
+            "--lr_scheduler.total_steps=5000",
+        ),
     ),
     standard=BASE_CONFIG.standard,
     fixture_root=BASE_CONFIG.fixture_root,
