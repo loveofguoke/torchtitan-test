@@ -17,6 +17,23 @@ CONFIG=${CONFIG:-llama3_debugmodel}
 COMM_MODE=${COMM_MODE:-}
 TORCHFT_LIGHTHOUSE=${TORCHFT_LIGHTHOUSE:-http://localhost:29510}
 
+RUN_LOG=${TORCHTITAN_RUN_LOG:-}
+if [[ -z "$RUN_LOG" ]]; then
+    RUN_STAMP=$(date +%Y%m%d-%H%M%S)
+    RUN_NAME=${TORCHTITAN_RUN_NAME:-${MODULE}-${CONFIG}-${RUN_STAMP}-$$}
+    RUN_LOG="$SCRIPT_DIR/runs/train/$RUN_NAME/runtime.log"
+fi
+mkdir -p "$(dirname -- "$RUN_LOG")"
+RUN_LOG=$(cd -- "$(dirname -- "$RUN_LOG")" && pwd)/$(basename -- "$RUN_LOG")
+exec > >(tee -a "$RUN_LOG") 2>&1
+
+run_exit_log() {
+    status=$?
+    echo "Training exit status: $status"
+    echo "Runtime log: $RUN_LOG"
+}
+trap run_exit_log EXIT
+
 DEVICE=${TORCHTITAN_DEVICE:-auto}
 if [[ "$DEVICE" == "auto" ]]; then
     if [[ -n "${ASCEND_RT_VISIBLE_DEVICES:-}" ]]; then
@@ -41,6 +58,10 @@ case "$DEVICE" in
 esac
 
 echo "TorchTitan backend: $DEVICE"
+echo "Runtime log: $RUN_LOG"
+printf 'Training command:'
+printf ' %q' "$0" "$@"
+printf '\n'
 if [[ -n "$COMM_MODE" ]]; then
     NGPU="$NGPU" LOCAL_RANK=0 python3 "${TRAIN_ENTRY[@]}" \
         --module "$MODULE" --config "$CONFIG" "$@" \
