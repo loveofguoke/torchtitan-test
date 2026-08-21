@@ -352,6 +352,7 @@ class FormalExperimentConfig:
     exploratory_reports: tuple[str, ...] = ()
     shared_fixture: bool = False
     fixture_name: str | None = None
+    allow_fixture_precision_override: bool = False
 
     def __post_init__(self) -> None:
         if self.kind == "migration":
@@ -587,14 +588,20 @@ def _validate_shared_fixture(
             f"{expected.checkpoint_kind!r}"
         )
     recorded = manifest.get("fixture_contract") or manifest.get("training", {})
-    for key in (
+    contract_keys = [
         "module",
         "config",
         "seed",
-        "training_dtype",
-        "mixed_precision_param",
-        "mixed_precision_reduce",
-    ):
+    ]
+    if not config.allow_fixture_precision_override:
+        contract_keys.extend(
+            (
+                "training_dtype",
+                "mixed_precision_param",
+                "mixed_precision_reduce",
+            )
+        )
+    for key in contract_keys:
         if key in recorded and recorded[key] != getattr(expected, key):
             mismatches.append(
                 f"{key} {recorded[key]!r} != {getattr(expected, key)!r}"
