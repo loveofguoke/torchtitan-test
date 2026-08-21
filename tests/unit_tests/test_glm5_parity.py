@@ -1072,25 +1072,21 @@ def _replay_titan_indexer_scores(
     rope_head_dim: int,
 ) -> torch.Tensor:
     """Reconstruct TorchTitan index scores from captured indexer tensors."""
-    batch_size, sequence_length = q_projection.shape[:2]
-    q_full = q_projection.reshape(
-        batch_size, sequence_length, n_heads, head_dim
-    )
+    num_tokens = q_projection.shape[0]
+    q_full = q_projection.reshape(num_tokens, n_heads, head_dim)
     q_pass = q_full[..., rope_head_dim:]
     k_pass = k_normalized[..., rope_head_dim:]
     q = torch.cat((q_rotated, q_pass), dim=-1).float()
-    k = torch.cat((k_rotated.squeeze(2), k_pass), dim=-1).float()
+    k = torch.cat((k_rotated.squeeze(1), k_pass), dim=-1).float()
     scores = torch.matmul(
-        q.transpose(1, 2),
-        k.transpose(1, 2).unsqueeze(1),
+        q.transpose(0, 1),
+        k.transpose(0, 1),
     ) * (head_dim**-0.5)
     scores = F.relu(scores)
     weights = projected_weights.float() * (n_heads**-0.5)
     index_scores = torch.matmul(
-        weights.unsqueeze(-2), scores.transpose(1, 2)
-    ).squeeze(-2)
-    if attention_mask.ndim == 4:
-        attention_mask = attention_mask[:, 0]
+        weights.unsqueeze(1), scores.transpose(0, 1)
+    ).squeeze(1)
     if attention_mask.shape != index_scores.shape:
         raise ValueError(
             "captured attention mask does not match replayed index scores: "
@@ -1111,12 +1107,9 @@ def _capture_titan_indexer_scores(
             f"TorchTitan indexer expected four inputs, got {len(inputs)}"
         )
     hidden_states, q_residual, positions, attention_mask = inputs
-    batch_size, sequence_length = hidden_states.shape[:2]
+    num_tokens = hidden_states.shape[0]
     q_projection = indexer.wq_b(q_residual).view(
-        batch_size,
-        sequence_length,
-        indexer.n_heads,
-        indexer.head_dim,
+        num_tokens, indexer.n_heads, indexer.head_dim
     )
     q_rotated, _q_pass = torch.split(
         q_projection,
@@ -1125,7 +1118,7 @@ def _capture_titan_indexer_scores(
     )
     k_normalized = indexer.k_norm(indexer.wk(hidden_states))
     k_rotated, _k_pass = torch.split(
-        k_normalized.unsqueeze(2),
+        k_normalized.unsqueeze(1),
         [indexer.qk_rope_head_dim, indexer.head_dim - indexer.qk_rope_head_dim],
         dim=-1,
     )
@@ -1160,6 +1153,27 @@ def _causal_mask(positions_BL: torch.Tensor, dtype: torch.dtype) -> torch.Tensor
         dtype=dtype,
         device=positions_BL.device,
     ).masked_fill(~allowed.unsqueeze(1), torch.finfo(dtype).min)
+
+
+def _titan_token_first_inputs(
+    values_BLD: torch.Tensor,
+    positions_BL: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    values_TD = values_BLD.flatten(0, 1)
+    positions_T = positions_BL.flatten()
+    token_indices_T = torch.arange(positions_T.numel(), device=positions_T.device)
+    document_ids_T = (positions_T == 0).cumsum(0)
+    allowed_TT = (token_indices_T[:, None] >= token_indices_T[None, :]) & (
+        document_ids_T[:, None] == document_ids_T[None, :]
+    )
+    mask_1TT = torch.zeros(
+        1,
+        positions_T.numel(),
+        positions_T.numel(),
+        dtype=values_BLD.dtype,
+        device=values_BLD.device,
+    ).masked_fill(~allowed_TT.unsqueeze(0), torch.finfo(values_BLD.dtype).min)
+    return values_TD, positions_T, mask_1TT
 
 
 @dataclass
@@ -1625,6 +1639,22 @@ class ParityRecorder:
         expected_dtype = expected_dtype or f"out={str(expected.dtype).removeprefix('torch.')}"
         actual_cpu = self._cpu(actual)
         expected_cpu = self._cpu(expected)
+        if (
+            actual_cpu.ndim + 1 == expected_cpu.ndim
+            and actual_cpu.shape[0] == expected_cpu.shape[0] * expected_cpu.shape[1]
+            and actual_cpu.shape[1:] == expected_cpu.shape[2:]
+        ):
+            actual_cpu = actual_cpu.unflatten(
+                0, (expected_cpu.shape[0], expected_cpu.shape[1])
+            )
+        elif (
+            expected_cpu.ndim + 1 == actual_cpu.ndim
+            and expected_cpu.shape[0] == actual_cpu.shape[0] * actual_cpu.shape[1]
+            and expected_cpu.shape[1:] == actual_cpu.shape[2:]
+        ):
+            expected_cpu = expected_cpu.unflatten(
+                0, (actual_cpu.shape[0], actual_cpu.shape[1])
+            )
         rtol = self.precision.rtol if rtol is None else rtol
         atol = self.precision.atol if atol is None else atol
         if actual_cpu.shape != expected_cpu.shape:
@@ -1751,6 +1781,22 @@ class ParityRecorder:
     ) -> ComparisonResult:
         actual_cpu = actual.detach().cpu()
         expected_cpu = expected.detach().cpu()
+        if (
+            actual_cpu.ndim + 1 == expected_cpu.ndim
+            and actual_cpu.shape[0] == expected_cpu.shape[0] * expected_cpu.shape[1]
+            and actual_cpu.shape[1:] == expected_cpu.shape[2:]
+        ):
+            actual_cpu = actual_cpu.unflatten(
+                0, (expected_cpu.shape[0], expected_cpu.shape[1])
+            )
+        elif (
+            expected_cpu.ndim + 1 == actual_cpu.ndim
+            and expected_cpu.shape[0] == actual_cpu.shape[0] * actual_cpu.shape[1]
+            and expected_cpu.shape[1:] == actual_cpu.shape[2:]
+        ):
+            expected_cpu = expected_cpu.unflatten(
+                0, (actual_cpu.shape[0], actual_cpu.shape[1])
+            )
         mismatch_positions: set[int] = set()
         mismatch_coordinates: list[tuple[int, int]] = []
         mismatch_count = 0
@@ -1869,6 +1915,18 @@ class ParityRecorder:
         actual_scores_cpu = actual_scores.detach().float().cpu()
         expected_scores_cpu = expected_scores.detach().float().cpu()
         positions_cpu = None if positions is None else positions.detach().cpu()
+        if positions_cpu is not None and positions_cpu.ndim == 2:
+            batch_size, sequence_length = positions_cpu.shape
+            folded_tokens = batch_size * sequence_length
+            batch_shape = (batch_size, sequence_length)
+            if actual_topk_cpu.ndim == 2 and actual_topk_cpu.shape[0] == folded_tokens:
+                actual_topk_cpu = actual_topk_cpu.unflatten(0, batch_shape)
+            if expected_topk_cpu.ndim == 2 and expected_topk_cpu.shape[0] == folded_tokens:
+                expected_topk_cpu = expected_topk_cpu.unflatten(0, batch_shape)
+            if actual_scores_cpu.ndim == 2 and actual_scores_cpu.shape[0] == folded_tokens:
+                actual_scores_cpu = actual_scores_cpu.unflatten(0, batch_shape)
+            if expected_scores_cpu.ndim == 2 and expected_scores_cpu.shape[0] == folded_tokens:
+                expected_scores_cpu = expected_scores_cpu.unflatten(0, batch_shape)
         if (
             actual_topk_cpu.shape != expected_topk_cpu.shape
             or actual_topk_cpu.ndim != 3
@@ -3057,9 +3115,16 @@ def _format_parity_diagnostics(
     if missing_record_names:
         return f"missing record groups: {missing_record_names}"
     recorder = ParityRecorder(BF16)
+    batch_size, sequence_length = positions_BL.shape
     for layer in sorted(set(records.get("hf_blocks", {})) | set(records.get("titan_blocks", {}))):
         hf_block = records.get("hf_blocks", {}).get(layer)
         titan_block = records.get("titan_blocks", {}).get(layer)
+        if (
+            titan_block is not None
+            and titan_block.ndim == 2
+            and titan_block.shape[0] == batch_size * sequence_length
+        ):
+            titan_block = titan_block.unflatten(0, (batch_size, sequence_length))
         if hf_block is not None and titan_block is not None:
             recorder.tensor(
                 scope="e2e", component="block", layer=layer,
@@ -3086,6 +3151,12 @@ def _format_parity_diagnostics(
     for layer in layers:
         hf_block = records.get("hf_blocks", {}).get(layer)
         titan_block = records.get("titan_blocks", {}).get(layer)
+        if (
+            titan_block is not None
+            and titan_block.ndim == 2
+            and titan_block.shape[0] == batch_size * sequence_length
+        ):
+            titan_block = titan_block.unflatten(0, (batch_size, sequence_length))
         if hf_block is None or titan_block is None:
             lines.append(
                 f"layer {layer}: block_records=missing"
@@ -3093,7 +3164,7 @@ def _format_parity_diagnostics(
             )
         elif hf_block.ndim != 3 or titan_block.ndim != 3:
             lines.append(
-                f"layer {layer}: block_shape_error=expected [B, L, D] compatible with positions"
+                f"layer {layer}: block_shape_error=expected token-aligned activations"
             )
         elif hf_block.shape != titan_block.shape:
             lines.append(
@@ -3602,10 +3673,12 @@ def _run_causal_lm_endpoint(
             use_cache=False,
         )
         return output.logits, output.loss
-    logits = model(
-        batch.tokens,
-        positions=batch.positions,
-        attention_masks=batch.causal_mask,
+    batch_size, sequence_length = batch.tokens.shape
+    tokens = batch.tokens.reshape(-1)
+    positions = batch.positions.reshape(-1)
+    attention_masks = model.get_attention_masks(positions)
+    logits = model(tokens, positions=positions, attention_masks=attention_masks).view(
+        batch_size, sequence_length, -1
     )
     loss = F.cross_entropy(
         logits[:, :-1].float().reshape(-1, logits.shape[-1]),
@@ -4064,8 +4137,11 @@ class ComponentParityMixin:
             hf_attention = self.pair.hf_layer(layer_index).self_attn
             titan_attention = self.pair.titan_layer(layer_index).attention
             hidden_states = self._normalized(layer_index)
+            titan_hidden, titan_positions, titan_mask = _titan_token_first_inputs(
+                hidden_states, self.batch.positions
+            )
             hf_q_resid = hf_attention.q_a_layernorm(hf_attention.q_a_proj(hidden_states))
-            titan_q_resid = titan_attention.q_norm(titan_attention.wq_a(hidden_states))
+            titan_q_resid = titan_attention.q_norm(titan_attention.wq_a(titan_hidden))
             recorder.tensor(
                 scope="component", component="q_residual", layer=layer_index,
                 actual=titan_q_resid, expected=hf_q_resid,
@@ -4085,8 +4161,10 @@ class ComponentParityMixin:
                 self.batch.causal_mask[:, 0], self.batch.positions,
             )
             titan_topk = titan_attention.indexer(
-                hidden_states, common_q_resid, self.batch.positions,
-                self.batch.causal_mask[:, 0],
+                titan_hidden,
+                common_q_resid.flatten(0, 1),
+                titan_positions,
+                titan_mask[0],
             )
             recorder.discrete(
                 scope="component", component="indexer", layer=layer_index,
@@ -4104,10 +4182,13 @@ class ComponentParityMixin:
             hf_layer = self.pair.hf_layer(layer_index)
             titan_moe = self.pair.titan_layer(layer_index).moe
             normalized = self._normalized(layer_index)
+            titan_normalized, _, _ = _titan_token_first_inputs(
+                normalized, self.batch.positions
+            )
             # 比较topk索引和对应权重
             _, hf_weights, hf_indices = hf_layer.mlp.gate(normalized)
             titan_weights, titan_indices, _ = titan_moe.router(
-                normalized, titan_moe.expert_bias_E
+                titan_normalized, titan_moe.expert_bias_E
             )
             recorder.discrete(
                 scope="component", component="router_indices", layer=layer_index,
@@ -4134,6 +4215,9 @@ class ComponentParityMixin:
         recorder = self._recorder()
         for layer_index in layer_indices:
             normalized = self._normalized(layer_index)
+            titan_normalized, titan_positions, titan_mask = _titan_token_first_inputs(
+                normalized, self.batch.positions
+            )
             hf_output = self.pair.hf_layer(layer_index).self_attn(
                 hidden_states=normalized,
                 position_embeddings=self.batch.hf_position_embeddings,
@@ -4141,7 +4225,7 @@ class ComponentParityMixin:
                 position_ids=self.batch.positions,
             )[0]
             titan_output = self.pair.titan_layer(layer_index).attention(
-                normalized, self.batch.causal_mask, self.batch.positions
+                titan_normalized, titan_mask, titan_positions
             )
             recorder.tensor(
                 scope="component", component="attention", layer=layer_index,
@@ -4163,10 +4247,11 @@ class ComponentParityMixin:
                 position_embeddings=self.batch.hf_position_embeddings,
                 use_cache=False,
             )[0]
+            titan_hidden, titan_positions, titan_mask = _titan_token_first_inputs(
+                self.batch.hidden_states, self.batch.positions
+            )
             titan_output = self.pair.titan_layer(layer_index)(
-                self.batch.hidden_states,
-                self.batch.causal_mask,
-                self.batch.positions,
+                titan_hidden, titan_mask, titan_positions
             )
             recorder.tensor(
                 scope="composition", component="decoder_block", layer=layer_index,
@@ -5361,7 +5446,14 @@ class TestGlm5Parity(
             {endpoint: model}, layer_indices
         ) as trace:
             with torch.no_grad():
-                current = batch.hidden_states
+                titan_hidden, titan_positions, titan_mask = _titan_token_first_inputs(
+                    batch.hidden_states, batch.positions
+                )
+                current = (
+                    batch.hidden_states
+                    if endpoint.implementation == "hf"
+                    else titan_hidden
+                )
                 for layer_index in layer_indices:
                     layer = (
                         layers[layer_index]
@@ -5379,8 +5471,8 @@ class TestGlm5Parity(
                     else:
                         output = layer(
                             current,
-                            batch.causal_mask,
-                            batch.positions,
+                            titan_mask,
+                            titan_positions,
                         )
                     if self.COMPONENT_EXECUTION.lower() == "sequential":
                         value = (
@@ -5391,7 +5483,11 @@ class TestGlm5Parity(
                         )
                         current = _first_tensor(value)
                     else:
-                        current = batch.hidden_states
+                        current = (
+                            batch.hidden_states
+                            if endpoint.implementation == "hf"
+                            else titan_hidden
+                        )
         self._capture_recursive_observations(
             section_id=case.section_id,
             trace=trace,
@@ -5416,10 +5512,18 @@ class TestGlm5Parity(
                 else self.capture_model.layers[str(layer_index)]
             )
             with torch.no_grad():
-                normalized = (
-                    layer.input_layernorm(batch.hidden_states)
+                titan_hidden, titan_positions, titan_mask = _titan_token_first_inputs(
+                    batch.hidden_states, batch.positions
+                )
+                source_hidden = (
+                    batch.hidden_states
                     if endpoint.implementation == "hf"
-                    else layer.attention_norm(batch.hidden_states)
+                    else titan_hidden
+                )
+                normalized = (
+                    layer.input_layernorm(source_hidden)
+                    if endpoint.implementation == "hf"
+                    else layer.attention_norm(source_hidden)
                 )
                 parent_path = f"layers.{layer_index}"
                 self._capture_add(
@@ -5479,8 +5583,8 @@ class TestGlm5Parity(
                         else attention.indexer(
                             normalized,
                             q_residual,
-                            batch.positions,
-                            batch.causal_mask[:, 0],
+                            titan_positions,
+                            titan_mask[0],
                         )
                     )
                     self._capture_add(
@@ -5515,9 +5619,10 @@ class TestGlm5Parity(
                         weights, indices, _ = layer.moe.router(
                             normalized, layer.moe.expert_bias_E
                         )
-                    indices = indices.view(
-                        normalized.shape[0], normalized.shape[1], -1
-                    )
+                    if endpoint.implementation == "hf":
+                        indices = indices.view(
+                            normalized.shape[0], normalized.shape[1], -1
+                        )
                     weights = weights.view_as(indices)
                     for name, value, kind in (
                         ("indices", indices, "discrete"),
@@ -5562,7 +5667,7 @@ class TestGlm5Parity(
                         )[0]
                         if endpoint.implementation == "hf"
                         else layer.attention(
-                            normalized, batch.causal_mask, batch.positions
+                            normalized, titan_mask, titan_positions
                         )
                     )
                     self._capture_add(
@@ -5588,9 +5693,9 @@ class TestGlm5Parity(
                         )[0]
                         if endpoint.implementation == "hf"
                         else layer(
-                            batch.hidden_states,
-                            batch.causal_mask,
-                            batch.positions,
+                            titan_hidden,
+                            titan_mask,
+                            titan_positions,
                         )
                     )
                     self._capture_add(
