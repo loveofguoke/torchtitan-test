@@ -140,3 +140,46 @@ state entry. This benchmark therefore verifies every state scope that the
 manager currently persists and checks the resulting training trajectory
 end-to-end. If stochastic GLM training features are introduced, direct RNG
 state persistence should be added upstream and made a required scope here.
+
+## Resume-boundary diagnostics
+
+The benchmark fingerprints the live local shard of every checkpoint scope at
+the configured split-boundary save and again immediately after
+`CheckpointManager.load()` in the new process. This instrumentation records
+evidence only; TorchTitan still owns
+checkpoint selection, loading, and training resumption. Fingerprints cover
+model, optimizer, LR scheduler, dataloader, and train state. Changed optimizer
+leaves retain their FQN and state-field path, such as `exp_avg`, `exp_avg_sq`,
+or `step`.
+
+The HTML report distinguishes three failure locations:
+
+1. The saved step-`K` checkpoint differs from the uninterrupted baseline.
+2. The in-memory state immediately after load differs from the state before
+   process restart.
+3. The boundary state is exact, but the first resumed training step diverges.
+
+It also reports the first differing loss and grad-norm step, separate error
+statistics through step `K` and after restart, and final DCP differences grouped
+by state scope.
+
+For TP localization, run only the controlled restart first. This avoids paying
+the state-fingerprint cost for every fault mode while preserving the same
+checkpoint and resume path:
+
+```bash
+export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+unset CUDA_VISIBLE_DEVICES
+
+python tests/glm5_2_checkpoint/checkpoint_benchmark.py \
+  --device npu --topology tp8 \
+  --precision bf16 --total-steps 100 --split-step 50 \
+  --local-batch-size 8 --global-batch-size 64 \
+  --sequence-length 128 --seed 61 \
+  --comparison exact \
+  --async-mode disabled \
+  --failure-mode graceful
+```
+
+Once the shared resume path is exact, rerun with `--failure-mode all` to cover
+the external-signal, single-rank, and incomplete-checkpoint cases.

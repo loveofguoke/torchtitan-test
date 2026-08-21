@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,7 @@ FAULT_STEP_ENV = "GLM5_CHECKPOINT_FAULT_STEP"
 FAULT_RANK_ENV = "GLM5_CHECKPOINT_FAULT_RANK"
 READY_PATH_ENV = "GLM5_CHECKPOINT_READY_PATH"
 EVENTS_DIR_ENV = "GLM5_CHECKPOINT_EVENTS_DIR"
+BOUNDARY_STEP_ENV = "GLM5_CHECKPOINT_BOUNDARY_STEP"
 
 EXTERNAL_FAILURE_MODES = {"sigint", "sigterm", "sigkill", "incomplete"}
 RANK_FAILURE_MODES = {"rank-error", "rank-sigkill"}
@@ -86,6 +88,118 @@ def _missing_optimizer_state(checkpointer: Any) -> list[str]:
     return sorted(missing)
 
 
+def _fingerprint_leaf(value: Any) -> dict[str, Any]:
+    """Return a stable, local fingerprint for one checkpoint-state leaf."""
+
+    import torch
+
+    if isinstance(value, torch.Tensor):
+        local = value.to_local() if hasattr(value, "to_local") else value
+        local = local.detach().cpu().contiguous()
+        payload = local.view(torch.uint8).numpy()
+        return {
+            "kind": "tensor",
+            "dtype": str(value.dtype),
+            "shape": list(value.shape),
+            "local_shape": list(local.shape),
+            "numel": int(local.numel()),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }
+    if isinstance(value, bytes):
+        return {
+            "kind": "bytes",
+            "size": len(value),
+            "sha256": hashlib.sha256(value).hexdigest(),
+        }
+    payload = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=repr,
+    ).encode("utf-8")
+    return {
+        "kind": "value",
+        "type": f"{type(value).__module__}.{type(value).__qualname__}",
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "value": (
+            value
+            if value is None or isinstance(value, (bool, int, float, str))
+            else repr(value)
+        ),
+    }
+
+
+def _walk_fingerprint_leaves(
+    value: Any,
+    path: tuple[str, ...] = (),
+):
+    import torch
+
+    if isinstance(value, torch.Tensor) or isinstance(value, bytes):
+        yield path, _fingerprint_leaf(value)
+    elif isinstance(value, dict):
+        if not value:
+            yield path, _fingerprint_leaf({})
+        for key in sorted(value, key=str):
+            yield from _walk_fingerprint_leaves(value[key], (*path, str(key)))
+    elif isinstance(value, (list, tuple)):
+        if not value:
+            yield path, _fingerprint_leaf([])
+        for index, item in enumerate(value):
+            yield from _walk_fingerprint_leaves(item, (*path, str(index)))
+    else:
+        yield path, _fingerprint_leaf(value)
+
+
+def _state_fingerprint(value: Any) -> dict[str, Any]:
+    state = value.state_dict() if hasattr(value, "state_dict") else value
+    leaves = {
+        "/".join(path) or "$": leaf
+        for path, leaf in _walk_fingerprint_leaves(state)
+    }
+    digest = hashlib.sha256()
+    for path, leaf in sorted(leaves.items()):
+        digest.update(path.encode("utf-8"))
+        digest.update(
+            json.dumps(leaf, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        )
+    return {
+        "sha256": digest.hexdigest(),
+        "leaf_count": len(leaves),
+        "tensor_leaf_count": sum(
+            leaf["kind"] == "tensor" for leaf in leaves.values()
+        ),
+        "tensor_elements": sum(
+            int(leaf.get("numel", 0)) for leaf in leaves.values()
+        ),
+        "leaves": leaves,
+    }
+
+
+def _checkpoint_state_fingerprints(checkpointer: Any) -> dict[str, Any]:
+    """Fingerprint the live local shard of every registered checkpoint scope."""
+
+    return {
+        str(scope): _state_fingerprint(value)
+        for scope, value in sorted(checkpointer.states.items())
+        if value is not None
+    }
+
+
+def _record_state_fingerprint(
+    checkpointer: Any,
+    *,
+    phase: str,
+    step: int | None,
+) -> None:
+    _record_event(
+        "state-fingerprint",
+        step=step,
+        phase=phase,
+        scopes=_checkpoint_state_fingerprints(checkpointer),
+    )
+
+
 def install_checkpoint_fault_injection() -> None:
     """Instrument checkpoint load/save and inject the requested process failure."""
 
@@ -94,6 +208,8 @@ def install_checkpoint_fault_injection() -> None:
         raise ValueError(f"unsupported checkpoint fault mode: {mode!r}")
     fault_step = int(os.environ[FAULT_STEP_ENV]) if mode is not None else -1
     fault_rank = int(os.environ.get(FAULT_RANK_ENV, "0"))
+    boundary_value = os.environ.get(BOUNDARY_STEP_ENV)
+    boundary_step = int(boundary_value) if boundary_value else None
 
     from torchtitan.components.checkpoint import CheckpointManager
 
@@ -104,11 +220,14 @@ def install_checkpoint_fault_injection() -> None:
         loaded = original_load(self, step)
         train_state = self.states.get("train_state")
         restored_step = getattr(train_state, "step", None)
+        restored_step = int(restored_step) if restored_step is not None else None
         _record_event(
             "load",
-            step=int(restored_step) if restored_step is not None else None,
+            step=restored_step,
             loaded=bool(loaded),
         )
+        if loaded and (boundary_step is None or restored_step == boundary_step):
+            _record_state_fingerprint(self, phase="load", step=restored_step)
         return loaded
 
     def save_with_fault(
@@ -125,6 +244,8 @@ def install_checkpoint_fault_injection() -> None:
                     step=curr_step,
                     missing=_missing_optimizer_state(self),
                 )
+                if boundary_step is None or curr_step == boundary_step:
+                    _record_state_fingerprint(self, phase="save", step=curr_step)
             return saved
         if mode == "incomplete" and curr_step == fault_step:
             # Model a job that dies after a new distributed-checkpoint directory
@@ -151,6 +272,8 @@ def install_checkpoint_fault_injection() -> None:
                 step=curr_step,
                 missing=_missing_optimizer_state(self),
             )
+            if boundary_step is None or curr_step == boundary_step:
+                _record_state_fingerprint(self, phase="save", step=curr_step)
         if curr_step != fault_step or mode == "graceful":
             return saved
 

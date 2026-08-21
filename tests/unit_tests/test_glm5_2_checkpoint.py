@@ -10,16 +10,20 @@ import torch
 from tests.glm5_2_common.cli import replace_topology
 from tests.glm5_2_checkpoint.checkpoint_benchmark import (
     CheckpointFixtureConfig,
+    _boundary_memory_comparison,
     _checkpoint_command,
     _combine_contracts,
     _combine_recovered_contracts,
     _combine_recovered_metrics,
     _device_from_environment,
+    _metrics_comparison,
     _precision_training,
+    _resume_failure_location,
     _selected_failure_modes,
 )
 from tests.glm5_2_checkpoint.fault_injection import (
     _missing_optimizer_state,
+    _state_fingerprint,
 )
 from tests.glm5_2_checkpoint.topology_suite import (
     checkpoint_member_complete,
@@ -196,6 +200,171 @@ def test_checkpoint_wrapper_reports_only_missing_trainable_optimizer_state() -> 
     checkpointer = type("Checkpointer", (), {"states": {"optimizer": container}})()
 
     assert _missing_optimizer_state(checkpointer) == ["1.weight"]
+
+
+def test_checkpoint_state_fingerprint_localizes_changed_optimizer_leaf() -> None:
+    saved = _state_fingerprint(
+        {"layers.0.weight": {"exp_avg": torch.tensor([1.0, 2.0])}}
+    )
+    loaded = _state_fingerprint(
+        {"layers.0.weight": {"exp_avg": torch.tensor([1.0, 3.0])}}
+    )
+
+    assert saved["sha256"] != loaded["sha256"]
+    assert (
+        saved["leaves"]["layers.0.weight/exp_avg"]["sha256"]
+        != loaded["leaves"]["layers.0.weight/exp_avg"]["sha256"]
+    )
+
+
+def test_boundary_memory_comparison_reports_scope_and_leaf(tmp_path: Path) -> None:
+    saved_directory = tmp_path / "saved"
+    loaded_directory = tmp_path / "loaded"
+    saved_directory.mkdir()
+    loaded_directory.mkdir()
+    saved_scope = _state_fingerprint({"step": torch.tensor(50.0)})
+    loaded_scope = _state_fingerprint({"step": torch.tensor(0.0)})
+    common = {"event": "state-fingerprint", "rank": 0, "step": 50}
+    (saved_directory / "rank-0.jsonl").write_text(
+        json.dumps({**common, "phase": "save", "scopes": {"optimizer": saved_scope}})
+        + "\n",
+        encoding="utf-8",
+    )
+    (loaded_directory / "rank-0.jsonl").write_text(
+        json.dumps(
+            {**common, "phase": "load", "scopes": {"optimizer": loaded_scope}}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = _boundary_memory_comparison(
+        saved_directory,
+        loaded_directory,
+        step=50,
+        expected_ranks={0},
+    )
+
+    assert not result["passed"]
+    optimizer = result["ranks"][0]["scopes"]["optimizer"]
+    assert optimizer["changed_leaves"] == ["step"]
+
+
+def test_boundary_memory_comparison_accepts_identical_rank_local_state(
+    tmp_path: Path,
+) -> None:
+    saved_directory = tmp_path / "saved"
+    loaded_directory = tmp_path / "loaded"
+    saved_directory.mkdir()
+    loaded_directory.mkdir()
+    scope = _state_fingerprint(
+        {"state.layers.0.weight.exp_avg": torch.tensor([1.0, 2.0])}
+    )
+    common = {
+        "event": "state-fingerprint",
+        "rank": 3,
+        "step": 50,
+        "scopes": {"optimizer": scope},
+    }
+    (saved_directory / "rank-3.jsonl").write_text(
+        json.dumps({**common, "phase": "save"}) + "\n",
+        encoding="utf-8",
+    )
+    (loaded_directory / "rank-3.jsonl").write_text(
+        json.dumps({**common, "phase": "load"}) + "\n",
+        encoding="utf-8",
+    )
+
+    result = _boundary_memory_comparison(
+        saved_directory,
+        loaded_directory,
+        step=50,
+        expected_ranks={3},
+    )
+
+    assert result["passed"]
+    assert result["ranks"][3]["scopes"]["optimizer"]["passed"]
+
+
+def test_metrics_comparison_identifies_first_post_restart_difference(
+    tmp_path: Path,
+) -> None:
+    reference = tmp_path / "reference.jsonl"
+    candidate = tmp_path / "candidate.jsonl"
+
+    def write_metrics(path: Path, losses: list[float]) -> None:
+        path.write_text(
+            "".join(
+                json.dumps(
+                    {
+                        "step": step,
+                        "metrics": {
+                            "loss_metrics/global_avg_loss": loss,
+                            "loss_metrics/global_max_loss": loss,
+                            "grad_norm": loss / 2,
+                        },
+                    }
+                )
+                + "\n"
+                for step, loss in enumerate(losses, start=1)
+            ),
+            encoding="utf-8",
+        )
+
+    write_metrics(reference, [4.0, 3.0, 2.0, 1.0])
+    write_metrics(candidate, [4.0, 3.0, 2.25, 1.0])
+
+    result = _metrics_comparison(
+        reference,
+        candidate,
+        exact=True,
+        loss_absolute_limit=0.01,
+        loss_relative_limit=0.01,
+        grad_relative_limit=0.05,
+        restored_step=2,
+    )
+
+    assert result["loss"]["first_bitwise_mismatch_step"] == 3
+    assert result["loss"]["through_checkpoint"]["bitwise_equal"]
+    assert not result["loss"]["after_restart"]["bitwise_equal"]
+
+
+def test_resume_failure_location_prioritizes_immediate_load_mismatch() -> None:
+    location = _resume_failure_location(
+        split_state={"passed": True},
+        boundary_memory={"passed": False},
+        metrics={
+            "loss": {"first_bitwise_mismatch_step": 51},
+            "grad_norm": {"first_bitwise_mismatch_step": 51},
+        },
+        final_state={"passed": False},
+        restored_step=50,
+    )
+
+    assert location["stage"] == "checkpoint-load"
+
+
+def test_resume_failure_location_reports_first_post_load_step() -> None:
+    location = _resume_failure_location(
+        split_state={"passed": True},
+        boundary_memory={"passed": True},
+        metrics={
+            "loss": {"first_bitwise_mismatch_step": 52},
+            "grad_norm": {"first_bitwise_mismatch_step": 51},
+        },
+        final_state={"passed": False},
+        restored_step=50,
+    )
+
+    assert location == {
+        "stage": "post-load-training",
+        "first_differing_step": 51,
+        "description": (
+            "All persisted state is exact immediately after load, but the "
+            "training trajectory first differs at step 51. Investigate "
+            "non-checkpointed runtime state or TP execution."
+        ),
+    }
 
 
 def test_checkpoint_phase_keeps_total_training_steps() -> None:
