@@ -11,12 +11,12 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import sys
 from typing import Any, Literal, Sequence
 
+from tests.glm5_2_common.naming import config_name, slug
 from tests.glm5_2_common.topology import ParallelTopology, standard_topologies
 
 from .artifacts import (
@@ -40,10 +40,7 @@ CheckpointKind = Literal["random_seed", "converged"]
 
 
 def _slug(value: str) -> str:
-    result = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
-    if not result:
-        raise ValueError(f"value does not produce a usable name: {value!r}")
-    return result
+    return slug(value)
 
 
 @dataclass(frozen=True)
@@ -209,6 +206,7 @@ class FormalExperimentConfig:
     allow_endpoint_argument_difference: bool = False
     storage_name_override: str | None = None
     topology_subdirectory: bool = False
+    legacy_storage_names: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.kind == "migration":
@@ -233,20 +231,18 @@ class FormalExperimentConfig:
         )
 
     @property
-    def storage_name(self) -> str:
-        """Return a compact, human-readable directory and rendezvous name."""
+    def storage_base_name(self) -> str:
+        """Return the readable part retained by the pre-digest layout."""
 
         if self.storage_name_override is not None:
-            value = _slug(self.storage_name_override)
-            if len(value) <= 112:
-                return value
-            digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:10]
-            return f"{value[:101].rstrip('-')}-{digest}"
+            return _slug(self.storage_name_override)
         if self.kind == "migration":
             experiment = (
                 f"migration-{self.reference.device_type}-"
-                f"{self.candidate.device_type}-{self.reference.topology.slug}"
+                f"{self.candidate.device_type}"
             )
+            if not self.topology_subdirectory:
+                experiment += f"-{self.reference.topology.slug}"
         else:
             experiment = f"self-{self.reference.device_type}"
         checkpoint = (
@@ -257,15 +253,42 @@ class FormalExperimentConfig:
             "mixed-float32": "fp32",
             "full-bf16": "full-bf16",
         }.get(self.training.precision_name, self.training.precision_name)
-        value = _slug(
+        return _slug(
             f"{experiment}-{precision}-{checkpoint}-s{self.training.steps}-"
             f"b{self.training.global_batch_size}-seq{self.training.sequence_length}-"
             f"seed{self.training.seed}"
         )
-        if len(value) <= 112:
+
+    @property
+    def capture_identity(self) -> dict[str, Any]:
+        """Return settings that can change captured training results."""
+
+        include_topology = self.kind == "migration" and not self.topology_subdirectory
+
+        def endpoint_identity(endpoint: TrainingEndpoint) -> dict[str, Any]:
+            value: dict[str, Any] = {
+                "device_type": endpoint.device_type,
+                "num_nodes": endpoint.num_nodes,
+                "entry_module": endpoint.entry_module,
+                "environment": endpoint.environment,
+                "extra_args": endpoint.extra_args,
+            }
+            if include_topology:
+                value["topology"] = asdict(endpoint.topology)
             return value
-        digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:10]
-        return f"{value[:101].rstrip('-')}-{digest}"
+
+        return {
+            "kind": self.kind,
+            "training": _normalized_training(self.training),
+            "reference": endpoint_identity(self.reference),
+            "candidate": endpoint_identity(self.candidate),
+        }
+
+    @property
+    def storage_name(self) -> str:
+        """Return the readable pre-digest name plus its capture config digest."""
+
+        return config_name(self.storage_base_name, self.capture_identity)
 
     @property
     def fixture_storage_name(self) -> str:
@@ -273,20 +296,20 @@ class FormalExperimentConfig:
 
         if self.fixture_name is not None:
             return _slug(self.fixture_name)
-        training = _normalized_training(self.training)
-        digest = hashlib.sha256(
-            json.dumps(training, sort_keys=True).encode("utf-8")
-        ).hexdigest()[:10]
         precision = {
             "mixed-bfloat16": "bf16",
             "mixed-float32": "fp32",
             "full-bf16": "full-bf16",
         }.get(self.training.precision_name, self.training.precision_name)
-        return _slug(
-            f"fixture-{self.training.module}-{precision}-"
-            f"s{self.training.steps}-b{self.training.global_batch_size}-"
-            f"seq{self.training.sequence_length}-seed{self.training.seed}-{digest}"
+        checkpoint = (
+            "random" if self.training.checkpoint_kind == "random_seed" else "converged"
         )
+        base = _slug(
+            f"{precision}-{checkpoint}-"
+            f"s{self.training.steps}-b{self.training.global_batch_size}-"
+            f"seq{self.training.sequence_length}-seed{self.training.seed}"
+        )
+        return config_name(base, _normalized_training(self.training))
 
 
 def _directory_digest(path: Path) -> str:
@@ -407,8 +430,140 @@ def _root(script_path: str) -> Path:
     return Path(script_path).resolve().parents[2]
 
 
+def _precision_name(training: FormalTrainingConfig) -> str:
+    return {
+        "mixed-bfloat16": "bf16",
+        "mixed-float32": "fp32",
+        "full-bf16": "full-bf16",
+    }.get(training.precision_name, training.precision_name)
+
+
+def _legacy_fixture_names(config: FormalExperimentConfig) -> tuple[str, ...]:
+    training = _normalized_training(config.training)
+    old_digest = hashlib.sha256(
+        json.dumps(training, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:10]
+    old_generated = _slug(
+        f"fixture-{config.training.module}-{_precision_name(config.training)}-"
+        f"s{config.training.steps}-b{config.training.global_batch_size}-"
+        f"seq{config.training.sequence_length}-seed{config.training.seed}-{old_digest}"
+    )
+    return tuple(
+        dict.fromkeys(
+            (
+                config.storage_base_name,
+                old_generated,
+                "graph-probe-fixture",
+                *config.legacy_storage_names,
+            )
+        )
+    )
+
+
+def _stored_training_matches(path: Path, config: FormalExperimentConfig) -> bool:
+    expected = json.loads(
+        json.dumps(_normalized_training(config.training), sort_keys=True)
+    )
+    fixture_manifest = path / "fixture.json"
+    if fixture_manifest.is_file():
+        try:
+            return json.loads(fixture_manifest.read_text(encoding="utf-8")).get(
+                "training"
+            ) == expected
+        except (OSError, TypeError, ValueError):
+            return False
+    contracts = list(path.rglob("training_contract.json"))
+    if contracts:
+        allowed_endpoint_args = {
+            tuple(config.reference.extra_args),
+            tuple(config.candidate.extra_args),
+        }
+        try:
+            values = [
+                json.loads(contract.read_text(encoding="utf-8"))
+                for contract in contracts
+            ]
+            return all(
+                value.get("training") == expected
+                and tuple(value.get("endpoint_args", ())) in allowed_endpoint_args
+                for value in values
+            )
+        except (OSError, TypeError, ValueError):
+            return False
+    required = (
+        f"--training.steps={config.training.steps}",
+        f"--training.local_batch_size={config.training.local_batch_size}",
+        f"--training.global_batch_size={config.training.global_batch_size}",
+        f"--training.seq_len={config.training.sequence_length}",
+        f"--training.dtype={config.training.training_dtype}",
+        f"--training.mixed_precision_param={config.training.mixed_precision_param}",
+        f"--debug.seed={config.training.seed}",
+    )
+    logs = list(path.rglob("runtime.log"))
+    if not logs:
+        return False
+    try:
+        commands = [log.read_text(encoding="utf-8", errors="replace") for log in logs]
+    except OSError:
+        return False
+    return all(all(argument in command for argument in required) for command in commands)
+
+
+def _adopt_legacy_directory(
+    parent: Path,
+    *,
+    destination_name: str,
+    legacy_names: Sequence[str],
+    config: FormalExperimentConfig,
+) -> Path:
+    destination = parent / destination_name
+    if destination.exists():
+        return destination
+    matches = []
+    for name in dict.fromkeys(legacy_names):
+        source = parent / name
+        if source != destination and source.is_dir() and _stored_training_matches(
+            source, config
+        ):
+            matches.append(source)
+    if len(matches) > 1:
+        raise RuntimeError(
+            "multiple legacy output directories match the current config: "
+            + ", ".join(str(path) for path in matches)
+        )
+    if matches:
+        source = matches[0]
+        parent.mkdir(parents=True, exist_ok=True)
+        source.rename(destination)
+        fixture_manifest = destination / "fixture.json"
+        if fixture_manifest.is_file():
+            manifest = json.loads(fixture_manifest.read_text(encoding="utf-8"))
+            manifest["scenario_name"] = destination_name
+            _write_json(fixture_manifest, manifest)
+        for contract_path in destination.rglob("training_contract.json"):
+            contract = json.loads(contract_path.read_text(encoding="utf-8"))
+            if "scenario_name" not in contract:
+                continue
+            contract["scenario_name"] = destination_name
+            _write_json(contract_path, contract)
+            manifest_path = contract_path.parent / "manifest.json"
+            if manifest_path.is_file():
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                files = manifest.get("files", {})
+                if "training_contract.json" in files:
+                    files["training_contract.json"] = sha256_file(contract_path)
+                    _write_json(manifest_path, manifest)
+        print(f"Adopted matching legacy output:\n  {source}\n  -> {destination}")
+    return destination
+
+
 def _fixture_directory(root: Path, config: FormalExperimentConfig) -> Path:
-    return root / config.fixture_root / config.fixture_storage_name
+    return _adopt_legacy_directory(
+        root / config.fixture_root,
+        destination_name=config.fixture_storage_name,
+        legacy_names=_legacy_fixture_names(config),
+        config=config,
+    )
 
 
 def _artifact_directory(
@@ -423,7 +578,18 @@ def _artifact_directory(
         if config.kind == "self_consistency" and role == "candidate"
         else _slug(f"{role}-r{repeat}")
     )
-    directory = root / config.artifact_root / config.storage_name
+    directory = _adopt_legacy_directory(
+        root / config.artifact_root,
+        destination_name=config.storage_name,
+        legacy_names=(config.storage_base_name, *config.legacy_storage_names),
+        config=config,
+    )
+    _adopt_legacy_directory(
+        root / config.run_root,
+        destination_name=config.storage_name,
+        legacy_names=(config.storage_base_name, *config.legacy_storage_names),
+        config=config,
+    )
     if config.topology_subdirectory:
         directory /= endpoint.topology.slug
     return directory / name
@@ -443,10 +609,35 @@ def _run_directory(
     )
     if endpoint.num_nodes > 1:
         name = f"{name}-node-{endpoint.node_rank}"
-    directory = root / config.run_root / config.storage_name
+    directory = _adopt_legacy_directory(
+        root / config.run_root,
+        destination_name=config.storage_name,
+        legacy_names=(config.storage_base_name, *config.legacy_storage_names),
+        config=config,
+    )
     if config.topology_subdirectory:
         directory /= endpoint.topology.slug
     return directory / name
+
+
+def _report_directory(root: Path, config: FormalExperimentConfig) -> Path:
+    parent = root / config.report_root
+    destination = parent / config.storage_name
+    if destination.exists():
+        return destination
+    artifact_directory = root / config.artifact_root / config.storage_name
+    if not artifact_directory.is_dir():
+        return destination
+    for legacy_name in dict.fromkeys(
+        (config.storage_base_name, *config.legacy_storage_names)
+    ):
+        source = parent / legacy_name
+        if source.is_dir():
+            parent.mkdir(parents=True, exist_ok=True)
+            source.rename(destination)
+            print(f"Adopted matching legacy output:\n  {source}\n  -> {destination}")
+            break
+    return destination
 
 
 def _seed_checkpoint_path(fixture_directory: Path) -> Path:
@@ -790,9 +981,6 @@ def capture_endpoint(
     metrics_node_rank = metrics_rank // endpoint.num_processes_per_node
     if not 1 <= repeat <= endpoint.repeats:
         raise ValueError(f"repeat must be in [1, {endpoint.repeats}]")
-    fixture_directory = _fixture_directory(root, config)
-    checkpoint_path = _seed_checkpoint_path(fixture_directory)
-    token_plan_path = _token_plan_path(fixture_directory)
     artifact_directory = _artifact_directory(root, config, role, endpoint, repeat)
     artifact_complete = False
     if endpoint.node_rank == metrics_node_rank and artifact_directory.exists():
@@ -804,6 +992,9 @@ def capture_endpoint(
         if artifact_complete and not force:
             print(f"Skip completed capture: {artifact_directory}")
             return artifact_directory
+    fixture_directory = _fixture_directory(root, config)
+    checkpoint_path = _seed_checkpoint_path(fixture_directory)
+    token_plan_path = _token_plan_path(fixture_directory)
     run_directory = _run_directory(root, config, role, endpoint, repeat)
     metrics_path = run_directory / "raw_metrics.jsonl"
     runtime_log = run_directory / "runtime.log"

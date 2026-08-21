@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from tests.glm5_2_common.device import resolve_device_type
+from tests.glm5_2_common.naming import config_name, slug
 from tests.glm5_2_common.topology import select_topologies
 
 from .analysis import build_analysis, render_html_report
@@ -26,10 +27,7 @@ from .config import (
 
 
 def _slug(value: str) -> str:
-    result = "".join(
-        character if character.isalnum() else "-" for character in value.lower()
-    )
-    return "-".join(part for part in result.split("-") if part)
+    return slug(value)
 
 
 def _repository_root(script_path: str) -> Path:
@@ -128,7 +126,64 @@ def _profiling_preflight(output_directory: Path, device: str) -> dict[str, Any]:
 
 
 def _run_name(config: PerformanceConfig, device: str) -> str:
-    return _slug(f"{config.name}-{device}-{config.topology}-{config.preset}")
+    precision = {
+        ("float32", "bfloat16"): "bf16",
+        ("float32", "float32"): "fp32",
+        ("bfloat16", "bfloat16"): "full-bf16",
+    }.get(
+        (config.training_dtype, config.mixed_precision_param),
+        f"{config.training_dtype}-{config.mixed_precision_param}",
+    )
+    base = (
+        f"{device}-{config.topology}-{precision}-s{config.steps}-"
+        f"l{config.local_batch_size}-b{config.global_batch_size}-"
+        f"seq{config.sequence_length}-seed{config.seed}-{config.preset}"
+    )
+    identity = config.as_dict()
+    for key in ("name", "device", "run_root", "artifact_root", "report_root"):
+        identity.pop(key, None)
+    identity["resolved_device"] = device
+    return config_name(base, identity)
+
+
+def _adopt_legacy_performance_output(
+    parent: Path,
+    *,
+    config: PerformanceConfig,
+    device: str,
+    destination_name: str,
+) -> Path:
+    destination = parent / destination_name
+    legacy = parent / _slug(
+        f"{config.name}-{device}-{config.topology}-{config.preset}"
+    )
+    if destination.exists() or not legacy.is_dir():
+        return destination
+    manifest_path = legacy / "manifest.json"
+    if not manifest_path.is_file():
+        return destination
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return destination
+    if manifest.get("config") != config.as_dict():
+        return destination
+    parent.mkdir(parents=True, exist_ok=True)
+    legacy.rename(destination)
+    def rename_value(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: rename_value(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [rename_value(item) for item in value]
+        if isinstance(value, str):
+            return value.replace(legacy.name, destination_name)
+        return value
+
+    manifest = rename_value(manifest)
+    manifest["run_name"] = destination_name
+    _write_json(destination / "manifest.json", manifest)
+    print(f"Adopted matching legacy output:\n  {legacy}\n  -> {destination}")
+    return destination
 
 
 def _write_json(path: Path, value: Any) -> None:
@@ -299,8 +354,18 @@ def capture(
     run_name = _run_name(config, device)
     run_parent = root / config.run_root
     artifact_parent = root / config.artifact_root
-    run_directory = run_parent / run_name
-    artifact_directory = artifact_parent / run_name
+    run_directory = _adopt_legacy_performance_output(
+        run_parent,
+        config=config,
+        device=device,
+        destination_name=run_name,
+    )
+    artifact_directory = _adopt_legacy_performance_output(
+        artifact_parent,
+        config=config,
+        device=device,
+        destination_name=run_name,
+    )
     complete_manifest = artifact_directory / "manifest.json"
 
     run_manifest = run_directory / "manifest.json"
@@ -559,8 +624,18 @@ def analyze(
     compare_baseline: Path | None,
 ) -> Path:
     run_name = _run_name(config, device)
-    run_directory = root / config.run_root / run_name
-    artifact_directory = root / config.artifact_root / run_name
+    run_directory = _adopt_legacy_performance_output(
+        root / config.run_root,
+        config=config,
+        device=device,
+        destination_name=run_name,
+    )
+    artifact_directory = _adopt_legacy_performance_output(
+        root / config.artifact_root,
+        config=config,
+        device=device,
+        destination_name=run_name,
+    )
     manifest_path = artifact_directory / "manifest.json"
     if not manifest_path.is_file():
         raise FileNotFoundError(f"capture artifact not found: {manifest_path}")

@@ -18,9 +18,18 @@ from tests.glm5_2_performance.dynamic_profile import (
     build_dynamic_profile_config,
     write_dynamic_profile_config,
 )
+from tests.glm5_2_performance.workflow import _run_name
 
 
 class TestPerformanceConfig(unittest.TestCase):
+    def test_run_name_uses_readable_config_and_digest(self):
+        config = PerformanceConfig(name="glm5-probe")
+        run_name = _run_name(config, "npu")
+
+        self.assertTrue(run_name.startswith("npu-single-bf16-s12-"))
+        self.assertNotIn("glm5-probe", run_name)
+        self.assertEqual(len(run_name.rsplit("-", 1)[1]), 8)
+
     def test_standard_topologies_cover_declared_world_size(self):
         topologies = standard_topologies()
         self.assertEqual(topologies["single"].world_size, 1)

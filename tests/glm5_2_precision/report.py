@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .artifacts import PrecisionArtifactReader
+from .workflow import _report_directory
 from .standards import (
     CriterionResult,
     PairEvaluation,
@@ -687,7 +688,7 @@ def compare_and_write_report(
         )
 
     if report_directory is None:
-        report_directory = root / config.report_root / config.storage_name
+        report_directory = _report_directory(root, config)
         if config.kind == "self_consistency":
             report_directory /= config.candidate.topology.slug
     report_directory.mkdir(parents=True, exist_ok=True)

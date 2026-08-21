@@ -23,7 +23,6 @@ PROBE_CONFIG = replace(
         global_batch_size=1,
         sequence_length=32,
     ),
-    fixture_name="graph-probe-fixture",
 )
 
 

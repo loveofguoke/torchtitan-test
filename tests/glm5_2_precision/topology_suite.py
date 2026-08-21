@@ -61,6 +61,8 @@ def topology_config(
 ) -> FormalExperimentConfig:
     """Create one topology member while preserving the shared fixture identity."""
 
+    training = _training_with_precision(base, precision)
+    fixture_base = replace(base, training=training)
     reference = base.reference
     candidate = base.candidate
     if base.kind == "migration":
@@ -76,7 +78,8 @@ def topology_config(
         base,
         reference=reference,
         candidate=candidate,
-        training=_training_with_precision(base, precision),
+        training=training,
+        fixture_name=fixture_base.fixture_storage_name,
     )
 
 
@@ -92,12 +95,8 @@ def _capture_complete(root: Path, config: FormalExperimentConfig, role: str) -> 
 
 
 def _suite_directory(root: Path, config: FormalExperimentConfig) -> Path:
-    devices = f"{config.reference.device_type}-{config.candidate.device_type}"
-    name = (
-        f"{config.kind.replace('_consistency', '')}-{devices}-"
-        f"{precision_label(config)}-topology-suite"
-    )
-    return root / config.report_root / name
+    suite_config = replace(config, topology_subdirectory=True)
+    return root / config.report_root / suite_config.storage_name
 
 
 def compare_topology_suite(

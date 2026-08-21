@@ -51,7 +51,36 @@ class CombinationSelection:
             raise ValueError("performance objective requires a profiler feature")
 
 
-def _combination_storage_name(
+def _combination_storage_base(
+    config: FormalExperimentConfig,
+    selection: CombinationSelection,
+) -> str:
+    precision = {
+        "mixed-bfloat16": "bf16",
+        "mixed-float32": "fp32",
+        "full-bf16": "full-bf16",
+    }.get(config.training.precision_name, config.training.precision_name)
+    objective = "-".join(sorted(selection.objectives))
+    profiler = (
+        f"prof-{selection.profiler.preset.name}" if selection.profiler else "no-prof"
+    )
+    experiment = (
+        f"migration-{config.reference.device_type}-{config.candidate.device_type}"
+        if config.kind == "migration"
+        else f"self-{config.reference.device_type}"
+    )
+    checkpoint = (
+        "random" if config.training.checkpoint_kind == "random_seed" else "converged"
+    )
+    return (
+        f"{experiment}-{precision}-{checkpoint}-s{config.training.steps}-"
+        f"b{config.training.global_batch_size}-seq{config.training.sequence_length}-"
+        f"seed{config.training.seed}-{selection.reference_graph.mode}-"
+        f"{selection.candidate_graph.mode}-{objective}-{profiler}"
+    )
+
+
+def _legacy_combination_storage_name(
     config: FormalExperimentConfig,
     selection: CombinationSelection,
 ) -> str:
@@ -105,18 +134,20 @@ def _apply_selection(
             environment={**endpoint.environment, **plan.environment()},
             entry_module="tests.glm5_2_combination.capture_metrics",
         )
-    storage_name = _combination_storage_name(config, selection)
-    return replace(
+    storage_base = _combination_storage_base(config, selection)
+    legacy_storage_name = _legacy_combination_storage_name(config, selection)
+    selected = replace(
         config,
         reference=endpoints["reference"],
         candidate=endpoints["candidate"],
         allow_endpoint_argument_difference=True,
         artifact_root="combination_artifacts",
         run_root="combination_runs",
-        report_root=f"combination_reports/{storage_name}/precision",
-        storage_name_override=storage_name,
+        storage_name_override=storage_base,
         topology_subdirectory=True,
+        legacy_storage_names=(legacy_storage_name,),
     )
+    return replace(selected, report_root="combination_reports/precision")
 
 
 def _metric_median(analysis: dict, fragment: str) -> float | None:
@@ -199,7 +230,19 @@ def _write_combination_report(
 ) -> Path:
     first_raw = topology_config(base, topologies[selected[0]], precision=precision)
     first_config = _apply_selection(first_raw, selection)
-    report_root = root / "combination_reports" / first_config.storage_name
+    report_parent = root / "combination_reports"
+    report_root = report_parent / first_config.storage_name
+    if not report_root.exists():
+        for legacy_name in first_config.legacy_storage_names:
+            legacy_root = report_parent / legacy_name
+            if legacy_root.is_dir():
+                report_parent.mkdir(parents=True, exist_ok=True)
+                legacy_root.rename(report_root)
+                print(
+                    "Adopted matching legacy output:\n"
+                    f"  {legacy_root}\n  -> {report_root}"
+                )
+                break
     precision_report: Path | None = None
     if "precision" in selection.objectives:
         precision_report = compare_topology_suite(

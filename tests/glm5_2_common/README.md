@@ -37,3 +37,15 @@ profiling overhead and runtime behavior and does not claim numerical
 comparability. Use the combination runner when fixed inputs, graph mode,
 distributed execution, precision comparison, and profiling must be enabled in
 the same training process.
+
+## Output names
+
+Each experiment root already identifies the artifact type, so child names do
+not repeat `fixture`, `combo`, `stability`, `checkpoint`, or the model name.
+Readable settings are followed by an eight-character digest of only the values
+that can change capture results. Report thresholds and presentation settings
+are excluded, so report-only changes never require another training run.
+
+When a pre-digest output directory contains the same stored training contract,
+the workflow renames it to the current config-digested name and continues. A
+different contract is never adopted silently.

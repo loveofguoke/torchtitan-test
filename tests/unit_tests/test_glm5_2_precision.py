@@ -1,7 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 from pathlib import Path
 import struct
@@ -534,9 +534,9 @@ def test_storage_name_and_capture_paths_are_compact(tmp_path: Path) -> None:
         candidate=TrainingEndpoint("npu-candidate", "npu", "0", topology),
     )
 
-    assert config.storage_name == (
-        "migration-cuda-npu-single-bf16-random-s1000-b16-seq128-seed61"
-    )
+    base = "migration-cuda-npu-single-bf16-random-s1000-b16-seq128-seed61"
+    assert config.storage_name.startswith(base + "-")
+    assert len(config.storage_name.removeprefix(base + "-")) == 8
     from tests.glm5_2_precision.workflow import _artifact_directory
 
     assert _artifact_directory(
@@ -593,9 +593,9 @@ def test_self_consistency_suite_reuses_reference_and_reports_partial_results(
     )
     from tests.glm5_2_precision.workflow import _artifact_directory
 
-    assert config.storage_name == (
-        "self-cuda-bf16-random-s4-b16-seq128-seed61"
-    )
+    base = "self-cuda-bf16-random-s4-b16-seq128-seed61"
+    assert config.storage_name.startswith(base + "-")
+    assert len(config.storage_name.removeprefix(base + "-")) == 8
     assert _artifact_directory(
         tmp_path, config, "candidate", config.candidate, 1
     ).name == "ddp8-r1"
@@ -698,3 +698,68 @@ def test_migration_topologies_share_one_fixture_identity() -> None:
     assert single.fixture_storage_name == fsdp.fixture_storage_name
     assert single.storage_name != fsdp.storage_name
     assert fsdp.reference.topology == fsdp.candidate.topology
+
+
+def test_report_standard_does_not_change_capture_storage_name() -> None:
+    topology = ParallelTopology("single", 1)
+    config = FormalExperimentConfig(
+        name="migration",
+        kind="migration",
+        reference=TrainingEndpoint("gpu", "cuda", "0", topology),
+        candidate=TrainingEndpoint("npu", "npu", "0", topology),
+    )
+    changed_standard = replace(
+        config,
+        standard=PrecisionStandard(
+            migration=MigrationStandard(
+                all_loss=AnyOfErrorLimit(absolute=0.123)
+            )
+        ),
+    )
+
+    assert changed_standard.storage_name == config.storage_name
+
+
+def test_matching_pre_digest_artifact_directory_is_adopted(tmp_path: Path) -> None:
+    topology = ParallelTopology("single", 1)
+    config = FormalExperimentConfig(
+        name="migration",
+        kind="migration",
+        reference=TrainingEndpoint("gpu", "cuda", "0", topology),
+        candidate=TrainingEndpoint("npu", "npu", "0", topology),
+        artifact_root="artifacts",
+    )
+    legacy_capture = (
+        tmp_path
+        / "artifacts"
+        / config.storage_base_name
+        / "candidate-r1"
+    )
+    legacy_capture.mkdir(parents=True)
+    (legacy_capture / "training_contract.json").write_text(
+        json.dumps(
+            {
+                "scenario_name": config.storage_base_name,
+                "training": {
+                    **asdict(config.training),
+                    "converged_checkpoint": None,
+                },
+                "endpoint_args": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    from tests.glm5_2_precision.workflow import _artifact_directory
+
+    adopted = _artifact_directory(
+        tmp_path, config, "candidate", config.candidate, 1
+    )
+
+    assert adopted.parent.name == config.storage_name
+    assert adopted.is_dir()
+    assert not (tmp_path / "artifacts" / config.storage_base_name).exists()
+    adopted_contract = json.loads(
+        (adopted / "training_contract.json").read_text(encoding="utf-8")
+    )
+    assert adopted_contract["scenario_name"] == config.storage_name

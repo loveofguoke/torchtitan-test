@@ -84,11 +84,12 @@ python tests/glm5_2_graph/compile_probe.py \
   --compiler-diagnostics --require-all
 ```
 
-The first command creates `graph-probe-fixture` below
+The first command creates a config-digested directory below
 `precision_fixtures/`. The two captures run NPU eager as the reference and NPU
-Inductor as the candidate with the same checkpoint and token plan. Each capture
-prints the exact run directory and always writes the complete command, stdout,
-stderr, graph breaks, recompiles, and backend failures to:
+Inductor as the candidate with the same checkpoint and token plan. A matching
+pre-digest fixture is renamed automatically and reused. Each capture prints the
+exact run directory and always writes the complete command, stdout, stderr,
+graph breaks, recompiles, and backend failures to:
 
 ```text
 combination_runs/<combination-id>/single/candidate-r1/runtime.log

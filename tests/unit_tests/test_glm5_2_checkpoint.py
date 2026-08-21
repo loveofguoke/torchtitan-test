@@ -438,7 +438,9 @@ def test_checkpoint_fixture_name_is_compact() -> None:
         training=training,
     )
 
-    assert config.storage_name == "ckpt-cuda-bf16-s20-b64-q128-seed61"
+    base = "cuda-bf16-s20-b64-seq128-seed61"
+    assert config.storage_name.startswith(base + "-")
+    assert len(config.storage_name.removeprefix(base + "-")) == 8
 
 
 def test_checkpoint_topologies_share_one_suite_directory(tmp_path: Path) -> None:
@@ -465,6 +467,7 @@ def test_checkpoint_topologies_share_one_suite_directory(tmp_path: Path) -> None
 
     assert single_suite == fsdp_suite
     assert single_member != fsdp_member
+    assert not single_suite.startswith("ckpt-")
     single_run, _, _, _ = checkpoint_member_paths(
         tmp_path,
         suite_name=single_suite,

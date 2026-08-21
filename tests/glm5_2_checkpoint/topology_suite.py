@@ -5,14 +5,16 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 import html
 import json
+from pathlib import Path
 import subprocess
 import sys
-from pathlib import Path
 from typing import Any, Sequence
 
 from tests.glm5_2_common.cli import archive_previous_output, replace_topology
+from tests.glm5_2_common.naming import config_name
 from tests.glm5_2_common.topology import standard_topologies
 
 
@@ -56,6 +58,72 @@ def checkpoint_output_names(
     comparison: str,
     requested_failure_modes: Sequence[str],
     run_tag: str | None,
+    extra_train_args: Sequence[str] = (),
+    interrupt_step: int | None = None,
+    failure_rank: int | None = None,
+    failure_timeout: float | None = None,
+    restart_delay: float | None = None,
+    topology_identity: dict[str, Any] | None = None,
+) -> tuple[str, str]:
+    save_mode = {
+        "disabled": "sync",
+        "async": "async",
+        "async_with_pinned_mem": "pinned",
+    }[async_mode]
+    suffix = (
+        f"{precision}-s{total_steps}-k{split_step}-l{local_batch_size}-"
+        f"b{global_batch_size}-seq{sequence_length}-seed{seed}-{save_mode}-"
+        f"{comparison}-{_failure_mode_label(requested_failure_modes)}"
+    )
+    suite_base = f"{device}-{suffix}"
+    member_base = f"{device}-{topology_slug}-{suffix}"
+    if run_tag:
+        normalized_tag = _normalize_run_tag(run_tag)
+        suite_base += f"-{normalized_tag}"
+        member_base += f"-{normalized_tag}"
+    identity = {
+        "device": device,
+        "precision": precision,
+        "total_steps": total_steps,
+        "split_step": split_step,
+        "local_batch_size": local_batch_size,
+        "global_batch_size": global_batch_size,
+        "sequence_length": sequence_length,
+        "seed": seed,
+        "async_mode": async_mode,
+        "comparison": comparison,
+        "failure_modes": tuple(requested_failure_modes),
+        "run_tag": run_tag,
+        "extra_train_args": tuple(extra_train_args),
+        "interrupt_step": interrupt_step,
+        "failure_rank": failure_rank,
+        "failure_timeout": failure_timeout,
+        "restart_delay": restart_delay,
+    }
+    suite_name = config_name(suite_base, identity)
+    member_name = config_name(
+        member_base,
+        {**identity, "topology": topology_identity or topology_slug},
+    )
+    return suite_name, member_name
+
+
+def legacy_checkpoint_output_names(
+    *,
+    device: str,
+    topology_slug: str,
+    precision: str,
+    total_steps: int,
+    split_step: int,
+    local_batch_size: int,
+    global_batch_size: int,
+    sequence_length: int,
+    seed: int,
+    async_mode: str,
+    comparison: str,
+    requested_failure_modes: Sequence[str],
+    run_tag: str | None,
+    **_: Any,
 ) -> tuple[str, str]:
     save_mode = {
         "disabled": "sync",
@@ -74,6 +142,60 @@ def checkpoint_output_names(
         suite_name += f"-{normalized_tag}"
         member_name += f"-{normalized_tag}"
     return suite_name, member_name
+
+
+def adopt_legacy_checkpoint_outputs(
+    root: Path,
+    *,
+    suite_name: str,
+    member_name: str,
+    legacy_suite_name: str,
+    legacy_member_name: str,
+    topology_slug: str,
+) -> None:
+    for root_name in ("checkpoint_runs", "checkpoint_reports"):
+        parent = root / root_name
+        source = parent / legacy_suite_name
+        destination = parent / suite_name
+        if destination.exists() or not source.is_dir():
+            continue
+        parent.mkdir(parents=True, exist_ok=True)
+        source.rename(destination)
+        print(f"Adopted matching legacy output:\n  {source}\n  -> {destination}")
+    report_directory = root / "checkpoint_reports" / suite_name / topology_slug
+    old_summary = report_directory / f"{legacy_member_name}.json"
+    new_summary = report_directory / f"{member_name}.json"
+    if old_summary.is_file() and not new_summary.exists():
+        summary = json.loads(old_summary.read_text(encoding="utf-8"))
+        def rename_value(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {key: rename_value(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [rename_value(item) for item in value]
+            if isinstance(value, str):
+                return value.replace(legacy_suite_name, suite_name).replace(
+                    legacy_member_name, member_name
+                )
+            return value
+
+        summary = rename_value(summary)
+        summary["run_name"] = member_name
+        new_summary.write_text(
+            json.dumps(summary, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        old_summary.unlink()
+    old_report = report_directory / f"{legacy_member_name}.html"
+    new_report = report_directory / f"{member_name}.html"
+    if old_report.is_file() and not new_report.exists():
+        report_text = old_report.read_text(encoding="utf-8")
+        new_report.write_text(
+            report_text.replace(legacy_suite_name, suite_name).replace(
+                legacy_member_name, member_name
+            ),
+            encoding="utf-8",
+        )
+        old_report.unlink()
 
 
 def checkpoint_member_paths(
@@ -205,6 +327,7 @@ def run_checkpoint_topology_suite(
         current_suite, member_name = checkpoint_output_names(
             device=device,
             topology_slug=topology_slug,
+            topology_identity=asdict(topologies[topology_name]),
             **output_name_args,
         )
         if suite_name is None:

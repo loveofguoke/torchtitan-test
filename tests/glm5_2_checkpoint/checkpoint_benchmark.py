@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tests.glm5_2_common.cli import archive_previous_output
 from tests.glm5_2_common.device import resolve_accelerator
+from tests.glm5_2_common.naming import config_name
 from tests.glm5_2_common.topology import DISTRIBUTED_TOPOLOGY_NAMES
 
 from tests.glm5_2_checkpoint.fault_injection import (  # noqa: E402
@@ -40,9 +41,11 @@ from tests.glm5_2_checkpoint.state_compare import (  # noqa: E402
 )
 from tests.glm5_2_checkpoint.topology_suite import (  # noqa: E402
     CHECKPOINT_SCHEMA,
+    adopt_legacy_checkpoint_outputs,
     checkpoint_member_complete,
     checkpoint_member_paths,
     checkpoint_output_names,
+    legacy_checkpoint_output_names,
     run_checkpoint_topology_suite,
 )
 from tests.glm5_2_precision.artifacts import read_captured_metrics  # noqa: E402
@@ -55,6 +58,7 @@ from tests.glm5_2_precision.workflow import (  # noqa: E402
     FormalTrainingConfig,
     ParallelTopology,
     TrainingEndpoint,
+    _fixture_directory,
     fixed_input_environment,
     prepare_fixture,
     resolve_fixture_inputs,
@@ -77,10 +81,17 @@ class CheckpointFixtureConfig(FormalExperimentConfig):
             "mixed-float32": "fp32",
             "full-bf16": "full-bf16",
         }.get(self.training.precision_name, self.training.precision_name)
-        return (
-            f"ckpt-{self.reference.device_type}-{precision}-"
+        base = (
+            f"{self.reference.device_type}-{precision}-"
             f"s{self.training.steps}-b{self.training.global_batch_size}-"
-            f"q{self.training.sequence_length}-seed{self.training.seed}"
+            f"seq{self.training.sequence_length}-seed{self.training.seed}"
+        )
+        return config_name(
+            base,
+            {
+                "device": self.reference.device_type,
+                "training": asdict(self.training),
+            },
         )
 
 
@@ -1005,6 +1016,11 @@ def main() -> int:
         "comparison": args.comparison,
         "requested_failure_modes": args.failure_mode or [],
         "run_tag": args.run_tag,
+        "extra_train_args": tuple(args.extra_train_arg),
+        "interrupt_step": interrupt_step,
+        "failure_rank": args.failure_rank,
+        "failure_timeout": args.failure_timeout,
+        "restart_delay": args.restart_delay,
     }
     if args.topology == "all" and not args.data:
         return run_checkpoint_topology_suite(
@@ -1065,9 +1081,7 @@ def main() -> int:
         report_root="checkpoint_reports",
         run_root="checkpoint_runs",
     )
-    fixture = (
-        root / fixture_config.fixture_root / fixture_config.fixture_storage_name
-    )
+    fixture = _fixture_directory(root, fixture_config)
     fixture_manifest = fixture / "fixture.json"
     if args.data:
         if fixture_manifest.is_file() and not args.force:
@@ -1085,8 +1099,23 @@ def main() -> int:
     suite_name, run_name = checkpoint_output_names(
         device=device,
         topology_slug=topology.slug,
+        topology_identity=asdict(topology),
         **output_name_args,
     )
+    legacy_suite_name, legacy_run_name = legacy_checkpoint_output_names(
+        device=device,
+        topology_slug=topology.slug,
+        **output_name_args,
+    )
+    if not training.extra_args:
+        adopt_legacy_checkpoint_outputs(
+            root,
+            suite_name=suite_name,
+            member_name=run_name,
+            legacy_suite_name=legacy_suite_name,
+            legacy_member_name=legacy_run_name,
+            topology_slug=topology.slug,
+        )
     run_root, report_root, summary_path, report_path = checkpoint_member_paths(
         root,
         suite_name=suite_name,

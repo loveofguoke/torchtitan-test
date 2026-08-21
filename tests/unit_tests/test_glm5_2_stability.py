@@ -110,6 +110,7 @@ def test_stability_topologies_share_one_suite_name() -> None:
 
     assert single_suite == fsdp_suite
     assert single_member != fsdp_member
+    assert not single_suite.startswith("stability-")
 
 
 def test_only_passed_stability_summary_is_complete(tmp_path: Path) -> None:

@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tests.glm5_2_common.cli import archive_previous_output, run_all_topologies
 from tests.glm5_2_common.device import resolve_accelerator
+from tests.glm5_2_common.naming import config_name
 from tests.glm5_2_common.topology import DISTRIBUTED_TOPOLOGY_NAMES
 
 from tests.glm5_2_precision.workflow import (  # noqa: E402
@@ -32,6 +33,7 @@ from tests.glm5_2_precision.workflow import (  # noqa: E402
     FormalTrainingConfig,
     ParallelTopology,
     TrainingEndpoint,
+    _fixture_directory,
     fixed_input_environment,
     prepare_fixture,
     resolve_fixture_inputs,
@@ -266,6 +268,51 @@ def _stability_output_names(
     sequence_length: int,
     seed: int,
     run_tag: str | None,
+    extra_args: tuple[str, ...] = (),
+    topology_identity: dict[str, Any] | None = None,
+) -> tuple[str, str]:
+    suffix = (
+        f"{precision}-s{steps}-l{local_batch_size}-b{global_batch_size}-"
+        f"seq{sequence_length}-seed{seed}"
+    )
+    suite_base = f"{device}-{suffix}"
+    member_base = f"{device}-{topology_slug}-{suffix}"
+    if run_tag:
+        normalized_tag = _normalize_run_tag(run_tag)
+        suite_base += f"-{normalized_tag}"
+        member_base += f"-{normalized_tag}"
+    identity = {
+        "device": device,
+        "precision": precision,
+        "steps": steps,
+        "local_batch_size": local_batch_size,
+        "global_batch_size": global_batch_size,
+        "sequence_length": sequence_length,
+        "seed": seed,
+        "run_tag": run_tag,
+        "extra_args": extra_args,
+    }
+    suite_name = config_name(suite_base, identity)
+    member_name = config_name(
+        member_base,
+        {**identity, "topology": topology_identity or topology_slug},
+    )
+    return suite_name, member_name
+
+
+def _legacy_stability_output_names(
+    *,
+    device: str,
+    topology_slug: str,
+    precision: str,
+    steps: int,
+    local_batch_size: int,
+    global_batch_size: int,
+    sequence_length: int,
+    seed: int,
+    run_tag: str | None,
+    extra_args: tuple[str, ...] = (),
+    topology_identity: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     suffix = (
         f"{precision}-s{steps}-l{local_batch_size}-b{global_batch_size}-"
@@ -295,6 +342,60 @@ def _completed_stability_member(
         and summary.get("run_name") == member_name
         and summary.get("status") == "PASS"
     )
+
+
+def _adopt_legacy_stability_outputs(
+    root: Path,
+    *,
+    suite_name: str,
+    member_name: str,
+    legacy_suite_name: str,
+    legacy_member_name: str,
+    topology_slug: str,
+) -> None:
+    for root_name in ("stability_runs", "stability_reports"):
+        parent = root / root_name
+        source = parent / legacy_suite_name
+        destination = parent / suite_name
+        if destination.exists() or not source.is_dir():
+            continue
+        parent.mkdir(parents=True, exist_ok=True)
+        source.rename(destination)
+        print(f"Adopted matching legacy output:\n  {source}\n  -> {destination}")
+    report_directory = root / "stability_reports" / suite_name / topology_slug
+    old_summary = report_directory / f"{legacy_member_name}.json"
+    new_summary = report_directory / f"{member_name}.json"
+    if old_summary.is_file() and not new_summary.exists():
+        summary = json.loads(old_summary.read_text(encoding="utf-8"))
+        def rename_value(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {key: rename_value(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [rename_value(item) for item in value]
+            if isinstance(value, str):
+                return value.replace(legacy_suite_name, suite_name).replace(
+                    legacy_member_name, member_name
+                )
+            return value
+
+        summary = rename_value(summary)
+        summary["run_name"] = member_name
+        new_summary.write_text(
+            json.dumps(summary, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        old_summary.unlink()
+    old_report = report_directory / f"{legacy_member_name}.html"
+    new_report = report_directory / f"{member_name}.html"
+    if old_report.is_file() and not new_report.exists():
+        report_text = old_report.read_text(encoding="utf-8")
+        new_report.write_text(
+            report_text.replace(legacy_suite_name, suite_name).replace(
+                legacy_member_name, member_name
+            ),
+            encoding="utf-8",
+        )
+        old_report.unlink()
 
 
 def main() -> int:
@@ -381,9 +482,7 @@ def main() -> int:
         report_root="stability_reports",
         run_root="stability_runs",
     )
-    fixture_directory = (
-        root / fixture_config.fixture_root / fixture_config.fixture_storage_name
-    )
+    fixture_directory = _fixture_directory(root, fixture_config)
     fixture_manifest = fixture_directory / "fixture.json"
     if args.data:
         if fixture_manifest.is_file() and not args.force:
@@ -425,7 +524,31 @@ def main() -> int:
         sequence_length=training.sequence_length,
         seed=training.seed,
         run_tag=args.run_tag,
+        extra_args=training.extra_args,
+        topology_identity=asdict(topology),
     )
+    legacy_suite_name, legacy_run_name = _legacy_stability_output_names(
+        device=device,
+        topology_slug=topology.slug,
+        precision=args.precision,
+        steps=training.steps,
+        local_batch_size=training.local_batch_size,
+        global_batch_size=training.global_batch_size,
+        sequence_length=training.sequence_length,
+        seed=training.seed,
+        run_tag=args.run_tag,
+        extra_args=training.extra_args,
+        topology_identity=asdict(topology),
+    )
+    if not training.extra_args:
+        _adopt_legacy_stability_outputs(
+            root,
+            suite_name=suite_name,
+            member_name=run_name,
+            legacy_suite_name=legacy_suite_name,
+            legacy_member_name=legacy_run_name,
+            topology_slug=topology.slug,
+        )
     run_directory = root / "stability_runs" / suite_name / topology.slug
     report_directory = root / "stability_reports" / suite_name / topology.slug
     report_path = report_directory / f"{run_name}.html"
