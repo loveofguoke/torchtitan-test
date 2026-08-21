@@ -263,19 +263,14 @@ class FormalExperimentConfig:
     def capture_identity(self) -> dict[str, Any]:
         """Return settings that can change captured training results."""
 
-        include_topology = self.kind == "migration" and not self.topology_subdirectory
-
         def endpoint_identity(endpoint: TrainingEndpoint) -> dict[str, Any]:
-            value: dict[str, Any] = {
+            return {
                 "device_type": endpoint.device_type,
                 "num_nodes": endpoint.num_nodes,
                 "entry_module": endpoint.entry_module,
                 "environment": endpoint.environment,
                 "extra_args": endpoint.extra_args,
             }
-            if include_topology:
-                value["topology"] = asdict(endpoint.topology)
-            return value
 
         return {
             "kind": self.kind,
@@ -292,24 +287,11 @@ class FormalExperimentConfig:
 
     @property
     def fixture_storage_name(self) -> str:
-        """Return the topology-independent identity of synchronized inputs."""
+        """Return the experiment identity of synchronized inputs."""
 
         if self.fixture_name is not None:
             return _slug(self.fixture_name)
-        precision = {
-            "mixed-bfloat16": "bf16",
-            "mixed-float32": "fp32",
-            "full-bf16": "full-bf16",
-        }.get(self.training.precision_name, self.training.precision_name)
-        checkpoint = (
-            "random" if self.training.checkpoint_kind == "random_seed" else "converged"
-        )
-        base = _slug(
-            f"{precision}-{checkpoint}-"
-            f"s{self.training.steps}-b{self.training.global_batch_size}-"
-            f"seq{self.training.sequence_length}-seed{self.training.seed}"
-        )
-        return config_name(base, _normalized_training(self.training))
+        return self.storage_name
 
 
 def _directory_digest(path: Path) -> str:
@@ -448,10 +430,20 @@ def _legacy_fixture_names(config: FormalExperimentConfig) -> tuple[str, ...]:
         f"s{config.training.steps}-b{config.training.global_batch_size}-"
         f"seq{config.training.sequence_length}-seed{config.training.seed}-{old_digest}"
     )
+    checkpoint = (
+        "random" if config.training.checkpoint_kind == "random_seed" else "converged"
+    )
+    generic_base = _slug(
+        f"{_precision_name(config.training)}-{checkpoint}-"
+        f"s{config.training.steps}-b{config.training.global_batch_size}-"
+        f"seq{config.training.sequence_length}-seed{config.training.seed}"
+    )
+    generic_digested = config_name(generic_base, training)
     return tuple(
         dict.fromkeys(
             (
                 config.storage_base_name,
+                generic_digested,
                 old_generated,
                 "graph-probe-fixture",
                 *config.legacy_storage_names,

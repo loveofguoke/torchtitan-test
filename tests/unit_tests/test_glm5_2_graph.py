@@ -114,6 +114,7 @@ def test_combination_topologies_share_one_suite_root(tmp_path: Path) -> None:
     )
 
     assert single.storage_name == fsdp.storage_name
+    assert single.fixture_storage_name == single.storage_name
     assert not single.storage_name.startswith("combo-")
     single_path = _artifact_directory(
         tmp_path, single, "candidate", single.candidate, 1

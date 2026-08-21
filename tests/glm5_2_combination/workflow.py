@@ -147,7 +147,11 @@ def _apply_selection(
         topology_subdirectory=True,
         legacy_storage_names=(legacy_storage_name,),
     )
-    return replace(selected, report_root="combination_reports/precision")
+    return replace(
+        selected,
+        fixture_name=selected.storage_name,
+        report_root="combination_reports/precision",
+    )
 
 
 def _metric_median(analysis: dict, fragment: str) -> float | None:
@@ -400,18 +404,18 @@ def run_combination_cli(
         name: topology_config(base, topologies[name], precision=args.precision)
         for name in selected
     }
+    configs = {
+        name: _apply_selection(config, selection)
+        for name, config in raw_configs.items()
+    }
     if args.data:
-        first = next(iter(raw_configs.values()))
+        first = next(iter(configs.values()))
         endpoint = _fixture_endpoint_from_environment(first, args.data_device)
         print(
             "Prepared fixture:",
             prepare_fixture(root, first, endpoint=endpoint, force=args.force),
         )
         return
-    configs = {
-        name: _apply_selection(config, selection)
-        for name, config in raw_configs.items()
-    }
     if args.capture:
         seen: set[Path] = set()
         for name, config in configs.items():

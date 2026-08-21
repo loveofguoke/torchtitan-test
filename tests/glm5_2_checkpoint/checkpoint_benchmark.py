@@ -1069,6 +1069,12 @@ def main() -> int:
         topology=topology,
         repeats=1,
     )
+    suite_name, run_name = checkpoint_output_names(
+        device=device,
+        topology_slug=topology.slug,
+        topology_identity=asdict(topology),
+        **output_name_args,
+    )
     fixture_training = replace(training, extra_args=())
     fixture_config = CheckpointFixtureConfig(
         name="checkpoint",
@@ -1080,6 +1086,7 @@ def main() -> int:
         artifact_root="checkpoint_artifacts",
         report_root="checkpoint_reports",
         run_root="checkpoint_runs",
+        fixture_name=suite_name,
     )
     fixture = _fixture_directory(root, fixture_config)
     fixture_manifest = fixture / "fixture.json"
@@ -1096,12 +1103,6 @@ def main() -> int:
         print(f"Prepared checkpoint fixture: {path}", flush=True)
         return 0
 
-    suite_name, run_name = checkpoint_output_names(
-        device=device,
-        topology_slug=topology.slug,
-        topology_identity=asdict(topology),
-        **output_name_args,
-    )
     legacy_suite_name, legacy_run_name = legacy_checkpoint_output_names(
         device=device,
         topology_slug=topology.slug,

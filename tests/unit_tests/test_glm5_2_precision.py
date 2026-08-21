@@ -537,6 +537,7 @@ def test_storage_name_and_capture_paths_are_compact(tmp_path: Path) -> None:
     base = "migration-cuda-npu-single-bf16-random-s1000-b16-seq128-seed61"
     assert config.storage_name.startswith(base + "-")
     assert len(config.storage_name.removeprefix(base + "-")) == 8
+    assert config.fixture_storage_name == config.storage_name
     from tests.glm5_2_precision.workflow import _artifact_directory
 
     assert _artifact_directory(
@@ -697,6 +698,11 @@ def test_migration_topologies_share_one_fixture_identity() -> None:
 
     assert single.fixture_storage_name == fsdp.fixture_storage_name
     assert single.storage_name != fsdp.storage_name
+    assert (
+        single.fixture_storage_name.rsplit("-", 1)[1]
+        == single.storage_name.rsplit("-", 1)[1]
+        == fsdp.storage_name.rsplit("-", 1)[1]
+    )
     assert fsdp.reference.topology == fsdp.candidate.topology
 
 

@@ -471,6 +471,19 @@ def main() -> int:
         topology=topology,
         repeats=1,
     )
+    suite_name, run_name = _stability_output_names(
+        device=device,
+        topology_slug=topology.slug,
+        precision=args.precision,
+        steps=training.steps,
+        local_batch_size=training.local_batch_size,
+        global_batch_size=training.global_batch_size,
+        sequence_length=training.sequence_length,
+        seed=training.seed,
+        run_tag=args.run_tag,
+        extra_args=training.extra_args,
+        topology_identity=asdict(topology),
+    )
     fixture_config = FormalExperimentConfig(
         name="stability",
         kind="self_consistency",
@@ -481,6 +494,7 @@ def main() -> int:
         artifact_root="stability_artifacts",
         report_root="stability_reports",
         run_root="stability_runs",
+        fixture_name=suite_name,
     )
     fixture_directory = _fixture_directory(root, fixture_config)
     fixture_manifest = fixture_directory / "fixture.json"
@@ -514,19 +528,6 @@ def main() -> int:
         )
     initial_checkpoint, token_plan = resolve_fixture_inputs(root, fixture_config)
 
-    suite_name, run_name = _stability_output_names(
-        device=device,
-        topology_slug=topology.slug,
-        precision=args.precision,
-        steps=training.steps,
-        local_batch_size=training.local_batch_size,
-        global_batch_size=training.global_batch_size,
-        sequence_length=training.sequence_length,
-        seed=training.seed,
-        run_tag=args.run_tag,
-        extra_args=training.extra_args,
-        topology_identity=asdict(topology),
-    )
     legacy_suite_name, legacy_run_name = _legacy_stability_output_names(
         device=device,
         topology_slug=topology.slug,
