@@ -1031,6 +1031,13 @@ def capture_endpoint(
     environment["GLM5_PRECISION_TRAINING_LOCAL_BATCH_SIZE"] = str(
         config.training.local_batch_size
     )
+    if config.training.exploratory_steps:
+        environment["GLM5_PRECISION_TRACE_STEPS"] = ",".join(
+            str(step) for step in config.training.exploratory_steps
+        )
+        environment["GLM5_PRECISION_TRACE_DIR"] = str(
+            run_directory / "sampled_trace"
+        )
     environment["GLM5_PRECISION_TENSOR_PARALLEL_DEGREE"] = str(
         endpoint.topology.tensor_parallel_degree
     )

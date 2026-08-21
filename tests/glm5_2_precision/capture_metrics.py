@@ -80,6 +80,10 @@ def main() -> None:
 
     install_fixed_token_dataloader()
     _install_jsonl_metrics_capture()
+    if os.environ.get("GLM5_PRECISION_TRACE_STEPS"):
+        from .sampled_trace import install_sampled_trace
+
+        install_sampled_trace()
 
     from torchtitan.train import main as train_main
 
