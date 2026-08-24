@@ -11,11 +11,11 @@ formal precision runner for CUDA/NPU eager accuracy and the NPU combination
 runner for graph-aware performance comparison.
 
 Exploratory NPU measurements are deliberately separated from this formal
-contract. See [`explorations/`](explorations/README.md) for immutable per-run
-commands/evidence, [`NPU_EXPLORATION_REPORT.md`](explorations/reports/NPU_EXPLORATION_REPORT.md)
-for current findings, and [`MULTI_CARD_TOPOLOGY_REPORT.md`](explorations/reports/MULTI_CARD_TOPOLOGY_REPORT.md)
-for the four-card comparison. The diagnostic eight-card matrix and detailed
-derivations are under [`reports/eight_card/`](explorations/reports/eight_card/).
+contract. See the [exploration index](explorations/index.md), the
+[cross-topology analysis](explorations/reports/summary.md), and the
+[1/2/4/8-card report index](explorations/reports/index.md). Each topology owns
+an `experiment.md`, and each immutable run owns a readable `readme.md` beside
+its machine-readable evidence.
 Those reports follow the three-stage Ascend
 Profiler → `msprof-analyze` → MindStudio Insight workflow and do not redefine
 the acceptance topology matrix.

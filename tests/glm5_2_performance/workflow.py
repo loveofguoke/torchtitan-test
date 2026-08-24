@@ -27,6 +27,7 @@ from .config import (
     performance_topologies,
     profiler_presets,
 )
+from .documentation import card_scope, write_run_readme
 
 
 def _slug(value: str) -> str:
@@ -203,12 +204,19 @@ def _adopt_legacy_performance_output(
     config: PerformanceConfig,
     device: str,
     destination_name: str,
+    legacy_parent: Path | None = None,
 ) -> Path:
     destination = parent / destination_name
-    legacy = parent / _slug(
-        f"{config.name}-{device}-{config.topology}-{config.preset}"
-    )
-    if destination.exists() or not legacy.is_dir():
+    legacy_name = _slug(f"{config.name}-{device}-{config.topology}-{config.preset}")
+    candidates = [parent / legacy_name]
+    if legacy_parent is not None and legacy_parent != parent:
+        candidates = [
+            legacy_parent / destination_name,
+            legacy_parent / legacy_name,
+            *candidates,
+        ]
+    legacy = next((path for path in candidates if path.is_dir()), None)
+    if destination.exists() or legacy is None:
         return destination
     manifest_path = legacy / "manifest.json"
     if not manifest_path.is_file():
@@ -227,7 +235,9 @@ def _adopt_legacy_performance_output(
         if isinstance(value, list):
             return [rename_value(item) for item in value]
         if isinstance(value, str):
-            return value.replace(legacy.name, destination_name)
+            return value.replace(str(legacy), str(destination)).replace(
+                legacy.name, destination_name
+            )
         return value
 
     manifest = rename_value(manifest)
@@ -242,15 +252,29 @@ def _write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def _exploration_directory(root: Path, run_name: str) -> Path:
+def _scoped_parent(root: Path, configured_root: str, topology: str) -> Path:
+    return root / configured_root / card_scope(topology) / topology
+
+
+def _exploration_directory(root: Path, topology: str, run_name: str) -> Path:
     return (
         root
         / "tests"
         / "glm5_2_performance"
         / "explorations"
         / "runs"
+        / card_scope(topology)
+        / topology
         / run_name
     )
+
+
+def _refresh_exploration_documents(root: Path) -> None:
+    """Refresh topology/run indexes after an exploration changes state."""
+
+    from .explorations.tools.organize import generate_documents
+
+    generate_documents(root)
 
 
 def _record_exploration_command(
@@ -263,7 +287,7 @@ def _record_exploration_command(
 ) -> Path:
     """Append the exact driver invocation and relevant environment as JSONL."""
 
-    directory = _exploration_directory(root, run_name)
+    directory = _exploration_directory(root, topology, run_name)
     directory.mkdir(parents=True, exist_ok=True)
     visible_variable = (
         "ASCEND_RT_VISIBLE_DEVICES" if device == "npu" else "CUDA_VISIBLE_DEVICES"
@@ -294,12 +318,14 @@ def _record_exploration_command(
     history = directory / "command_history.jsonl"
     with history.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(record, sort_keys=True) + "\n")
+    write_run_readme(directory)
     return directory
 
 
 def _sync_exploration_bundle(
     root: Path,
     *,
+    topology: str,
     run_name: str,
     run_directory: Path,
     artifact_directory: Path,
@@ -307,7 +333,7 @@ def _sync_exploration_bundle(
 ) -> Path:
     """Keep compact evidence beside the experiment's reproducibility log."""
 
-    directory = _exploration_directory(root, run_name)
+    directory = _exploration_directory(root, topology, run_name)
     directory.mkdir(parents=True, exist_ok=True)
     for name in ("manifest.json", "analysis.json", "metrics.jsonl"):
         source = artifact_directory / name
@@ -327,6 +353,8 @@ def _sync_exploration_bundle(
         "mindstudio_input": str(_find_profiler_directory(run_directory)),
     }
     _write_json(directory / "artifacts.json", index)
+    write_run_readme(directory)
+    _refresh_exploration_documents(root)
     return directory
 
 
@@ -356,7 +384,7 @@ def _find_matching_capture(
     matches = []
     if not artifact_parent.is_dir():
         return None
-    for manifest_path in artifact_parent.glob("*/manifest.json"):
+    for manifest_path in artifact_parent.rglob("manifest.json"):
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, TypeError, ValueError):
@@ -553,19 +581,21 @@ def capture(
             "with this scheduled profiler capture"
         )
     run_name = _run_name(config, device, preset)
-    run_parent = root / config.run_root
-    artifact_parent = root / config.artifact_root
+    run_parent = _scoped_parent(root, config.run_root, config.topology)
+    artifact_parent = _scoped_parent(root, config.artifact_root, config.topology)
     run_directory = _adopt_legacy_performance_output(
         run_parent,
         config=config,
         device=device,
         destination_name=run_name,
+        legacy_parent=root / config.run_root,
     )
     artifact_directory = _adopt_legacy_performance_output(
         artifact_parent,
         config=config,
         device=device,
         destination_name=run_name,
+        legacy_parent=root / config.artifact_root,
     )
     complete_manifest = artifact_directory / "manifest.json"
 
@@ -639,13 +669,17 @@ def capture(
         failure = {"error": repr(error), "command": command}
         failure_path = run_directory / "failure.json"
         _write_json(failure_path, failure)
-        exploration_directory = _exploration_directory(root, run_name)
+        exploration_directory = _exploration_directory(
+            root, config.topology, run_name
+        )
         exploration_directory.mkdir(parents=True, exist_ok=True)
         shutil.copy2(failure_path, exploration_directory / "failure.json")
         if runtime_log.is_file():
             shutil.copy2(
                 runtime_log, exploration_directory / "failed_runtime.log"
             )
+        write_run_readme(exploration_directory)
+        _refresh_exploration_documents(root)
         raise
 
     storage_after = shutil.disk_usage(run_directory.parent)
@@ -689,6 +723,7 @@ def capture(
         shutil.copy2(metrics_path, artifact_directory / "metrics.jsonl")
     _sync_exploration_bundle(
         root,
+        topology=config.topology,
         run_name=run_name,
         run_directory=run_directory,
         artifact_directory=artifact_directory,
@@ -915,22 +950,26 @@ def analyze(
     compare_baseline: Path | None,
 ) -> Path:
     run_name = _run_name(config, device, preset)
+    run_parent = _scoped_parent(root, config.run_root, config.topology)
+    artifact_parent = _scoped_parent(root, config.artifact_root, config.topology)
     run_directory = _adopt_legacy_performance_output(
-        root / config.run_root,
+        run_parent,
         config=config,
         device=device,
         destination_name=run_name,
+        legacy_parent=root / config.run_root,
     )
     artifact_directory = _adopt_legacy_performance_output(
-        root / config.artifact_root,
+        artifact_parent,
         config=config,
         device=device,
         destination_name=run_name,
+        legacy_parent=root / config.artifact_root,
     )
     manifest_path = artifact_directory / "manifest.json"
     if not manifest_path.is_file():
         match = _find_matching_capture(
-            root / config.artifact_root,
+            artifact_parent,
             config=config,
             device=device,
             profiler_environment=(
@@ -941,7 +980,7 @@ def analyze(
             raise FileNotFoundError(f"capture artifact not found: {manifest_path}")
         artifact_directory, manifest = match
         run_name = str(manifest["run_name"])
-        run_directory = root / config.run_root / run_name
+        run_directory = run_parent / run_name
         manifest_path = artifact_directory / "manifest.json"
         print(f"Using compatible capture manifest: {manifest_path}")
     if parse_offline and config.profiler_enabled:
@@ -959,7 +998,10 @@ def analyze(
         profiler_environment=manifest.get("profiler_environment"),
     )
     _write_json(artifact_directory / "analysis.json", analysis)
-    report_path = root / config.report_root / f"{run_name}.html"
+    report_path = (
+        _scoped_parent(root, config.report_root, config.topology)
+        / f"{run_name}.html"
+    )
     render_html_report(
         manifest=manifest,
         analysis=analysis,
@@ -967,6 +1009,7 @@ def analyze(
     )
     _sync_exploration_bundle(
         root,
+        topology=config.topology,
         run_name=run_name,
         run_directory=run_directory,
         artifact_directory=artifact_directory,
@@ -1165,10 +1208,18 @@ def run_profiler_cli(
                 )
             reports.append((topology_name, report))
     if len(reports) > 1:
-        links = "".join(
-            f'<li><a href="{path.name}">{name}</a></li>' for name, path in reports
+        index = (
+            root
+            / effective.report_root
+            / "suites"
+            / f"{_slug(effective.name)}-{device}-suite.html"
         )
-        index = root / effective.report_root / f"{_slug(effective.name)}-{device}-suite.html"
+        index.parent.mkdir(parents=True, exist_ok=True)
+        links = "".join(
+            f'<li><a href="{Path(os.path.relpath(path, index.parent)).as_posix()}">'
+            f"{name}</a></li>"
+            for name, path in reports
+        )
         index.write_text(
             "<!doctype html><html><head><meta charset=\"utf-8\">"
             "<title>GLM-5.2 performance topology suite</title></head>"

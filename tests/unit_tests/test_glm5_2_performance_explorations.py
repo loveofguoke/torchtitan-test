@@ -4,9 +4,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.glm5_2_performance.documentation import card_scope, write_run_readme
 from tests.glm5_2_performance.explorations.tools.summarize_topologies import (
     _baseline_row,
     _latest_runs,
+)
+from tests.glm5_2_performance.workflow import (
+    _exploration_directory,
+    _scoped_parent,
 )
 
 
@@ -148,6 +153,84 @@ class TestTopologyExplorationSummary(unittest.TestCase):
             self.assertAlmostEqual(row["memory_gib"], 0.75)
 
 
+class TestExplorationDocumentation(unittest.TestCase):
+    def test_scoped_paths_follow_card_count_and_topology(self):
+        root = Path("/repo")
+
+        self.assertEqual(card_scope("fsdp8"), "8-card")
+        self.assertEqual(
+            _scoped_parent(root, "performance_runs", "fsdp8"),
+            root / "performance_runs" / "8-card" / "fsdp8",
+        )
+        self.assertEqual(
+            _exploration_directory(root, "fsdp8", "run-id"),
+            root
+            / "tests"
+            / "glm5_2_performance"
+            / "explorations"
+            / "runs"
+            / "8-card"
+            / "fsdp8"
+            / "run-id",
+        )
+
+    def test_run_readme_contains_process_results_and_outputs(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory) / "run-id"
+            directory.mkdir()
+            manifest = {
+                "run_name": "run-id",
+                "device": "npu",
+                "topology": "ddp2",
+                "preset": "distributed",
+                "visible_devices": ["1", "2"],
+                "command": ["torchrun", "--nproc_per_node=2", "train.py"],
+                "config": {
+                    "steps": 20,
+                    "local_batch_size": 8,
+                    "global_batch_size": 64,
+                    "sequence_length": 128,
+                    "mixed_precision_param": "bfloat16",
+                    "mixed_precision_reduce": "float32",
+                    "profiler_enabled": False,
+                    "replicate": 1,
+                },
+            }
+            analysis = {
+                "profile_phases": {
+                    "comparison": {
+                        "baseline_median_step_seconds": 0.5,
+                        "baseline_median_throughput_tps": 2048.0,
+                        "baseline_job_throughput_tps": 4096.0,
+                    }
+                }
+            }
+            (directory / "manifest.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+            (directory / "analysis.json").write_text(
+                json.dumps(analysis), encoding="utf-8"
+            )
+            (directory / "command_history.jsonl").write_text(
+                json.dumps(
+                    {
+                        "action": "probe",
+                        "topology": "ddp2",
+                        "shell_command": "python profiler_benchmark.py --probe",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            output = write_run_readme(directory)
+            text = output.read_text(encoding="utf-8")
+
+            self.assertIn("python profiler_benchmark.py --probe", text)
+            self.assertIn("torchrun --nproc_per_node=2 train.py", text)
+            self.assertIn("4,096.00 tok/s", text)
+            self.assertIn("[analysis.json](analysis.json)", text)
+
+
 if __name__ == "__main__":
     unittest.main()
-
