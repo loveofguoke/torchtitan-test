@@ -49,6 +49,26 @@ def _writer(
     )
 
 
+def test_parity_model_dtype_cast_preserves_complex_buffers() -> None:
+    model = torch.nn.Module()
+    model.weight = torch.nn.Parameter(torch.ones(2, dtype=torch.float32))
+    model.register_buffer(
+        "rope_cache",
+        torch.polar(torch.ones(2), torch.ones(2)),
+    )
+
+    glm5_parity._cast_floating_dtype_preserving_complex_buffers(
+        model, torch.bfloat16
+    )
+
+    assert model.weight.dtype is torch.bfloat16
+    assert model.rope_cache.dtype is torch.complex64
+    assert torch.equal(
+        model.rope_cache,
+        torch.polar(torch.ones(2), torch.ones(2)),
+    )
+
+
 def test_parity_artifact_round_trip_preserves_dtype_and_metadata(
     tmp_path: Path,
 ) -> None:
@@ -819,6 +839,33 @@ def test_indexer_score_replay_uses_captured_mixed_precision_boundaries() -> None
     )
     expected = torch.tensor([[17.0, 23.0], [39.0, 53.0]]) / (2.0**0.5)
     torch.testing.assert_close(scores, expected)
+
+
+def test_indexer_score_replay_accepts_structured_token_first_projection() -> None:
+    scores = glm5_parity._replay_titan_indexer_scores(
+        q_projection=torch.tensor([[[0.0, 2.0]], [[0.0, 4.0]]]),
+        q_rotated=torch.tensor([[[1.0]], [[3.0]]]),
+        k_normalized=torch.tensor([[0.0, 6.0], [0.0, 8.0]]),
+        k_rotated=torch.tensor([[[5.0]], [[7.0]]]),
+        projected_weights=torch.ones((2, 1)),
+        attention_mask=torch.zeros((2, 2)),
+        n_heads=1,
+        head_dim=2,
+        rope_head_dim=1,
+    )
+    expected = torch.tensor([[17.0, 23.0], [39.0, 53.0]]) / (2.0**0.5)
+    torch.testing.assert_close(scores, expected)
+
+
+def test_routed_expert_load_supports_token_first_and_legacy_batches() -> None:
+    token_first = torch.tensor(
+        [[True, False, True], [False, True, True]],
+    )
+    legacy_batches = token_first.reshape(1, 2, 3)
+
+    expected = torch.tensor([1, 1, 2])
+    assert torch.equal(glm5_parity._routed_expert_load(token_first), expected)
+    assert torch.equal(glm5_parity._routed_expert_load(legacy_batches), expected)
 
 
 def test_offline_score_diagnostics_prefer_captured_scores(

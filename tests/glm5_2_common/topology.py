@@ -126,7 +126,10 @@ class ParallelTopology:
             f"--parallelism.pipeline_parallel_degree={self.pipeline_parallel_degree}",
             f"--parallelism.expert_parallel_degree={self.expert_parallel_degree}",
         ]
-        if self.tensor_parallel_degree > 1:
+        # Keep pure-TP coverage on the explicit SP-off path.  TP+EP uses the
+        # model's default sequence-parallel layout: routed-expert outputs are
+        # token-sharded on TP and cannot be reinterpreted as Partial tensors.
+        if self.tensor_parallel_degree > 1 and self.expert_parallel_degree == 1:
             args.append("--parallelism.no-enable-sequence-parallel")
         if self.pipeline_parallel_degree > 1:
             args.append(

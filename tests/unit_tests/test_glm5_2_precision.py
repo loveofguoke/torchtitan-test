@@ -194,6 +194,20 @@ def test_topology_validates_rank_product() -> None:
         ParallelTopology("invalid", 8, data_parallel_shard_degree=2)
 
 
+def test_tp_ep_topology_keeps_sequence_parallel_enabled() -> None:
+    pure_tp = ParallelTopology("tp8", 8, tensor_parallel_degree=8)
+    tp_ep = ParallelTopology(
+        "fsdp2-tp4-ep8",
+        8,
+        data_parallel_shard_degree=2,
+        tensor_parallel_degree=4,
+        expert_parallel_degree=8,
+    )
+
+    assert "--parallelism.no-enable-sequence-parallel" in pure_tp.command_args()
+    assert "--parallelism.no-enable-sequence-parallel" not in tp_ep.command_args()
+
+
 def test_training_arguments_translate_sample_batches_to_token_budgets() -> None:
     topology = ParallelTopology(
         "pp4", 4, pipeline_parallel_degree=4,

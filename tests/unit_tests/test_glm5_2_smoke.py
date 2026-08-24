@@ -1,12 +1,35 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
+import json
 from types import SimpleNamespace
 
 import pytest
 
 from tests.glm5_2_common.topology import ParallelTopology
-from tests.glm5_2_smoke.train_smoke import _run_topology
+from tests.glm5_2_smoke.train_smoke import _completed, _contract, _run_topology
+
+
+def test_completed_smoke_contract_survives_json_round_trip(tmp_path) -> None:
+    contract = _contract(
+        device="npu",
+        topology=ParallelTopology(
+            "tp2", 2, tensor_parallel_degree=2, extra_args=("--example",)
+        ),
+        steps=10,
+        local_batch_size=8,
+        global_batch_size=64,
+        sequence_length=128,
+        seed=61,
+        module="glm5",
+        config="glm5_debugmodel",
+    )
+    (tmp_path / "manifest.json").write_text(
+        json.dumps({"status": "passed", "contract": contract}),
+        encoding="utf-8",
+    )
+
+    assert _completed(tmp_path, contract)
 
 
 def test_smoke_disables_trainer_cuda_graphs(

@@ -74,10 +74,14 @@ def _contract(
     module: str,
     config: str,
 ) -> dict[str, Any]:
+    topology_contract = asdict(topology)
+    # Manifests are JSON.  Normalize tuple-valued fields before comparing a
+    # freshly built contract with one loaded back from disk.
+    topology_contract["extra_args"] = list(topology_contract["extra_args"])
     return {
         "schema_version": 1,
         "device": device,
-        "topology": asdict(topology),
+        "topology": topology_contract,
         "steps": steps,
         "local_batch_size": local_batch_size,
         "global_batch_size": global_batch_size,

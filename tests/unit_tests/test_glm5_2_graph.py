@@ -90,14 +90,15 @@ def test_compiler_diagnostics_summarize_runtime_log(tmp_path: Path) -> None:
 
 def test_combination_topologies_share_one_suite_root(tmp_path: Path) -> None:
     topologies = standard_topologies()
+    all_devices = "0,1,2,3,4,5,6,7"
     base = FormalExperimentConfig(
         name="combined",
         kind="migration",
         reference=TrainingEndpoint(
-            "gpu", "cuda", "0", topologies["single"]
+            "gpu", "cuda", all_devices, topologies["single"]
         ),
         candidate=TrainingEndpoint(
-            "npu", "npu", "0", topologies["single"]
+            "npu", "npu", all_devices, topologies["single"]
         ),
     )
     selection = CombinationSelection(

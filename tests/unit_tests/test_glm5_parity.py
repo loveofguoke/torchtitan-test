@@ -92,6 +92,24 @@ TOP_LEVEL_COMPONENTS = {"tok_embeddings", "norm", "lm_head"}
 GLM5_PARITY_SUITE_VERSION = 3
 
 
+def _cast_floating_dtype_preserving_complex_buffers(
+    model: torch.nn.Module,
+    dtype: torch.dtype,
+) -> None:
+    """Cast model compute tensors without destroying complex-valued buffers."""
+    complex_buffers: list[tuple[torch.nn.Module, str, torch.Tensor]] = []
+    for module in model.modules():
+        for name, buffer in module._buffers.items():
+            if buffer is not None and buffer.is_complex():
+                complex_buffers.append((module, name, buffer))
+                module._buffers[name] = None
+    try:
+        model.to(dtype=dtype)
+    finally:
+        for module, name, buffer in complex_buffers:
+            module._buffers[name] = buffer
+
+
 @dataclass
 class ParityBatch:
     """All inputs shared by a component or end-to-end comparison."""
@@ -1061,6 +1079,11 @@ def _bf16_ulp(value: float) -> float:
     return 2.0 ** max(exponent - 7, -133)
 
 
+def _routed_expert_load(routing_map: torch.Tensor) -> torch.Tensor:
+    """Sum every token dimension while retaining the expert dimension."""
+    return routing_map.sum(dim=tuple(range(routing_map.ndim - 1)))
+
+
 def _replay_titan_indexer_scores(
     q_projection: torch.Tensor,
     q_rotated: torch.Tensor,
@@ -1074,9 +1097,12 @@ def _replay_titan_indexer_scores(
     rope_head_dim: int,
 ) -> torch.Tensor:
     """Reconstruct TorchTitan index scores from captured indexer tensors."""
-    if q_projection.ndim == 2:
-        num_tokens = q_projection.shape[0]
-        q_full = q_projection.reshape(num_tokens, n_heads, head_dim)
+    token_first = q_projection.ndim == 2 or (
+        q_projection.ndim == 3
+        and q_projection.shape[-2:] == (n_heads, head_dim)
+    )
+    if token_first:
+        q_full = q_projection.reshape(-1, n_heads, head_dim)
         q_pass = q_full[..., rope_head_dim:]
         k_pass = k_normalized[..., rope_head_dim:]
         q = torch.cat((q_rotated, q_pass), dim=-1).float()
@@ -1117,7 +1143,8 @@ def _replay_titan_indexer_scores(
     else:
         raise ValueError(
             "captured indexer q projection must have shape [T, D] or "
-            f"[B, L, D], got {tuple(q_projection.shape)}"
+            "[T, N, H] or [B, L, D], got "
+            f"{tuple(q_projection.shape)}"
         )
     if attention_mask.shape != index_scores.shape:
         raise ValueError(
@@ -4809,7 +4836,9 @@ class TestGlm5Parity(
             model.init_states()
             model.load_state_dict(canonical_state, strict=True)
 
-        model.to(dtype=endpoint.precision.dtype)
+        _cast_floating_dtype_preserving_complex_buffers(
+            model, endpoint.precision.dtype
+        )
         for name, parameter in model.named_parameters():
             if name.endswith("indexer.weights_proj.weight"):
                 parameter.data = parameter.data.float()
@@ -7390,15 +7419,12 @@ class TestGlm5Parity(
             routing_map = torch.zeros_like(scores, dtype=torch.bool).scatter_(
                 -1, indices, True
             )
-            expert_load = routing_map.sum(dim=(0, 1))
+            expert_load = _routed_expert_load(routing_map)
             routed = moe.routed_experts(
                 hidden_states,
                 weights,
                 indices,
                 expert_load,
-                num_local_tokens_after_seq_dim_padding=(
-                    hidden_states.shape[0] * hidden_states.shape[1]
-                ),
             )
             return routed, weights, indices, expert_load
 
