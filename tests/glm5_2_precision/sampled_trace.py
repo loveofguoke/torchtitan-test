@@ -315,10 +315,10 @@ class _SampledTrace:
             or not isinstance(output, torch.Tensor)
         ):
             return
-        q_BQNH, k_BKH, weights_BQN, attention_mask_BQK = inputs
+        q, k, weights, attention_mask = inputs
         if not all(
             isinstance(value, torch.Tensor)
-            for value in (q_BQNH, k_BKH, weights_BQN, attention_mask_BQK)
+            for value in (q, k, weights, attention_mask)
         ):
             return
         index_topk = getattr(module, "index_topk", None)
@@ -329,27 +329,36 @@ class _SampledTrace:
             return
 
         with torch.no_grad():
-            scores_BNQK = (
-                torch.matmul(
-                    q_BQNH.float().transpose(1, 2),
-                    k_BKH.float().transpose(1, 2).unsqueeze(1),
-                )
-                * softmax_scale
-            )
-            scores_BNQK = F.relu(scores_BNQK)
-            index_scores_BQK = torch.matmul(
-                weights_BQN.unsqueeze(-2), scores_BNQK.transpose(1, 2)
-            ).squeeze(-2)
-            index_scores_BQK = index_scores_BQK + attention_mask_BQK.float()
+            if q.ndim == 4 and k.ndim == 3 and weights.ndim == 3:
+                scores = torch.matmul(
+                    q.float().transpose(1, 2),
+                    k.float().transpose(1, 2).unsqueeze(1),
+                ) * softmax_scale
+                scores = F.relu(scores)
+                index_scores = torch.matmul(
+                    weights.unsqueeze(-2), scores.transpose(1, 2)
+                ).squeeze(-2)
+            elif q.ndim == 3 and k.ndim == 2 and weights.ndim == 2:
+                scores = torch.matmul(
+                    q.float().transpose(0, 1),
+                    k.float().transpose(0, 1),
+                ) * softmax_scale
+                scores = F.relu(scores)
+                index_scores = torch.matmul(
+                    weights.unsqueeze(1), scores.transpose(0, 1)
+                ).squeeze(1)
+            else:
+                return
+            index_scores = index_scores + attention_mask.float()
             selected_scores = torch.gather(
-                index_scores_BQK,
+                index_scores,
                 dim=-1,
                 index=output.long(),
             )
             self.store(
                 "forward_diagnostic",
                 f"{module_name}.index_scores",
-                index_scores_BQK,
+                index_scores,
                 kind="index_score",
             )
             self.store(
@@ -358,9 +367,9 @@ class _SampledTrace:
                 selected_scores,
                 kind="selected_index_score",
             )
-            if index_scores_BQK.shape[-1] > index_topk:
+            if index_scores.shape[-1] > index_topk:
                 boundary = torch.topk(
-                    index_scores_BQK,
+                    index_scores,
                     k=index_topk + 1,
                     dim=-1,
                     sorted=True,

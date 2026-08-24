@@ -13,7 +13,10 @@ from typing import Any, Iterator
 
 import torch
 
-from torchtitan.components.dataloader import BaseDataLoader
+try:
+    from torchtitan.components.data.loader import BaseDataLoader
+except ImportError:  # Compatibility with TorchTitan before the data refactor.
+    from torchtitan.components.dataloader import BaseDataLoader
 from torchtitan.components.tokenizer import BaseTokenizer
 
 from .token_data import (
@@ -49,14 +52,38 @@ class FixedTokenDataLoader(BaseDataLoader):
         dp_world_size: int,
         dp_rank: int,
         tokenizer: BaseTokenizer,
-        seq_len: int,
-        local_batch_size: int,
+        max_context_length: int | None = None,
+        num_tokens_per_batch: int | None = None,
+        seq_len: int | None = None,
+        local_batch_size: int | None = None,
         snapshot_every_n_steps: int | None = 1,
         **kwargs: Any,
     ) -> None:
         del tokenizer, snapshot_every_n_steps, kwargs
+        token_first = num_tokens_per_batch is not None
+        if max_context_length is not None:
+            if seq_len is not None and seq_len != max_context_length:
+                raise ValueError("conflicting dataloader sequence lengths")
+            seq_len = max_context_length
+        if seq_len is None:
+            raise ValueError("dataloader sequence length is required")
+        if num_tokens_per_batch is not None:
+            if num_tokens_per_batch % seq_len:
+                raise ValueError(
+                    "num_tokens_per_batch must be divisible by sequence length"
+                )
+            derived_local_batch_size = num_tokens_per_batch // seq_len
+            if (
+                local_batch_size is not None
+                and local_batch_size != derived_local_batch_size
+            ):
+                raise ValueError("conflicting dataloader local batch sizes")
+            local_batch_size = derived_local_batch_size
+        if local_batch_size is None:
+            raise ValueError("dataloader local batch size is required")
         self.dp_world_size = dp_world_size
         self.dp_rank = dp_rank
+        self.token_first = token_first
         self.dataloader_batch_size = local_batch_size
         self.global_batch_size = config.global_batch_size
         self.training_local_batch_size = config.training_local_batch_size
@@ -142,10 +169,17 @@ class FixedTokenDataLoader(BaseDataLoader):
 
             input_BL = tokens_BQ[:, :-1].to(torch.long)
             labels_BL = tokens_BQ[:, 1:].to(torch.long)
-            yield {
-                "input": input_BL,
-                "positions": positions_BL.to(torch.long),
-            }, labels_BL
+            positions_BL = positions_BL.to(torch.long)
+            if self.token_first:
+                yield {
+                    "input": input_BL.flatten(),
+                    "positions": positions_BL.flatten(),
+                }, labels_BL.flatten()
+            else:
+                yield {
+                    "input": input_BL,
+                    "positions": positions_BL,
+                }, labels_BL
 
     def _write_step_contract(self, optimizer_step: int) -> None:
         record = {

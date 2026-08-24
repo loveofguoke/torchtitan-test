@@ -700,9 +700,11 @@ def _base_training_args(
     args = [
         f"--dump_folder={dump_folder}",
         f"--training.steps={config.steps}",
-        f"--training.local_batch_size={config.local_batch_size}",
-        f"--training.global_batch_size={config.global_batch_size}",
-        f"--training.seq_len={config.sequence_length}",
+        "--training.num_tokens_per_microbatch_per_dp_rank="
+        f"{config.local_batch_size * config.sequence_length}",
+        "--training.num_tokens_per_train_step="
+        f"{config.global_batch_size * config.sequence_length}",
+        f"--training.max_context_length={config.sequence_length}",
         f"--training.dtype={config.training_dtype}",
         f"--training.mixed_precision_param={config.mixed_precision_param}",
         f"--training.mixed_precision_reduce={config.mixed_precision_reduce}",
