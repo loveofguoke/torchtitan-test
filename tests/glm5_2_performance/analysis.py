@@ -6,6 +6,7 @@ import csv
 import html
 import json
 import math
+import re
 import statistics
 from collections import defaultdict
 from pathlib import Path
@@ -63,6 +64,122 @@ def summarize_metrics(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def summarize_profile_phases(
+    records: list[dict[str, Any]],
+    *,
+    config: dict[str, Any] | None,
+    profiler_environment: dict[str, str] | None,
+) -> dict[str, Any]:
+    """Separate steady state, collection overhead, and synchronous parse tax."""
+    if not records or not config:
+        return {"phase_order": [], "phases": {}, "comparison": {}}
+
+    skip_steps = int(config["skip_steps"])
+    warmup_steps = int(config["warmup_steps"])
+    active_steps = int(config["active_steps"])
+    active_start = skip_steps + warmup_steps + 1
+    active_end = active_start + active_steps - 1
+    parse_mode = (profiler_environment or {}).get(
+        "TORCHTITAN_NPU_PROFILER_PARSE_MODE", "unknown"
+    )
+    available_steps = {int(record["step"]) for record in records}
+    final_step = max(available_steps)
+
+    phase_steps: dict[str, list[int]] = {
+        "startup": [step for step in (1,) if step in available_steps],
+        "baseline": [
+            step
+            for step in range(2, min(skip_steps, final_step) + 1)
+            if step in available_steps
+        ],
+        "profile_warmup": [
+            step
+            for step in range(skip_steps + 1, min(active_start, final_step + 1))
+            if step in available_steps
+        ],
+        "profile_active": [
+            step
+            for step in range(active_start, min(active_end, final_step) + 1)
+            if step in available_steps
+        ],
+    }
+    boundary_step = active_end + 1
+    if parse_mode == "sync" and boundary_step in available_steps:
+        phase_steps["sync_parse_boundary"] = [boundary_step]
+        post_start = boundary_step + 1
+    else:
+        post_start = boundary_step
+    phase_steps["post_profile"] = [
+        step
+        for step in range(post_start, final_step + 1)
+        if step in available_steps
+    ]
+    phase_steps = {name: steps for name, steps in phase_steps.items() if steps}
+
+    records_by_step = {int(record["step"]): record for record in records}
+    phases: dict[str, Any] = {}
+    for name, steps in phase_steps.items():
+        phase_summary = summarize_metrics([records_by_step[step] for step in steps])
+        phases[name] = {
+            "steps": steps,
+            "summary": phase_summary["summary"],
+        }
+
+    step_metric = "time_metrics/end_to_end(s)"
+    throughput_metric = "throughput(tps)"
+
+    def statistic(phase: str, metric: str, name: str) -> float | None:
+        value = phases.get(phase, {}).get("summary", {}).get(metric, {}).get(name)
+        return float(value) if value is not None else None
+
+    baseline_step = statistic("baseline", step_metric, "median")
+    active_step = statistic("profile_active", step_metric, "median")
+    post_step = statistic("post_profile", step_metric, "median")
+    boundary_time = statistic("sync_parse_boundary", step_metric, "median")
+    baseline_throughput = statistic("baseline", throughput_metric, "median")
+    active_throughput = statistic("profile_active", throughput_metric, "median")
+
+    def percent_change(value: float | None, reference: float | None) -> float | None:
+        if value is None or reference in {None, 0.0}:
+            return None
+        return (value / reference - 1.0) * 100.0
+
+    parse_reference = post_step if post_step is not None else baseline_step
+    comparison = {
+        "parse_mode": parse_mode,
+        "baseline_median_step_seconds": baseline_step,
+        "active_median_step_seconds": active_step,
+        "active_step_overhead_percent": percent_change(active_step, baseline_step),
+        "post_profile_median_step_seconds": post_step,
+        "baseline_median_throughput_tps": baseline_throughput,
+        "active_median_throughput_tps": active_throughput,
+        "active_throughput_change_percent": percent_change(
+            active_throughput, baseline_throughput
+        ),
+        "parse_boundary_step": (
+            boundary_step if "sync_parse_boundary" in phases else None
+        ),
+        "parse_boundary_step_seconds": boundary_time,
+        "parse_stall_excess_seconds": (
+            boundary_time - parse_reference
+            if boundary_time is not None and parse_reference is not None
+            else None
+        ),
+    }
+    return {
+        "schedule": {
+            "skip_steps": skip_steps,
+            "warmup_steps": warmup_steps,
+            "active_steps": active_steps,
+            "active_start": active_start,
+            "active_end": active_end,
+        },
+        "phase_order": list(phase_steps),
+        "phases": phases,
+        "comparison": comparison,
+    }
+
+
 def file_inventory(directory: Path) -> dict[str, Any]:
     files = [path for path in directory.rglob("*") if path.is_file()]
     by_suffix: dict[str, dict[str, int]] = defaultdict(
@@ -114,6 +231,8 @@ def _find_column(headers: list[str], candidates: Iterable[str]) -> str | None:
 
 def _duration_category(name: str) -> str:
     normalized = name.lower().replace("_", "")
+    if "aicpu" in normalized:
+        return "aicpu"
     communication_markers = (
         "hccl",
         "allreduce",
@@ -192,6 +311,132 @@ def extract_top_csv_entries(
         reverse=True,
     )
     return tables[:8]
+
+
+def extract_kernel_shape_entries(
+    profiler_directory: Path,
+    *,
+    limit: int = 30,
+) -> list[dict[str, Any]]:
+    """Aggregate kernel duration by operator and concrete input signature."""
+    tables = []
+    for path in profiler_directory.rglob("kernel_details.csv"):
+        groups: dict[tuple[str, str, str], dict[str, float]] = defaultdict(
+            lambda: {"total_us": 0.0, "calls": 0.0, "max_us": 0.0}
+        )
+        try:
+            with path.open(encoding="utf-8-sig", errors="replace", newline="") as stream:
+                reader = csv.DictReader(stream)
+                headers = reader.fieldnames or []
+                name_column = _find_column(headers, ("name", "opname"))
+                duration_column = next(
+                    (header for header in headers if "duration" in header.lower()),
+                    None,
+                )
+                if (
+                    name_column is None
+                    or duration_column is None
+                    or "Input Shapes" not in headers
+                    or "Input Data Types" not in headers
+                ):
+                    continue
+                scale = _duration_scale(duration_column)
+                for row in reader:
+                    name = (row.get(name_column) or "").strip()
+                    try:
+                        duration_us = float(row.get(duration_column) or "") * scale
+                    except ValueError:
+                        continue
+                    if not name:
+                        continue
+                    shapes = (row.get("Input Shapes") or "-").strip() or "-"
+                    dtypes = (row.get("Input Data Types") or "-").strip() or "-"
+                    group = groups[(name, shapes, dtypes)]
+                    group["total_us"] += duration_us
+                    group["calls"] += 1
+                    group["max_us"] = max(group["max_us"], duration_us)
+        except OSError:
+            continue
+        rows = [
+            {
+                "name": name,
+                "input_shapes": shapes,
+                "input_dtypes": dtypes,
+                "total_us": values["total_us"],
+                "calls": int(values["calls"]),
+                "mean_us": values["total_us"] / values["calls"],
+                "max_us": values["max_us"],
+            }
+            for (name, shapes, dtypes), values in groups.items()
+        ]
+        rows.sort(key=lambda row: row["total_us"], reverse=True)
+        tables.append(
+            {
+                "source": path.relative_to(profiler_directory).as_posix(),
+                "rows": rows[:limit],
+            }
+        )
+    return tables
+
+
+def extract_l2_cache_entries(
+    profiler_directory: Path,
+    *,
+    limit: int = 30,
+) -> list[dict[str, Any]]:
+    """Summarize available L2 hit/victim samples by operator name."""
+    entries = []
+    for path in profiler_directory.rglob("l2_cache.csv"):
+        groups: dict[str, dict[str, list[float] | int]] = defaultdict(
+            lambda: {"samples": 0, "hit_rates": [], "victim_rates": []}
+        )
+        try:
+            with path.open(encoding="utf-8-sig", errors="replace", newline="") as stream:
+                reader = csv.DictReader(stream)
+                for row in reader:
+                    name = (row.get("Op Name") or row.get("Name") or "").strip()
+                    if not name:
+                        continue
+                    group = groups[name]
+                    group["samples"] = int(group["samples"]) + 1
+                    for column, target in (
+                        ("Hit Rate", "hit_rates"),
+                        ("Victim Rate", "victim_rates"),
+                    ):
+                        try:
+                            value = float(row.get(column) or "")
+                        except ValueError:
+                            continue
+                        values = group[target]
+                        assert isinstance(values, list)
+                        values.append(value)
+        except OSError:
+            continue
+        rows = []
+        for name, values in groups.items():
+            hit_rates = values["hit_rates"]
+            victim_rates = values["victim_rates"]
+            assert isinstance(hit_rates, list) and isinstance(victim_rates, list)
+            rows.append(
+                {
+                    "name": name,
+                    "samples": int(values["samples"]),
+                    "mean_hit_rate": (
+                        statistics.fmean(hit_rates) if hit_rates else None
+                    ),
+                    "mean_victim_rate": (
+                        statistics.fmean(victim_rates) if victim_rates else None
+                    ),
+                }
+            )
+        rows.sort(key=lambda row: row["samples"], reverse=True)
+        entries.append(
+            {
+                "source": path.relative_to(profiler_directory).as_posix(),
+                "rows": rows[:limit],
+            }
+        )
+    return entries
 
 
 def inspect_profiler_deliverables(profiler_directory: Path) -> dict[str, Any]:
@@ -283,7 +528,7 @@ def _read_optional_json(path: Path) -> dict[str, Any] | None:
 
 
 def _compiler_diagnostics(runtime_log: Path) -> dict[str, Any]:
-    """Summarize compiler health messages without requiring Torch internals."""
+    """Summarize compiler, fallback, and profiler-parser runtime messages."""
 
     categories = {
         "graph_breaks": ("graph break", "graph_break"),
@@ -293,9 +538,13 @@ def _compiler_diagnostics(runtime_log: Path) -> dict[str, Any]:
             "torch._dynamo.exc",
             "inductorerror",
         ),
+        "npu_cpu_fallbacks": ("will fall back to run on the cpu",),
+        "aicpu_fallbacks": ("kernel is running on aicpu",),
     }
     result: dict[str, Any] = {
         "compile_markers": 0,
+        "cann_parse_seconds": None,
+        "all_parse_seconds": None,
         **{name: 0 for name in categories},
         "examples": [],
     }
@@ -303,6 +552,16 @@ def _compiler_diagnostics(runtime_log: Path) -> dict[str, Any]:
         return result
     for line in runtime_log.read_text(encoding="utf-8", errors="replace").splitlines():
         normalized = line.lower()
+        duration_match = re.search(
+            r"total time of (\d+):(\d+):(\d+(?:\.\d+)?)", normalized
+        )
+        if duration_match:
+            hours, minutes, seconds = duration_match.groups()
+            duration = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+            if "cann profiling data parsed" in normalized:
+                result["cann_parse_seconds"] = duration
+            elif "all profiling data parsed" in normalized:
+                result["all_parse_seconds"] = duration
         if "compiling each" in normalized and "torch.compile" in normalized:
             result["compile_markers"] += 1
         for name, patterns in categories.items():
@@ -319,10 +578,11 @@ def build_analysis(
     run_directory: Path,
     *,
     metrics_path: Path | None = None,
+    config: dict[str, Any] | None = None,
+    profiler_environment: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    metrics = summarize_metrics(
-        read_metrics(metrics_path or run_directory / "metrics.jsonl")
-    )
+    records = read_metrics(metrics_path or run_directory / "metrics.jsonl")
+    metrics = summarize_metrics(records)
     profiler_directory = run_directory / "trainer_output" / "profiling" / "traces"
     if not profiler_directory.is_dir():
         profiler_directory = run_directory / "trainer_output" / "profiling"
@@ -334,10 +594,25 @@ def build_analysis(
     deliverables = inspect_profiler_deliverables(profiler_directory)
     return {
         "metrics": metrics,
+        "profile_phases": summarize_profile_phases(
+            records,
+            config=config,
+            profiler_environment=profiler_environment,
+        ),
         "profiler_directory": str(profiler_directory),
         "profiler_inventory": inventory,
         "top_csv_tables": (
             extract_top_csv_entries(profiler_directory)
+            if profiler_directory.is_dir()
+            else []
+        ),
+        "kernel_shape_tables": (
+            extract_kernel_shape_entries(profiler_directory)
+            if profiler_directory.is_dir()
+            else []
+        ),
+        "l2_cache_tables": (
+            extract_l2_cache_entries(profiler_directory)
             if profiler_directory.is_dir()
             else []
         ),
@@ -479,15 +754,17 @@ def _composition_chart(table: dict[str, Any]) -> str:
         "compute_or_runtime": "#2563eb",
         "communication": "#f97316",
         "memory": "#10b981",
+        "aicpu": "#dc2626",
     }
     labels = {
         "compute_or_runtime": "Compute / runtime",
         "communication": "Communication",
         "memory": "Memory movement",
+        "aicpu": "AiCPU fallback",
     }
     segments = []
     legend = []
-    for category in ("compute_or_runtime", "communication", "memory"):
+    for category in ("compute_or_runtime", "communication", "memory", "aicpu"):
         value = totals.get(category, 0.0)
         fraction = value / total * 100
         segments.append(
@@ -553,6 +830,25 @@ def render_html_report(
         )
 
     compiler = analysis.get("compiler_diagnostics", {})
+    phase_analysis = analysis.get("profile_phases", {})
+    phase_comparison = phase_analysis.get("comparison", {})
+    active_overhead = phase_comparison.get("active_step_overhead_percent")
+    if active_overhead is not None:
+        cards.append(
+            '<div class="card"><span>Active collection overhead</span>'
+            f'<strong>{_format_number(active_overhead)}%</strong></div>'
+        )
+    parse_stall = phase_comparison.get("parse_stall_excess_seconds")
+    if parse_stall is not None:
+        cards.append(
+            '<div class="card"><span>Sync parse stall</span>'
+            f'<strong>{_format_number(parse_stall)} s</strong></div>'
+        )
+    if compiler.get("all_parse_seconds") is not None:
+        cards.append(
+            '<div class="card"><span>Profiler parser wall time</span>'
+            f'<strong>{_format_number(compiler["all_parse_seconds"])} s</strong></div>'
+        )
     compile_enabled = any(
         "--compile." in str(value) for value in config.get("extra_args", [])
     )
@@ -617,6 +913,53 @@ def render_html_report(
 </tbody></table>
 <details><summary>Representative compiler log lines</summary><pre>{html.escape(compiler_examples or 'No compiler diagnostic line was recorded.')}</pre></details>
 </section>"""
+    runtime_section = f"""
+<section><h2>NPU runtime diagnostics</h2>
+<p class="subtle">Counts are warning lines, not operator invocation counts. Parser
+time is extracted from the Ascend profiler completion messages.</p>
+<table><tbody>
+<tr><th>NPU-to-CPU fallback warnings</th><td>{compiler.get('npu_cpu_fallbacks', 0)}</td></tr>
+<tr><th>AiCPU fallback warnings</th><td>{compiler.get('aicpu_fallbacks', 0)}</td></tr>
+<tr><th>CANN parse time</th><td>{_format_number(compiler.get('cann_parse_seconds'))} s</td></tr>
+<tr><th>Total profiler parse time</th><td>{_format_number(compiler.get('all_parse_seconds'))} s</td></tr>
+</tbody></table>
+<details><summary>Representative diagnostic lines</summary><pre>{html.escape(compiler_examples or 'No runtime diagnostic line was recorded.')}</pre></details>
+</section>"""
+
+    baseline_step = phase_comparison.get("baseline_median_step_seconds")
+    phase_rows = ""
+    for phase_name in phase_analysis.get("phase_order", []):
+        phase = phase_analysis["phases"][phase_name]
+        steps = phase["steps"]
+        step_range = str(steps[0]) if len(steps) == 1 else f"{steps[0]}–{steps[-1]}"
+        phase_summary = phase["summary"]
+        step_time = phase_summary.get("time_metrics/end_to_end(s)", {}).get(
+            "median"
+        )
+        throughput = phase_summary.get("throughput(tps)", {}).get("median")
+        overhead = (
+            (step_time / baseline_step - 1.0) * 100.0
+            if step_time is not None and baseline_step not in {None, 0.0}
+            else None
+        )
+        overhead_text = "-" if overhead is None else f"{_format_number(overhead)}%"
+        phase_rows += (
+            f"<tr><td>{html.escape(phase_name)}</td><td>{step_range}</td>"
+            f"<td>{_format_number(step_time)}</td>"
+            f"<td>{_format_number(throughput)}</td>"
+            f"<td>{overhead_text}</td></tr>"
+        )
+    phase_section = (
+        '<section><h2>Profiler phase overhead</h2>'
+        f'<p class="subtle">Parse mode: {html.escape(str(phase_comparison.get("parse_mode", "unknown")))}. '
+        'The baseline excludes startup, profiler warmup, active collection, and '
+        'the synchronous parser boundary.</p>'
+        '<table><thead><tr><th>Phase</th><th>Steps</th><th>Median step (s)</th>'
+        '<th>Median throughput (tok/s)</th><th>Step overhead vs baseline</th>'
+        f'</tr></thead><tbody>{phase_rows}</tbody></table></section>'
+        if phase_rows
+        else ""
+    )
     training_arguments = " ".join(str(value) for value in config.get("extra_args", []))
     inventory = analysis["profiler_inventory"]
     suffix_rows = "".join(
@@ -652,6 +995,50 @@ def render_html_report(
             "No recognized duration CSV is available yet. For offline captures, run "
             "<code>--analyze --offline-parse</code>; for deeper diagnosis, run "
             "<code>--analyze --advisor</code>.</div></section>"
+        )
+
+    kernel_shape_sections = ""
+    for table in analysis.get("kernel_shape_tables", [])[:2]:
+        rows = "".join(
+            "<tr>"
+            f'<td><code>{html.escape(row["name"])}</code></td>'
+            f'<td><code>{html.escape(row["input_shapes"])}</code></td>'
+            f'<td><code>{html.escape(row["input_dtypes"])}</code></td>'
+            f'<td>{row["calls"]}</td>'
+            f'<td>{_format_number(row["total_us"] / 1000.0)}</td>'
+            f'<td>{_format_number(row["mean_us"])}</td>'
+            f'<td>{_format_number(row["max_us"])}</td>'
+            "</tr>"
+            for row in table["rows"][:20]
+        )
+        kernel_shape_sections += (
+            '<section><h2>Top kernel shape signatures</h2>'
+            f'<p class="subtle">Source: {html.escape(table["source"])}. '
+            "Grouped by kernel name, input shapes, and input dtypes.</p>"
+            '<table><thead><tr><th>Kernel</th><th>Input shapes</th>'
+            '<th>Dtypes</th><th>Calls</th><th>Total (ms)</th>'
+            '<th>Mean (us)</th><th>Max (us)</th></tr></thead>'
+            f"<tbody>{rows}</tbody></table></section>"
+        )
+
+    l2_sections = ""
+    for table in analysis.get("l2_cache_tables", [])[:2]:
+        rows = "".join(
+            "<tr>"
+            f'<td><code>{html.escape(row["name"])}</code></td>'
+            f'<td>{row["samples"]}</td>'
+            f'<td>{_format_number(row["mean_hit_rate"])}</td>'
+            f'<td>{_format_number(row["mean_victim_rate"])}</td>'
+            "</tr>"
+            for row in table["rows"][:20]
+        )
+        l2_sections += (
+            '<section><h2>L2 cache samples</h2>'
+            f'<p class="subtle">Source: {html.escape(table["source"])}. '
+            "N/A samples are excluded from each mean.</p>"
+            '<table><thead><tr><th>Operator</th><th>Samples</th>'
+            '<th>Mean hit rate</th><th>Mean victim rate</th></tr></thead>'
+            f"<tbody>{rows}</tbody></table></section>"
         )
 
     diagnostics = analysis.get("diagnostics", {})
@@ -784,10 +1171,14 @@ th{{background:#f8fafc;position:sticky;top:0}} code{{background:#edf2ff;padding:
 <div class="pipeline">{pipeline}</div>
 <div class="cards">{''.join(cards) or '<div class="card"><span>Training metrics</span><strong>Unavailable</strong></div>'}</div>
 {profile_duration_warning}
+{phase_section}
 {''.join(charts)}
+{runtime_section}
 {compiler_section}
 {composition_section}
 {top_sections}
+{kernel_shape_sections}
+{l2_sections}
 {diagnostic_sections}
 <section><h2>Official Ascend deliverables</h2><p class="subtle">Each row is one <code>*_ascend_pt</code> profile root. Text/DB readiness is checked against the official PyTorch Profiler output layout.</p>
 <table><thead><tr><th>Profile root and parsed files</th><th>Raw</th><th>Text</th><th>Database</th><th>MindStudio Insight</th></tr></thead><tbody>{ascend_rows}</tbody></table></section>

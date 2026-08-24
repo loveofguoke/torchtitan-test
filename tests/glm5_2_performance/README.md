@@ -185,8 +185,15 @@ msprof-analyze compare -d PROFILE -bp BASELINE -o COMPARE_DIR
 
 The generated HTML is the first-level dashboard. It includes training step
 time, throughput, TFLOPS, MFU/memory summaries, profiler file inventory, and
-recognized operator/kernel duration CSVs. The blue region on time-series
-charts is the actual active profile window.
+recognized operator/kernel duration CSVs. It also separates startup, steady
+baseline, profiler warmup, active collection, synchronous parse boundary, and
+post-profile steps so parser stalls do not pollute the steady-state summary.
+The blue region on time-series charts is the actual active profile window.
+
+Profiler-control overrides are part of the run identity. For example,
+`overview` with `sync` parsing and `overview` with `offline` parsing use
+different run/artifact/report paths and can be compared without `--force` or
+overwriting either capture.
 
 For Ascend data, copy the complete `*_ascend_pt` directory to local storage and
 import that root into MindStudio Insight. Do not import only its

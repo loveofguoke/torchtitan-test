@@ -125,7 +125,14 @@ def _profiling_preflight(output_directory: Path, device: str) -> dict[str, Any]:
     return result
 
 
-def _run_name(config: PerformanceConfig, device: str) -> str:
+def _run_name(
+    config: PerformanceConfig,
+    device: str,
+    preset: ProfilerPreset | None = None,
+) -> str:
+    default_preset = profiler_presets()[config.preset]
+    effective_preset = preset or default_preset
+    preset_overridden = effective_preset.environment() != default_preset.environment()
     precision = {
         ("float32", "bfloat16"): "bf16",
         ("float32", "float32"): "fp32",
@@ -139,10 +146,14 @@ def _run_name(config: PerformanceConfig, device: str) -> str:
         f"l{config.local_batch_size}-b{config.global_batch_size}-"
         f"seq{config.sequence_length}-seed{config.seed}-{config.preset}"
     )
+    if preset_overridden:
+        base += f"-{effective_preset.parse_mode}"
     identity = config.as_dict()
     for key in ("name", "device", "run_root", "artifact_root", "report_root"):
         identity.pop(key, None)
     identity["resolved_device"] = device
+    if preset_overridden:
+        identity["profiler_environment"] = effective_preset.environment()
     return config_name(base, identity)
 
 
@@ -202,6 +213,7 @@ def _training_command(
     root: Path,
     config: PerformanceConfig,
     device: str,
+    preset: ProfilerPreset,
     run_directory: Path,
 ) -> list[str]:
     topology = standard_topologies()[config.topology]
@@ -246,7 +258,7 @@ def _training_command(
         f"--nproc_per_node={topology.world_size}",
         "--rdzv_backend=c10d",
         "--rdzv_endpoint=localhost:0",
-        f"--rdzv_id={_run_name(config, device)}",
+        f"--rdzv_id={_run_name(config, device, preset)}",
         f"--local-ranks-filter={metrics_rank}",
         "--role=rank",
         "--tee=3",
@@ -354,7 +366,7 @@ def capture(
             "PROF_CONFIG_PATH enables dynamic_profile and cannot be combined "
             "with this scheduled profiler capture"
         )
-    run_name = _run_name(config, device)
+    run_name = _run_name(config, device, preset)
     run_parent = root / config.run_root
     artifact_parent = root / config.artifact_root
     run_directory = _adopt_legacy_performance_output(
@@ -412,6 +424,7 @@ def capture(
         root=root,
         config=config,
         device=device,
+        preset=preset,
         run_directory=run_directory,
     )
     print(
@@ -620,13 +633,14 @@ def analyze(
     config: PerformanceConfig,
     *,
     device: str,
+    preset: ProfilerPreset,
     parse_offline: bool,
     parse_workers: int | None,
     advisor: bool,
     cluster: bool,
     compare_baseline: Path | None,
 ) -> Path:
-    run_name = _run_name(config, device)
+    run_name = _run_name(config, device, preset)
     run_directory = _adopt_legacy_performance_output(
         root / config.run_root,
         config=config,
@@ -651,7 +665,11 @@ def analyze(
     if compare_baseline is not None:
         run_performance_compare(run_directory, compare_baseline)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    analysis = build_analysis(run_directory)
+    analysis = build_analysis(
+        run_directory,
+        config=manifest.get("config"),
+        profiler_environment=manifest.get("profiler_environment"),
+    )
     _write_json(artifact_directory / "analysis.json", analysis)
     report_path = root / config.report_root / f"{run_name}.html"
     render_html_report(
@@ -789,6 +807,7 @@ def run_profiler_cli(
                 root,
                 topology_config,
                 device=device,
+                preset=preset,
                 parse_offline=(
                     args.offline_parse
                     or (
