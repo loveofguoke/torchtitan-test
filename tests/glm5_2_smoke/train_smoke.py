@@ -155,6 +155,7 @@ def _run_topology(
         str(root / "run_train.sh"),
         f"--dump_folder={run_directory / 'trainer_output'}",
         f"--training.steps={steps}",
+        "--training.disable_cuda_graphs",
         *training_command_args(
             local_batch_size=local_batch_size,
             global_batch_size=global_batch_size,
