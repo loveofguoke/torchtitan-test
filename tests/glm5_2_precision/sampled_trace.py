@@ -15,6 +15,7 @@ import os
 import re
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
+from types import MethodType
 from typing import Any
 
 import torch
@@ -178,6 +179,7 @@ class _SampledTrace:
         steps: frozenset[int],
         output: Path,
         detail: frozenset[str],
+        ablations: tuple[str, ...] = (),
     ):
         self.trainer = trainer
         self.steps = steps
@@ -204,6 +206,7 @@ class _SampledTrace:
                 "steps": sorted(self.steps),
                 "sample_count": _SAMPLE_COUNT,
                 "detail": sorted(self.detail),
+                "ablations": list(ablations),
             }
         )
         self._index_parameters()
@@ -512,6 +515,38 @@ def _parse_detail(value: str) -> frozenset[str]:
     return detail
 
 
+def _install_layer0_wq_a_fp32(trainer: Any) -> tuple[str, ...]:
+    """Run only layer 0's query A projection in FP32 for diagnosis."""
+    patched: list[str] = []
+    for part_index, model in enumerate(trainer.model_parts):
+        for raw_name, module in model.named_modules():
+            clean = _clean_name(raw_name)
+            if not clean.endswith("layers.0.attention.wq_a"):
+                continue
+            if not isinstance(module, torch.nn.Linear):
+                raise TypeError(
+                    "layer 0 attention.wq_a must be torch.nn.Linear, got "
+                    f"{type(module).__name__}"
+                )
+
+            def fp32_forward(
+                linear: torch.nn.Linear,
+                input_tensor: torch.Tensor,
+            ) -> torch.Tensor:
+                bias = linear.bias.float() if linear.bias is not None else None
+                output = F.linear(input_tensor.float(), linear.weight.float(), bias)
+                return output.to(input_tensor.dtype)
+
+            module.forward = MethodType(fp32_forward, module)
+            patched.append(f"part{part_index}.{clean}")
+    if len(patched) != 1:
+        raise RuntimeError(
+            "expected exactly one layer 0 attention.wq_a module, found "
+            f"{len(patched)}"
+        )
+    return tuple(patched)
+
+
 def install_sampled_trace() -> None:
     global _INSTALLED
     if _INSTALLED:
@@ -534,7 +569,16 @@ def install_sampled_trace() -> None:
 
     def init_with_trace(self: Any, *args: Any, **kwargs: Any) -> None:
         original_init(self, *args, **kwargs)
-        self._glm5_sampled_trace = _SampledTrace(self, steps, output, detail)
+        ablations: tuple[str, ...] = ()
+        if os.environ.get("GLM5_PRECISION_LAYER0_WQ_A_FP32") == "1":
+            ablations = _install_layer0_wq_a_fp32(self)
+        self._glm5_sampled_trace = _SampledTrace(
+            self,
+            steps,
+            output,
+            detail,
+            ablations,
+        )
 
     def forward_backward_with_trace(
         self: Any, *args: Any, **kwargs: Any
