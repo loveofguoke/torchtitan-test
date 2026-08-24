@@ -41,6 +41,10 @@ Run every topology of at most eight ranks:
 python tests/glm5_2_smoke/train_smoke.py --topology all
 ```
 
+The default local batch size is 8 and the default global batch size is 64.
+This shared profile is valid for every built-in topology through eight ranks,
+including the eight microbatches required by PP8 with the 1F1B schedule.
+
 Successful topologies are skipped on the next invocation. Incomplete output is
 preserved with a `.failed-<timestamp>` suffix and retried. Use `--force` to
 replace successful output as well.

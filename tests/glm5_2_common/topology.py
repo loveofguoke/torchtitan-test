@@ -146,6 +146,14 @@ def training_command_args(
 ) -> list[str]:
     """Translate sample-batch settings to TorchTitan's token-budget CLI."""
 
+    data_parallel_batch = local_batch_size * topology.data_parallel_degree
+    if global_batch_size % data_parallel_batch:
+        raise ValueError(
+            f"topology {topology.name!r} requires global_batch_size to be "
+            "divisible by local_batch_size * data_parallel_degree: "
+            f"{global_batch_size} % ({local_batch_size} * "
+            f"{topology.data_parallel_degree}) != 0"
+        )
     microbatch_size = (
         topology.pipeline_parallel_microbatch_size
         if topology.pipeline_parallel_degree > 1
@@ -156,6 +164,15 @@ def training_command_args(
             "local_batch_size must be divisible by the pipeline microbatch size"
         )
     num_pp_microbatches = local_batch_size // microbatch_size
+    if (
+        topology.pipeline_parallel_degree > 1
+        and num_pp_microbatches < topology.pipeline_parallel_degree
+    ):
+        raise ValueError(
+            f"topology {topology.name!r} has {num_pp_microbatches} pipeline "
+            f"microbatches but {topology.pipeline_parallel_degree} stages; "
+            "increase local_batch_size or reduce the PP microbatch size"
+        )
     args = [
         "--training.num_tokens_per_microbatch_per_dp_rank="
         f"{microbatch_size * sequence_length}",

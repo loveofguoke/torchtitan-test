@@ -24,10 +24,10 @@ def test_smoke_disables_trainer_cuda_graphs(
         suite_root=tmp_path / "smoke_runs",
         device="gpu",
         visible_devices="0",
-        topology=ParallelTopology("single", 1),
+        topology=ParallelTopology("pp8", 8, pipeline_parallel_degree=8),
         steps=1,
-        local_batch_size=1,
-        global_batch_size=1,
+        local_batch_size=8,
+        global_batch_size=64,
         sequence_length=8,
         seed=61,
         module="glm5",
@@ -37,3 +37,4 @@ def test_smoke_disables_trainer_cuda_graphs(
 
     assert len(commands) == 1
     assert "--training.disable_cuda_graphs" in commands[0]
+    assert "--parallelism.num_pp_microbatches=8" in commands[0]

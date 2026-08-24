@@ -211,6 +211,18 @@ def test_training_arguments_translate_sample_batches_to_token_budgets() -> None:
     assert "--parallelism.num_pp_microbatches=8" in args
 
 
+def test_training_arguments_reject_an_undersized_pipeline_batch() -> None:
+    topology = ParallelTopology("pp8", 8, pipeline_parallel_degree=8)
+
+    with pytest.raises(ValueError, match="1 pipeline microbatches but 8 stages"):
+        training_command_args(
+            local_batch_size=1,
+            global_batch_size=8,
+            sequence_length=128,
+            topology=topology,
+        )
+
+
 def test_common_eight_card_batch_profile_supports_every_builtin_topology() -> None:
     training = FormalTrainingConfig(local_batch_size=8, global_batch_size=64)
 
