@@ -1,8 +1,33 @@
 # GLM-5.2 graph-mode entry points
 
+For the isolated CANN 9.1 NPU Inductor launcher, persistent compiler cache,
+automatic per-run reports, and Chinese operating instructions, see:
+
+- `../glm5_2_graph_debug/run_npu_inductor.sh`
+- `../glm5_2_graph_debug/RUN_NPU_INDUCTOR.md`
+- `../glm5_2_graph_debug/NPU_INDUCTOR_ENV_ADAPTATION_REPORT.md`
+- `../glm5_2_graph_debug/HUAWEI_DELIVERY.md`
+
+This launcher is an environment/debugging aid. It does not replace the formal
+precision, performance, stability, or central combination acceptance tests.
+
 Graph mode is an independent feature owned by the combination experiment. It
 does not modify TorchTitan and does not configure precision or performance
 modules. Ascend-only backend validation lives in TorchTitanTurbo.
+
+For direct execution without the debug wrapper, place every compiler-generated
+file in the persistent user cache before running any graph command:
+
+```bash
+GRAPH_CACHE_ROOT=/workspace/y50064852_yyb/.cache/torchtitan-test/graph_mode/cann91-torch214-triton321
+mkdir -p "$GRAPH_CACHE_ROOT"/{inductor,triton,torch_compile_debug}
+export TORCHINDUCTOR_CACHE_DIR="$GRAPH_CACHE_ROOT/inductor"
+export TRITON_CACHE_DIR="$GRAPH_CACHE_ROOT/triton"
+export TORCH_COMPILE_DEBUG_DIR="$GRAPH_CACHE_ROOT/torch_compile_debug"
+```
+
+The `glm5_2_graph_debug/run_npu_inductor.sh` launcher applies this policy
+automatically, including for its `probe` action that calls `compile_probe.py`.
 
 The supported execution policies match TorchTitan's current compile contract:
 
@@ -106,7 +131,7 @@ and place it explicitly when detailed Dynamo/Inductor artifacts are needed:
 
 ```bash
 export TORCH_COMPILE_DEBUG=1
-export TORCH_COMPILE_DEBUG_DIR="$PWD/graph_compile_debug/npu-inductor"
+export TORCH_COMPILE_DEBUG_DIR=/workspace/y50064852_yyb/.cache/torchtitan-test/graph_mode/cann91-torch214-triton321/torch_compile_debug
 ```
 
 ## Full NPU graph precision experiment
