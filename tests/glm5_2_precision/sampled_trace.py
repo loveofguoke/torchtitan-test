@@ -25,7 +25,9 @@ _INSTALLED = False
 _ACTIVE_CAPTURE: "_SampledTrace | None" = None
 _LAYER_RE = re.compile(r"(?:^|\.)layers\.\d+$")
 _SAMPLE_COUNT = 64
-_SUPPORTED_TRACE_DETAIL = frozenset({"indexer", "router"})
+_SUPPORTED_TRACE_DETAIL = frozenset(
+    {"attention_projection", "indexer", "router"}
+)
 
 
 def _local_tensor(value: torch.Tensor) -> torch.Tensor:
@@ -51,6 +53,13 @@ def _clean_name(name: str) -> str:
 
 def _detail_group(name: str) -> str | None:
     clean = _clean_name(name)
+    if clean.endswith(
+        (
+            "layers.0.attention.wq_a",
+            "layers.0.attention.q_norm",
+        )
+    ):
+        return "attention_projection"
     if ".attention.indexer." in f".{clean}.":
         return "indexer"
     if ".moe.router." in f".{clean}.":
@@ -350,6 +359,10 @@ class _SampledTrace:
             else:
                 return
             index_scores = index_scores + attention_mask.float()
+            expanded_mask = attention_mask.float().expand_as(index_scores)
+            valid_scores = index_scores.masked_select(
+                torch.isfinite(expanded_mask) & (expanded_mask > -1.0e20)
+            )
             selected_scores = torch.gather(
                 index_scores,
                 dim=-1,
@@ -360,6 +373,12 @@ class _SampledTrace:
                 f"{module_name}.index_scores",
                 index_scores,
                 kind="index_score",
+            )
+            self.store(
+                "forward_diagnostic",
+                f"{module_name}.valid_index_scores",
+                valid_scores,
+                kind="valid_index_score",
             )
             self.store(
                 "forward_diagnostic",

@@ -272,7 +272,11 @@ class FormalTrainingConfig:
             raise ValueError("exploratory_steps must be within the training step range")
         if tuple(sorted(set(self.exploratory_steps))) != self.exploratory_steps:
             raise ValueError("exploratory_steps must be sorted and unique")
-        supported_trace_detail = {"indexer", "router"}
+        supported_trace_detail = {
+            "attention_projection",
+            "indexer",
+            "router",
+        }
         unknown_trace_detail = (
             set(self.exploratory_trace_detail) - supported_trace_detail
         )
