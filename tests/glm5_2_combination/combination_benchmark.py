@@ -2,7 +2,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""GPU/NPU graph, distributed, precision, and performance experiment."""
+"""NPU graph, distributed, precision, and performance experiment."""
 
 from pathlib import Path
 import sys
@@ -25,11 +25,11 @@ TOPOLOGIES = standard_topologies()
 TOPOLOGY_NAMES = ("single", *DISTRIBUTED_TOPOLOGY_NAMES)
 ALL_DEVICES = "0,1,2,3,4,5,6,7"
 CONFIG = FormalExperimentConfig(
-    name="combined",
-    kind="migration",
+    name="npu-combined",
+    kind="self_consistency",
     reference=TrainingEndpoint(
-        name="gpu-reference",
-        device_type="cuda",
+        name="npu-eager-reference",
+        device_type="npu",
         visible_devices=ALL_DEVICES,
         topology=TOPOLOGIES["single"],
         repeats=2,

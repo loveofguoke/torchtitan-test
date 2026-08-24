@@ -702,8 +702,13 @@ def run_profiler_cli(
     suite_topologies = tuple(
         name for name, topology in topologies.items() if topology.world_size <= 8
     )
-    parser.add_argument("--topology", choices=("all", *suite_topologies))
-    parser.add_argument("--topologies", help="comma-separated topology subset or all")
+    topology_selection = parser.add_mutually_exclusive_group()
+    topology_selection.add_argument(
+        "--topology", choices=("all", *suite_topologies)
+    )
+    topology_selection.add_argument(
+        "--topologies", help="comma-separated topology subset or all"
+    )
     parser.add_argument("--preset", choices=tuple(presets))
     parser.add_argument("--visible-devices")
     parser.add_argument("--steps", type=int)
@@ -765,6 +770,12 @@ def run_profiler_cli(
     )
     root = _repository_root(script_path)
     device = _resolve_device(effective.device)
+    if device != "npu":
+        raise NotImplementedError(
+            "the performance profiler currently supports only Ascend NPU; "
+            "the CUDA interface is reserved until the torch.profiler workflow "
+            "and report contract are defined"
+        )
     if args.visible_devices:
         variable = (
             "ASCEND_RT_VISIBLE_DEVICES"

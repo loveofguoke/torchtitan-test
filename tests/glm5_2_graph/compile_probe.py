@@ -2,7 +2,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Fast single-topology graph probe using the combination executor."""
+"""Fast NPU eager-versus-graph probe using the combination executor."""
 
 from dataclasses import replace
 from pathlib import Path
@@ -10,7 +10,11 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from tests.glm5_2_graph.precision_benchmark import CONFIG, TOPOLOGIES
+from tests.glm5_2_graph.precision_benchmark import (
+    CONFIG,
+    TOPOLOGIES,
+    TOPOLOGY_NAMES,
+)
 from tests.glm5_2_combination.workflow import run_combination_cli
 
 
@@ -31,5 +35,7 @@ if __name__ == "__main__":
         PROBE_CONFIG,
         __file__,
         topologies=TOPOLOGIES,
-        topology_names=("single",),
+        topology_names=TOPOLOGY_NAMES,
+        default_topology="single",
+        default_objectives="precision",
     )

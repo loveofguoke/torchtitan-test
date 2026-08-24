@@ -6,6 +6,12 @@ locate a numerical divergence. This suite decides whether a long-running
 training process is accurate and stable enough for migration or distributed
 self-consistency.
 
+This package owns ordinary eager CUDA/NPU migration and distributed
+self-consistency. Graph-mode precision keeps the same formal fixture, metric,
+standard, and report implementation, but is composed through
+`tests/glm5_2_graph` and `tests/glm5_2_combination` so compiler policy does not
+leak into this workflow. Compiled graph execution is currently NPU-only.
+
 The two suites are intentionally independent. They share TorchTitan model and
 data assets, and a formal report can link sampled exploratory reports through
 `exploratory_reports`, but exploratory trace results never decide the formal
@@ -101,6 +107,53 @@ Because the token plan is now part of the formal data contract, fixtures made by
 an earlier framework version cannot be reused for new captures. Recreate the
 fixture once with `--data --force`, then rerun reference and candidate captures.
 
+## Command-line parameters
+
+The maintained `migration_benchmark.py` and
+`self_consistency_benchmark.py` entry points share this suite CLI.
+
+| Parameter | Purpose and choices | Default |
+|---|---|---|
+| `--data` | Generate one shared checkpoint/token fixture and exit. | no action; one action is required |
+| `--capture reference\|candidate` | Capture one endpoint. Omit `--repeat` to run both configured repeats. | no action; one action is required |
+| `--capture-all` | Compatibility alias for `--capture candidate --topology all`. | disabled |
+| `--compare` | Compare available captures and generate detailed plus suite reports. | no action; one action is required |
+| `--list-topologies` | Print topology degrees and the derived batch schedule. | no action; one action is required |
+| `--topology` | One topology or `all`. Migration applies it to both devices; self-consistency applies it to the distributed candidate. | `all` |
+| `--topologies` | Comma-separated subset or `all`; mutually exclusive with `--topology`. | unset |
+| `--repeat` | Capture only repeat `N`; omit it for every configured repeat. | all configured repeats (`2`) |
+| `--precision` | `fp32`, `bf16`, or `full-bf16`. | `bf16` from the experiment config |
+| `--data-device` | Fixture backend override: `cuda` or `npu`. Normally inferred from exactly one exported visibility variable. | inferred |
+| `--force` | Replace a valid existing fixture/capture. Without it, completed output is reused and incomplete output is retried. | disabled |
+| `--require-all` | Require every selected topology and repeat for a final suite decision. Without it, missing members are reported as `NOT RUN`. | disabled |
+
+Both maintained experiments define 5000 steps, local batch 8, global batch 64,
+sequence length 128, seed 61, deterministic execution, BF16 parameters with
+FP32 master/reduction, and two captures per endpoint. Those values are part of
+the maintained experiment contract and are edited in the corresponding Python
+`CONFIG`, not overridden ad hoc on the command line.
+
+For one experiment, data, captures, and compare must use the same precision and
+training config. Topology selection may be narrowed during capture and expanded
+later during compare because every topology shares the same fixture. `--force`
+is never required merely to resume an interrupted suite.
+
+## Report contents and acceptance
+
+Every detailed report shows the complete loss and global-grad-norm curves,
+warmup boundary, repeat-to-repeat determinism diagnostics, first and worst
+divergent steps, the four error formulas, max error, and configured error
+quantiles. It also records device/topology/dtype/source metadata and validates
+the fixed-token input contract before comparing numerical series.
+
+The migration PASS/FAIL decision uses the configured first-loss, all-loss, and
+grad-norm standards. P99/P99.9/P99.99 distributions and historical customer
+profiles are supplemental diagnostics unless the experiment's
+`PrecisionStandard` explicitly promotes them. The suite index shows one row per
+topology, links each detailed report, and distinguishes `PASS`, `FAIL`,
+`PARTIAL PASS`, and `NOT RUN`; `--require-all` turns missing selected members
+into an incomplete final deliverable.
+
 ## Migration workflow
 
 Configure `CONFIG` once in `migration_benchmark.py`. Each command derives its
@@ -117,18 +170,67 @@ server captures all topologies sequentially with one command, and compare writes
 one suite index plus a detailed report per topology:
 
 ```bash
-python tests/glm5_2_precision/migration_benchmark.py --data --topology all
+unset CUDA_VISIBLE_DEVICES
+export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+python tests/glm5_2_precision/migration_benchmark.py \
+  --data --data-device npu --topology all
+python tests/glm5_2_precision/migration_benchmark.py \
+  --capture candidate --topology all
 
+unset ASCEND_RT_VISIBLE_DEVICES
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 python tests/glm5_2_precision/migration_benchmark.py \
   --capture reference --topology all
 
-export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-python tests/glm5_2_precision/migration_benchmark.py \
-  --capture candidate --topology all
-
 python tests/glm5_2_precision/migration_benchmark.py \
   --compare --topology all --require-all
+```
+
+The commands above are the complete all-topology migration workflow. For a
+focused single-card GPU/NPU migration, run the same data, two capture, and
+compare stages with `single`:
+
+```bash
+# NPU: prepare shared data and capture the candidate.
+unset CUDA_VISIBLE_DEVICES
+export ASCEND_RT_VISIBLE_DEVICES=4
+python tests/glm5_2_precision/migration_benchmark.py \
+  --data --data-device npu --topology single
+python tests/glm5_2_precision/migration_benchmark.py \
+  --capture candidate --topology single
+
+# GPU: after synchronizing precision_fixtures, capture the reference.
+unset ASCEND_RT_VISIBLE_DEVICES
+export CUDA_VISIBLE_DEVICES=7
+python tests/glm5_2_precision/migration_benchmark.py \
+  --capture reference --topology single
+
+# CPU: after synchronizing precision_artifacts.
+python tests/glm5_2_precision/migration_benchmark.py \
+  --compare --topology single --require-all
+```
+
+Distributed GPU/NPU migration example (`fsdp8`; replace it with any registered
+topology):
+
+```bash
+# NPU.
+unset CUDA_VISIBLE_DEVICES
+export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+python tests/glm5_2_precision/migration_benchmark.py \
+  --data --data-device npu --topology fsdp8
+python tests/glm5_2_precision/migration_benchmark.py \
+  --capture candidate --topology fsdp8
+
+# GPU, after fixture synchronization.
+unset ASCEND_RT_VISIBLE_DEVICES
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+python tests/glm5_2_precision/migration_benchmark.py \
+  --capture reference --topology fsdp8
+
+# CPU, after artifact synchronization.
+python tests/glm5_2_precision/migration_benchmark.py \
+  --compare --topology fsdp8 --require-all
 ```
 
 `--topologies single,fsdp8,tp8` selects a subset. Completed captures are skipped,
@@ -217,6 +319,40 @@ python tests/glm5_2_precision/self_consistency_benchmark.py \
   --capture reference
 ```
 
+The reference is always the single-card baseline. The self-consistency
+candidate registry contains distributed topologies, so this script does not
+accept `--topology single`; the command above is the single-card operation.
+
+Complete GPU single-reference versus one distributed candidate workflow
+(`fsdp8` in this example):
+
+```bash
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+unset ASCEND_RT_VISIBLE_DEVICES
+
+python tests/glm5_2_precision/self_consistency_benchmark.py --data
+python tests/glm5_2_precision/self_consistency_benchmark.py \
+  --capture reference --topology fsdp8
+python tests/glm5_2_precision/self_consistency_benchmark.py \
+  --capture candidate --topology fsdp8
+python tests/glm5_2_precision/self_consistency_benchmark.py \
+  --compare --topology fsdp8 --require-all
+```
+
+Complete GPU single-reference versus every distributed topology workflow:
+
+```bash
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+unset ASCEND_RT_VISIBLE_DEVICES
+
+python tests/glm5_2_precision/self_consistency_benchmark.py --data
+python tests/glm5_2_precision/self_consistency_benchmark.py \
+  --capture reference
+python tests/glm5_2_precision/self_consistency_benchmark.py --capture-all
+python tests/glm5_2_precision/self_consistency_benchmark.py \
+  --compare --require-all
+```
+
 Run candidates independently so completed work is preserved and can be
 compared immediately:
 
@@ -265,9 +401,12 @@ ddp2
 ddp8
 fsdp8
 tp8
+cp8
 pp8
 ep8
 fsdp2-tp4
+fsdp2-cp4
+tp2-cp4
 fsdp4-tp2
 fsdp2-pp4
 fsdp2-tp2-pp2
@@ -335,40 +474,27 @@ For NPU self-consistency, use a separate suite configuration and export
 `ASCEND_RT_VISIBLE_DEVICES`; do not mix CUDA and NPU candidates into this CUDA
 self-consistency suite.
 
-## Multi-node capture
+## Multi-node status
 
-Define or select a topology whose `world_size` covers every node. The built-in
-`ddp16` and `fsdp16` entries target two eight-device nodes. Run the same command
-on both nodes with a shared rendezvous endpoint and the appropriate node rank:
-
-```bash
-python tests/glm5_2_precision/migration_benchmark.py \
-  --capture reference --repeat 1 --topology fsdp16 \
-  --num-nodes 2 --node-rank 1 --rdzv-endpoint host0:29500
-
-python tests/glm5_2_precision/migration_benchmark.py \
-  --capture reference --repeat 1 --topology fsdp16 \
-  --num-nodes 2 --node-rank 0 --rdzv-endpoint host0:29500
-```
-
-The synchronized fixture must be present at the same repository-relative
-location on every node, and `precision_runs/` must be on shared storage. Every
-node writes its global-rank input-contract records to the same scenario
-directory; only the node owning TorchTitan's metrics rank validates the complete
-world and writes the portable artifact. Missing rank records fail capture.
+The maintained topology-suite entry points currently expose single-node
+topologies through eight local ranks. The common registry retains `ddp16` and
+`fsdp16` for future multi-node work, but they are intentionally not selectable
+from these scripts yet. Do not pass legacy `--num-nodes`, `--node-rank`, or
+`--rdzv-endpoint` examples to the suite CLI; multi-node artifact coordination
+needs a separately defined shared-storage and launcher contract first.
 
 ## Outputs
 
 - `precision_fixtures/`: synchronized seed or converged checkpoint, fixed token
-  plan, and checksums; keep this directory in Git when another environment needs
-  it;
+  plan, and checksums; transfer it with `release_artifacts.py`, shared storage,
+  or `rsync` when another environment needs it;
 - `precision_runs/`: ignored local working files, including TensorBoard output,
   runtime logs, and the raw metric stream;
 - `precision_artifacts/`: synchronized checksummed comparison inputs. Each
   capture contains `manifest.json`, normalized `metrics.jsonl`,
   `training_contract.json`, and a compact validated input-contract summary;
 - `precision_reports/`: a self-contained HTML report and machine-readable JSON
-  summary; it is generated locally and ignored by default.
+  summary; it is generated locally and ignored by Git.
 
 Directory names omit the model name and redundant endpoint labels. For example:
 `migration-cuda-npu-single-bf16-random-s5000-b64-seq128-seed61/candidate-r1`.

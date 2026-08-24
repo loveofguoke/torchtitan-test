@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.glm5_2_common.topology import ParallelTopology
+from tests.glm5_2_graph.config import GraphFeatureConfig
 from tests.glm5_2_smoke.train_smoke import _completed, _contract, _run_topology
 
 
@@ -61,3 +62,58 @@ def test_smoke_disables_trainer_cuda_graphs(
     assert len(commands) == 1
     assert "--training.disable_cuda_graphs" in commands[0]
     assert "--parallelism.num_pp_microbatches=8" in commands[0]
+
+
+def test_npu_smoke_can_compile_each_topology(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands: list[list[str]] = []
+    environments: list[dict[str, str]] = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        environments.append(kwargs["env"])
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("tests.glm5_2_smoke.train_smoke.subprocess.run", run)
+    _run_topology(
+        root=tmp_path,
+        suite_root=tmp_path / "smoke_runs",
+        device="npu",
+        visible_devices="0,1",
+        topology=ParallelTopology("fsdp2", 2, data_parallel_shard_degree=2),
+        steps=1,
+        local_batch_size=1,
+        global_batch_size=2,
+        sequence_length=8,
+        seed=61,
+        module="glm5",
+        config="glm5_debugmodel",
+        graph=GraphFeatureConfig(mode="inductor", diagnostics=True),
+        force=False,
+    )
+
+    assert "--compile.enable" in commands[0]
+    assert "--compile.components=model" in commands[0]
+    assert "--compile.backend=inductor" in commands[0]
+    assert environments[0]["TORCH_LOGS"] == "graph_breaks,recompiles,dynamic"
+
+
+def test_gpu_smoke_reserves_compiled_graph_interface(tmp_path) -> None:
+    with pytest.raises(NotImplementedError, match="only NPU endpoints"):
+        _run_topology(
+            root=tmp_path,
+            suite_root=tmp_path / "smoke_runs",
+            device="gpu",
+            visible_devices="0",
+            topology=ParallelTopology("single", 1),
+            steps=1,
+            local_batch_size=1,
+            global_batch_size=1,
+            sequence_length=8,
+            seed=61,
+            module="glm5",
+            config="glm5_debugmodel",
+            graph=GraphFeatureConfig(mode="inductor"),
+            force=False,
+        )

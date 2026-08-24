@@ -25,6 +25,8 @@ from tests.glm5_2_common.topology import (  # noqa: E402
     standard_topologies,
     training_command_args,
 )
+from tests.glm5_2_common.execution import compose_execution  # noqa: E402
+from tests.glm5_2_graph.config import GraphFeatureConfig  # noqa: E402
 
 
 def _root() -> Path:
@@ -73,12 +75,13 @@ def _contract(
     seed: int,
     module: str,
     config: str,
+    graph: GraphFeatureConfig = GraphFeatureConfig(),
 ) -> dict[str, Any]:
     topology_contract = asdict(topology)
     # Manifests are JSON.  Normalize tuple-valued fields before comparing a
     # freshly built contract with one loaded back from disk.
     topology_contract["extra_args"] = list(topology_contract["extra_args"])
-    return {
+    contract = {
         "schema_version": 1,
         "device": device,
         "topology": topology_contract,
@@ -90,6 +93,13 @@ def _contract(
         "module": module,
         "config": config,
     }
+    if graph.mode != "eager":
+        contract["graph"] = {
+            "mode": graph.mode,
+            "components": list(graph.components),
+            "diagnostics": graph.diagnostics,
+        }
+    return contract
 
 
 def _completed(path: Path, contract: dict[str, Any]) -> bool:
@@ -130,8 +140,13 @@ def _run_topology(
     seed: int,
     module: str,
     config: str,
+    graph: GraphFeatureConfig = GraphFeatureConfig(),
     force: bool,
 ) -> Path:
+    execution = compose_execution(
+        topology,
+        [graph.feature(device_type="npu" if device == "npu" else "cuda")],
+    )
     run_directory = suite_root / topology.slug
     contract = _contract(
         device=device,
@@ -143,6 +158,7 @@ def _run_topology(
         seed=seed,
         module=module,
         config=config,
+        graph=graph,
     )
     if not force and _completed(run_directory, contract):
         print(f"Skip completed topology {topology.name}: {run_directory}")
@@ -169,6 +185,7 @@ def _run_topology(
         f"--debug.seed={seed}",
         "--metrics.log_freq=1",
         *topology.command_args(),
+        *execution.command_args(),
     ]
     environment = os.environ.copy()
     environment.update(
@@ -181,6 +198,7 @@ def _run_topology(
             "CONFIG": config,
         }
     )
+    environment.update(execution.environment())
     visible_variable = (
         "ASCEND_RT_VISIBLE_DEVICES"
         if device == "npu"
@@ -214,8 +232,9 @@ def _run_topology(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", choices=("auto", "gpu", "npu"), default="auto")
-    parser.add_argument("--topology")
-    parser.add_argument("--topologies")
+    topology_selection = parser.add_mutually_exclusive_group()
+    topology_selection.add_argument("--topology")
+    topology_selection.add_argument("--topologies")
     parser.add_argument("--steps", type=int, default=10)
     parser.add_argument("--local-batch-size", type=int, default=8)
     parser.add_argument("--global-batch-size", type=int, default=64)
@@ -223,14 +242,35 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=61)
     parser.add_argument("--module", default="glm5")
     parser.add_argument("--config", default="glm5_debugmodel")
+    parser.add_argument(
+        "--graph",
+        choices=("eager", "inductor", "npugraphs"),
+        default="eager",
+    )
+    parser.add_argument(
+        "--compile-loss",
+        action="store_true",
+        help="compile the loss together with the model",
+    )
+    parser.add_argument(
+        "--compiler-diagnostics",
+        action="store_true",
+        help="enable graph-break, recompile, and dynamic-shape diagnostics",
+    )
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
     if args.steps < 1:
         parser.error("--steps must be positive")
-    _check_runtime_dependencies()
     device = _device(args.device)
     visible_devices = _visible_devices(device)
+    graph = GraphFeatureConfig(
+        mode=args.graph,
+        components=("model", "loss") if args.compile_loss else ("model",),
+        diagnostics=args.compiler_diagnostics,
+    )
+    graph.feature(device_type="npu" if device == "npu" else "cuda")
+    _check_runtime_dependencies()
     topologies = standard_topologies()
     available = tuple(
         name for name, topology in topologies.items() if topology.world_size <= 8
@@ -255,6 +295,10 @@ def main() -> int:
         f"{device}-{args.config}-s{args.steps}-b{args.global_batch_size}-"
         f"seq{args.sequence_length}-seed{args.seed}"
     )
+    if graph.mode != "eager":
+        suite_name += f"-{graph.mode}-{'-'.join(graph.components)}"
+        if graph.diagnostics:
+            suite_name += "-diag"
     root = _root()
     suite_root = root / "smoke_runs" / suite_name
     for name in selected:
@@ -271,6 +315,7 @@ def main() -> int:
             seed=args.seed,
             module=args.module,
             config=args.config,
+            graph=graph,
             force=args.force,
         )
     print(f"Smoke suite passed: {suite_root}")

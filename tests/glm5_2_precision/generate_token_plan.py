@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+from typing import Any
 
 import torch
 
@@ -29,6 +30,49 @@ GLOBAL_BATCH_ENV = "GLM5_PRECISION_TOKEN_PLAN_GLOBAL_BATCH_SIZE"
 SEQUENCE_LENGTH_ENV = "GLM5_PRECISION_TOKEN_PLAN_SEQUENCE_LENGTH"
 
 
+def _build_source_dataloader(
+    config: Any,
+    *,
+    tokenizer: Any,
+    global_batch_size: int,
+    sequence_length: int,
+) -> Any:
+    return config.dataloader.build(
+        dp_world_size=1,
+        dp_rank=0,
+        tokenizer=tokenizer,
+        max_context_length=sequence_length,
+        num_tokens_per_batch=global_batch_size * sequence_length,
+    )
+
+
+def _reshape_source_batch(
+    input_dict: dict[str, torch.Tensor],
+    labels: torch.Tensor,
+    *,
+    global_batch_size: int,
+    sequence_length: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    expected_num_tokens = global_batch_size * sequence_length
+    inputs_T = input_dict["input"]
+    positions_T = input_dict["positions"]
+    for name, tensor in (
+        ("input", inputs_T),
+        ("labels", labels),
+        ("positions", positions_T),
+    ):
+        if tensor.numel() != expected_num_tokens:
+            raise RuntimeError(
+                f"unexpected {name} token count: {tensor.numel()}, "
+                f"expected {expected_num_tokens}"
+            )
+    return (
+        inputs_T.reshape(global_batch_size, sequence_length),
+        labels.reshape(global_batch_size, sequence_length),
+        positions_T.reshape(global_batch_size, sequence_length),
+    )
+
+
 def _write_plan() -> None:
     output = Path(os.environ[OUTPUT_ENV]).resolve()
     steps = int(os.environ[STEPS_ENV])
@@ -39,13 +83,11 @@ def _write_plan() -> None:
 
     config = ConfigManager().parse_args()
     tokenizer = config.tokenizer.build(tokenizer_path=config.hf_assets_path)
-    dataloader = config.dataloader.build(
-        dp_world_size=1,
-        dp_rank=0,
+    dataloader = _build_source_dataloader(
+        config,
         tokenizer=tokenizer,
-        seq_len=sequence_length,
-        local_batch_size=global_batch_size,
-        snapshot_every_n_steps=None,
+        global_batch_size=global_batch_size,
+        sequence_length=sequence_length,
     )
 
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -60,27 +102,18 @@ def _write_plan() -> None:
             "wb"
         ) as position_stream:
             for step in range(steps):
-                input_dict, labels = next(iterator)
-                inputs_BL = input_dict["input"]
-                positions_BL = input_dict["positions"]
-                if tuple(inputs_BL.shape) != (global_batch_size, sequence_length):
-                    raise RuntimeError(
-                        f"unexpected input shape at step {step + 1}: "
-                        f"{tuple(inputs_BL.shape)}"
-                    )
-                if tuple(labels.shape) != tuple(inputs_BL.shape):
-                    raise RuntimeError(
-                        f"label shape does not match input shape at step {step + 1}"
-                    )
-                if tuple(positions_BL.shape) != tuple(inputs_BL.shape):
-                    raise RuntimeError(
-                        f"position shape does not match input shape at step {step + 1}"
-                    )
-                if not torch.equal(inputs_BL[:, 1:], labels[:, :-1]):
+                input_dict, labels_T = next(iterator)
+                inputs_BL, labels_BL, positions_BL = _reshape_source_batch(
+                    input_dict,
+                    labels_T,
+                    global_batch_size=global_batch_size,
+                    sequence_length=sequence_length,
+                )
+                if not torch.equal(inputs_BL[:, 1:], labels_BL[:, :-1]):
                     raise RuntimeError(
                         "fixed token plans require next-token shifted labels"
                     )
-                tokens_BQ = torch.cat((inputs_BL, labels[:, -1:]), dim=1).to(
+                tokens_BQ = torch.cat((inputs_BL, labels_BL[:, -1:]), dim=1).to(
                     dtype=torch.int32
                 ).contiguous()
                 positions_BL = positions_BL.to(dtype=torch.int32).contiguous()

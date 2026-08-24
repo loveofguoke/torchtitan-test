@@ -5,13 +5,20 @@ from pathlib import Path
 
 import pytest
 
-from tests.glm5_2_combination.config import GraphFeatureConfig
+from tests.glm5_2_combination.combination_benchmark import (
+    CONFIG as COMBINATION_CONFIG,
+    TOPOLOGY_NAMES,
+)
 from tests.glm5_2_combination.workflow import (
     CombinationSelection,
     _apply_selection,
 )
 from tests.glm5_2_common.execution import TrainingFeature, compose_execution
 from tests.glm5_2_common.topology import select_topologies, standard_topologies
+from tests.glm5_2_graph.config import (
+    GraphFeatureConfig,
+    validate_graph_training_args,
+)
 from tests.glm5_2_graph.precision_benchmark import CONFIG as GRAPH_CONFIG
 from tests.glm5_2_performance.analysis import _compiler_diagnostics
 from tests.glm5_2_precision.topology_suite import topology_config
@@ -23,8 +30,8 @@ from tests.glm5_2_precision.workflow import (
 
 
 def test_graph_feature_generates_only_compile_arguments() -> None:
-    eager = GraphFeatureConfig("eager").feature(device_type="cuda")
-    compiled = GraphFeatureConfig("inductor").feature(device_type="cuda")
+    eager = GraphFeatureConfig("eager").feature(device_type="npu")
+    compiled = GraphFeatureConfig("inductor").feature(device_type="npu")
 
     assert eager.arguments == ()
     assert compiled.arguments == (
@@ -34,12 +41,23 @@ def test_graph_feature_generates_only_compile_arguments() -> None:
     )
 
 
-def test_npugraphs_is_npu_only() -> None:
-    with pytest.raises(ValueError, match="NPU endpoint"):
+def test_graph_backends_are_npu_only() -> None:
+    with pytest.raises(NotImplementedError, match="only NPU"):
+        GraphFeatureConfig("inductor").feature(device_type="cuda")
+    with pytest.raises(NotImplementedError, match="only NPU"):
         GraphFeatureConfig("npugraphs").feature(device_type="cuda")
     assert "--compile.backend=npugraphs" in GraphFeatureConfig(
         "npugraphs"
     ).feature(device_type="npu").arguments
+
+
+def test_raw_compile_arguments_use_the_same_device_gate() -> None:
+    validate_graph_training_args(device_type="cuda", arguments=("--debug.seed=61",))
+    with pytest.raises(NotImplementedError, match="only NPU"):
+        validate_graph_training_args(
+            device_type="cuda",
+            arguments=("--compile.enable",),
+        )
 
 
 def test_graph_benchmark_compares_npu_eager_and_npu_graph() -> None:
@@ -47,6 +65,72 @@ def test_graph_benchmark_compares_npu_eager_and_npu_graph() -> None:
     assert GRAPH_CONFIG.reference.device_type == "npu"
     assert GRAPH_CONFIG.candidate.device_type == "npu"
     assert GRAPH_CONFIG.reference.topology == GRAPH_CONFIG.candidate.topology
+
+
+def test_combination_defaults_to_npu_self_consistency() -> None:
+    assert COMBINATION_CONFIG.kind == "self_consistency"
+    assert COMBINATION_CONFIG.reference.device_type == "npu"
+    assert COMBINATION_CONFIG.candidate.device_type == "npu"
+
+
+def test_combination_all_selector_is_bounded_to_eight_devices() -> None:
+    topologies = standard_topologies()
+
+    assert "single" in TOPOLOGY_NAMES
+    assert all(topologies[name].world_size <= 8 for name in TOPOLOGY_NAMES)
+    assert "ddp16" not in TOPOLOGY_NAMES
+
+
+def test_self_consistency_keeps_single_reference_for_distributed_candidate() -> None:
+    topologies = standard_topologies()
+    configured = topology_config(
+        COMBINATION_CONFIG,
+        topologies["fsdp8"],
+        precision="bf16",
+    )
+
+    assert configured.reference.topology.name == "single"
+    assert configured.candidate.topology.name == "fsdp8"
+
+
+def test_combined_cuda_performance_is_reserved() -> None:
+    topologies = standard_topologies()
+    base = FormalExperimentConfig(
+        name="cuda-performance",
+        kind="self_consistency",
+        reference=TrainingEndpoint("reference", "cuda", "0", topologies["single"]),
+        candidate=TrainingEndpoint("candidate", "cuda", "0", topologies["single"]),
+    )
+    selection = CombinationSelection(
+        objectives=frozenset(("performance",)),
+        reference_graph=GraphFeatureConfig("eager"),
+        candidate_graph=GraphFeatureConfig("eager"),
+        profiler=None,
+    )
+
+    with pytest.raises(NotImplementedError, match="only NPU"):
+        _apply_selection(
+            topology_config(base, topologies["single"], precision="bf16"),
+            selection,
+        )
+
+
+def test_npu_performance_does_not_require_profiler_collection() -> None:
+    topologies = standard_topologies()
+    selection = CombinationSelection(
+        objectives=frozenset(("performance",)),
+        reference_graph=GraphFeatureConfig("eager"),
+        candidate_graph=GraphFeatureConfig("inductor"),
+        profiler=None,
+    )
+
+    configured = _apply_selection(
+        topology_config(COMBINATION_CONFIG, topologies["single"], precision="bf16"),
+        selection,
+    )
+
+    assert "--profiler.enable_profiling" not in configured.reference.extra_args
+    assert "--profiler.enable_profiling" not in configured.candidate.extra_args
 
 
 def test_execution_plan_rejects_cross_feature_option_conflicts() -> None:
@@ -115,7 +199,8 @@ def test_combination_topologies_share_one_suite_root(tmp_path: Path) -> None:
     )
 
     assert single.storage_name == fsdp.storage_name
-    assert single.fixture_storage_name == single.storage_name
+    assert single.fixture_storage_name == fsdp.fixture_storage_name
+    assert single.fixture_storage_name != single.storage_name
     assert not single.storage_name.startswith("combo-")
     single_path = _artifact_directory(
         tmp_path, single, "candidate", single.candidate, 1

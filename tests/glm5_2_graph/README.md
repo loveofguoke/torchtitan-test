@@ -1,53 +1,33 @@
-# GLM-5.2 graph-mode entry points
+# GLM-5.2 graph mode
 
-For the isolated CANN 9.1 NPU Inductor launcher, persistent compiler cache,
-automatic per-run reports, and Chinese operating instructions, see:
+This package owns only the graph execution policy and its convenience entry
+points. It does not implement a second precision, performance, checkpoint, or
+stability framework. Graph-aware comparisons delegate to
+`tests/glm5_2_combination`, which reuses the formal fixed-checkpoint and
+fixed-token workflow.
 
-- `../glm5_2_graph_debug/run_npu_inductor.sh`
-- `../glm5_2_graph_debug/RUN_NPU_INDUCTOR.md`
-- `../glm5_2_graph_debug/NPU_INDUCTOR_ENV_ADAPTATION_REPORT.md`
-- `../glm5_2_graph_debug/HUAWEI_DELIVERY.md`
+Current executable support is Ascend NPU only. The `cuda` device vocabulary is
+reserved, but selecting Inductor or NPUGraph for a CUDA endpoint raises
+`NotImplementedError` until the CUDA `torch.compile` policy is defined.
 
-This launcher is an environment/debugging aid. It does not replace the formal
-precision, performance, stability, or central combination acceptance tests.
-
-Graph mode is an independent feature owned by the combination experiment. It
-does not modify TorchTitan and does not configure precision or performance
-modules. Ascend-only backend validation lives in TorchTitanTurbo.
-
-For direct execution without the debug wrapper, place every compiler-generated
-file in the persistent user cache before running any graph command:
-
-```bash
-GRAPH_CACHE_ROOT=/workspace/y50064852_yyb/.cache/torchtitan-test/graph_mode/cann91-torch214-triton321
-mkdir -p "$GRAPH_CACHE_ROOT"/{inductor,triton,torch_compile_debug}
-export TORCHINDUCTOR_CACHE_DIR="$GRAPH_CACHE_ROOT/inductor"
-export TRITON_CACHE_DIR="$GRAPH_CACHE_ROOT/triton"
-export TORCH_COMPILE_DEBUG_DIR="$GRAPH_CACHE_ROOT/torch_compile_debug"
-```
-
-The `glm5_2_graph_debug/run_npu_inductor.sh` launcher applies this policy
-automatically, including for its `probe` action that calls `compile_probe.py`.
-
-The supported execution policies match TorchTitan's current compile contract:
+Supported modes are:
 
 - `eager`: no compile arguments;
-- `inductor`: `torch.compile` with the Inductor backend;
+- `inductor`: TorchTitan `torch.compile`, backend `inductor`;
 - `npugraphs`: NPU-only NPUGraph backend, model component only.
 
-There is no `inductor-dynamic` option because the installed TorchTitan
-`CompileConfig` does not expose a dynamic-shape field.
+## Direct NPU training
 
-## Normal training entry point
-
-Graph mode is available to ordinary training, not only to the test workflow.
-Eager is the default and requires no compile option:
+Eager:
 
 ```bash
+export ASCEND_RT_VISIBLE_DEVICES=4
+unset CUDA_VISIBLE_DEVICES
+
 NGPU=1 LOG_RANK=0 MODULE=glm5 CONFIG=glm5_debugmodel ./run_train.sh
 ```
 
-Enable TorchTitan's `torch.compile` path with Inductor:
+Inductor:
 
 ```bash
 NGPU=1 LOG_RANK=0 MODULE=glm5 CONFIG=glm5_debugmodel ./run_train.sh \
@@ -56,259 +36,222 @@ NGPU=1 LOG_RANK=0 MODULE=glm5 CONFIG=glm5_debugmodel ./run_train.sh \
   --compile.backend=inductor
 ```
 
-On NPU, `run_train.sh` selects `train_npu.py`, which imports TorchTitanTurbo
-before starting TorchTitan. The NPUGraph prototype uses the same public
-TorchTitan configuration:
+NPUGraph:
 
 ```bash
-export ASCEND_RT_VISIBLE_DEVICES=4
-unset CUDA_VISIBLE_DEVICES
-
 NGPU=1 LOG_RANK=0 MODULE=glm5 CONFIG=glm5_debugmodel ./run_train.sh \
   --compile.enable \
   --compile.components=model \
   --compile.backend=npugraphs
 ```
 
-These commands establish functional graph-mode training. The experiment below
-then checks accuracy, graph diagnostics, distributed composition, and
-performance using the same underlying options.
+`--training.disable_cuda_graphs` controls TorchTitan whole-step CUDA Graph and
+is independent from `--compile.enable`. Keep it disabled for the current NPU
+graph experiments, especially PP.
 
-## Multi-card graph-mode training
+For the validated CANN environment, persistent cache, and detailed compiler
+diagnostics, use:
 
-Run from the repository root. The shared eight-card profile uses local batch 8,
-global batch 64, and sequence length 128, expressed through TorchTitan's current
-token-budget CLI:
+- `tests/glm5_2_graph_debug/run_npu_inductor.sh`
+- `tests/glm5_2_graph_debug/RUN_NPU_INDUCTOR.md`
+
+For ordinary run-through validation, prefer the shared smoke runner over
+manually spelling every topology argument:
 
 ```bash
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-unset CUDA_VISIBLE_DEVICES
-export TORCHTITAN_DEVICE=npu
-
-NGPU=8 LOG_RANK=0 MODULE=glm5 CONFIG=glm5_debugmodel ./run_train.sh \
-  --training.steps=10 \
-  --training.disable_cuda_graphs \
-  --training.num_tokens_per_microbatch_per_dp_rank=1024 \
-  --training.num_tokens_per_train_step=8192 \
-  --training.max_context_length=128 \
-  --compile.enable \
-  --compile.components=model \
-  --compile.backend=inductor \
-  --parallelism.spmd_backend=partial_dtensor \
-  --parallelism.data_parallel_replicate_degree=1 \
-  --parallelism.data_parallel_shard_degree=8 \
-  --parallelism.context_parallel_degree=1 \
-  --parallelism.tensor_parallel_degree=1 \
-  --parallelism.pipeline_parallel_degree=1 \
-  --parallelism.expert_parallel_degree=1
+python tests/glm5_2_smoke/train_smoke.py \
+  --device npu --topology all --graph inductor \
+  --compiler-diagnostics
 ```
 
-This first command validates FSDP8. `NGPU` must equal the product of the dense
-parallel degrees. Keep every degree explicit when changing topology so values
-from the TOML configuration cannot leak into the experiment. The authoritative
-topologies and their generated arguments live in
-`tests/glm5_2_common/topology.py`; common focused choices are:
+Use `--topology single`, one topology, or `--topologies` for a focused run.
 
-| Topology | Non-unit degree and required extra option |
-|----------|-------------------------------------------|
-| DDP8 | `data_parallel_replicate_degree=8` |
-| FSDP8 | `data_parallel_shard_degree=8` |
-| TP8 | `tensor_parallel_degree=8`, plus `--parallelism.no-enable-sequence-parallel` |
-| CP8 | `context_parallel_degree=8` |
-| FSDP2 + TP4 | `data_parallel_shard_degree=2`, `tensor_parallel_degree=4`, plus `--parallelism.no-enable-sequence-parallel` |
+## Eager versus graph acceptance
 
-`--training.disable_cuda_graphs` disables TorchTitan Trainer's whole-step CUDA
-Graph capture, which is independent from this experiment's `torch.compile`
-path. Keep it set for PP, because the Trainer CUDA Graph path does not support
-pipeline parallelism. PP8 also requires
-`--parallelism.num_pp_microbatches=8` with the shared batch profile.
-
-The 10-step command is a functional smoke run. After all ranks complete compile,
-forward, backward, optimizer, and collectives, increase the configured steps for
-formal precision and steady-state performance tests. Complete output is written
-to `train_runs/<run-name>/runtime.log`.
-
-## Fast NPU eager versus graph probe
-
-The probe uses the same fixed seed checkpoint and token plan as the precision
-framework. Therefore `--data` is required before the first capture. The
-fixture may be generated on either endpoint; this example generates it on the
-NPU server:
-
-```bash
-export ASCEND_RT_VISIBLE_DEVICES=4
-unset CUDA_VISIBLE_DEVICES
-
-python tests/glm5_2_graph/compile_probe.py \
-  --data --data-device npu --topology single \
-  --objectives precision \
-  --reference-graph eager --candidate-graph inductor
-
-python tests/glm5_2_graph/compile_probe.py \
-  --capture reference --topology single \
-  --objectives precision \
-  --reference-graph eager --candidate-graph inductor \
-  --compiler-diagnostics
-
-python tests/glm5_2_graph/compile_probe.py \
-  --capture candidate --topology single \
-  --objectives precision \
-  --reference-graph eager --candidate-graph inductor \
-  --compiler-diagnostics
-
-python tests/glm5_2_graph/compile_probe.py \
-  --compare --topology single \
-  --objectives precision \
-  --reference-graph eager --candidate-graph inductor \
-  --compiler-diagnostics --require-all
-```
-
-The first command creates a config-digested directory below
-`precision_fixtures/`. The two captures run NPU eager as the reference and NPU
-Inductor as the candidate with the same checkpoint and token plan. A matching
-pre-digest fixture is renamed automatically and reused. Each capture prints the
-exact run directory and always writes the complete command, stdout, stderr,
-graph breaks, recompiles, and backend failures to:
+The primary graph acceptance experiment is same-device self-consistency:
 
 ```text
-combination_runs/<combination-id>/single/candidate-r1/runtime.log
-combination_runs/<combination-id>/single/reference-r1/runtime.log
+reference = NPU eager, single card
+candidate = NPU eager/Inductor/NPUGraph, selected topology
 ```
 
-All configured repeats are captured when `--repeat` is omitted. Use
-`--repeat 1` for one quick smoke run. To probe NPUGraph instead, replace
-`--candidate-graph inductor` with `--candidate-graph npugraphs` in all
-commands.
+The fixed reference is captured once and reused by every candidate topology.
+The same fixture is reused across graph modes and objectives when the training
+configuration is unchanged.
 
-`torch_compile_debug/` is PyTorch compiler output, not the runtime log. Enable
-and place it explicitly when detailed Dynamo/Inductor artifacts are needed:
-
-```bash
-export TORCH_COMPILE_DEBUG=1
-export TORCH_COMPILE_DEBUG_DIR=/workspace/y50064852_yyb/.cache/torchtitan-test/graph_mode/cann91-torch214-triton321/torch_compile_debug
-```
-
-## Full NPU graph precision experiment
-
-The full experiment uses the same four stages but the 5000-step configuration
-from `precision_benchmark.py`:
+Fast single-card probe:
 
 ```bash
 export ASCEND_RT_VISIBLE_DEVICES=4
 unset CUDA_VISIBLE_DEVICES
 
-python tests/glm5_2_graph/precision_benchmark.py \
+python tests/glm5_2_graph/compile_probe.py \
   --data --data-device npu --topology single \
   --objectives precision \
   --reference-graph eager --candidate-graph inductor
 
-python tests/glm5_2_graph/precision_benchmark.py \
+python tests/glm5_2_graph/compile_probe.py \
   --capture reference --topology single \
   --objectives precision \
   --reference-graph eager --candidate-graph inductor \
   --compiler-diagnostics
 
-python tests/glm5_2_graph/precision_benchmark.py \
+python tests/glm5_2_graph/compile_probe.py \
   --capture candidate --topology single \
   --objectives precision \
   --reference-graph eager --candidate-graph inductor \
   --compiler-diagnostics
 
-python tests/glm5_2_graph/precision_benchmark.py \
+python tests/glm5_2_graph/compile_probe.py \
   --compare --topology single \
   --objectives precision \
   --reference-graph eager --candidate-graph inductor \
   --compiler-diagnostics --require-all
 ```
 
-Use the central combination runner for graph + distributed + precision +
-performance experiments. The graph scripts above are single-topology
-NPU eager-versus-graph entry points. The central combination experiment keeps
-its independent CUDA-reference/NPU-candidate endpoint configuration.
+Use `precision_benchmark.py` for the 5000-step configuration and
+`performance_benchmark.py` as the graph-performance convenience entry point.
+Both support:
 
-See `tests/glm5_2_combination/README.md` for complete two-endpoint and
-all-topology commands.
+```text
+--topology single
+--topology fsdp8
+--topologies ddp8,fsdp8,tp8
+--topology all
+```
 
-## Multi-card precision and performance tests
-
-The entry points in `tests/glm5_2_graph` intentionally register only the
-`single` topology. Multi-card acceptance must use the combination runner, which
-owns the common topology definitions and composes graph, precision, and
-performance settings at one execution boundary.
-
-The formal multi-card workflow uses the combination experiment's independent
-GPU eager reference and NPU graph candidate endpoints. Generate the fixed
-checkpoint and token plan once, then synchronize the generated
-`precision_fixtures/<fixture-id>/` directory to the other server:
+For a distributed candidate, export the number of devices required by that
+topology and run the same complete fixture, reference, candidate, and compare
+sequence. This example uses `fsdp8`; it can be replaced by any registered
+topology:
 
 ```bash
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 unset CUDA_VISIBLE_DEVICES
 
-python tests/glm5_2_combination/combination_benchmark.py \
+python tests/glm5_2_graph/precision_benchmark.py \
+  --data --data-device npu --topology fsdp8 \
+  --reference-graph eager --candidate-graph inductor
+python tests/glm5_2_graph/precision_benchmark.py \
+  --capture reference --topology fsdp8 \
+  --reference-graph eager --candidate-graph inductor
+python tests/glm5_2_graph/precision_benchmark.py \
+  --capture candidate --topology fsdp8 \
+  --reference-graph eager --candidate-graph inductor
+python tests/glm5_2_graph/precision_benchmark.py \
+  --compare --topology fsdp8 --require-all \
+  --reference-graph eager --candidate-graph inductor
+```
+
+For the complete graph-acceptance suite, change the selector to `all` so every
+registered candidate topology is captured and compared against the reusable
+single-card eager reference:
+
+```bash
+export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+unset CUDA_VISIBLE_DEVICES
+
+python tests/glm5_2_graph/precision_benchmark.py \
   --data --data-device npu --topology all \
-  --objectives precision,performance \
+  --reference-graph eager --candidate-graph inductor
+python tests/glm5_2_graph/precision_benchmark.py \
+  --capture reference --topology all \
+  --reference-graph eager --candidate-graph inductor
+python tests/glm5_2_graph/precision_benchmark.py \
+  --capture candidate --topology all \
+  --reference-graph eager --candidate-graph inductor
+python tests/glm5_2_graph/precision_benchmark.py \
+  --compare --topology all --require-all \
   --reference-graph eager --candidate-graph inductor
 ```
 
-Capture the eager reference on the GPU server:
+CUDA eager remains available in the ordinary precision/smoke suites. Compiled
+CUDA graph commands are intentionally not shown as runnable examples because
+selecting `--device gpu` with `inductor` or `npugraphs` currently raises
+`NotImplementedError`.
 
-```bash
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-unset ASCEND_RT_VISIBLE_DEVICES
+The reference remains single-card even when the candidate is FSDP8, TP8, or
+another distributed topology. Run `--capture reference` with at least one
+visible NPU; the artifact is shared by all selected candidates.
 
-python tests/glm5_2_combination/combination_benchmark.py \
-  --capture reference --topology all \
-  --objectives precision,performance \
-  --reference-graph eager --candidate-graph inductor \
-  --compiler-diagnostics
-```
-
-Capture the graph candidate on the NPU server:
-
-```bash
-export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-unset CUDA_VISIBLE_DEVICES
-
-python tests/glm5_2_combination/combination_benchmark.py \
-  --capture candidate --topology all \
-  --objectives precision,performance \
-  --reference-graph eager --candidate-graph inductor \
-  --compiler-diagnostics
-```
-
-Synchronize `combination_artifacts` and the profiler-containing
-`combination_runs`, then compare on either server or a CPU-only report host:
-
-```bash
-python tests/glm5_2_combination/combination_benchmark.py \
-  --compare --topology all \
-  --objectives precision,performance \
-  --reference-graph eager --candidate-graph inductor \
-  --compiler-diagnostics --require-all
-```
-
-Start with `--topology fsdp8` for one focused multi-card test, or use
-`--topologies ddp8,fsdp8,tp8` for a subset. The data, reference, candidate, and
-compare stages must use the same topology, graph, objectives, profiler,
-diagnostics, and training configuration because these fields define the
-combination identity.
-
-Precision acceptance compares GPU eager and NPU graph loss and grad-norm traces
-produced from the same initial state and fixed tokens. Performance acceptance
-compares profiler-backed throughput and step-time statistics from both
-endpoints. Run at least 10 steps so startup and warm-up do not dominate the
-result. Use `--objectives precision` or
-`--objectives performance` to isolate one dimension. Omitting `--repeat` runs
-every configured repeat; `--repeat 1` is only a quick diagnostic.
-
-Every topology and role keeps a complete runtime log:
+Any pair is valid on NPU:
 
 ```text
-combination_runs/<combination-id>/<topology>/reference-r<repeat>/runtime.log
-combination_runs/<combination-id>/<topology>/candidate-r<repeat>/runtime.log
+eager       vs eager
+eager       vs inductor
+eager       vs npugraphs
+inductor    vs inductor
+inductor    vs npugraphs
+npugraphs   vs npugraphs
 ```
 
-Review graph breaks, recompiles, and backend failures together with the
-numerical and performance reports. A zero exit status alone is not sufficient
-graph-mode acceptance.
+The normal acceptance baseline is eager single versus the selected graph
+candidate. Other pairs are diagnostic experiments.
+
+## Command-line parameters
+
+`compile_probe.py`, `precision_benchmark.py`, and
+`performance_benchmark.py` use the combination executor, so they share the
+same options. Their entry-point defaults differ only where noted below.
+
+| Parameter | Purpose and choices | Default |
+|---|---|---|
+| `--data` | Generate the shared step-0 checkpoint and fixed token plan, then exit. | no action; one action is required |
+| `--capture reference\|candidate` | Run one endpoint and save its portable metrics artifact. | no action; one action is required |
+| `--compare` | Compare existing captures on CPU and generate the suite report. | no action; one action is required |
+| `--list-topologies` | Print every selectable topology and its degrees. | no action; one action is required |
+| `--topology` | Select one candidate topology or `all`. | `single` for all graph entry points |
+| `--topologies` | Comma-separated candidate subset such as `ddp8,fsdp8,tp8`; mutually exclusive with `--topology`. | unset |
+| `--repeat` | Capture only repeat `N`. If omitted, capture both configured repeats. | all configured repeats (`2`) |
+| `--precision` | `fp32`, `bf16`, or `full-bf16`. `bf16` keeps FP32 master training with BF16 parameters; `full-bf16` changes the training dtype too. | `bf16` from the entry config |
+| `--objectives` | `precision`, `performance`, or `precision,performance`. | `precision` for probe/precision; `performance` for performance entry point |
+| `--reference-graph` | Reference execution: `eager`, `inductor`, or `npugraphs`. | `eager` |
+| `--candidate-graph` | Candidate execution: `eager`, `inductor`, or `npugraphs`. | `inductor` |
+| `--compile-loss` | Compile `loss` in addition to `model`. NPUGraph is currently model-only. | disabled |
+| `--compiler-diagnostics` | Record graph-break, recompile, and dynamic-shape diagnostics for compiled endpoints. | disabled |
+| `--profiler-preset` | `off`, `overview`, `comparison`, `standard`, `distributed`, `kernel`, or `runtime`. | `off` |
+| `--profile-skip-steps` | Steps before the scheduled Profiler window. | `10` |
+| `--profile-warmup-steps` | Profiler warmup steps. | `1` |
+| `--profile-active-steps` | Recorded Profiler steps. | `3` |
+| `--data-device` | Fixture-generation backend override. The generic choices are `cuda` and `npu`; current NPU graph entry points use `npu`. | inferred from the NPU visibility variable |
+| `--force` | Replace an existing valid fixture/capture instead of reusing it. | disabled |
+| `--require-all` | Make compare fail unless every selected topology and repeat is present. | disabled |
+
+The fixed training profile is 5000 steps, local batch 8, global batch 64,
+sequence length 128, seed 61, and two repeats. `compile_probe.py` overrides
+that profile to 10 steps, batch 1, sequence length 32 for a fast functional
+check.
+
+Capture and compare commands must use identical precision, selected graph
+modes, compiled components, compiler diagnostics, objectives, and profiler
+settings. The `--data` phase only depends on the model/training input contract,
+so it does not need graph, objective, or profiler flags.
+
+## Report contents and acceptance
+
+Graph entry points do not define a separate report format. They produce the
+same formal precision and performance reports as the combination executor,
+with reference/candidate graph mode, compiled components, diagnostics setting,
+and topology recorded in the experiment identity. The precision report shows
+loss and grad-norm curves plus formal error statistics; the performance report
+shows each endpoint's step time/throughput and candidate speedup, with Profiler
+details only when a preset is enabled.
+
+For the primary graph acceptance experiment, precision PASS/FAIL comes from
+NPU eager-single versus the selected NPU graph candidate. Performance numbers
+are diagnostic unless a separate regression target is declared. A compile
+that merely launches through smoke is not sufficient evidence of graph-mode
+precision acceptance.
+
+## Outputs
+
+```text
+precision_fixtures/<fixture-id>/
+combination_runs/<experiment-id>/<topology>/<role>-r<repeat>/runtime.log
+combination_artifacts/<experiment-id>/<topology>/<role>-r<repeat>/
+combination_reports/<experiment-id>/
+```
+
+Compiler cache and `torch_compile_debug` output are not experiment reports.
+Place them outside the repository or under an ignored cache root.

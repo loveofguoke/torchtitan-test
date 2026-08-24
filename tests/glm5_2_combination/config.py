@@ -6,43 +6,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
 
 from tests.glm5_2_common.execution import TrainingFeature
+from tests.glm5_2_graph.config import GraphFeatureConfig, GraphMode
 from tests.glm5_2_performance.config import ProfilerPreset
 
 
-GraphMode = Literal["eager", "inductor", "npugraphs"]
-
-
-@dataclass(frozen=True)
-class GraphFeatureConfig:
-    mode: GraphMode = "eager"
-    components: tuple[str, ...] = ("model",)
-    diagnostics: bool = False
-
-    def feature(self, *, device_type: str) -> TrainingFeature:
-        if self.mode == "eager":
-            return TrainingFeature(name="graph:eager", metadata={"mode": "eager"})
-        if self.mode == "npugraphs" and device_type != "npu":
-            raise ValueError("npugraphs is available only for an NPU endpoint")
-        if self.mode == "npugraphs" and self.components != ("model",):
-            raise ValueError("npugraphs supports model compilation only")
-        environment = (
-            {"TORCH_LOGS": "graph_breaks,recompiles,dynamic"}
-            if self.diagnostics
-            else {}
-        )
-        return TrainingFeature(
-            name=f"graph:{self.mode}",
-            arguments=(
-                "--compile.enable",
-                f"--compile.components={','.join(self.components)}",
-                f"--compile.backend={self.mode}",
-            ),
-            environment=environment,
-            metadata={"mode": self.mode, "components": list(self.components)},
-        )
+__all__ = ["GraphFeatureConfig", "GraphMode", "ProfilerFeatureConfig"]
 
 
 @dataclass(frozen=True)

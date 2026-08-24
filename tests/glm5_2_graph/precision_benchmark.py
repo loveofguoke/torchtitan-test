@@ -2,7 +2,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Single-topology graph precision entry point."""
+"""NPU eager-versus-graph precision entry point."""
 
 from dataclasses import replace
 from pathlib import Path
@@ -13,12 +13,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tests.glm5_2_combination.combination_benchmark import (  # noqa: E402
     CONFIG as COMBINATION_CONFIG,
     TOPOLOGIES,
+    TOPOLOGY_NAMES,
 )
 from tests.glm5_2_combination.workflow import run_combination_cli  # noqa: E402
 
 
 # Graph-mode validation compares two executions on the same NPU backend. The
-# central combination entry point remains the CUDA-to-NPU composition test.
+# central combination entry point composes the same NPU graph contract with
+# optional performance profiling and distributed candidate topologies.
 CONFIG = replace(
     COMBINATION_CONFIG,
     name="npu-graph",
@@ -41,5 +43,7 @@ if __name__ == "__main__":
         CONFIG,
         __file__,
         topologies=TOPOLOGIES,
-        topology_names=("single",),
+        topology_names=TOPOLOGY_NAMES,
+        default_topology="single",
+        default_objectives="precision",
     )

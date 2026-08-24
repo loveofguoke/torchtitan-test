@@ -15,6 +15,7 @@ from typing import Sequence
 
 from tests.glm5_2_common.execution import compose_execution
 from tests.glm5_2_common.topology import ParallelTopology, select_topologies
+from tests.glm5_2_graph.config import GraphFeatureConfig
 from tests.glm5_2_performance.analysis import build_analysis, render_html_report
 from tests.glm5_2_performance.config import profiler_presets
 from tests.glm5_2_precision.artifacts import PrecisionArtifactReader
@@ -33,7 +34,7 @@ from tests.glm5_2_precision.workflow import (
     prepare_fixture,
 )
 
-from .config import GraphFeatureConfig, ProfilerFeatureConfig
+from .config import ProfilerFeatureConfig
 
 
 @dataclass(frozen=True)
@@ -47,8 +48,6 @@ class CombinationSelection:
         unknown = self.objectives - {"precision", "performance"}
         if unknown or not self.objectives:
             raise ValueError(f"invalid combination objectives: {sorted(unknown)}")
-        if "performance" in self.objectives and self.profiler is None:
-            raise ValueError("performance objective requires a profiler feature")
 
 
 def _combination_storage_base(
@@ -123,6 +122,11 @@ def _apply_selection(
         ("reference", config.reference, selection.reference_graph),
         ("candidate", config.candidate, selection.candidate_graph),
     ):
+        if "performance" in selection.objectives and endpoint.device_type != "npu":
+            raise NotImplementedError(
+                "combined performance experiments currently support only NPU "
+                "endpoints; the CUDA performance interface is reserved"
+            )
         features = [graph.feature(device_type=endpoint.device_type)]
         if selection.profiler is not None:
             features.append(selection.profiler.feature())
@@ -149,7 +153,7 @@ def _apply_selection(
     )
     return replace(
         selected,
-        fixture_name=selected.storage_name,
+        fixture_name=config.fixture_name,
         report_root="combination_reports/precision",
     )
 
@@ -189,25 +193,26 @@ def _performance_report(
         raise FileNotFoundError(metrics_path)
     analysis = build_analysis(run_directory, metrics_path=metrics_path)
     profiler = selection.profiler
-    assert profiler is not None
     run_name = f"{role}-{endpoint.device_type}-{endpoint.topology.slug}-r{repeat}"
     manifest = {
         "run_name": run_name,
         "device": endpoint.device_type,
         "topology": endpoint.topology.name,
-        "preset": profiler.preset.name,
+        "preset": profiler.preset.name if profiler is not None else "off",
         "config": {
             "steps": config.training.steps,
             "local_batch_size": config.training.local_batch_size,
             "global_batch_size": config.training.global_batch_size,
             "sequence_length": config.training.sequence_length,
-            "skip_steps": profiler.skip_steps,
-            "warmup_steps": profiler.warmup_steps,
-            "active_steps": profiler.active_steps,
+            "skip_steps": profiler.skip_steps if profiler is not None else 0,
+            "warmup_steps": profiler.warmup_steps if profiler is not None else 0,
+            "active_steps": profiler.active_steps if profiler is not None else 0,
             "extra_args": list(endpoint.extra_args),
             "environment": endpoint.environment,
         },
-        "profiler_environment": profiler.preset.environment(),
+        "profiler_environment": (
+            profiler.preset.environment() if profiler is not None else {}
+        ),
         "preflight": {},
     }
     output = (
@@ -329,6 +334,8 @@ def run_combination_cli(
     *,
     topologies: dict[str, ParallelTopology],
     topology_names: Sequence[str],
+    default_topology: str = "all",
+    default_objectives: str = "precision,performance",
 ) -> None:
     parser = argparse.ArgumentParser(description="Composable GLM-5.2 experiment")
     actions = parser.add_mutually_exclusive_group(required=True)
@@ -336,11 +343,16 @@ def run_combination_cli(
     actions.add_argument("--capture", choices=("reference", "candidate"))
     actions.add_argument("--compare", action="store_true")
     actions.add_argument("--list-topologies", action="store_true")
-    parser.add_argument("--topology", choices=("all", *topology_names), default="all")
-    parser.add_argument("--topologies", help="comma-separated topology subset or all")
+    topology_selection = parser.add_mutually_exclusive_group()
+    topology_selection.add_argument(
+        "--topology", choices=("all", *topology_names)
+    )
+    topology_selection.add_argument(
+        "--topologies", help="comma-separated topology subset or all"
+    )
     parser.add_argument("--repeat", type=int)
     parser.add_argument("--precision", choices=("fp32", "bf16", "full-bf16"))
-    parser.add_argument("--objectives", default="precision,performance")
+    parser.add_argument("--objectives", default=default_objectives)
     graph_choices = ("eager", "inductor", "npugraphs")
     parser.add_argument(
         "--reference-graph", choices=graph_choices, default="eager"
@@ -352,8 +364,8 @@ def run_combination_cli(
     parser.add_argument("--compiler-diagnostics", action="store_true")
     parser.add_argument(
         "--profiler-preset",
-        choices=tuple(profiler_presets()),
-        default="comparison",
+        choices=("off", *profiler_presets()),
+        default="off",
     )
     parser.add_argument("--profile-skip-steps", type=int, default=10)
     parser.add_argument("--profile-warmup-steps", type=int, default=1)
@@ -364,8 +376,13 @@ def run_combination_cli(
     args = parser.parse_args()
     selected = select_topologies(
         available=topology_names,
-        topology=None if args.topologies else args.topology,
+        topology=args.topology,
         topologies=args.topologies,
+        default=(
+            tuple(topology_names)
+            if default_topology == "all"
+            else (default_topology,)
+        ),
     )
     if args.list_topologies:
         for name in topology_names:
@@ -382,7 +399,7 @@ def run_combination_cli(
             warmup_steps=args.profile_warmup_steps,
             active_steps=args.profile_active_steps,
         )
-        if "performance" in objectives
+        if "performance" in objectives and args.profiler_preset != "off"
         else None
     )
     selection = CombinationSelection(

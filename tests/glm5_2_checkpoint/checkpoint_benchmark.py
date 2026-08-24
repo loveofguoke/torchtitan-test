@@ -52,6 +52,7 @@ from tests.glm5_2_checkpoint.topology_suite import (  # noqa: E402
     legacy_checkpoint_output_names,
     run_checkpoint_topology_suite,
 )
+from tests.glm5_2_graph.config import validate_graph_training_args  # noqa: E402
 from tests.glm5_2_precision.artifacts import read_captured_metrics  # noqa: E402
 from tests.glm5_2_precision.standards import (  # noqa: E402
     compute_error_metrics,
@@ -1155,6 +1156,10 @@ def main() -> int:
 
     root = Path(__file__).resolve().parents[2]
     device, visible_env, visible_devices = _device_from_environment(args.device)
+    validate_graph_training_args(
+        device_type=device,
+        arguments=args.extra_train_arg,
+    )
     output_name_args = {
         "precision": args.precision,
         "total_steps": args.total_steps,

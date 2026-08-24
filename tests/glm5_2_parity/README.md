@@ -5,12 +5,42 @@ This framework lives in `torchtitan-test` and imports the source-installed
 repository root. NPU captures also import source-installed `torchtitanturbo`
 before PyTorch selects its device backend.
 
+Parity scenarios are single-endpoint exploratory runs. They do not expose
+`--topology` or `--topology all`; distributed long-training acceptance belongs
+to the formal precision suite. The GPU/NPU and Titan/HF command sets below are
+therefore the complete device matrix for this package.
+
 The GLM-5.2 parity suite supports four execution modes:
 
 - `paired` (default): run two endpoints in one process and immediately report.
 - `prepare`: create one immutable fixture containing exact model state and data.
 - `capture`: run one endpoint and write a portable, checksummed artifact.
 - `compare`: compare two artifacts on CPU and write the same HTML diagnostics.
+
+## Command-line parameters
+
+Offline scenario files expose one required stage at a time:
+
+| Parameter | Purpose | Default |
+|---|---|---|
+| `--data` | Materialize the exact model state, test plan, and every case tensor. | no stage; one stage is required |
+| `--actual-capture` | Run the configured `actual` endpoint and save its portable trace artifact. | no stage; one stage is required |
+| `--expected-capture` | Run the configured `expected` endpoint and save its portable trace artifact. | no stage; one stage is required |
+| endpoint alias | Scenario-generated alias such as `--npu-capture`, `--gpu-capture`, `--titan-gpu-capture`, or `--hf-gpu-capture`; equivalent to its actual/expected stage. | scenario-dependent |
+| `--compare` | Compare the two complete artifacts on CPU and render the HTML report. | no stage; one stage is required |
+| `--print-config` | Print the effective scenario, digests, and resolved fixture/artifact/report paths without running pytest. | no stage; one stage is required |
+
+Paired scenarios expose `--run` and `--print-config`; `--run` constructs both
+endpoints in one process and immediately reports. There are intentionally no
+CLI overrides for precision, data case, layers, components, model size, seeds,
+endpoint, or device. Those values live in the copied scenario file's `CONFIG`
+block so its filename and configuration digest identify one reproducible
+experiment. The current scenario values are therefore the defaults and the
+only values for that file.
+
+Offline stages have no `--force` option: fixtures and completed artifacts are
+immutable. Choose a new scenario filename/configuration or deliberately remove
+the exact failed/obsolete output before rerunning it.
 
 Artifacts contain a versioned JSON manifest, exact fixture tensors, module
 activation and gradient traces, discrete routing selections, logits, loss,
@@ -68,6 +98,25 @@ hierarchy: linked contents, a summary hero and status cards, card-style charts,
 consistent status colors, and sticky headers for every table. Trace
 content and top-k boundary diagnostics are unchanged. Existing captures can be
 reused; rerun only `compare` to render the updated HTML.
+
+## Report contents and acceptance
+
+The exploratory HTML begins with the effective configuration and summary,
+then presents forward values, activation gradients, parameter gradients,
+canonical parameters, logits, loss, and discrete indexer/router decisions in
+semantic execution order. Numerical rows include dtype/shape, max and mean
+absolute error, relative metrics, cosine similarity, mismatch count, trend,
+and status. Top-k rows include readable ranked scores for all positions,
+cutoff/precision bands, changed candidates, boundary classification, and the
+same-layer downstream numerical check.
+
+`PASS` means every decisive requested component satisfies its configured
+tolerance. `BOUNDARY_PASS` is the documented BF16 discrete cutoff case and is
+kept visually distinct from exact PASS. `TRACE` is diagnostic-only evidence;
+it does not independently fail the suite. `FAIL` identifies the first observed
+checkpoint outside its contract, not necessarily the root-cause module. This
+report is for localization; long-training delivery acceptance remains owned by
+`glm5_2_precision`.
 
 ## Existing paired command
 

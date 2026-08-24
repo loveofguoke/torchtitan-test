@@ -48,6 +48,56 @@ when needed, and acts as a Linux child subreaper so abruptly killed torchrun
 workers do not remain as orphaned or zombie processes. Every runtime log ends
 with a `Process cleanup` record; a surviving process group fails the test.
 
+## Command-line parameters
+
+| Parameter | Purpose and choices | Default |
+|---|---|---|
+| `--data` | Generate the shared step-0 checkpoint and fixed token plan, then exit. | disabled; ordinary execution may create a missing fixture for compatibility |
+| `--device` | `cuda` or `npu`; normally inferred from the exported visibility variable when omitted. | inferred |
+| `--topology` | One common topology or `all`. | `single` |
+| `--precision` | `fp32`, `bf16`, or `full-bf16`. | `bf16` |
+| `--total-steps` | Final optimizer step for uninterrupted and resumed jobs. | `20` |
+| `--split-step` | Complete checkpoint step from which the restarted job must resume. | `10` |
+| `--local-batch-size` | Per-DP-rank local batch used by the shared token contract. | `8` |
+| `--global-batch-size` | Global samples per optimizer step. | `64` |
+| `--sequence-length` | Tokens per sample. | `128` |
+| `--seed` | Model, data, and trainer seed. | `61` |
+| `--comparison` | `exact` for bitwise equality, or `tolerance` for numerical state/metric thresholds while structural and input checks remain exact. | `exact` |
+| `--state-atol`, `--state-rtol` | Absolute and relative checkpoint-tensor tolerances in tolerance mode. | `0.01`, `0.01` |
+| `--loss-atol`, `--loss-rtol` | Absolute and relative loss tolerances in tolerance mode. | `0.01`, `0.01` |
+| `--grad-relative-limit` | Maximum relative grad-norm difference in tolerance mode. | `0.05` |
+| `--async-mode` | TorchTitan save path: `disabled`, `async`, or `async_with_pinned_mem`. | `disabled` |
+| `--failure-mode` | Repeatable: `graceful`, `sigint`, `sigterm`, `sigkill`, `incomplete`, `rank-error`, `rank-sigkill`, or `all`. | `graceful` |
+| `--failure-rank` | Target rank for `rank-error` and `rank-sigkill`. | rank 1 distributed; rank 0 single-card |
+| `--interrupt-step` | Step at which abrupt failure is injected. Must be after the split checkpoint. | `split-step + 1` |
+| `--failure-timeout` | Seconds allowed for a failure scenario before the controller aborts it. | `1800` |
+| `--restart-delay` | Seconds allowed for accelerator/process cleanup before restart. | `2` |
+| `--extra-train-arg` | Append one raw TorchTitan argument; repeat for graph or other orthogonal features. | none |
+| `--run-tag` | Short output-identity label for feature variants such as `inductor`. | unset |
+| `--force` | Replace completed topology output. Without it, PASS members are skipped and incomplete/failed members are archived and retried. | disabled |
+
+The fixture-defining options (`precision`, steps, batches, sequence length,
+seed, run tag, extra training arguments, async mode, comparison mode, and
+requested failure modes) must match between `--data` and execution. For
+`--topology all`, one topology-independent fixture is created and all members
+are stored below one suite directory.
+
+## Report contents and acceptance
+
+The report contains one row per failure mode with the injected interruption,
+observed exit status, actual checkpoint loaded on every rank, incomplete-latest
+fallback result, process-cleanup result, and scenario verdict. Expanded
+diagnostics show loss/grad-norm comparisons before and after restart, the first
+divergent step, token replay, state fingerprints at save/load boundaries, and
+final DCP differences grouped by model, optimizer, scheduler, dataloader, and
+trainer state.
+
+`exact` requires identical logical state and trajectory. `tolerance` applies
+the configured numerical limits but never relaxes checkpoint selection,
+structure, loaded step, dataloader/input order, or cleanup correctness. The
+topology-suite index records completed, failed, and pending members; a member
+passes only when every requested failure mode passes.
+
 ## Prepare synchronized inputs
 
 Checkpoint equivalence requires more than using the same seed. First prepare a
@@ -116,6 +166,47 @@ The same command shape works for NPU. Set
 and training configuration unchanged. To run one failure path, use for example
 `--failure-mode sigint` or `--failure-mode rank-sigkill`. Omitting the option
 keeps the original controlled-resume behavior and its command unchanged.
+
+After preparing the shared fixture above, the corresponding NPU distributed
+validation changes only the device selection. This example uses `fsdp8`, which
+can be replaced by any registered topology:
+
+```bash
+unset CUDA_VISIBLE_DEVICES
+export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+
+python tests/glm5_2_checkpoint/checkpoint_benchmark.py \
+  --device npu --topology fsdp8 \
+  --precision bf16 --total-steps 20 --split-step 10 \
+  --local-batch-size 8 --global-batch-size 64 \
+  --sequence-length 128 --seed 61 --failure-mode all
+```
+
+To run every registered GPU topology through eight ranks with one fixture, use:
+
+```bash
+unset ASCEND_RT_VISIBLE_DEVICES
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+
+python tests/glm5_2_checkpoint/checkpoint_benchmark.py \
+  --device cuda --topology all \
+  --precision bf16 --total-steps 20 --split-step 10 \
+  --local-batch-size 8 --global-batch-size 64 \
+  --sequence-length 128 --seed 61 --failure-mode all
+```
+
+The corresponding NPU all-topology workflow is:
+
+```bash
+unset CUDA_VISIBLE_DEVICES
+export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+
+python tests/glm5_2_checkpoint/checkpoint_benchmark.py \
+  --device npu --topology all \
+  --precision bf16 --total-steps 20 --split-step 10 \
+  --local-batch-size 8 --global-batch-size 64 \
+  --sequence-length 128 --seed 61 --failure-mode all
+```
 
 To run the complete topology suite, select `--topology all`. All members use one
 suite directory, with `single/`, `ddp8/`, `fsdp8/`, and the other topology
@@ -189,3 +280,42 @@ python tests/glm5_2_checkpoint/checkpoint_benchmark.py \
 
 Once the shared resume path is exact, rerun with `--failure-mode all` to cover
 the external-signal, single-rank, and incomplete-checkpoint cases.
+
+## NPU graph-mode checkpoint validation
+
+Checkpoint validation remains owned by this package. Graph mode is an
+independent TorchTitan training feature passed through `--extra-train-arg`, so
+the checkpoint test still controls only interruption and observation while
+TorchTitan owns save, selection, load, and resume. Current compiled execution
+is NPU-only.
+
+Use the same graph arguments and `--run-tag` in the data and execution phases:
+
+```bash
+unset CUDA_VISIBLE_DEVICES
+export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+
+python tests/glm5_2_checkpoint/checkpoint_benchmark.py \
+  --data --device npu --topology all \
+  --precision bf16 --total-steps 100 --split-step 50 \
+  --local-batch-size 8 --global-batch-size 64 \
+  --sequence-length 128 --seed 61 \
+  --failure-mode graceful --run-tag inductor \
+  --extra-train-arg=--compile.enable \
+  --extra-train-arg=--compile.components=model \
+  --extra-train-arg=--compile.backend=inductor
+
+python tests/glm5_2_checkpoint/checkpoint_benchmark.py \
+  --device npu --topology all \
+  --precision bf16 --total-steps 100 --split-step 50 \
+  --local-batch-size 8 --global-batch-size 64 \
+  --sequence-length 128 --seed 61 \
+  --failure-mode graceful --run-tag inductor \
+  --extra-train-arg=--compile.enable \
+  --extra-train-arg=--compile.components=model \
+  --extra-train-arg=--compile.backend=inductor
+```
+
+Replace `all` with `single` or one registered topology for focused debugging.
+After graceful resume passes, change both commands to `--failure-mode all` for
+the complete failure-recovery matrix; that is a distinct experiment identity.

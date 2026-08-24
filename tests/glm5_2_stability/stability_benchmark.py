@@ -31,6 +31,7 @@ from tests.glm5_2_common.topology import (
     training_command_args,
 )
 
+from tests.glm5_2_graph.config import validate_graph_training_args  # noqa: E402
 from tests.glm5_2_precision.workflow import (  # noqa: E402
     FormalExperimentConfig,
     FormalTrainingConfig,
@@ -463,6 +464,10 @@ def main() -> int:
     )
     batch_schedule = training_topology_plan(training, topology)
     device, visible_env, visible_devices = _device_from_environment(args.device)
+    validate_graph_training_args(
+        device_type=device,
+        arguments=args.extra_train_arg,
+    )
     visible_count = len([value for value in visible_devices.split(",") if value.strip()])
     if visible_count < topology.world_size:
         raise ValueError(

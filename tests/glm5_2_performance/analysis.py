@@ -797,6 +797,7 @@ def render_html_report(
     # Trainer calls profiler.step() after finishing each one-based training
     # step, while the scheduler itself is zero based. Recording therefore
     # starts on the following training step.
+    profiling_enabled = config["active_steps"] > 0
     profile_start = config["skip_steps"] + config["warmup_steps"] + 1
     profile_end = profile_start + config["active_steps"] - 1
 
@@ -818,7 +819,7 @@ def render_html_report(
             )
     step_time_series = _find_metric(series, ("end_to_end",))
     profile_window_seconds = None
-    if step_time_series is not None:
+    if step_time_series is not None and profiling_enabled:
         profile_window_seconds = sum(
             value
             for step, value in step_time_series[1]
@@ -875,9 +876,14 @@ def render_html_report(
         found = _find_metric(series, fragments)
         if found:
             name, points = found
+            profile_note = (
+                "blue region is the active profiling window."
+                if profiling_enabled
+                else "profiler collection was disabled for this run."
+            )
             charts.append(
                 f'<section><h2>{html.escape(label)}</h2><p class="subtle">'
-                f'{html.escape(name)}; blue region is the active profiling window.</p>'
+                f'{html.escape(name)}; {profile_note}</p>'
                 + _line_chart(
                     points,
                     label=label,

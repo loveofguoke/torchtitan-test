@@ -16,14 +16,32 @@ from urllib.parse import quote
 
 DEFAULT_REPOSITORY = "loveofguoke/torchtitan-test"
 EXPERIMENT_ROOTS = (
-    "parity_artifacts",
     "parity_fixtures",
-    "precision_artifacts",
+    "parity_artifacts",
+    "parity_reports",
     "precision_fixtures",
+    "precision_artifacts",
     "precision_runs",
+    "precision_reports",
+    "performance_runs",
+    "performance_artifacts",
+    "performance_reports",
+    "performance_dynamic",
+    "stability_fixtures",
+    "stability_artifacts",
     "stability_runs",
-    "checkpoint_runs",
+    "stability_reports",
     "checkpoint_fixtures",
+    "checkpoint_artifacts",
+    "checkpoint_runs",
+    "checkpoint_reports",
+    "combination_artifacts",
+    "combination_runs",
+    "combination_reports",
+    "combination_reports/precision",
+    "graph_debug_runs",
+    "smoke_runs",
+    "train_runs",
 )
 
 
@@ -82,15 +100,23 @@ def validate_repository(repository: str) -> tuple[str, str]:
 
 def find_experiment_paths(repository_root: Path, experiment: str) -> list[Path]:
     """Find standard artifact directories with the requested experiment name."""
-    paths = [
-        repository_root / root / experiment
-        for root in EXPERIMENT_ROOTS
-        if (repository_root / root / experiment).is_dir()
-    ]
+    paths: list[Path] = []
+    for root in EXPERIMENT_ROOTS:
+        experiment_root = repository_root / root
+        exact = experiment_root / experiment
+        if exact.exists():
+            paths.append(exact)
+        if experiment_root.is_dir():
+            paths.extend(
+                path
+                for path in experiment_root.iterdir()
+                if path.is_file() and path.stem == experiment
+            )
+    paths = list(dict.fromkeys(paths))
     if not paths:
         roots = ", ".join(EXPERIMENT_ROOTS)
         raise FileNotFoundError(
-            f"no directory named {experiment!r} was found under: {roots}"
+            f"no output named {experiment!r} was found under: {roots}"
         )
     return paths
 
@@ -99,9 +125,18 @@ def create_archive(
     repository_root: Path,
     experiment: str,
     archive_path: Path,
+    *,
+    include: tuple[str, ...] = (),
 ) -> list[Path]:
-    """Archive all standard directories belonging to an experiment."""
-    paths = find_experiment_paths(repository_root, experiment)
+    """Archive standard outputs for an experiment and explicit dependencies."""
+    names = tuple(dict.fromkeys((experiment, *include)))
+    paths = list(
+        dict.fromkeys(
+            path
+            for name in names
+            for path in find_experiment_paths(repository_root, name)
+        )
+    )
     with tarfile.open(archive_path, "w:gz") as archive:
         for path in paths:
             relative_path = path.relative_to(repository_root)
@@ -132,7 +167,13 @@ def upload(args: argparse.Namespace) -> None:
     experiment = validate_experiment_name(args.experiment)
     with tempfile.TemporaryDirectory(prefix="torchtitan-release-") as temp_dir:
         archive_path = Path(temp_dir) / f"{experiment}.tar.gz"
-        paths = create_archive(repository_root, experiment, archive_path)
+        include = tuple(validate_experiment_name(name) for name in args.include)
+        paths = create_archive(
+            repository_root,
+            experiment,
+            archive_path,
+            include=include,
+        )
         checksum_path = write_checksum(archive_path)
         assets = [str(archive_path), str(checksum_path)]
 
@@ -306,6 +347,16 @@ def build_parser() -> argparse.ArgumentParser:
         "upload", help="archive and upload an experiment"
     )
     upload_parser.add_argument("experiment", help="experiment directory name")
+    upload_parser.add_argument(
+        "--include",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help=(
+            "also archive outputs with this name; repeat for shared fixtures "
+            "or reports whose names differ from the primary experiment"
+        ),
+    )
     upload_parser.add_argument(
         "--repository-root",
         type=Path,

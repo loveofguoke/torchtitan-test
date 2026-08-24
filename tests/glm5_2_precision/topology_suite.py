@@ -259,8 +259,13 @@ def run_topology_suite_cli(
     )
     actions.add_argument("--compare", action="store_true")
     actions.add_argument("--list-topologies", action="store_true")
-    parser.add_argument("--topology", choices=("all", *topology_names), default="all")
-    parser.add_argument("--topologies", help="comma-separated topology subset or all")
+    topology_selection = parser.add_mutually_exclusive_group()
+    topology_selection.add_argument(
+        "--topology", choices=("all", *topology_names)
+    )
+    topology_selection.add_argument(
+        "--topologies", help="comma-separated topology subset or all"
+    )
     parser.add_argument("--repeat", type=int)
     parser.add_argument("--precision", choices=("fp32", "bf16", "full-bf16"))
     parser.add_argument("--data-device", choices=("cuda", "npu"))
@@ -269,8 +274,9 @@ def run_topology_suite_cli(
     args = parser.parse_args()
     selected = select_topologies(
         available=topology_names,
-        topology=None if args.topologies else args.topology,
+        topology=args.topology,
         topologies=args.topologies,
+        default=topology_names,
     )
     if args.list_topologies:
         for name in topology_names:

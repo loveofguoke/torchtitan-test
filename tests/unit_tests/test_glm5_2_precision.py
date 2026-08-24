@@ -5,8 +5,10 @@ from dataclasses import asdict, replace
 import json
 from pathlib import Path
 import struct
+from types import SimpleNamespace
 
 import pytest
+import torch
 
 from tests.glm5_2_common.topology import training_command_args
 from tests.glm5_2_precision.artifacts import (
@@ -15,11 +17,15 @@ from tests.glm5_2_precision.artifacts import (
     PrecisionArtifactWriter,
     TrainingMetric,
 )
+from tests.glm5_2_precision.generate_token_plan import (
+    _build_source_dataloader,
+    _reshape_source_batch,
+)
+from tests.glm5_2_precision.migrate_legacy_outputs import compact_scenario_name
 from tests.glm5_2_precision.report import (
     compare_and_write_report,
     precision_report_filename,
 )
-from tests.glm5_2_precision.migrate_legacy_outputs import compact_scenario_name
 from tests.glm5_2_precision.self_consistency_suite import compare_suite
 from tests.glm5_2_precision.standards import (
     AnyOfErrorLimit,
@@ -90,6 +96,54 @@ def test_completed_capture_can_be_finalized_without_training(tmp_path: Path) -> 
         contract,
         expected_steps=3,
     )
+
+
+def test_token_plan_source_uses_current_torchtitan_dataloader_contract() -> None:
+    class RecordingDataLoaderConfig:
+        def __init__(self) -> None:
+            self.kwargs = {}
+
+        def build(self, **kwargs):
+            self.kwargs = kwargs
+            return "dataloader"
+
+    dataloader_config = RecordingDataLoaderConfig()
+    tokenizer = object()
+    result = _build_source_dataloader(
+        SimpleNamespace(dataloader=dataloader_config),
+        tokenizer=tokenizer,
+        global_batch_size=64,
+        sequence_length=128,
+    )
+
+    assert result == "dataloader"
+    assert dataloader_config.kwargs == {
+        "dp_world_size": 1,
+        "dp_rank": 0,
+        "tokenizer": tokenizer,
+        "max_context_length": 128,
+        "num_tokens_per_batch": 8192,
+    }
+
+
+def test_token_plan_source_reshapes_flat_torchtitan_batches() -> None:
+    inputs_T = torch.arange(12)
+    labels_T = torch.arange(1, 13)
+    positions_T = torch.arange(12) % 4
+
+    inputs_BL, labels_BL, positions_BL = _reshape_source_batch(
+        {"input": inputs_T, "positions": positions_T},
+        labels_T,
+        global_batch_size=3,
+        sequence_length=4,
+    )
+
+    assert tuple(inputs_BL.shape) == (3, 4)
+    assert tuple(labels_BL.shape) == (3, 4)
+    assert tuple(positions_BL.shape) == (3, 4)
+    assert torch.equal(inputs_BL.reshape(-1), inputs_T)
+    assert torch.equal(labels_BL.reshape(-1), labels_T)
+    assert torch.equal(positions_BL.reshape(-1), positions_T)
 
 
 def test_documented_error_formulas() -> None:
