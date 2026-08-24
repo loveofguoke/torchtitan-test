@@ -75,6 +75,61 @@ def summarize_profile_phases(
         return {"phase_order": [], "phases": {}, "comparison": {}}
 
     skip_steps = int(config["skip_steps"])
+    topology_name = str(config.get("topology", "single"))
+    try:
+        from tests.glm5_2_performance.config import performance_topologies
+
+        world_size = performance_topologies()[topology_name].world_size
+    except (ImportError, KeyError):
+        world_size = 1
+
+    if config.get("profiler_enabled") is False:
+        final_step = max(int(record["step"]) for record in records)
+        records_by_step = {int(record["step"]): record for record in records}
+        phase_steps = {
+            "startup": [
+                step
+                for step in range(1, min(skip_steps, final_step) + 1)
+                if step in records_by_step
+            ],
+            "steady": [
+                step
+                for step in range(skip_steps + 1, final_step + 1)
+                if step in records_by_step
+            ],
+        }
+        phases = {
+            name: {
+                "steps": steps,
+                "summary": summarize_metrics(
+                    [records_by_step[step] for step in steps]
+                )["summary"],
+            }
+            for name, steps in phase_steps.items()
+            if steps
+        }
+        step_metric = "time_metrics/end_to_end(s)"
+        throughput_metric = "throughput(tps)"
+        steady = phases.get("steady", {}).get("summary", {})
+        steady_step = steady.get(step_metric, {}).get("median")
+        steady_throughput = steady.get(throughput_metric, {}).get("median")
+        return {
+            "schedule": {"skip_steps": skip_steps, "profiler_enabled": False},
+            "phase_order": list(phases),
+            "phases": phases,
+            "comparison": {
+                "parse_mode": "disabled",
+                "baseline_median_step_seconds": steady_step,
+                "baseline_median_throughput_tps": steady_throughput,
+                "world_size": world_size,
+                "baseline_job_throughput_tps": (
+                    steady_throughput * world_size
+                    if steady_throughput is not None
+                    else None
+                ),
+            },
+        }
+
     warmup_steps = int(config["warmup_steps"])
     active_steps = int(config["active_steps"])
     active_start = skip_steps + warmup_steps + 1
@@ -153,6 +208,17 @@ def summarize_profile_phases(
         "post_profile_median_step_seconds": post_step,
         "baseline_median_throughput_tps": baseline_throughput,
         "active_median_throughput_tps": active_throughput,
+        "world_size": world_size,
+        "baseline_job_throughput_tps": (
+            baseline_throughput * world_size
+            if baseline_throughput is not None
+            else None
+        ),
+        "active_job_throughput_tps": (
+            active_throughput * world_size
+            if active_throughput is not None
+            else None
+        ),
         "active_throughput_change_percent": percent_change(
             active_throughput, baseline_throughput
         ),
@@ -439,6 +505,229 @@ def extract_l2_cache_entries(
     return entries
 
 
+def _profile_rank(path: Path, profiler_directory: Path) -> int | None:
+    relative = path.relative_to(profiler_directory).as_posix()
+    match = re.search(r"(?:^|/)rank_(\d+)_", relative)
+    return int(match.group(1)) if match else None
+
+
+def extract_distributed_step_trace(profiler_directory: Path) -> dict[str, Any]:
+    """Summarize official exposed-communication and idle time per rank."""
+
+    rank_rows: dict[int, list[dict[str, float]]] = defaultdict(list)
+    for path in profiler_directory.rglob("step_trace_time.csv"):
+        if path.parent.name != "ASCEND_PROFILER_OUTPUT":
+            continue
+        rank = _profile_rank(path, profiler_directory)
+        if rank is None:
+            continue
+        try:
+            with path.open(encoding="utf-8-sig", errors="replace", newline="") as stream:
+                for row in csv.DictReader(stream):
+                    try:
+                        values = {
+                            "step": float(row["Step"]),
+                            "stage_us": float(row["Stage"]),
+                            "compute_us": float(row["Computing"]),
+                            "exposed_communication_us": float(
+                                row["Communication(Not Overlapped)"]
+                            ),
+                            "communication_us": float(row["Communication"]),
+                            "overlapped_us": float(row["Overlapped"]),
+                            "free_us": float(row["Free"]),
+                        }
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    if values["stage_us"] <= 0:
+                        continue
+                    rank_rows[rank].append(values)
+        except OSError:
+            continue
+
+    rows = []
+    for rank, samples in sorted(rank_rows.items()):
+
+        def median(name: str) -> float:
+            return statistics.median(sample[name] for sample in samples)
+
+        stage_us = median("stage_us")
+        communication_us = median("communication_us")
+        row = {
+            "rank": rank,
+            "steps": [int(sample["step"]) for sample in samples],
+            "median_stage_ms": stage_us / 1000.0,
+            "median_compute_ms": median("compute_us") / 1000.0,
+            "median_exposed_communication_ms": (
+                median("exposed_communication_us") / 1000.0
+            ),
+            "median_communication_ms": communication_us / 1000.0,
+            "median_overlapped_ms": median("overlapped_us") / 1000.0,
+            "median_free_ms": median("free_us") / 1000.0,
+            "compute_percent": 100.0 * median("compute_us") / stage_us,
+            "exposed_communication_percent": (
+                100.0 * median("exposed_communication_us") / stage_us
+            ),
+            "communication_overlap_percent": (
+                100.0 * median("overlapped_us") / communication_us
+                if communication_us > 0
+                else None
+            ),
+            "free_percent": 100.0 * median("free_us") / stage_us,
+        }
+        rows.append(row)
+
+    cross_rank: dict[str, Any] = {}
+    for name in (
+        "median_stage_ms",
+        "median_compute_ms",
+        "median_exposed_communication_ms",
+        "median_free_ms",
+    ):
+        values = [float(row[name]) for row in rows]
+        if not values:
+            continue
+        maximum = max(values)
+        median_value = statistics.median(values)
+        slowest = max(rows, key=lambda row: float(row[name]))
+        cross_rank[name] = {
+            "min": min(values),
+            "median": median_value,
+            "max": maximum,
+            "max_over_median": (
+                maximum / median_value if median_value else None
+            ),
+            "max_rank": slowest["rank"],
+        }
+    return {"ranks": rows, "cross_rank": cross_rank}
+
+
+def _communication_kind(name: str) -> str:
+    match = re.match(r"hcom_([^_]+)", name, flags=re.IGNORECASE)
+    return match.group(1).lower() if match else name
+
+
+def extract_communication_summary(profiler_directory: Path) -> dict[str, Any]:
+    """Aggregate official communication.json without double-counting SDMA."""
+
+    groups: dict[tuple[int, str], dict[str, float]] = defaultdict(
+        lambda: {
+            "calls": 0.0,
+            "captured_steps": 0.0,
+            "elapsed_ms": 0.0,
+            "op_transit_ms": 0.0,
+            "transit_ms": 0.0,
+            "wait_ms": 0.0,
+            "synchronization_ms": 0.0,
+            "idle_ms": 0.0,
+            "payload_mb": 0.0,
+        }
+    )
+    for path in profiler_directory.rglob("communication.json"):
+        # CANN keeps another copy under PROF_*/analyze. Consume only the
+        # canonical export or every collective and payload would be doubled.
+        if path.parent.name != "ASCEND_PROFILER_OUTPUT":
+            continue
+        rank = _profile_rank(path, profiler_directory)
+        if rank is None:
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for step in payload.values():
+            if not isinstance(step, dict):
+                continue
+            for family in ("collective", "p2p"):
+                operations = step.get(family, {})
+                if not isinstance(operations, dict):
+                    continue
+                for name, operation in operations.items():
+                    if not isinstance(operation, dict):
+                        continue
+                    if not name.lower().startswith("hcom_"):
+                        continue
+                    timing = operation.get("Communication Time Info", {})
+                    bandwidth = operation.get("Communication Bandwidth Info", {})
+                    if not isinstance(timing, dict) or not isinstance(bandwidth, dict):
+                        continue
+                    group = groups[(rank, _communication_kind(name))]
+                    group["calls"] += 1
+                    for source, destination in (
+                        ("Elapse Time(ms)", "elapsed_ms"),
+                        ("Transit Time(ms)", "op_transit_ms"),
+                        ("Wait Time(ms)", "wait_ms"),
+                        ("Synchronization Time(ms)", "synchronization_ms"),
+                        ("Idle Time(ms)", "idle_ms"),
+                    ):
+                        try:
+                            group[destination] += float(timing.get(source, 0.0))
+                        except (TypeError, ValueError):
+                            pass
+                    # SDMA repeats the selected physical transport in current CANN
+                    # output. Count HCCS/RDMA/PCIE/SIO payloads only once.
+                    for transport in ("HCCS", "RDMA", "PCIE", "SIO"):
+                        details = bandwidth.get(transport, {})
+                        if not isinstance(details, dict):
+                            continue
+                        try:
+                            group["payload_mb"] += float(
+                                details.get("Transit Size(MB)", 0.0)
+                            )
+                            group["transit_ms"] += float(
+                                details.get("Transit Time(ms)", 0.0)
+                            )
+                        except (TypeError, ValueError):
+                            pass
+            kinds = {
+                _communication_kind(name)
+                for family in ("collective", "p2p")
+                for name in (
+                    step.get(family, {}).keys()
+                    if isinstance(step.get(family, {}), dict)
+                    else ()
+                )
+                if name.lower().startswith("hcom_")
+            }
+            for kind in kinds:
+                groups[(rank, kind)]["captured_steps"] += 1
+
+    rows = []
+    for (rank, kind), values in groups.items():
+        elapsed = values["elapsed_ms"]
+        transit = values["transit_ms"]
+        captured_steps = int(values["captured_steps"])
+        rows.append(
+            {
+                "rank": rank,
+                "kind": kind,
+                "calls": int(values["calls"]),
+                "captured_steps": captured_steps,
+                "calls_per_step": (
+                    values["calls"] / captured_steps if captured_steps else None
+                ),
+                **{
+                    key: value
+                    for key, value in values.items()
+                    if key not in {"calls", "captured_steps"}
+                },
+                "payload_mb_per_step": (
+                    values["payload_mb"] / captured_steps
+                    if captured_steps
+                    else None
+                ),
+                "transit_ms_per_step": (
+                    transit / captured_steps if captured_steps else None
+                ),
+                "wait_percent": 100.0 * values["wait_ms"] / elapsed if elapsed else None,
+                "effective_bandwidth_gbps": (
+                    values["payload_mb"] / transit if transit else None
+                ),
+            }
+        )
+    rows.sort(key=lambda row: (row["rank"], -row["elapsed_ms"]))
+    return {"rows": rows}
+
+
 def inspect_profiler_deliverables(profiler_directory: Path) -> dict[str, Any]:
     """Classify official Ascend outputs and portable GPU traces."""
 
@@ -616,6 +905,16 @@ def build_analysis(
             if profiler_directory.is_dir()
             else []
         ),
+        "distributed_step_trace": (
+            extract_distributed_step_trace(profiler_directory)
+            if profiler_directory.is_dir()
+            else {"ranks": [], "cross_rank": {}}
+        ),
+        "communication_summary": (
+            extract_communication_summary(profiler_directory)
+            if profiler_directory.is_dir()
+            else {"rows": []}
+        ),
         "deliverables": deliverables,
         "compiler_diagnostics": _compiler_diagnostics(
             run_directory / "runtime.log"
@@ -665,8 +964,8 @@ def _line_chart(
     *,
     label: str,
     color: str,
-    profile_start: int,
-    profile_end: int,
+    profile_start: int | None,
+    profile_end: int | None,
 ) -> str:
     if not points:
         return '<div class="empty">No samples</div>'
@@ -696,9 +995,12 @@ def _line_chart(
     polyline = " ".join(
         f"{x_position(step):.2f},{y_position(value):.2f}" for step, value in points
     )
-    shade_start = max(profile_start, x_min)
-    shade_end = min(profile_end, x_max)
     shade = ""
+    if profile_start is not None and profile_end is not None:
+        shade_start = max(profile_start, x_min)
+        shade_end = min(profile_end, x_max)
+    else:
+        shade_start, shade_end = 1, 0
     if shade_start <= shade_end:
         start_x = x_position(shade_start)
         end_x = x_position(shade_end)
@@ -784,6 +1086,60 @@ def _composition_chart(table: dict[str, Any]) -> str:
     )
 
 
+def _distributed_rank_chart(ranks: list[dict[str, Any]]) -> str:
+    """Render the rank critical path and communication skew on shared scales."""
+
+    if not ranks:
+        return ""
+    max_stage = max(float(row["median_stage_ms"]) for row in ranks) or 1.0
+    max_exposed = max(
+        float(row["median_exposed_communication_ms"]) for row in ranks
+    ) or 1.0
+    rows = []
+    skew_rows = []
+    for row in ranks:
+        stage = float(row["median_stage_ms"])
+        compute = float(row["median_compute_ms"])
+        exposed = float(row["median_exposed_communication_ms"])
+        free = float(row["median_free_ms"])
+        accounted = min(stage, compute + exposed + free)
+        other = max(0.0, stage - accounted)
+        segments = (
+            ("Compute", compute, "#2563eb"),
+            ("Exposed communication", exposed, "#f97316"),
+            ("Device free", free, "#94a3b8"),
+            ("Other / overlap", other, "#10b981"),
+        )
+        bars = "".join(
+            f'<div title="{label}: {value:.3f} ms" '
+            f'style="width:{value / max_stage * 100:.5f}%;background:{color}"></div>'
+            for label, value, color in segments
+            if value > 0
+        )
+        rows.append(
+            '<div class="rank-row"><strong>rank '
+            f'{row["rank"]}</strong><div class="rank-track">{bars}</div>'
+            f'<span>{stage:.2f} ms</span></div>'
+        )
+        skew_rows.append(
+            '<div class="rank-row"><strong>rank '
+            f'{row["rank"]}</strong><div class="rank-track">'
+            f'<div title="Exposed communication: {exposed:.3f} ms" '
+            f'style="width:{exposed / max_exposed * 100:.5f}%;background:#f97316"></div>'
+            f'</div><span>{exposed:.2f} ms</span></div>'
+        )
+    return (
+        '<h3>Rank critical-path composition</h3>'
+        '<div class="rank-chart">' + "".join(rows) + '</div>'
+        '<div class="legend"><span><i style="background:#2563eb"></i>Compute</span>'
+        '<span><i style="background:#f97316"></i>Exposed communication</span>'
+        '<span><i style="background:#94a3b8"></i>Device free</span>'
+        '<span><i style="background:#10b981"></i>Other / overlap</span></div>'
+        '<h3>Exposed-communication skew</h3>'
+        '<div class="rank-chart">' + "".join(skew_rows) + '</div>'
+    )
+
+
 def render_html_report(
     *,
     manifest: dict[str, Any],
@@ -797,9 +1153,17 @@ def render_html_report(
     # Trainer calls profiler.step() after finishing each one-based training
     # step, while the scheduler itself is zero based. Recording therefore
     # starts on the following training step.
-    profiling_enabled = config["active_steps"] > 0
-    profile_start = config["skip_steps"] + config["warmup_steps"] + 1
-    profile_end = profile_start + config["active_steps"] - 1
+    profiler_enabled = config.get("profiler_enabled", True)
+    profile_start = (
+        config["skip_steps"] + config["warmup_steps"] + 1
+        if profiler_enabled
+        else None
+    )
+    profile_end = (
+        profile_start + config["active_steps"] - 1
+        if profile_start is not None
+        else None
+    )
 
     cards = []
     card_specs = (
@@ -819,7 +1183,7 @@ def render_html_report(
             )
     step_time_series = _find_metric(series, ("end_to_end",))
     profile_window_seconds = None
-    if step_time_series is not None and profiling_enabled:
+    if step_time_series is not None and profile_start is not None:
         profile_window_seconds = sum(
             value
             for step, value in step_time_series[1]
@@ -876,14 +1240,14 @@ def render_html_report(
         found = _find_metric(series, fragments)
         if found:
             name, points = found
-            profile_note = (
-                "blue region is the active profiling window."
-                if profiling_enabled
-                else "profiler collection was disabled for this run."
-            )
             charts.append(
                 f'<section><h2>{html.escape(label)}</h2><p class="subtle">'
-                f'{html.escape(name)}; {profile_note}</p>'
+                f'{html.escape(name)}; '
+                + (
+                    'blue region is the active profiling window.</p>'
+                    if profiler_enabled
+                    else 'profiler is disabled for this run.</p>'
+                )
                 + _line_chart(
                     points,
                     label=label,
@@ -934,6 +1298,7 @@ time is extracted from the Ascend profiler completion messages.</p>
 
     baseline_step = phase_comparison.get("baseline_median_step_seconds")
     phase_rows = ""
+    world_size = int(phase_comparison.get("world_size", 1))
     for phase_name in phase_analysis.get("phase_order", []):
         phase = phase_analysis["phases"][phase_name]
         steps = phase["steps"]
@@ -953,6 +1318,7 @@ time is extracted from the Ascend profiler completion messages.</p>
             f"<tr><td>{html.escape(phase_name)}</td><td>{step_range}</td>"
             f"<td>{_format_number(step_time)}</td>"
             f"<td>{_format_number(throughput)}</td>"
+            f"<td>{_format_number(throughput * world_size if throughput is not None else None)}</td>"
             f"<td>{overhead_text}</td></tr>"
         )
     phase_section = (
@@ -961,9 +1327,88 @@ time is extracted from the Ascend profiler completion messages.</p>
         'The baseline excludes startup, profiler warmup, active collection, and '
         'the synchronous parser boundary.</p>'
         '<table><thead><tr><th>Phase</th><th>Steps</th><th>Median step (s)</th>'
-        '<th>Median throughput (tok/s)</th><th>Step overhead vs baseline</th>'
+        '<th>Per-device throughput (tok/s)</th><th>Job throughput (tok/s)</th>'
+        '<th>Step overhead vs baseline</th>'
         f'</tr></thead><tbody>{phase_rows}</tbody></table></section>'
         if phase_rows
+        else ""
+    )
+
+    distributed_rows = ""
+    distributed_analysis = analysis.get("distributed_step_trace", {})
+    for row in distributed_analysis.get("ranks", []):
+        distributed_rows += (
+            f'<tr><td>{row["rank"]}</td>'
+            f'<td>{row["steps"][0]}–{row["steps"][-1]}</td>'
+            f'<td>{_format_number(row["median_stage_ms"])}</td>'
+            f'<td>{_format_number(row["median_compute_ms"])}</td>'
+            f'<td>{_format_number(row["median_exposed_communication_ms"])}</td>'
+            f'<td>{_format_number(row["median_overlapped_ms"])}</td>'
+            f'<td>{_format_number(row["median_free_ms"])}</td>'
+            f'<td>{_format_number(row["exposed_communication_percent"])}%</td>'
+            f'<td>{_format_number(row["communication_overlap_percent"])}%</td>'
+            f'<td>{_format_number(row["free_percent"])}%</td></tr>'
+        )
+    cross_rank_labels = {
+        "median_stage_ms": "Stage (ms)",
+        "median_compute_ms": "Compute (ms)",
+        "median_exposed_communication_ms": "Exposed communication (ms)",
+        "median_free_ms": "Free (ms)",
+    }
+    cross_rank_rows = ""
+    for name, values in distributed_analysis.get("cross_rank", {}).items():
+        cross_rank_rows += (
+            f"<tr><td>{html.escape(cross_rank_labels.get(name, name))}</td>"
+            f'<td>{_format_number(values["min"])}</td>'
+            f'<td>{_format_number(values["median"])}</td>'
+            f'<td>{_format_number(values["max"])}</td>'
+            f'<td>{_format_number(values["max_over_median"])}</td>'
+            f'<td>{values["max_rank"]}</td></tr>'
+        )
+    cross_rank_table = (
+        '<h3>Cross-rank balance</h3><table><thead><tr><th>Metric</th>'
+        '<th>Min</th><th>Median</th><th>Max</th><th>Max / median</th>'
+        f'<th>Max rank</th></tr></thead><tbody>{cross_rank_rows}</tbody></table>'
+        if cross_rank_rows
+        else ""
+    )
+    distributed_section = (
+        '<section><h2>Distributed critical path</h2>'
+        '<p class="subtle">Official <code>step_trace_time.csv</code> decomposition. '
+        'Exposed communication is the non-overlapped portion; Free is device idle '
+        'inside the measured stage. Durations are medians over captured steps.</p>'
+        f'{_distributed_rank_chart(distributed_analysis.get("ranks", []))}'
+        '<table><thead><tr><th>Rank</th><th>Steps</th><th>Stage (ms)</th>'
+        '<th>Compute (ms)</th><th>Exposed comm (ms)</th><th>Overlapped (ms)</th>'
+        '<th>Free (ms)</th><th>Exposed comm</th><th>Comm overlap</th>'
+        f'<th>Free</th></tr></thead><tbody>{distributed_rows}</tbody></table>'
+        f'{cross_rank_table}</section>'
+        if distributed_rows
+        else ""
+    )
+
+    communication_rows = ""
+    for row in analysis.get("communication_summary", {}).get("rows", []):
+        communication_rows += (
+            f'<tr><td>{row["rank"]}</td><td><code>{html.escape(row["kind"])}</code></td>'
+            f'<td>{_format_number(row["calls_per_step"])}</td>'
+            f'<td>{_format_number(row["elapsed_ms"])}</td>'
+            f'<td>{_format_number(row["wait_ms"])}</td>'
+            f'<td>{_format_number(row["wait_percent"])}%</td>'
+            f'<td>{_format_number(row["transit_ms_per_step"])}</td>'
+            f'<td>{_format_number(row["payload_mb_per_step"])}</td>'
+            f'<td>{_format_number(row["effective_bandwidth_gbps"])}</td></tr>'
+        )
+    communication_section = (
+        '<section><h2>Collective communication</h2>'
+        '<p class="subtle">Official <code>communication.json</code> aggregation. '
+        'SDMA mirrors the physical transport and is excluded from payload totals.</p>'
+        '<table><thead><tr><th>Rank</th><th>Collective</th><th>Calls / step</th>'
+        '<th>Elapsed (ms)</th><th>Wait (ms)</th><th>Wait ratio</th>'
+        '<th>Transit / step (ms)</th><th>Payload / step (MB)</th>'
+        '<th>Effective GB/s</th>'
+        f'</tr></thead><tbody>{communication_rows}</tbody></table></section>'
+        if communication_rows
         else ""
     )
     training_arguments = " ".join(str(value) for value in config.get("extra_args", []))
@@ -1163,6 +1608,7 @@ main{{max-width:1180px;margin:auto;padding:28px}} h1{{font-size:27px;margin:0 0 
 .card{{padding:16px}} .card span{{display:block;color:var(--muted)}} .card strong{{font-size:22px}}
 section{{padding:20px;margin:16px 0;overflow:auto}} table{{border-collapse:collapse;width:100%}} th,td{{padding:9px 10px;border-bottom:1px solid var(--line);text-align:left}}
 th{{background:#f8fafc;position:sticky;top:0}} code{{background:#edf2ff;padding:2px 5px;border-radius:4px}} .chart{{width:100%;min-width:600px}}
+.rank-chart{{display:grid;gap:8px;min-width:620px;margin:12px 0 8px}} .rank-row{{display:grid;grid-template-columns:64px 1fr 90px;gap:10px;align-items:center}} .rank-track{{height:20px;background:#e2e8f0;display:flex;overflow:hidden}} .rank-track>div{{height:100%}}
 .axis{{stroke:#9aa6ba;stroke-width:1}} .tick{{fill:#657089;font-size:11px}} .empty,.callout{{padding:18px;background:#f8fafc;border-radius:8px;color:var(--muted)}}
 .bars{{display:grid;gap:8px}} .bar-row{{display:grid;grid-template-columns:minmax(180px,2fr) minmax(220px,4fr) 150px;gap:10px;align-items:center}}
 .bar-name{{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}} .bar-track{{height:12px;background:#e8edf6;border-radius:8px;overflow:hidden}} .bar-fill{{height:100%;background:linear-gradient(90deg,#2563eb,#38bdf8)}} .bar-value{{text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}}
@@ -1178,6 +1624,8 @@ th{{background:#f8fafc;position:sticky;top:0}} code{{background:#edf2ff;padding:
 <div class="cards">{''.join(cards) or '<div class="card"><span>Training metrics</span><strong>Unavailable</strong></div>'}</div>
 {profile_duration_warning}
 {phase_section}
+{distributed_section}
+{communication_section}
 {''.join(charts)}
 {runtime_section}
 {compiler_section}

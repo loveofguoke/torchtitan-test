@@ -4,6 +4,9 @@
 或 combination 的正式验收结果。`probe` 子命令复用既有实验框架时，仍遵循该框架
 原有的结果目录与报告规范；`smoke/train` 的调试日志则统一写到用户主目录。
 
+CANN 9.1.0 的实际安装来源、复制命令、SHA-256 和隔离激活方法见
+`CANN_9_1_INSTALLATION.md`。
+
 ## 推荐入口
 
 在 `glm5-npu-dev` 容器内运行：
@@ -16,6 +19,10 @@ tests/glm5_2_graph_debug/run_npu_inductor.sh env
 
 # 推荐：10-step 快速图模式验证
 tests/glm5_2_graph_debug/run_npu_inductor.sh smoke
+
+# 两卡 DDP/FSDP 快速图模式验证，默认使用物理卡 3、4
+tests/glm5_2_graph_debug/run_npu_inductor.sh smoke-ddp
+tests/glm5_2_graph_debug/run_npu_inductor.sh smoke-fsdp
 
 # 原始普通训练入口
 tests/glm5_2_graph_debug/run_npu_inductor.sh train
@@ -31,6 +38,22 @@ ASCEND_RT_VISIBLE_DEVICES=4 \
   tests/glm5_2_graph_debug/run_npu_inductor.sh smoke
 ```
 
+多卡 action 默认 `GRAPH_NGPU=2`、物理卡 `3,4`。自定义规模时，设备数必须与
+`GRAPH_NGPU` 完全一致。例如四卡 DDP：
+
+```bash
+ASCEND_RT_VISIBLE_DEVICES=3,4,5,6 GRAPH_NGPU=4 \
+  tests/glm5_2_graph_debug/run_npu_inductor.sh smoke-ddp
+```
+
+脚本默认只在隔离子进程中设置 `HCCL_NPU_SOCKET_PORT_RANGE=auto`，避免共享宿主上
+其他容器占用 HCCL 的默认 NPU 端口 16666。如需固定端口范围，可显式设置：
+
+```bash
+GRAPH_HCCL_NPU_SOCKET_PORT_RANGE=61000-61050 \
+  tests/glm5_2_graph_debug/run_npu_inductor.sh smoke-ddp
+```
+
 `train` 和 `smoke` 后可继续传递 TorchTitan 参数：
 
 ```bash
@@ -39,7 +62,7 @@ tests/glm5_2_graph_debug/run_npu_inductor.sh train \
   --training.max_context_length=128
 ```
 
-## 三种运行模式
+## 运行模式
 
 ### smoke
 
@@ -57,8 +80,21 @@ forward、backward 和 optimizer，适合判断环境是否可用。
 --compile.backend=inductor
 ```
 
-固定 `NGPU=1 MODULE=glm5 CONFIG=glm5_debugmodel`，其他训练参数保持 TorchTitan
-配置默认值或使用命令行覆盖。
+固定 `MODULE=glm5 CONFIG=glm5_debugmodel`；单卡 `NGPU=1`，多卡 `NGPU` 取
+`GRAPH_NGPU`。其他训练参数保持 TorchTitan 配置默认值或使用命令行覆盖。
+
+### smoke-ddp / smoke-fsdp
+
+复用 `smoke` 的 10-step 小规格，并分别设置：
+
+```text
+DDP:  data_parallel_replicate_degree = GRAPH_NGPU
+FSDP: data_parallel_shard_degree     = GRAPH_NGPU
+```
+
+每个 DP rank 仍处理 32 tokens，因此每步总 token 数为 `32 * GRAPH_NGPU`。
+`train-ddp` 和 `train-fsdp` 是对应的普通训练入口。完整测试记录见
+`MULTI_NPU_DEBUG.md`。
 
 ### probe
 
@@ -88,6 +124,10 @@ Dynamo capture
 本次 debugmodel 冷编译实测约 7 分 35 秒，生成约 5,546 个 `.npubin` 候选，
 编译与诊断目录约 977 MB。训练稳态本身只有约 0.18–0.20 秒/step，因此绝大部分
 首轮时间是编译和 autotune，而不是模型执行。
+
+多卡会让多个 rank 同时进行图加载或编译，CPU 编译 worker、文件系统和缓存锁会产生
+竞争。本轮 DDP2 首次运行为 224 秒，DDP4 首次完整运行为 245 秒；进入稳态后仍约
+0.18–0.21 秒/step。不要根据 step 1 的耗时判断训练吞吐。
 
 ## 如何缩短后续运行
 
@@ -152,3 +192,10 @@ graph_debug_runs/<action>-<timestamp>-<pid>/reports/report.md
   g++ 或 kernel 错误，不能只按 autotune 问题处理。
 - 修改 shape 后再次变慢：新 shape 触发新图和新 kernel 编译，属于预期。
 - 希望强制冷启动：为 `GRAPH_CACHE_ROOT` 指定一个新的空目录，不要删除共享缓存。
+- 出现 `507033`、`TsdOpen failed` 且发生在 `set_device`：先确认目标卡没有其他进程，
+  等待上一任务完全释放，再用单卡最小张量测试确认设备恢复；它发生在编译前，不应
+  直接归因于 Inductor。不要在没有确认设备范围和其他用户任务的情况下重置 NPU。
+- 出现 `EI0020`、`port 16666 have already been bound`：默认 HCCL NPU 端口与共享
+  宿主上的其他容器冲突。保持脚本默认的 `HCCL_NPU_SOCKET_PORT_RANGE=auto`，或通过
+  `GRAPH_HCCL_NPU_SOCKET_PORT_RANGE` 指定经管理员规划的空闲范围。同一通信域的所有
+  rank 必须使用相同配置。

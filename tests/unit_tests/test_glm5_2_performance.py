@@ -1,8 +1,10 @@
 import json
+import os
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 from tests.glm5_2_performance.analysis import (
     build_analysis,
@@ -12,6 +14,7 @@ from tests.glm5_2_performance.analysis import (
 )
 from tests.glm5_2_performance.config import (
     PerformanceConfig,
+    performance_topologies,
     profiler_presets,
     standard_topologies,
 )
@@ -19,7 +22,11 @@ from tests.glm5_2_performance.dynamic_profile import (
     build_dynamic_profile_config,
     write_dynamic_profile_config,
 )
-from tests.glm5_2_performance.workflow import _run_name
+from tests.glm5_2_performance.workflow import (
+    _config_is_compatible,
+    _msprof_analyze_executable,
+    _run_name,
+)
 
 
 class TestPerformanceConfig(unittest.TestCase):
@@ -44,6 +51,51 @@ class TestPerformanceConfig(unittest.TestCase):
         self.assertIn("-overview-offline-", offline_name)
         self.assertNotEqual(sync_name, offline_name)
 
+    def test_run_name_exposes_nondefault_reduction_precision(self):
+        config = PerformanceConfig(
+            name="glm5-probe", mixed_precision_reduce="bfloat16"
+        )
+
+        run_name = _run_name(config, "npu")
+
+        self.assertIn("-reduce-bf16-", run_name)
+
+    def test_run_name_exposes_profiler_off_baseline(self):
+        config = PerformanceConfig(name="glm5-probe", profiler_enabled=False)
+
+        self.assertIn("-profiler-off-", _run_name(config, "npu"))
+
+    def test_run_name_exposes_repeat_index(self):
+        config = PerformanceConfig(name="glm5-probe", replicate=2)
+
+        self.assertIn("-r2-", _run_name(config, "npu"))
+
+    def test_isolated_msprof_analyze_executable_can_be_selected(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            executable = Path(temporary_directory) / "msprof-analyze"
+            executable.write_text("#!/bin/sh\n", encoding="utf-8")
+            executable.chmod(0o755)
+            with mock.patch.dict(
+                os.environ,
+                {"TORCHTITAN_MSPROF_ANALYZE": str(executable)},
+            ):
+                selected = _msprof_analyze_executable()
+
+        self.assertEqual(selected, str(executable.resolve()))
+
+    def test_additive_default_fields_match_old_capture_manifests(self):
+        config = PerformanceConfig(name="legacy")
+        saved = json.loads(json.dumps(config.as_dict()))
+        saved.pop("profiler_enabled")
+        saved.pop("replicate")
+
+        self.assertTrue(_config_is_compatible(saved, config))
+        self.assertFalse(
+            _config_is_compatible(
+                saved, replace(config, profiler_enabled=False)
+            )
+        )
+
     def test_standard_topologies_cover_declared_world_size(self):
         topologies = standard_topologies()
         self.assertEqual(topologies["single"].world_size, 1)
@@ -52,6 +104,17 @@ class TestPerformanceConfig(unittest.TestCase):
             "--parallelism.tensor_parallel_degree=4",
             topologies["fsdp2-tp4"].command_args(),
         )
+
+    def test_performance_topologies_add_health_safe_lab_shapes(self):
+        topologies = performance_topologies()
+
+        self.assertEqual(topologies["ddp4"].world_size, 4)
+        self.assertEqual(topologies["fsdp4"].dp_shard, 4)
+        self.assertEqual(topologies["tp4"].tp, 4)
+        self.assertEqual(topologies["cp4"].cp, 4)
+        self.assertEqual(topologies["pp4"].pp, 4)
+        self.assertEqual(topologies["ep4"].ep, 4)
+        self.assertEqual(topologies["fsdp2-tp2"].world_size, 4)
 
     def test_profile_window_must_fit_training_steps(self):
         with self.assertRaisesRegex(ValueError, "cannot reach"):
@@ -62,6 +125,10 @@ class TestPerformanceConfig(unittest.TestCase):
                 warmup_steps=1,
                 active_steps=2,
             )
+
+    def test_reduction_precision_is_bounded_for_performance_override(self):
+        with self.assertRaisesRegex(ValueError, "mixed_precision_reduce"):
+            PerformanceConfig(name="invalid", mixed_precision_reduce="int8")
 
     def test_presets_progress_from_overview_to_runtime(self):
         presets = profiler_presets()
@@ -139,6 +206,7 @@ class TestPerformanceAnalysis(unittest.TestCase):
             skip_steps=2,
             warmup_steps=1,
             active_steps=2,
+            topology="ddp2",
         ).as_dict()
         phases = summarize_profile_phases(
             records,
@@ -157,6 +225,74 @@ class TestPerformanceAnalysis(unittest.TestCase):
         self.assertAlmostEqual(
             phases["comparison"]["parse_stall_excess_seconds"], 10.0
         )
+        self.assertEqual(phases["comparison"]["world_size"], 2)
+        self.assertAlmostEqual(
+            phases["comparison"]["baseline_job_throughput_tps"], 2000.0
+        )
+
+    def test_distributed_trace_and_collectives_are_summarized_once(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            profiler = root / "trainer_output" / "profiling" / "traces"
+            output = (
+                profiler
+                / "rank_0_123_ascend_pt"
+                / "ASCEND_PROFILER_OUTPUT"
+            )
+            output.mkdir(parents=True)
+            (output / "step_trace_time.csv").write_text(
+                "Device_id,Step,Computing,Communication(Not Overlapped),"
+                "Overlapped,Communication,Free,Stage\n"
+                "1,12,200,100,50,150,650,1000\n"
+                "1,13,220,80,40,120,680,1000\n",
+                encoding="utf-8",
+            )
+            communication = {
+                f"step{step}": {
+                    "collective": {
+                        f"hcom_allReduce__{step}": {
+                            "Communication Time Info": {
+                                "Elapse Time(ms)": 10,
+                                "Transit Time(ms)": 2,
+                                "Wait Time(ms)": 8,
+                                "Synchronization Time(ms)": 8,
+                                "Idle Time(ms)": 0,
+                            },
+                            "Communication Bandwidth Info": {
+                                "HCCS": {
+                                    "Transit Size(MB)": 40,
+                                    "Transit Time(ms)": 2,
+                                },
+                                "SDMA": {
+                                    "Transit Size(MB)": 40,
+                                    "Transit Time(ms)": 2,
+                                },
+                            },
+                        }
+                    },
+                    "p2p": {},
+                }
+                for step in (12, 13)
+            }
+            encoded = json.dumps(communication)
+            (output / "communication.json").write_text(encoded, encoding="utf-8")
+            duplicate = output.parent / "PROF_1" / "analyze"
+            duplicate.mkdir(parents=True)
+            (duplicate / "communication.json").write_text(
+                encoded, encoding="utf-8"
+            )
+
+            analysis = build_analysis(root)
+
+            rank = analysis["distributed_step_trace"]["ranks"][0]
+            self.assertEqual(rank["rank"], 0)
+            self.assertEqual(rank["median_stage_ms"], 1.0)
+            self.assertEqual(rank["median_compute_ms"], 0.21)
+            collective = analysis["communication_summary"]["rows"][0]
+            self.assertEqual(collective["calls"], 2)
+            self.assertEqual(collective["calls_per_step"], 1.0)
+            self.assertEqual(collective["payload_mb_per_step"], 40.0)
+            self.assertEqual(collective["effective_bandwidth_gbps"], 20.0)
 
     def test_official_ascend_deliverables_are_classified(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -175,6 +311,37 @@ class TestPerformanceAnalysis(unittest.TestCase):
             self.assertTrue(
                 deliverables["ascend_profiles"][0]["parsed_database"]
             )
+
+    def test_profiler_off_uses_post_warmup_steps_as_authoritative_steady_state(self):
+        records = [
+            {
+                "step": step,
+                "metrics": {
+                    "time_metrics/end_to_end(s)": float(value),
+                    "throughput(tps)": 1000.0 / value,
+                },
+            }
+            for step, value in enumerate((9, 8, 1, 2), start=1)
+        ]
+        config = PerformanceConfig(
+            name="off",
+            steps=4,
+            skip_steps=2,
+            active_steps=1,
+            profiler_enabled=False,
+            topology="ddp2",
+        ).as_dict()
+
+        phases = summarize_profile_phases(
+            records, config=config, profiler_environment={}
+        )
+
+        self.assertEqual(phases["phase_order"], ["startup", "steady"])
+        self.assertEqual(phases["phases"]["steady"]["steps"], [3, 4])
+        self.assertEqual(phases["comparison"]["parse_mode"], "disabled")
+        self.assertEqual(
+            phases["comparison"]["baseline_job_throughput_tps"], 1500.0
+        )
 
     def test_metrics_and_csv_are_rendered_into_report(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -15,18 +15,27 @@ fi
 
 usage() {
     cat <<'EOF'
-Usage: run_npu_inductor.sh [smoke|train|probe|env] [extra arguments]
+Usage: run_npu_inductor.sh ACTION [extra arguments]
 
   smoke  Run the existing GLM-5.2 graph probe-sized training workload:
          10 steps, batch 1, sequence length 32. This is the default.
+  smoke-ddp   Run the same workload with replicated data parallelism.
+  smoke-fsdp  Run the same workload with sharded data parallelism.
   train  Run the repository's normal GLM-5.2 training entry point with the
          three Inductor graph-mode flags. Extra arguments go to run_train.sh.
+  train-ddp   Run normal training with replicated data parallelism.
+  train-fsdp  Run normal training with sharded data parallelism.
   probe  Run compile_probe.py's data, eager reference, Inductor candidate,
          and comparison stages. Extra arguments go to every probe stage.
   env    Print the isolated software stack and cache paths without training.
 
 Environment overrides:
   ASCEND_RT_VISIBLE_DEVICES   Physical NPU id; default: 2
+                              Multi-card default: 3,4
+  GRAPH_NGPU                 World size; multi-card default: 2. It must equal
+                              the number of visible devices.
+  GRAPH_HCCL_NPU_SOCKET_PORT_RANGE
+                              Per-process HCCL NPU port selection; default: auto
   GRAPH_CANN_ROOT             CANN root; default: /usr/local/Ascend/cann-9.1.0
   GRAPH_CONDA_ENV             Conda env; default: torchtitan-0803-graph-adapt
   GRAPH_CACHE_ROOT            Persistent compiler cache location
@@ -44,7 +53,7 @@ if [[ "$ACTION" == "-h" || "$ACTION" == "--help" || "$ACTION" == "help" ]]; then
 fi
 
 case "$ACTION" in
-    smoke|train|probe|env) ;;
+    smoke|smoke-ddp|smoke-fsdp|train|train-ddp|train-fsdp|probe|env) ;;
     *)
         echo "Unknown action: $ACTION" >&2
         usage >&2
@@ -55,7 +64,29 @@ esac
 CANN_ROOT=${GRAPH_CANN_ROOT:-/usr/local/Ascend/cann-9.1.0}
 CONDA_ENV=${GRAPH_CONDA_ENV:-/root/miniconda3/envs/torchtitan-0803-graph-adapt}
 ATB_ROOT=${GRAPH_ATB_ROOT:-/usr/local/Ascend/nnal/atb/latest/atb/cxx_abi_1}
-PHYSICAL_NPU=${ASCEND_RT_VISIBLE_DEVICES:-2}
+case "$ACTION" in
+    smoke-ddp|smoke-fsdp|train-ddp|train-fsdp)
+        DEFAULT_VISIBLE_DEVICES=3,4
+        DEFAULT_WORLD_SIZE=2
+        ;;
+    *)
+        DEFAULT_VISIBLE_DEVICES=2
+        DEFAULT_WORLD_SIZE=1
+        ;;
+esac
+VISIBLE_DEVICES=${ASCEND_RT_VISIBLE_DEVICES:-$DEFAULT_VISIBLE_DEVICES}
+IFS=',' read -r -a VISIBLE_DEVICE_LIST <<<"$VISIBLE_DEVICES"
+VISIBLE_DEVICE_COUNT=${#VISIBLE_DEVICE_LIST[@]}
+WORLD_SIZE=${GRAPH_NGPU:-$DEFAULT_WORLD_SIZE}
+HCCL_NPU_PORT_RANGE=${GRAPH_HCCL_NPU_SOCKET_PORT_RANGE:-auto}
+if ! [[ "$WORLD_SIZE" =~ ^[1-9][0-9]*$ ]]; then
+    echo "GRAPH_NGPU must be a positive integer, got: $WORLD_SIZE" >&2
+    exit 2
+fi
+if [[ $WORLD_SIZE -ne $VISIBLE_DEVICE_COUNT ]]; then
+    echo "GRAPH_NGPU=$WORLD_SIZE but ASCEND_RT_VISIBLE_DEVICES exposes $VISIBLE_DEVICE_COUNT device(s): $VISIBLE_DEVICES" >&2
+    exit 2
+fi
 CACHE_ROOT=${GRAPH_CACHE_ROOT:-$WORKSPACE_ROOT/.cache/torchtitan-test/graph_mode/cann91-torch214-triton321}
 RUN_ROOT=${GRAPH_RUN_ROOT:-$PROJECT_ROOT/graph_debug_runs}
 INDUCTOR_CACHE_DIR=${GRAPH_INDUCTOR_CACHE_DIR:-$CACHE_ROOT/inductor}
@@ -80,7 +111,10 @@ if [[ ${TORCHTITAN_GRAPH_ENV_READY:-0} != 1 ]]; then
         HOME=/root \
         USER=root \
         LANG=C.UTF-8 \
-        ASCEND_RT_VISIBLE_DEVICES="$PHYSICAL_NPU" \
+        ASCEND_RT_VISIBLE_DEVICES="$VISIBLE_DEVICES" \
+        GRAPH_NGPU="$WORLD_SIZE" \
+        GRAPH_HCCL_NPU_SOCKET_PORT_RANGE="$HCCL_NPU_PORT_RANGE" \
+        HCCL_NPU_SOCKET_PORT_RANGE="$HCCL_NPU_PORT_RANGE" \
         GRAPH_CANN_ROOT="$CANN_ROOT" \
         GRAPH_CONDA_ENV="$CONDA_ENV" \
         GRAPH_ATB_ROOT="$ATB_ROOT" \
@@ -103,7 +137,7 @@ set -u
 export PATH="$CONDA_ENV/bin:$ATB_ROOT/bin:$PATH"
 export LD_LIBRARY_PATH="$ATB_ROOT/lib:${LD_LIBRARY_PATH:-}"
 export TORCHTITAN_DEVICE=npu
-export NGPU=1
+export NGPU="$WORLD_SIZE"
 export LOG_RANK=0
 export MODULE=glm5
 export CONFIG=glm5_debugmodel
@@ -128,6 +162,8 @@ print(f"torch_npu={torch_npu.__version__}")
 print(f"triton_ascend={metadata.version('triton-ascend')}")
 print(f"triton_dist={metadata.version('triton')}")
 print(f"ASCEND_RT_VISIBLE_DEVICES={os.environ['ASCEND_RT_VISIBLE_DEVICES']}")
+print(f"NGPU={os.environ['NGPU']}")
+print(f"HCCL_NPU_SOCKET_PORT_RANGE={os.environ['HCCL_NPU_SOCKET_PORT_RANGE']}")
 print(f"TORCHINDUCTOR_CACHE_DIR={os.environ['TORCHINDUCTOR_CACHE_DIR']}")
 print(f"TRITON_CACHE_DIR={os.environ['TRITON_CACHE_DIR']}")
 print(f"TORCH_COMPILE_DEBUG_DIR={os.environ['TORCH_COMPILE_DEBUG_DIR']}")
@@ -151,31 +187,62 @@ mkdir -p "$RUN_DIR/logs" "$RUN_DIR/reports"
 START_EPOCH=$(date +%s)
 STATUS=0
 
+TOPOLOGY=single
+PARALLEL_ARGS=()
 case "$ACTION" in
-    smoke)
+    smoke-ddp|train-ddp)
+        TOPOLOGY="ddp${WORLD_SIZE}"
+        PARALLEL_ARGS=(
+            --parallelism.spmd_backend=partial_dtensor
+            --parallelism.data_parallel_replicate_degree="$WORLD_SIZE"
+            --parallelism.data_parallel_shard_degree=1
+            --parallelism.context_parallel_degree=1
+            --parallelism.tensor_parallel_degree=1
+            --parallelism.pipeline_parallel_degree=1
+            --parallelism.expert_parallel_degree=1
+        )
+        ;;
+    smoke-fsdp|train-fsdp)
+        TOPOLOGY="fsdp${WORLD_SIZE}"
+        PARALLEL_ARGS=(
+            --parallelism.spmd_backend=partial_dtensor
+            --parallelism.data_parallel_replicate_degree=1
+            --parallelism.data_parallel_shard_degree="$WORLD_SIZE"
+            --parallelism.context_parallel_degree=1
+            --parallelism.tensor_parallel_degree=1
+            --parallelism.pipeline_parallel_degree=1
+            --parallelism.expert_parallel_degree=1
+        )
+        ;;
+esac
+
+case "$ACTION" in
+    smoke|smoke-ddp|smoke-fsdp)
         export TORCHTITAN_RUN_LOG="$RUNTIME_LOG"
         set +e
         ./run_train.sh \
             --training.steps=10 \
             --training.num_tokens_per_microbatch_per_dp_rank=32 \
-            --training.num_tokens_per_train_step=32 \
+            --training.num_tokens_per_train_step="$((32 * WORLD_SIZE))" \
             --training.max_context_length=32 \
             --training.dtype=float32 \
             --training.mixed_precision_param=bfloat16 \
             --compile.enable \
             --compile.components=model \
             --compile.backend=inductor \
+            "${PARALLEL_ARGS[@]}" \
             "$@"
         STATUS=$?
         set -e
         ;;
-    train)
+    train|train-ddp|train-fsdp)
         export TORCHTITAN_RUN_LOG="$RUNTIME_LOG"
         set +e
         ./run_train.sh \
             --compile.enable \
             --compile.components=model \
             --compile.backend=inductor \
+            "${PARALLEL_ARGS[@]}" \
             "$@"
         STATUS=$?
         set -e
@@ -230,7 +297,10 @@ cat >"$REPORT_FILE" <<EOF
 - Exit code: $STATUS
 - Duration: $DURATION seconds
 - Started: $RUN_STAMP
-- Physical NPU: $PHYSICAL_NPU
+- Topology: \`$TOPOLOGY\`
+- World size: $WORLD_SIZE
+- Physical NPUs: \`$VISIBLE_DEVICES\`
+- HCCL NPU socket ports: \`$HCCL_NPU_PORT_RANGE\`
 - Conda: \`$CONDA_ENV\`
 - CANN: \`$CANN_ROOT\`
 - torch: \`$TORCH_VERSION\`

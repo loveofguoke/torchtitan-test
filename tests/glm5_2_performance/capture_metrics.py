@@ -7,11 +7,36 @@ import json
 import math
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 
 METRICS_PATH_ENV = "GLM5_PERFORMANCE_METRICS_PATH"
 PROFILE_RANKS_ENV = "GLM5_PERFORMANCE_PROFILE_RANKS"
+REDUCE_DTYPE_OVERRIDE_ENV = "GLM5_PERFORMANCE_REDUCE_DTYPE_OVERRIDE"
+
+
+def _install_reduction_dtype_override() -> None:
+    """Expose reduced-precision FSDP reductions only to this experiment."""
+
+    value = os.environ.get(REDUCE_DTYPE_OVERRIDE_ENV)
+    if not value:
+        return
+    supported = ("float32", "float16", "bfloat16")
+    if value not in supported:
+        raise ValueError(
+            f"unsupported {REDUCE_DTYPE_OVERRIDE_ENV}={value!r}; "
+            f"expected one of {supported}"
+        )
+
+    # TorchTitan deliberately exposes only float32 in its public config. The
+    # underlying MixedPrecisionPolicy already accepts these torch dtypes, so
+    # widen Tyro's runtime dataclass metadata for this isolated performance
+    # process without changing TorchTitan's generic Trainer or config source.
+    from torchtitan.config.configs import TrainingConfig
+
+    choices = Literal["float32", "float16", "bfloat16"]
+    TrainingConfig.__annotations__["mixed_precision_reduce"] = choices
+    TrainingConfig.__dataclass_fields__["mixed_precision_reduce"].type = choices
 
 
 def _to_float(value: Any) -> float | None:
@@ -95,6 +120,7 @@ def main() -> None:
     else:
         _install_gpu_rank_filter()
 
+    _install_reduction_dtype_override()
     _install_metrics_capture()
 
     from torchtitan.train import main as train_main

@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
+from datetime import datetime
 import json
 import os
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -21,8 +24,8 @@ from .analysis import build_analysis, render_html_report
 from .config import (
     PerformanceConfig,
     ProfilerPreset,
+    performance_topologies,
     profiler_presets,
-    standard_topologies,
 )
 
 
@@ -82,7 +85,33 @@ def _visible_devices(device: str) -> list[str] | None:
     return [part.strip() for part in value.split(",") if part.strip()]
 
 
-def _profiling_preflight(output_directory: Path, device: str) -> dict[str, Any]:
+def _device_snapshot(device: str) -> dict[str, Any]:
+    executable = shutil.which("npu-smi" if device == "npu" else "nvidia-smi")
+    if executable is None:
+        return {"available": False}
+    command = [executable, "info"] if device == "npu" else [executable]
+    try:
+        result = subprocess.run(
+            command,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return {"available": True, "error": repr(error), "command": command}
+    return {
+        "available": True,
+        "command": command,
+        "return_code": result.returncode,
+        "output": result.stdout,
+    }
+
+
+def _profiling_preflight(
+    output_directory: Path, device: str, *, profiler_enabled: bool = True
+) -> dict[str, Any]:
     """Record official environment and storage recommendations."""
 
     warnings = []
@@ -90,17 +119,17 @@ def _profiling_preflight(output_directory: Path, device: str) -> dict[str, Any]:
     if os.name == "posix":
         effective_umask = os.umask(0)
         os.umask(effective_umask)
-        if effective_umask & 0o027 != 0o027:
+        if profiler_enabled and effective_umask & 0o027 != 0o027:
             warnings.append(
                 f"umask {effective_umask:04o} is weaker than the recommended 0027"
             )
-        if hasattr(os, "geteuid") and os.geteuid() == 0:
+        if profiler_enabled and hasattr(os, "geteuid") and os.geteuid() == 0:
             warnings.append("profiling as root is not recommended")
     output_parent = output_directory.parent
     storage = shutil.disk_usage(output_parent)
     if output_parent.is_symlink():
         warnings.append("profiler output parent is a symbolic link")
-    if device == "npu" and not any(
+    if profiler_enabled and device == "npu" and not any(
         os.environ.get(name)
         for name in ("ASCEND_HOME_PATH", "ASCEND_OPP_PATH", "ASCEND_TOOLKIT_HOME")
     ):
@@ -118,6 +147,7 @@ def _profiling_preflight(output_directory: Path, device: str) -> dict[str, Any]:
         "output_parent_is_symlink": output_parent.is_symlink(),
         "storage_free_bytes_before_capture": storage.free,
         "storage_total_bytes": storage.total,
+        "device_snapshot_before_capture": _device_snapshot(device),
         "warnings": warnings,
     }
     for warning in warnings:
@@ -146,6 +176,16 @@ def _run_name(
         f"l{config.local_batch_size}-b{config.global_batch_size}-"
         f"seq{config.sequence_length}-seed{config.seed}-{config.preset}"
     )
+    if config.mixed_precision_reduce != "float32":
+        reduce_precision = {
+            "bfloat16": "bf16",
+            "float16": "fp16",
+        }.get(config.mixed_precision_reduce, config.mixed_precision_reduce)
+        base += f"-reduce-{reduce_precision}"
+    if not config.profiler_enabled:
+        base += "-profiler-off"
+    if config.replicate:
+        base += f"-r{config.replicate}"
     if preset_overridden:
         base += f"-{effective_preset.parse_mode}"
     identity = config.as_dict()
@@ -202,6 +242,141 @@ def _write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _exploration_directory(root: Path, run_name: str) -> Path:
+    return (
+        root
+        / "tests"
+        / "glm5_2_performance"
+        / "explorations"
+        / "runs"
+        / run_name
+    )
+
+
+def _record_exploration_command(
+    root: Path,
+    *,
+    run_name: str,
+    action: str,
+    device: str,
+    topology: str,
+) -> Path:
+    """Append the exact driver invocation and relevant environment as JSONL."""
+
+    directory = _exploration_directory(root, run_name)
+    directory.mkdir(parents=True, exist_ok=True)
+    visible_variable = (
+        "ASCEND_RT_VISIBLE_DEVICES" if device == "npu" else "CUDA_VISIBLE_DEVICES"
+    )
+    record = {
+        "timestamp": datetime.now().astimezone().isoformat(),
+        "action": action,
+        "cwd": str(root),
+        "argv": [sys.executable, *sys.argv],
+        "shell_command": shlex.join([sys.executable, *sys.argv]),
+        "device": device,
+        "topology": topology,
+        "environment": {
+            name: os.environ[name]
+            for name in (
+                visible_variable,
+                "TORCHTITAN_MSPROF_ANALYZE",
+                "PATH",
+                "PYTHONPATH",
+                "ASCEND_HOME_PATH",
+                "ASCEND_OPP_PATH",
+                "ASCEND_TOOLKIT_HOME",
+            )
+            if name in os.environ
+        },
+        "source": _source_metadata(root),
+    }
+    history = directory / "command_history.jsonl"
+    with history.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(record, sort_keys=True) + "\n")
+    return directory
+
+
+def _sync_exploration_bundle(
+    root: Path,
+    *,
+    run_name: str,
+    run_directory: Path,
+    artifact_directory: Path,
+    report_path: Path | None = None,
+) -> Path:
+    """Keep compact evidence beside the experiment's reproducibility log."""
+
+    directory = _exploration_directory(root, run_name)
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in ("manifest.json", "analysis.json", "metrics.jsonl"):
+        source = artifact_directory / name
+        if source.is_file():
+            shutil.copy2(source, directory / name)
+    command_directory = directory / "tool_commands"
+    for status_path in sorted(run_directory.glob("*.json")):
+        if status_path.name == "manifest.json":
+            continue
+        command_directory.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(status_path, command_directory / status_path.name)
+    index = {
+        "run_name": run_name,
+        "raw_run_directory": str(run_directory),
+        "artifact_directory": str(artifact_directory),
+        "report_path": str(report_path) if report_path is not None else None,
+        "mindstudio_input": str(_find_profiler_directory(run_directory)),
+    }
+    _write_json(directory / "artifacts.json", index)
+    return directory
+
+
+def _config_is_compatible(
+    saved: dict[str, Any], current: PerformanceConfig
+) -> bool:
+    """Match manifests written before additive config fields existed."""
+
+    current_values = json.loads(json.dumps(current.as_dict()))
+    defaults = json.loads(json.dumps(PerformanceConfig(name=current.name).as_dict()))
+    for key, value in current_values.items():
+        if key in saved:
+            if saved[key] != value:
+                return False
+        elif defaults.get(key) != value:
+            return False
+    return not any(key not in current_values for key in saved)
+
+
+def _find_matching_capture(
+    artifact_parent: Path,
+    *,
+    config: PerformanceConfig,
+    device: str,
+    profiler_environment: dict[str, str],
+) -> tuple[Path, dict[str, Any]] | None:
+    matches = []
+    if not artifact_parent.is_dir():
+        return None
+    for manifest_path in artifact_parent.glob("*/manifest.json"):
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, TypeError, ValueError):
+            continue
+        saved_config = manifest.get("config")
+        if (
+            manifest.get("device") == device
+            and manifest.get("topology") == config.topology
+            and manifest.get("preset") == config.preset
+            and manifest.get("profiler_environment") == profiler_environment
+            and isinstance(saved_config, dict)
+            and _config_is_compatible(saved_config, config)
+        ):
+            matches.append((manifest_path.parent, manifest))
+    if len(matches) > 1:
+        names = ", ".join(path.name for path, _ in matches)
+        raise RuntimeError(f"multiple compatible captures found: {names}")
+    return matches[0] if matches else None
+
+
 def _metrics_rank(world_size: int, pp: int, pp_schedule: str) -> int:
     if pp == 1 or pp_schedule == "ZBVZeroBubble":
         return 0
@@ -216,7 +391,7 @@ def _training_command(
     preset: ProfilerPreset,
     run_directory: Path,
 ) -> list[str]:
-    topology = standard_topologies()[config.topology]
+    topology = performance_topologies()[config.topology]
     visible = _visible_devices(device)
     if visible is not None and len(visible) < topology.world_size:
         raise ValueError(
@@ -251,6 +426,19 @@ def _training_command(
         topology.world_size, topology.pp, topology.pp_schedule
     )
     profile_frequency = config.warmup_steps + config.active_steps
+    profiler_arguments = (
+        [
+            "--profiler.enable_profiling",
+            "--profiler.save_traces_folder=profiling/traces",
+            f"--profiler.profile_freq={profile_frequency}",
+            "--profiler.profiler_repeat=1",
+            f"--profiler.profiler_skip_first={config.skip_steps}",
+            f"--profiler.profiler_warmup={config.warmup_steps}",
+            f"--profiler.profiler_active={config.active_steps}",
+        ]
+        if config.profiler_enabled
+        else []
+    )
     command = [
         torchrun,
         "--nnodes=1",
@@ -285,13 +473,7 @@ def _training_command(
         "--metrics.enable_tensorboard",
         "--metrics.disable_color_printing",
         "--metrics.save_tb_folder=tensorboard",
-        "--profiler.enable_profiling",
-        "--profiler.save_traces_folder=profiling/traces",
-        f"--profiler.profile_freq={profile_frequency}",
-        "--profiler.profiler_repeat=1",
-        f"--profiler.profiler_skip_first={config.skip_steps}",
-        f"--profiler.profiler_warmup={config.warmup_steps}",
-        f"--profiler.profiler_active={config.active_steps}",
+        *profiler_arguments,
         *topology.command_args(),
         *config.extra_args,
     ]
@@ -361,7 +543,11 @@ def capture(
     preset: ProfilerPreset,
     force: bool,
 ) -> tuple[Path, Path]:
-    if device == "npu" and os.environ.get("PROF_CONFIG_PATH"):
+    if (
+        config.profiler_enabled
+        and device == "npu"
+        and os.environ.get("PROF_CONFIG_PATH")
+    ):
         raise ValueError(
             "PROF_CONFIG_PATH enables dynamic_profile and cannot be combined "
             "with this scheduled profiler capture"
@@ -384,11 +570,12 @@ def capture(
     complete_manifest = artifact_directory / "manifest.json"
 
     run_manifest = run_directory / "manifest.json"
+    profiler_environment = preset.environment() if config.profiler_enabled else {}
     if complete_manifest.is_file() and run_manifest.is_file() and not force:
         existing = json.loads(complete_manifest.read_text(encoding="utf-8"))
         if (
-            existing.get("config") != config.as_dict()
-            or existing.get("profiler_environment") != preset.environment()
+            not _config_is_compatible(existing.get("config", {}), config)
+            or existing.get("profiler_environment") != profiler_environment
         ):
             raise FileExistsError(
                 f"completed capture uses different settings: {artifact_directory}; "
@@ -411,15 +598,22 @@ def capture(
     runtime_log = run_directory / "runtime.log"
     environment = os.environ.copy()
     environment.update(config.environment)
-    environment.update(preset.environment())
+    environment.update(profiler_environment)
     environment["TORCHTITAN_DEVICE"] = "npu" if device == "npu" else "gpu"
     environment["GLM5_PERFORMANCE_METRICS_PATH"] = str(metrics_path)
-    environment["GLM5_PERFORMANCE_PROFILE_RANKS"] = preset.profile_ranks
-    topology = standard_topologies()[config.topology]
+    if config.profiler_enabled:
+        environment["GLM5_PERFORMANCE_PROFILE_RANKS"] = preset.profile_ranks
+    if config.mixed_precision_reduce != "float32":
+        environment["GLM5_PERFORMANCE_REDUCE_DTYPE_OVERRIDE"] = (
+            config.mixed_precision_reduce
+        )
+    topology = performance_topologies()[config.topology]
     environment["LOG_RANK"] = str(
         _metrics_rank(topology.world_size, topology.pp, topology.pp_schedule)
     )
-    preflight = _profiling_preflight(run_directory, device)
+    preflight = _profiling_preflight(
+        run_directory, device, profiler_enabled=config.profiler_enabled
+    )
     command = _training_command(
         root=root,
         config=config,
@@ -427,8 +621,9 @@ def capture(
         preset=preset,
         run_directory=run_directory,
     )
+    capture_kind = "profiler" if config.profiler_enabled else "performance"
     print(
-        f"Starting profiler capture: device={device}, topology={config.topology}, "
+        f"Starting {capture_kind} capture: device={device}, topology={config.topology}, "
         f"preset={config.preset}, output={run_directory}"
     )
     print(f"Runtime log: {runtime_log}")
@@ -441,10 +636,16 @@ def capture(
             log_path=runtime_log,
         )
     except Exception as error:
-        _write_json(
-            run_directory / "failure.json",
-            {"error": repr(error), "command": command},
-        )
+        failure = {"error": repr(error), "command": command}
+        failure_path = run_directory / "failure.json"
+        _write_json(failure_path, failure)
+        exploration_directory = _exploration_directory(root, run_name)
+        exploration_directory.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(failure_path, exploration_directory / "failure.json")
+        if runtime_log.is_file():
+            shutil.copy2(
+                runtime_log, exploration_directory / "failed_runtime.log"
+            )
         raise
 
     storage_after = shutil.disk_usage(run_directory.parent)
@@ -459,6 +660,7 @@ def capture(
             "storage_free_bytes_after_capture": storage_after.free,
             "run_output_bytes": output_bytes,
             "recommended_free_bytes_for_same_capture": output_bytes * 20,
+            "device_snapshot_after_capture": _device_snapshot(device),
         }
     )
     if preflight["storage_free_bytes_before_capture"] < output_bytes * 20:
@@ -470,10 +672,11 @@ def capture(
         "format_version": 1,
         "run_name": run_name,
         "device": device,
+        "visible_devices": _visible_devices(device),
         "topology": config.topology,
         "preset": config.preset,
         "config": config.as_dict(),
-        "profiler_environment": preset.environment(),
+        "profiler_environment": profiler_environment,
         "command": command,
         "source": _source_metadata(root),
         "preflight": preflight,
@@ -484,6 +687,12 @@ def capture(
     _write_json(artifact_directory / "manifest.json", manifest)
     if metrics_path.is_file():
         shutil.copy2(metrics_path, artifact_directory / "metrics.jsonl")
+    _sync_exploration_bundle(
+        root,
+        run_name=run_name,
+        run_directory=run_directory,
+        artifact_directory=artifact_directory,
+    )
     print(f"Captured performance artifact: {artifact_directory}")
     return run_directory, artifact_directory
 
@@ -566,6 +775,15 @@ def _run_msprof_analyze(
 
 
 def _msprof_analyze_executable() -> str:
+    override = os.environ.get("TORCHTITAN_MSPROF_ANALYZE")
+    if override:
+        executable = str(Path(override).expanduser().resolve())
+        if not Path(executable).is_file() or not os.access(executable, os.X_OK):
+            raise FileNotFoundError(
+                "TORCHTITAN_MSPROF_ANALYZE must name an executable file: "
+                f"{executable}"
+            )
+        return executable
     executable = shutil.which("msprof-analyze")
     if executable is None:
         raise FileNotFoundError(
@@ -575,7 +793,7 @@ def _msprof_analyze_executable() -> str:
 
 
 def run_cluster_analysis(run_directory: Path) -> dict[str, Any]:
-    """Build the official multi-rank communication analysis deliverable."""
+    """Run the official cluster, time, bottleneck, and idle recipes."""
 
     profiler_directory = _find_profiler_directory(run_directory)
     output_directory = run_directory / "cluster"
@@ -589,9 +807,65 @@ def run_cluster_analysis(run_directory: Path) -> dict[str, Any]:
         "-o",
         str(output_directory),
     ]
-    return _run_msprof_analyze(
+    results = {"cluster": _run_msprof_analyze(
         run_directory, name="cluster", command=command
+    )}
+    executable = _msprof_analyze_executable()
+    recipes = {
+        "cluster_time_summary": [
+            executable,
+            "-m",
+            "cluster_time_summary",
+            "-d",
+            str(profiler_directory),
+            "-o",
+            str(run_directory / "cluster_time_summary"),
+            "--export_type",
+            "text",
+        ],
+        "free_analysis": [
+            executable,
+            "-m",
+            "free_analysis",
+            "-d",
+            str(profiler_directory),
+            "-o",
+            str(run_directory / "free_analysis"),
+            "--top_num",
+            "20",
+            "--export_type",
+            "text",
+        ],
+    }
+    rank_ids = sorted(
+        {
+            match.group(1)
+            for path in profiler_directory.iterdir()
+            if (match := re.match(r"rank_(\d+)_", path.name))
+        },
+        key=int,
     )
+    for rank_id in rank_ids:
+        recipes[f"communication_bottleneck_rank_{rank_id}"] = [
+            executable,
+            "-m",
+            "communication_bottleneck",
+            "-d",
+            str(profiler_directory),
+            "-o",
+            str(run_directory / f"communication_bottleneck_rank_{rank_id}"),
+            "--rank_id",
+            rank_id,
+            "--top_num",
+            "20",
+            "--export_type",
+            "text",
+        ]
+    for name, recipe in recipes.items():
+        results[name] = _run_msprof_analyze(
+            run_directory, name=name, command=recipe
+        )
+    return results
 
 
 def _comparison_input(run_directory: Path) -> Path:
@@ -655,8 +929,22 @@ def analyze(
     )
     manifest_path = artifact_directory / "manifest.json"
     if not manifest_path.is_file():
-        raise FileNotFoundError(f"capture artifact not found: {manifest_path}")
-    if parse_offline:
+        match = _find_matching_capture(
+            root / config.artifact_root,
+            config=config,
+            device=device,
+            profiler_environment=(
+                preset.environment() if config.profiler_enabled else {}
+            ),
+        )
+        if match is None:
+            raise FileNotFoundError(f"capture artifact not found: {manifest_path}")
+        artifact_directory, manifest = match
+        run_name = str(manifest["run_name"])
+        run_directory = root / config.run_root / run_name
+        manifest_path = artifact_directory / "manifest.json"
+        print(f"Using compatible capture manifest: {manifest_path}")
+    if parse_offline and config.profiler_enabled:
         offline_parse(run_directory, max_process_number=parse_workers)
     if advisor:
         run_advisor(run_directory)
@@ -677,6 +965,13 @@ def analyze(
         analysis=analysis,
         output_path=report_path,
     )
+    _sync_exploration_bundle(
+        root,
+        run_name=run_name,
+        run_directory=run_directory,
+        artifact_directory=artifact_directory,
+        report_path=report_path,
+    )
     print(f"Performance report: {report_path}")
     return report_path
 
@@ -685,7 +980,7 @@ def run_profiler_cli(
     config: PerformanceConfig,
     script_path: str,
 ) -> None:
-    topologies = standard_topologies()
+    topologies = performance_topologies()
     presets = profiler_presets()
     parser = argparse.ArgumentParser(
         description="Capture and visualize a bounded TorchTitan profiler window"
@@ -715,9 +1010,22 @@ def run_profiler_cli(
     parser.add_argument("--skip-steps", type=int)
     parser.add_argument("--warmup-steps", type=int)
     parser.add_argument("--active-steps", type=int)
+    parser.add_argument(
+        "--profiler-off",
+        action="store_true",
+        help="disable collection for authoritative steady-state throughput",
+    )
     parser.add_argument("--local-batch-size", type=int)
     parser.add_argument("--global-batch-size", type=int)
     parser.add_argument("--sequence-length", type=int)
+    parser.add_argument(
+        "--replicate",
+        type=int,
+        help="repeat index included in run identity without changing training",
+    )
+    parser.add_argument("--training-dtype")
+    parser.add_argument("--mixed-precision-param")
+    parser.add_argument("--mixed-precision-reduce")
     parser.add_argument(
         "--run-root",
         help="raw output root; use node-local storage for large cluster captures",
@@ -758,9 +1066,14 @@ def run_profiler_cli(
         "skip_steps": args.skip_steps,
         "warmup_steps": args.warmup_steps,
         "active_steps": args.active_steps,
+        "profiler_enabled": False if args.profiler_off else None,
         "local_batch_size": args.local_batch_size,
         "global_batch_size": args.global_batch_size,
         "sequence_length": args.sequence_length,
+        "replicate": args.replicate,
+        "training_dtype": args.training_dtype,
+        "mixed_precision_param": args.mixed_precision_param,
+        "mixed_precision_reduce": args.mixed_precision_reduce,
         "run_root": args.run_root,
     }
     effective = replace(
@@ -800,6 +1113,16 @@ def run_profiler_cli(
     reports: list[tuple[str, Path]] = []
     for topology_name in selected:
         topology_config = replace(effective, topology=topology_name)
+        run_name = _run_name(topology_config, device, preset)
+        action = "probe" if args.probe else "capture" if args.capture else "analyze"
+        if args.capture or args.probe:
+            _record_exploration_command(
+                root,
+                run_name=run_name,
+                action=action,
+                device=device,
+                topology=topology_name,
+            )
         print(
             f"Starting performance topology: {topology_name} "
             f"({topologies[topology_name].world_size} ranks)",
@@ -832,6 +1155,14 @@ def run_profiler_cli(
                 cluster=args.cluster,
                 compare_baseline=args.compare_baseline,
             )
+            if args.analyze:
+                _record_exploration_command(
+                    root,
+                    run_name=report.stem,
+                    action=action,
+                    device=device,
+                    topology=topology_name,
+                )
             reports.append((topology_name, report))
     if len(reports) > 1:
         links = "".join(

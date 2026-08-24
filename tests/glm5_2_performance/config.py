@@ -5,7 +5,10 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Literal
 
-from tests.glm5_2_common.topology import ParallelTopology, standard_topologies
+from tests.glm5_2_common.topology import (
+    ParallelTopology,
+    standard_topologies as common_topologies,
+)
 
 
 DeviceType = Literal["auto", "cuda", "npu"]
@@ -109,6 +112,60 @@ def profiler_presets() -> dict[str, ProfilerPreset]:
     }
 
 
+def performance_topologies() -> dict[str, ParallelTopology]:
+    """Extend canonical acceptance topologies with health-safe lab shapes.
+
+    The two- and four-rank entries let profiler exploration avoid a known-bad
+    physical card without changing the canonical cross-experiment topology
+    matrix in ``glm5_2_common``.
+    """
+
+    topologies = dict(common_topologies())
+    topologies.update(
+        {
+            "ddp4": ParallelTopology(
+                "ddp4", 4, data_parallel_replicate_degree=4
+            ),
+            "fsdp2": ParallelTopology(
+                "fsdp2", 2, data_parallel_shard_degree=2
+            ),
+            "fsdp4": ParallelTopology(
+                "fsdp4", 4, data_parallel_shard_degree=4
+            ),
+            "tp2": ParallelTopology("tp2", 2, tensor_parallel_degree=2),
+            "tp4": ParallelTopology("tp4", 4, tensor_parallel_degree=4),
+            "cp2": ParallelTopology("cp2", 2, context_parallel_degree=2),
+            "cp4": ParallelTopology("cp4", 4, context_parallel_degree=4),
+            "pp2": ParallelTopology("pp2", 2, pipeline_parallel_degree=2),
+            "pp4": ParallelTopology("pp4", 4, pipeline_parallel_degree=4),
+            "ep2": ParallelTopology(
+                "ep2",
+                2,
+                data_parallel_shard_degree=2,
+                expert_parallel_degree=2,
+            ),
+            "ep4": ParallelTopology(
+                "ep4",
+                4,
+                data_parallel_shard_degree=4,
+                expert_parallel_degree=4,
+            ),
+            "fsdp2-tp2": ParallelTopology(
+                "fsdp2-tp2",
+                4,
+                data_parallel_shard_degree=2,
+                tensor_parallel_degree=2,
+            ),
+        }
+    )
+    return topologies
+
+
+# Preserve the original public import used by existing performance tests and
+# scripts while keeping these lab-only shapes out of glm5_2_common.
+standard_topologies = performance_topologies
+
+
 @dataclass(frozen=True)
 class PerformanceConfig:
     """One reproducible profiler experiment."""
@@ -123,10 +180,12 @@ class PerformanceConfig:
     skip_steps: int = 3
     warmup_steps: int = 1
     active_steps: int = 3
+    profiler_enabled: bool = True
     local_batch_size: int = 2
     global_batch_size: int = 2
     sequence_length: int = 128
     seed: int = 61
+    replicate: int = 0
     training_dtype: str = "float32"
     mixed_precision_param: str = "bfloat16"
     mixed_precision_reduce: str = "float32"
@@ -148,6 +207,16 @@ class PerformanceConfig:
             raise ValueError("training and active profiler sizes must be positive")
         if self.skip_steps < 0 or self.warmup_steps < 0:
             raise ValueError("profiler skip and warmup steps must be non-negative")
+        if self.replicate < 0:
+            raise ValueError("replicate must be non-negative")
+        if self.mixed_precision_reduce not in {
+            "float32",
+            "float16",
+            "bfloat16",
+        }:
+            raise ValueError(
+                "mixed_precision_reduce must be float32, float16, or bfloat16"
+            )
         required_steps = self.skip_steps + self.warmup_steps + self.active_steps
         if self.steps < required_steps:
             raise ValueError(

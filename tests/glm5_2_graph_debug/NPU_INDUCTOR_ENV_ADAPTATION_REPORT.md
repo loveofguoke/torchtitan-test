@@ -56,6 +56,8 @@ CANN 9.1.0 的 `acl_rt.h` 已提供上述类型和 API。使用失败现场的�
 4. 每次测试通过 `env -i` 重建最小环境，避免 9.0 的 include/lib 混入。
 5. 为 Inductor、Triton、编译诊断和运行日志使用独立目录。
 
+完整安装与恢复步骤见 `CANN_9_1_INSTALLATION.md`。
+
 CANN 复制后关键文件与来源 SHA-256 完全一致：
 
 | 文件 | SHA-256 |
