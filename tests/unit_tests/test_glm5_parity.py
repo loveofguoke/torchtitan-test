@@ -3735,10 +3735,15 @@ class ComponentParityMixin:
                         position_embeddings=self.batch.hf_position_embeddings,
                         use_cache=False,
                     )
+                    titan_hidden, titan_positions, titan_mask = (
+                        _titan_token_first_inputs(
+                            self.batch.hidden_states, self.batch.positions
+                        )
+                    )
                     titan_layer(
-                        self.batch.hidden_states,
-                        self.batch.causal_mask,
-                        self.batch.positions,
+                        titan_hidden,
+                        titan_mask,
+                        titan_positions,
                     )
         self._record_recursive_trace(
             spec,
