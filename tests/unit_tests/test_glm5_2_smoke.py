@@ -23,7 +23,7 @@ def test_smoke_disables_trainer_cuda_graphs(
         root=tmp_path,
         suite_root=tmp_path / "smoke_runs",
         device="gpu",
-        visible_devices="0",
+        visible_devices="0,1,2,3,4,5,6,7",
         topology=ParallelTopology("pp8", 8, pipeline_parallel_degree=8),
         steps=1,
         local_batch_size=8,

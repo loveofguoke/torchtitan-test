@@ -261,6 +261,26 @@ def test_discrete_mismatch_column_reports_every_batch_and_topk() -> None:
     assert "Expected topk: [0, 1]" in recorder.table()
 
 
+def test_token_first_discrete_results_use_fixture_batch_coordinates() -> None:
+    recorder = glm5_parity.ParityRecorder(glm5_parity.BF16)
+    positions = torch.tensor([[0, 1], [0, 1]])
+    actual = torch.tensor([[0], [1], [2], [3]], dtype=torch.int32)
+    expected = torch.tensor([[0], [1], [2], [2]], dtype=torch.int32)
+
+    result = recorder.discrete(
+        scope="configured",
+        component="indexer",
+        layer=1,
+        actual=actual,
+        expected=expected,
+        positions=positions,
+    )
+
+    assert result.mismatch_count == 1
+    assert result.mismatch_coordinates == [(1, 1)]
+    assert "Batch 1, query position 1" in result.detail
+
+
 @pytest.mark.parametrize("component", ["indexer", "router"])
 def test_bf16_topk_cutoff_difference_is_boundary_pass(
     component: str,
@@ -305,7 +325,7 @@ def test_bf16_topk_cutoff_difference_is_boundary_pass(
     assert "Complete score row passes BF16 tolerance: Yes" in (
         result.precision_band
     )
-    assert "Observed cutoff instability interval:" in result.precision_band
+    assert "Observed one-score instability interval:" in result.precision_band
     assert "Scores reproduce recorded top-k: Yes" in result.precision_band
     assert "Index 0 (selected only by Actual)" in result.detail
     assert "Index 2 (selected only by Expected)" in result.detail
@@ -787,17 +807,17 @@ def test_matching_topk_still_reports_every_selected_score() -> None:
 
 def test_indexer_score_replay_uses_captured_mixed_precision_boundaries() -> None:
     scores = glm5_parity._replay_titan_indexer_scores(
-        q_projection=torch.tensor([[[0.0, 2.0], [0.0, 4.0]]]),
-        q_rotated=torch.tensor([[[[1.0]], [[3.0]]]]),
-        k_normalized=torch.tensor([[[0.0, 6.0], [0.0, 8.0]]]),
-        k_rotated=torch.tensor([[[[5.0]], [[7.0]]]]),
-        projected_weights=torch.ones((1, 2, 1)),
-        attention_mask=torch.zeros((1, 2, 2)),
+        q_projection=torch.tensor([[0.0, 2.0], [0.0, 4.0]]),
+        q_rotated=torch.tensor([[[1.0]], [[3.0]]]),
+        k_normalized=torch.tensor([[0.0, 6.0], [0.0, 8.0]]),
+        k_rotated=torch.tensor([[[5.0]], [[7.0]]]),
+        projected_weights=torch.ones((2, 1)),
+        attention_mask=torch.zeros((2, 2)),
         n_heads=1,
         head_dim=2,
         rope_head_dim=1,
     )
-    expected = torch.tensor([[[17.0, 23.0], [39.0, 53.0]]]) / (2.0**0.5)
+    expected = torch.tensor([[17.0, 23.0], [39.0, 53.0]]) / (2.0**0.5)
     torch.testing.assert_close(scores, expected)
 
 
@@ -977,20 +997,24 @@ def test_glm5_2_html_contents_is_top_only_and_targets_sections(
 
     html = path.read_text(encoding="utf-8")
     assert html.count("class='report-toc'") == 1
-    assert ".report-toc{position:sticky" not in html
-    assert ".parity-table thead th{position:sticky" in html
+    assert "nav.report-toc {" in html
+    toc_css = html.split("nav.report-toc {", 1)[1].split("}", 1)[0]
+    assert "position: sticky" not in toc_css
     assert "class='configuration-scroll'" in html
-    assert "thead th{position:sticky" in html
+    assert "thead th {" in html
+    table_header_css = html.split("thead th {", 1)[1].split("}", 1)[0]
+    assert "position: sticky;" in table_header_css
     assert "data-column-group='metric'" in html
     assert "data-column-group='topk'" in html
     assert "aria-pressed='false'" in html
-    assert "button[aria-pressed='true']" in html
+    assert 'button[aria-pressed="true"]' in html
     assert "hide-metric" in html
     assert "hide-topk" in html
     assert "Actual top-k scores" in html
-    assert ".boundary{color:" in html
+    assert "td.boundary {" in html
     assert "class='parity-table-scroll'" in html
-    assert ".error-chart-legend{display:grid" in html
+    assert ".error-chart-legend {" in html
+    assert "display: grid;" in html
     assert "href='#section-0-component-indexer'" in html
     assert "<section id='section-0-component-indexer'>" in html
     assert html.index("class='report-toc'") < html.index("<section id=")

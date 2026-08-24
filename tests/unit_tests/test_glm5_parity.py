@@ -675,7 +675,7 @@ def _titan_config(model_size: ParityModelSize) -> Any:
     rope = replace(
         base.layers[0].attention.rope,
         dim=model_size.qk_rope_head_dim,
-        max_seq_len=model_size.rope_cache_max_seq_len,
+        max_context_length=model_size.rope_cache_max_seq_len,
         theta=model_size.rope_theta,
     )
     return replace(
@@ -1036,12 +1036,14 @@ def _selection_mismatch_coordinates(
             actual = {
                 int(index)
                 for index in actual_cpu[batch_index, sequence_index]
-                if causal_position is None or int(index) <= causal_position
+                if causal_position is None
+                or 0 <= int(index) <= causal_position
             }
             expected = {
                 int(index)
                 for index in expected_cpu[batch_index, sequence_index]
-                if causal_position is None or int(index) <= causal_position
+                if causal_position is None
+                or 0 <= int(index) <= causal_position
             }
             if actual != expected:
                 mismatched_coordinates.append((batch_index, sequence_index))
@@ -1072,21 +1074,51 @@ def _replay_titan_indexer_scores(
     rope_head_dim: int,
 ) -> torch.Tensor:
     """Reconstruct TorchTitan index scores from captured indexer tensors."""
-    num_tokens = q_projection.shape[0]
-    q_full = q_projection.reshape(num_tokens, n_heads, head_dim)
-    q_pass = q_full[..., rope_head_dim:]
-    k_pass = k_normalized[..., rope_head_dim:]
-    q = torch.cat((q_rotated, q_pass), dim=-1).float()
-    k = torch.cat((k_rotated.squeeze(1), k_pass), dim=-1).float()
-    scores = torch.matmul(
-        q.transpose(0, 1),
-        k.transpose(0, 1),
-    ) * (head_dim**-0.5)
-    scores = F.relu(scores)
-    weights = projected_weights.float() * (n_heads**-0.5)
-    index_scores = torch.matmul(
-        weights.unsqueeze(1), scores.transpose(0, 1)
-    ).squeeze(1)
+    if q_projection.ndim == 2:
+        num_tokens = q_projection.shape[0]
+        q_full = q_projection.reshape(num_tokens, n_heads, head_dim)
+        q_pass = q_full[..., rope_head_dim:]
+        k_pass = k_normalized[..., rope_head_dim:]
+        q = torch.cat((q_rotated, q_pass), dim=-1).float()
+        k = torch.cat((k_rotated.squeeze(1), k_pass), dim=-1).float()
+        scores = torch.matmul(
+            q.transpose(0, 1),
+            k.transpose(0, 1),
+        ) * (head_dim**-0.5)
+        scores = F.relu(scores)
+        weights = projected_weights.float() * (n_heads**-0.5)
+        index_scores = torch.matmul(
+            weights.unsqueeze(1), scores.transpose(0, 1)
+        ).squeeze(1)
+        if attention_mask.ndim == 3 and attention_mask.shape[0] == 1:
+            attention_mask = attention_mask[0]
+    elif q_projection.ndim == 3:
+        # Artifacts captured before TorchTitan adopted token-first model inputs
+        # retain separate batch and sequence dimensions.
+        batch_size, sequence_length = q_projection.shape[:2]
+        q_full = q_projection.reshape(
+            batch_size, sequence_length, n_heads, head_dim
+        )
+        q_pass = q_full[..., rope_head_dim:]
+        k_pass = k_normalized[..., rope_head_dim:]
+        q = torch.cat((q_rotated, q_pass), dim=-1).float()
+        k = torch.cat((k_rotated.squeeze(2), k_pass), dim=-1).float()
+        scores = torch.matmul(
+            q.transpose(1, 2),
+            k.transpose(1, 2).unsqueeze(1),
+        ) * (head_dim**-0.5)
+        scores = F.relu(scores)
+        weights = projected_weights.float() * (n_heads**-0.5)
+        index_scores = torch.matmul(
+            weights.unsqueeze(-2), scores.transpose(1, 2)
+        ).squeeze(-2)
+        if attention_mask.ndim == 4:
+            attention_mask = attention_mask[:, 0]
+    else:
+        raise ValueError(
+            "captured indexer q projection must have shape [T, D] or "
+            f"[B, L, D], got {tuple(q_projection.shape)}"
+        )
     if attention_mask.shape != index_scores.shape:
         raise ValueError(
             "captured attention mask does not match replayed index scores: "
@@ -1781,6 +1813,26 @@ class ParityRecorder:
     ) -> ComparisonResult:
         actual_cpu = actual.detach().cpu()
         expected_cpu = expected.detach().cpu()
+        positions_cpu = None if positions is None else positions.detach().cpu()
+        if positions_cpu is not None and positions_cpu.ndim == 2:
+            batch_size, sequence_length = positions_cpu.shape
+            folded_tokens = batch_size * sequence_length
+            batch_shape = (batch_size, sequence_length)
+
+            def fold_token_first(value: torch.Tensor) -> torch.Tensor:
+                folded = value.unflatten(0, batch_shape)
+                if component == "indexer":
+                    offsets = (
+                        torch.arange(batch_size, dtype=folded.dtype)
+                        * sequence_length
+                    ).view(batch_size, 1, 1)
+                    folded = folded - offsets
+                return folded
+
+            if actual_cpu.ndim == 2 and actual_cpu.shape[0] == folded_tokens:
+                actual_cpu = fold_token_first(actual_cpu)
+            if expected_cpu.ndim == 2 and expected_cpu.shape[0] == folded_tokens:
+                expected_cpu = fold_token_first(expected_cpu)
         if (
             actual_cpu.ndim + 1 == expected_cpu.ndim
             and actual_cpu.shape[0] == expected_cpu.shape[0] * expected_cpu.shape[1]
@@ -1919,14 +1971,53 @@ class ParityRecorder:
             batch_size, sequence_length = positions_cpu.shape
             folded_tokens = batch_size * sequence_length
             batch_shape = (batch_size, sequence_length)
+
+            def fold_topk(value: torch.Tensor) -> torch.Tensor:
+                folded = value.unflatten(0, batch_shape)
+                if result.component == "indexer":
+                    offsets = (
+                        torch.arange(batch_size, dtype=folded.dtype)
+                        * sequence_length
+                    ).view(batch_size, 1, 1)
+                    folded = folded - offsets
+                return folded
+
+            def fold_scores(value: torch.Tensor) -> torch.Tensor:
+                folded = value.unflatten(0, batch_shape)
+                if (
+                    result.component == "indexer"
+                    and folded.shape[-1] == folded_tokens
+                ):
+                    folded = torch.stack(
+                        [
+                            folded[
+                                batch_index,
+                                :,
+                                batch_index * sequence_length
+                                : (batch_index + 1) * sequence_length,
+                            ]
+                            for batch_index in range(batch_size)
+                        ]
+                    )
+                return folded
+
             if actual_topk_cpu.ndim == 2 and actual_topk_cpu.shape[0] == folded_tokens:
-                actual_topk_cpu = actual_topk_cpu.unflatten(0, batch_shape)
-            if expected_topk_cpu.ndim == 2 and expected_topk_cpu.shape[0] == folded_tokens:
-                expected_topk_cpu = expected_topk_cpu.unflatten(0, batch_shape)
-            if actual_scores_cpu.ndim == 2 and actual_scores_cpu.shape[0] == folded_tokens:
-                actual_scores_cpu = actual_scores_cpu.unflatten(0, batch_shape)
-            if expected_scores_cpu.ndim == 2 and expected_scores_cpu.shape[0] == folded_tokens:
-                expected_scores_cpu = expected_scores_cpu.unflatten(0, batch_shape)
+                actual_topk_cpu = fold_topk(actual_topk_cpu)
+            if (
+                expected_topk_cpu.ndim == 2
+                and expected_topk_cpu.shape[0] == folded_tokens
+            ):
+                expected_topk_cpu = fold_topk(expected_topk_cpu)
+            if (
+                actual_scores_cpu.ndim == 2
+                and actual_scores_cpu.shape[0] == folded_tokens
+            ):
+                actual_scores_cpu = fold_scores(actual_scores_cpu)
+            if (
+                expected_scores_cpu.ndim == 2
+                and expected_scores_cpu.shape[0] == folded_tokens
+            ):
+                expected_scores_cpu = fold_scores(expected_scores_cpu)
         if (
             actual_topk_cpu.shape != expected_topk_cpu.shape
             or actual_topk_cpu.ndim != 3
@@ -5782,7 +5873,7 @@ class TestGlm5Parity(
                     },
                     positions_key=(
                         positions_key
-                        if value_kind == "discrete" and value.ndim == 3
+                        if value_kind == "discrete"
                         else ""
                     ),
                     tags=(
@@ -6348,6 +6439,12 @@ class TestGlm5Parity(
             positions_key = (
                 actual_metadata.positions_key or expected_metadata.positions_key
             )
+            if not positions_key:
+                case_id = actual_metadata.tags.get(
+                    "case_id", expected_metadata.tags.get("case_id", "")
+                )
+                if case_id:
+                    positions_key = f"fixture/data/{case_id}/positions"
             if positions_key:
                 if positions_key in actual.observation_keys:
                     positions = actual.tensor(positions_key)
