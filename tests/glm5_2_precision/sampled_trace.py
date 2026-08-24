@@ -18,12 +18,14 @@ from pathlib import Path
 from typing import Any
 
 import torch
+import torch.nn.functional as F
 
 
 _INSTALLED = False
 _ACTIVE_CAPTURE: "_SampledTrace | None" = None
 _LAYER_RE = re.compile(r"(?:^|\.)layers\.\d+$")
 _SAMPLE_COUNT = 64
+_SUPPORTED_TRACE_DETAIL = frozenset({"indexer", "router"})
 
 
 def _local_tensor(value: torch.Tensor) -> torch.Tensor:
@@ -47,13 +49,23 @@ def _clean_name(name: str) -> str:
     return name.strip(".") or "model"
 
 
-def _trace_module(name: str) -> bool:
+def _detail_group(name: str) -> str | None:
+    clean = _clean_name(name)
+    if ".attention.indexer." in f".{clean}.":
+        return "indexer"
+    if ".moe.router." in f".{clean}.":
+        return "router"
+    return None
+
+
+def _trace_module(name: str, detail: frozenset[str]) -> bool:
     clean = _clean_name(name)
     return (
         clean == "model"
         or clean.endswith(("tok_embeddings", "norm", "lm_head"))
         or bool(_LAYER_RE.search(clean))
         or clean.endswith((".attention", ".attention.indexer", ".moe.router"))
+        or _detail_group(clean) in detail
     )
 
 
@@ -103,6 +115,34 @@ def _summary(value: torch.Tensor) -> dict[str, Any]:
         indices = torch.linspace(0, flat.numel() - 1, count).to(torch.int64)
     sample = flat[indices]
     result["sample_indices"] = [int(item) for item in indices]
+    if (
+        not cpu.is_floating_point()
+        and not cpu.is_complex()
+        and cpu.dtype != torch.bool
+        and cpu.ndim >= 1
+        and 0 < cpu.shape[-1] <= 256
+    ):
+        rows = cpu.reshape(-1, cpu.shape[-1])
+        row_count = min(_SAMPLE_COUNT, rows.shape[0])
+        if row_count == rows.shape[0]:
+            row_indices = torch.arange(row_count, dtype=torch.int64)
+        else:
+            row_indices = torch.linspace(0, rows.shape[0] - 1, row_count).to(
+                torch.int64
+            )
+        sorted_rows = torch.sort(rows, dim=-1).values.contiguous()
+        result.update(
+            {
+                "unordered_last_dim_sha256": hashlib.sha256(
+                    sorted_rows.view(torch.uint8).numpy().tobytes()
+                ).hexdigest(),
+                "row_sample_indices": [int(item) for item in row_indices],
+                "row_samples": [
+                    [int(item) for item in row]
+                    for row in rows[row_indices].tolist()
+                ],
+            }
+        )
     if cpu.is_floating_point():
         numeric = flat.double()
         finite = torch.isfinite(numeric)
@@ -123,10 +163,17 @@ def _summary(value: torch.Tensor) -> dict[str, Any]:
 
 
 class _SampledTrace:
-    def __init__(self, trainer: Any, steps: frozenset[int], output: Path):
+    def __init__(
+        self,
+        trainer: Any,
+        steps: frozenset[int],
+        output: Path,
+        detail: frozenset[str],
+    ):
         self.trainer = trainer
         self.steps = steps
         self.output = output
+        self.detail = detail
         self.rank = torch.distributed.get_rank()
         self.world_size = torch.distributed.get_world_size()
         self.path = output / f"rank-{self.rank:03d}.jsonl"
@@ -147,6 +194,7 @@ class _SampledTrace:
                 "backend": os.environ.get("TORCHTITAN_DEVICE", "unknown"),
                 "steps": sorted(self.steps),
                 "sample_count": _SAMPLE_COUNT,
+                "detail": sorted(self.detail),
             }
         )
         self._index_parameters()
@@ -193,9 +241,30 @@ class _SampledTrace:
         for part_index, model in enumerate(self.trainer.model_parts):
             for raw_name, module in model.named_modules():
                 clean = _clean_name(raw_name)
-                if not _trace_module(clean):
+                if not _trace_module(clean, self.detail):
                     continue
                 semantic = f"part{part_index}.{clean}"
+                detail_group = _detail_group(clean)
+
+                if detail_group in self.detail:
+
+                    def capture_input(
+                        _module: torch.nn.Module,
+                        inputs: tuple[Any, ...],
+                        *,
+                        module_name: str = semantic,
+                    ) -> None:
+                        if self.selected():
+                            self.store_tree(
+                                "forward_input",
+                                f"{module_name}.input",
+                                inputs,
+                                kind="activation_input",
+                            )
+
+                    self.handles.append(
+                        module.register_forward_pre_hook(capture_input)
+                    )
 
                 def capture_output(
                     _module: torch.nn.Module,
@@ -222,7 +291,87 @@ class _SampledTrace:
                                 )
                             )
 
+                    if module_name.endswith(".attention.indexer.topk"):
+                        self.capture_indexer_topk_diagnostics(
+                            module_name,
+                            _module,
+                            _inputs,
+                            output,
+                        )
+
                 self.handles.append(module.register_forward_hook(capture_output))
+
+    def capture_indexer_topk_diagnostics(
+        self,
+        module_name: str,
+        module: torch.nn.Module,
+        inputs: tuple[Any, ...],
+        output: Any,
+    ) -> None:
+        """Record DSA scores, selected scores, and the top-k boundary margin."""
+        if (
+            not self.selected()
+            or len(inputs) != 4
+            or not isinstance(output, torch.Tensor)
+        ):
+            return
+        q_BQNH, k_BKH, weights_BQN, attention_mask_BQK = inputs
+        if not all(
+            isinstance(value, torch.Tensor)
+            for value in (q_BQNH, k_BKH, weights_BQN, attention_mask_BQK)
+        ):
+            return
+        index_topk = getattr(module, "index_topk", None)
+        softmax_scale = getattr(module, "softmax_scale", None)
+        if not isinstance(index_topk, int) or not isinstance(
+            softmax_scale, float
+        ):
+            return
+
+        with torch.no_grad():
+            scores_BNQK = (
+                torch.matmul(
+                    q_BQNH.float().transpose(1, 2),
+                    k_BKH.float().transpose(1, 2).unsqueeze(1),
+                )
+                * softmax_scale
+            )
+            scores_BNQK = F.relu(scores_BNQK)
+            index_scores_BQK = torch.matmul(
+                weights_BQN.unsqueeze(-2), scores_BNQK.transpose(1, 2)
+            ).squeeze(-2)
+            index_scores_BQK = index_scores_BQK + attention_mask_BQK.float()
+            selected_scores = torch.gather(
+                index_scores_BQK,
+                dim=-1,
+                index=output.long(),
+            )
+            self.store(
+                "forward_diagnostic",
+                f"{module_name}.index_scores",
+                index_scores_BQK,
+                kind="index_score",
+            )
+            self.store(
+                "forward_diagnostic",
+                f"{module_name}.selected_scores",
+                selected_scores,
+                kind="selected_index_score",
+            )
+            if index_scores_BQK.shape[-1] > index_topk:
+                boundary = torch.topk(
+                    index_scores_BQK,
+                    k=index_topk + 1,
+                    dim=-1,
+                    sorted=True,
+                ).values
+                margin = boundary[..., index_topk - 1] - boundary[..., index_topk]
+                self.store(
+                    "forward_diagnostic",
+                    f"{module_name}.boundary_margin",
+                    margin,
+                    kind="topk_boundary_margin",
+                )
 
     def capture_parameters_before(self) -> None:
         if self.rank != 0 or not self.selected():
@@ -324,6 +473,17 @@ def _parse_steps(value: str) -> frozenset[int]:
     return steps
 
 
+def _parse_detail(value: str) -> frozenset[str]:
+    detail = frozenset(item.strip() for item in value.split(",") if item.strip())
+    unknown = detail - _SUPPORTED_TRACE_DETAIL
+    if unknown:
+        raise ValueError(
+            "GLM5_PRECISION_TRACE_DETAIL contains unsupported groups: "
+            + ", ".join(sorted(unknown))
+        )
+    return detail
+
+
 def install_sampled_trace() -> None:
     global _INSTALLED
     if _INSTALLED:
@@ -332,6 +492,7 @@ def install_sampled_trace() -> None:
 
     steps = _parse_steps(os.environ["GLM5_PRECISION_TRACE_STEPS"])
     output = Path(os.environ["GLM5_PRECISION_TRACE_DIR"]).resolve()
+    detail = _parse_detail(os.environ.get("GLM5_PRECISION_TRACE_DETAIL", ""))
 
     from torchtitan.components.optimizer import OptimizersContainer
     from torchtitan.distributed import utils as dist_utils
@@ -345,7 +506,7 @@ def install_sampled_trace() -> None:
 
     def init_with_trace(self: Any, *args: Any, **kwargs: Any) -> None:
         original_init(self, *args, **kwargs)
-        self._glm5_sampled_trace = _SampledTrace(self, steps, output)
+        self._glm5_sampled_trace = _SampledTrace(self, steps, output, detail)
 
     def forward_backward_with_trace(
         self: Any, *args: Any, **kwargs: Any

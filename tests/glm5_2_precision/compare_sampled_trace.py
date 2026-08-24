@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +14,9 @@ from typing import Any
 PHASE_ORDER = (
     "parameter_before",
     "input",
+    "forward_input",
     "forward",
+    "forward_diagnostic",
     "loss",
     "backward_output_grad",
     "gradient_post_reduce_pre_clip",
@@ -60,7 +62,7 @@ def _metric(gpu: dict[str, Any], npu: dict[str, Any]) -> dict[str, Any]:
     max_abs = max((abs(item) for item in delta), default=0.0)
     mean_abs = sum(abs(item) for item in delta) / max(len(delta), 1)
     relative_l2 = math.sqrt(squared_delta) / max(math.sqrt(squared_ref), 1e-12)
-    return {
+    result = {
         "comparable": True,
         "exact": gpu["sha256"] == npu["sha256"],
         "sample_max_absolute": max_abs,
@@ -71,6 +73,40 @@ def _metric(gpu: dict[str, Any], npu: dict[str, Any]) -> dict[str, Any]:
             / max(abs(float(gpu.get("norm", 0.0))), 1e-12)
         ),
     }
+    gpu_rows = gpu.get("row_samples")
+    npu_rows = npu.get("row_samples")
+    if (
+        isinstance(gpu_rows, list)
+        and isinstance(npu_rows, list)
+        and gpu.get("row_sample_indices") == npu.get("row_sample_indices")
+        and len(gpu_rows) == len(npu_rows)
+    ):
+        ordered_matches = 0
+        set_matches = 0
+        jaccard_sum = 0.0
+        for gpu_row, npu_row in zip(gpu_rows, npu_rows):
+            ordered_matches += gpu_row == npu_row
+            gpu_counts = Counter(gpu_row)
+            npu_counts = Counter(npu_row)
+            intersection = sum((gpu_counts & npu_counts).values())
+            union = sum((gpu_counts | npu_counts).values())
+            set_matches += gpu_counts == npu_counts
+            jaccard_sum += intersection / max(union, 1)
+        row_count = max(len(gpu_rows), 1)
+        result.update(
+            {
+                "unordered_last_dim_exact": (
+                    gpu.get("unordered_last_dim_sha256")
+                    == npu.get("unordered_last_dim_sha256")
+                ),
+                "sampled_row_ordered_match_fraction": (
+                    ordered_matches / row_count
+                ),
+                "sampled_row_set_match_fraction": set_matches / row_count,
+                "sampled_row_mean_jaccard": jaccard_sum / row_count,
+            }
+        )
+    return result
 
 
 def compare(gpu_dir: Path, npu_dir: Path, output: Path) -> None:
@@ -79,7 +115,12 @@ def compare(gpu_dir: Path, npu_dir: Path, output: Path) -> None:
     if set(gpu_manifests) != set(npu_manifests):
         raise ValueError("GPU/NPU trace rank sets differ")
     for rank in gpu_manifests:
-        for field in ("world_size", "steps", "sample_count"):
+        for field in ("world_size", "steps", "sample_count", "detail"):
+            if (
+                field not in gpu_manifests[rank]
+                and field not in npu_manifests[rank]
+            ):
+                continue
             if gpu_manifests[rank][field] != npu_manifests[rank][field]:
                 raise ValueError(
                     f"GPU/NPU manifest mismatch: rank={rank}, field={field}"
@@ -113,21 +154,50 @@ def compare(gpu_dir: Path, npu_dir: Path, output: Path) -> None:
     summary: list[dict[str, Any]] = []
     for (step, phase), items in grouped.items():
         worst = max(items, key=lambda item: item["sample_relative_l2"])
-        summary.append(
-            {
-                "step": step,
-                "phase": phase,
-                "count": len(items),
-                "exact_count": sum(bool(item["exact"]) for item in items),
-                "mean_sample_relative_l2": sum(
-                    item["sample_relative_l2"] for item in items
-                )
-                / len(items),
-                "max_sample_relative_l2": worst["sample_relative_l2"],
-                "worst_rank": worst["rank"],
-                "worst_key": worst["key"],
-            }
-        )
+        phase_summary = {
+            "step": step,
+            "phase": phase,
+            "count": len(items),
+            "exact_count": sum(bool(item["exact"]) for item in items),
+            "mean_sample_relative_l2": sum(
+                item["sample_relative_l2"] for item in items
+            )
+            / len(items),
+            "max_sample_relative_l2": worst["sample_relative_l2"],
+            "worst_rank": worst["rank"],
+            "worst_key": worst["key"],
+        }
+        semantic_items = [
+            item
+            for item in items
+            if "sampled_row_set_match_fraction" in item
+        ]
+        if semantic_items:
+            phase_summary.update(
+                {
+                    "unordered_last_dim_exact_count": sum(
+                        bool(item["unordered_last_dim_exact"])
+                        for item in semantic_items
+                    ),
+                    "integer_semantic_count": len(semantic_items),
+                    "mean_sampled_row_ordered_match_fraction": sum(
+                        item["sampled_row_ordered_match_fraction"]
+                        for item in semantic_items
+                    )
+                    / len(semantic_items),
+                    "mean_sampled_row_set_match_fraction": sum(
+                        item["sampled_row_set_match_fraction"]
+                        for item in semantic_items
+                    )
+                    / len(semantic_items),
+                    "mean_sampled_row_jaccard": sum(
+                        item["sampled_row_mean_jaccard"]
+                        for item in semantic_items
+                    )
+                    / len(semantic_items),
+                }
+            )
+        summary.append(phase_summary)
     phase_index = {phase: index for index, phase in enumerate(PHASE_ORDER)}
     summary.sort(
         key=lambda item: (
@@ -141,6 +211,19 @@ def compare(gpu_dir: Path, npu_dir: Path, output: Path) -> None:
         key=lambda item: item["sample_relative_l2"],
         reverse=True,
     )[:50]
+    index_semantics = sorted(
+        (
+            row
+            for row in rows
+            if "sampled_row_set_match_fraction" in row
+            and "indexer" in row["key"]
+        ),
+        key=lambda item: (
+            item["sampled_row_set_match_fraction"],
+            item["sampled_row_mean_jaccard"],
+            item["sampled_row_ordered_match_fraction"],
+        ),
+    )
     payload = {
         "schema": "torchtitan.glm5_2.sampled_trace_comparison",
         "schema_version": 1,
@@ -149,6 +232,7 @@ def compare(gpu_dir: Path, npu_dir: Path, output: Path) -> None:
         "missing": missing,
         "summary": summary,
         "top_differences": top,
+        "index_semantics": index_semantics,
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(

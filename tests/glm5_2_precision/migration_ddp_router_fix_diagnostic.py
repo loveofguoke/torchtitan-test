@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-step DDP8 trace using the canonical 5000-step fixture."""
+"""One-step DDP8 BF16 A/B capture for the NPU router precision fix."""
 
 from dataclasses import replace
 from pathlib import Path
@@ -21,7 +21,7 @@ TOPOLOGIES = standard_topologies()
 DDP8 = TOPOLOGIES["ddp8"]
 
 CONFIG = FormalExperimentConfig(
-    name="glm5-2-gpu-npu-ddp-step1-diagnostic",
+    name="glm5-2-gpu-npu-ddp-router-fix-diagnostic",
     kind="migration",
     reference=replace(BASE_CONFIG.reference, topology=DDP8, repeats=1),
     candidate=replace(BASE_CONFIG.candidate, topology=DDP8, repeats=1),
@@ -38,14 +38,11 @@ CONFIG = FormalExperimentConfig(
     ),
     standard=BASE_CONFIG.standard,
     fixture_root=BASE_CONFIG.fixture_root,
-    artifact_root="precision_step1_diagnostic_artifacts",
-    report_root="precision_step1_diagnostic_reports",
-    run_root="precision_step1_diagnostic_runs",
+    artifact_root="precision_router_fix_diagnostic_artifacts",
+    report_root="precision_router_fix_diagnostic_reports",
+    run_root="precision_router_fix_diagnostic_runs",
     shared_fixture=True,
-    # The checkpoint and token plan are precision-independent. Reuse their exact
-    # bytes while the CLI changes only the runtime mixed-precision policy.
     fixture_name=BASE_CONFIG.fixture_storage_name,
-    allow_fixture_precision_override=True,
 )
 
 

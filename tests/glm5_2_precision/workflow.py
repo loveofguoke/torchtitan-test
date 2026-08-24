@@ -251,6 +251,7 @@ class FormalTrainingConfig:
     converged_checkpoint: str | None = None
     data_paths: tuple[str, ...] = ("tests/assets/c4_test", "tests/assets/tokenizer")
     exploratory_steps: tuple[int, ...] = ()
+    exploratory_trace_detail: tuple[str, ...] = ()
     extra_args: tuple[str, ...] = ()
     fixture_steps: int | None = None
 
@@ -271,6 +272,19 @@ class FormalTrainingConfig:
             raise ValueError("exploratory_steps must be within the training step range")
         if tuple(sorted(set(self.exploratory_steps))) != self.exploratory_steps:
             raise ValueError("exploratory_steps must be sorted and unique")
+        supported_trace_detail = {"indexer", "router"}
+        unknown_trace_detail = (
+            set(self.exploratory_trace_detail) - supported_trace_detail
+        )
+        if unknown_trace_detail:
+            raise ValueError(
+                "unsupported exploratory_trace_detail: "
+                + ", ".join(sorted(unknown_trace_detail))
+            )
+        if self.exploratory_trace_detail and not self.exploratory_steps:
+            raise ValueError(
+                "exploratory_trace_detail requires exploratory_steps"
+            )
         if self.fixture_steps is not None and self.fixture_steps < self.steps:
             raise ValueError("fixture_steps must be greater than or equal to steps")
 
@@ -1045,6 +1059,10 @@ def capture_endpoint(
         environment["GLM5_PRECISION_TRACE_DIR"] = str(
             run_directory / "sampled_trace"
         )
+        if config.training.exploratory_trace_detail:
+            environment["GLM5_PRECISION_TRACE_DETAIL"] = ",".join(
+                config.training.exploratory_trace_detail
+            )
     environment["GLM5_PRECISION_TENSOR_PARALLEL_DEGREE"] = str(
         endpoint.topology.tensor_parallel_degree
     )

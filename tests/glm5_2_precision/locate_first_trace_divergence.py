@@ -46,6 +46,7 @@ def locate(
         npu_records = _records(npu_path, step, phase)
         npu_by_key = {record["key"]: record for record in npu_records}
         rank_rows: list[dict[str, Any]] = []
+        previous_exact: dict[str, Any] | None = None
         for execution_index, gpu in enumerate(gpu_records):
             npu = npu_by_key.get(gpu["key"])
             if npu is None:
@@ -58,6 +59,11 @@ def locate(
             else:
                 metric = _metric(gpu, npu)
                 if metric.get("exact"):
+                    previous_exact = {
+                        "execution_index": execution_index,
+                        "key": gpu["key"],
+                        "kind": gpu["kind"],
+                    }
                     continue
                 row = {
                     "rank": gpu["rank"],
@@ -66,6 +72,8 @@ def locate(
                     "kind": gpu["kind"],
                     **metric,
                 }
+            if not rank_rows:
+                row["previous_exact"] = previous_exact
             rank_rows.append(row)
         if rank_rows:
             first_by_rank.append(rank_rows[0])

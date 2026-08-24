@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import inspect
 import json
 import math
 import os
@@ -15,28 +14,6 @@ from typing import Any
 
 
 METRICS_PATH_ENV = "GLM5_PRECISION_METRICS_PATH"
-
-
-def _declare_npu_router_compute_dtype_support() -> None:
-    """Bridge older TorchTitanTurbo implementations with the gate contract.
-
-    Some Turbo revisions implement the explicit ``compute_dtype`` keyword but
-    predate TorchTitan's capability declaration. Only declare support after
-    checking the actual forward signature; never bypass the contract for an
-    implementation that cannot honor the keyword.
-    """
-
-    try:
-        from torchtitanturbo.models.glm5.patch import NpuFp32RouterLinear
-    except ImportError:
-        return
-    if "compute_dtype" not in inspect.signature(
-        NpuFp32RouterLinear.forward
-    ).parameters:
-        raise RuntimeError(
-            "NpuFp32RouterLinear does not implement the compute_dtype contract"
-        )
-    NpuFp32RouterLinear.supports_compute_dtype = True
 
 
 def _to_float(value: Any) -> float | None:
@@ -96,8 +73,6 @@ def main() -> None:
     device_type = os.environ.get("TORCHTITAN_DEVICE", "gpu")
     if device_type == "npu":
         import torchtitanturbo  # noqa: F401
-
-        _declare_npu_router_compute_dtype_support()
     elif device_type != "gpu":
         raise ValueError(f"TORCHTITAN_DEVICE must be gpu or npu, got {device_type!r}")
 
