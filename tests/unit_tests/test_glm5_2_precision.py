@@ -45,6 +45,7 @@ from tests.glm5_2_precision.token_data import (
     global_slots_for_batch,
     load_token_plan,
     sample_digest,
+    sample_digest_v2,
     sha256_file,
     step_digest,
     step_series_digest,
@@ -400,18 +401,27 @@ def test_fixed_token_mapping_preserves_one_global_batch_across_dp_degrees() -> N
 
 def _write_synthetic_token_plan(path: Path) -> tuple[str, ...]:
     path.mkdir()
-    tokens = []
+    inputs = []
+    labels = []
     positions = []
     sample_hashes = []
     for slot in range(4):
-        token_values = (slot, slot + 1, slot + 2)
+        input_values = (slot, slot + 1)
+        # Deliberately do not require labels to be a shifted view of inputs.
+        # Packed datasets can cross a document boundary inside one sequence.
+        label_values = (slot + 1, 100 + slot)
         position_values = (0, 1)
-        token_bytes = struct.pack("<3i", *token_values)
+        input_bytes = struct.pack("<2i", *input_values)
+        label_bytes = struct.pack("<2i", *label_values)
         position_bytes = struct.pack("<2i", *position_values)
-        tokens.append(token_bytes)
+        inputs.append(input_bytes)
+        labels.append(label_bytes)
         positions.append(position_bytes)
-        sample_hashes.append(sample_digest(token_bytes, position_bytes))
-    (path / "tokens.i32").write_bytes(b"".join(tokens))
+        sample_hashes.append(
+            sample_digest_v2(input_bytes, label_bytes, position_bytes)
+        )
+    (path / "inputs.i32").write_bytes(b"".join(inputs))
+    (path / "labels.i32").write_bytes(b"".join(labels))
     (path / "positions.i32").write_bytes(b"".join(positions))
     step_hashes = (step_digest(sample_hashes),)
     (path / "manifest.json").write_text(
@@ -424,6 +434,47 @@ def _write_synthetic_token_plan(path: Path) -> tuple[str, ...]:
                 "sequence_length": 2,
                 "sample_sha256": sample_hashes,
                 "step_sha256": step_hashes,
+                "files": {
+                    "inputs": {
+                        "name": "inputs.i32",
+                        "sha256": sha256_file(path / "inputs.i32"),
+                    },
+                    "labels": {
+                        "name": "labels.i32",
+                        "sha256": sha256_file(path / "labels.i32"),
+                    },
+                    "positions": {
+                        "name": "positions.i32",
+                        "sha256": sha256_file(path / "positions.i32"),
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return tuple(sample_hashes)
+
+
+def test_load_token_plan_accepts_legacy_shifted_label_format(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "legacy-token-plan"
+    path.mkdir()
+    token_bytes = struct.pack("<3i", 10, 11, 12)
+    position_bytes = struct.pack("<2i", 0, 1)
+    (path / "tokens.i32").write_bytes(token_bytes)
+    (path / "positions.i32").write_bytes(position_bytes)
+    sample_hash = sample_digest(token_bytes, position_bytes)
+    (path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema": TOKEN_PLAN_SCHEMA,
+                "schema_version": 1,
+                "steps": 1,
+                "global_batch_size": 1,
+                "sequence_length": 2,
+                "sample_sha256": [sample_hash],
+                "step_sha256": [step_digest([sample_hash])],
                 "files": {
                     "tokens": {
                         "name": "tokens.i32",
@@ -438,7 +489,12 @@ def _write_synthetic_token_plan(path: Path) -> tuple[str, ...]:
         ),
         encoding="utf-8",
     )
-    return tuple(sample_hashes)
+
+    plan = load_token_plan(path)
+
+    assert plan.schema_version == 1
+    assert plan.input_file == path / "tokens.i32"
+    assert plan.label_file is None
 
 
 @pytest.mark.parametrize(

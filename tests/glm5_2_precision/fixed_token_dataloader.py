@@ -22,6 +22,7 @@ from .token_data import (
     global_slots_for_batch,
     load_token_plan,
     sample_digest,
+    sample_digest_v2,
 )
 
 
@@ -82,12 +83,29 @@ class FixedTokenDataLoader(BaseDataLoader):
             dp_world_size=self.dp_world_size,
         )
         self._next_batch = 0
-        self._tokens_IQ = torch.from_file(
-            str(self.plan.token_file),
-            shared=False,
-            size=self.plan.num_samples * (self.plan.sequence_length + 1),
-            dtype=torch.int32,
-        ).view(self.plan.num_samples, self.plan.sequence_length + 1)
+        if self.plan.label_file is None:
+            self._legacy_tokens_IQ = torch.from_file(
+                str(self.plan.input_file),
+                shared=False,
+                size=self.plan.num_samples * (self.plan.sequence_length + 1),
+                dtype=torch.int32,
+            ).view(self.plan.num_samples, self.plan.sequence_length + 1)
+            self._inputs_IL = self._legacy_tokens_IQ[:, :-1]
+            self._labels_IL = self._legacy_tokens_IQ[:, 1:]
+        else:
+            self._legacy_tokens_IQ = None
+            self._inputs_IL = torch.from_file(
+                str(self.plan.input_file),
+                shared=False,
+                size=self.plan.num_samples * self.plan.sequence_length,
+                dtype=torch.int32,
+            ).view(self.plan.num_samples, self.plan.sequence_length)
+            self._labels_IL = torch.from_file(
+                str(self.plan.label_file),
+                shared=False,
+                size=self.plan.num_samples * self.plan.sequence_length,
+                dtype=torch.int32,
+            ).view(self.plan.num_samples, self.plan.sequence_length)
         self._positions_IL = torch.from_file(
             str(self.plan.position_file),
             shared=False,
@@ -126,14 +144,22 @@ class FixedTokenDataLoader(BaseDataLoader):
             indices = [
                 optimizer_step * self.global_batch_size + slot for slot in slots
             ]
-            tokens_BQ = self._tokens_IQ[indices]
+            inputs_BL = self._inputs_IL[indices]
+            labels_BL = self._labels_IL[indices]
             positions_BL = self._positions_IL[indices]
             observed_hashes: list[str] = []
             for index, slot in zip(indices, slots, strict=True):
-                observed = sample_digest(
-                    self._tokens_IQ[index].numpy().tobytes(),
-                    self._positions_IL[index].numpy().tobytes(),
-                )
+                if self._legacy_tokens_IQ is None:
+                    observed = sample_digest_v2(
+                        self._inputs_IL[index].numpy().tobytes(),
+                        self._labels_IL[index].numpy().tobytes(),
+                        self._positions_IL[index].numpy().tobytes(),
+                    )
+                else:
+                    observed = sample_digest(
+                        self._legacy_tokens_IQ[index].numpy().tobytes(),
+                        self._positions_IL[index].numpy().tobytes(),
+                    )
                 expected = self.plan.sample_hash(step=optimizer_step, slot=slot)
                 if observed != expected:
                     raise RuntimeError(
@@ -147,12 +173,10 @@ class FixedTokenDataLoader(BaseDataLoader):
             if batch_in_step + 1 == self.num_batches_per_step:
                 self._write_step_contract(optimizer_step)
 
-            input_BL = tokens_BQ[:, :-1].to(torch.long)
-            labels_BL = tokens_BQ[:, 1:].to(torch.long)
             yield {
-                "input": input_BL.reshape(-1),
+                "input": inputs_BL.to(torch.long).reshape(-1),
                 "positions": positions_BL.to(torch.long).reshape(-1),
-            }, labels_BL.reshape(-1)
+            }, labels_BL.to(torch.long).reshape(-1)
 
     def _write_step_contract(self, optimizer_step: int) -> None:
         record = {

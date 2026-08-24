@@ -18,7 +18,7 @@ import torch
 from .token_data import (
     TOKEN_PLAN_SCHEMA,
     TOKEN_PLAN_VERSION,
-    sample_digest,
+    sample_digest_v2,
     sha256_file,
     step_digest,
 )
@@ -92,15 +92,16 @@ def _write_plan() -> None:
 
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent))
-    token_path = temporary / "tokens.i32"
+    input_path = temporary / "inputs.i32"
+    label_path = temporary / "labels.i32"
     position_path = temporary / "positions.i32"
     sample_hashes: list[str] = []
     step_hashes: list[str] = []
     try:
         iterator = iter(dataloader)
-        with token_path.open("wb") as token_stream, position_path.open(
+        with input_path.open("wb") as input_stream, label_path.open(
             "wb"
-        ) as position_stream:
+        ) as label_stream, position_path.open("wb") as position_stream:
             for step in range(steps):
                 input_dict, labels_T = next(iterator)
                 inputs_BL, labels_BL, positions_BL = _reshape_source_batch(
@@ -109,20 +110,17 @@ def _write_plan() -> None:
                     global_batch_size=global_batch_size,
                     sequence_length=sequence_length,
                 )
-                if not torch.equal(inputs_BL[:, 1:], labels_BL[:, :-1]):
-                    raise RuntimeError(
-                        "fixed token plans require next-token shifted labels"
-                    )
-                tokens_BQ = torch.cat((inputs_BL, labels_BL[:, -1:]), dim=1).to(
-                    dtype=torch.int32
-                ).contiguous()
+                inputs_BL = inputs_BL.to(dtype=torch.int32).contiguous()
+                labels_BL = labels_BL.to(dtype=torch.int32).contiguous()
                 positions_BL = positions_BL.to(dtype=torch.int32).contiguous()
-                token_stream.write(tokens_BQ.numpy().tobytes())
+                input_stream.write(inputs_BL.numpy().tobytes())
+                label_stream.write(labels_BL.numpy().tobytes())
                 position_stream.write(positions_BL.numpy().tobytes())
                 current_step_hashes: list[str] = []
                 for slot in range(global_batch_size):
-                    digest = sample_digest(
-                        tokens_BQ[slot].numpy().tobytes(),
+                    digest = sample_digest_v2(
+                        inputs_BL[slot].numpy().tobytes(),
+                        labels_BL[slot].numpy().tobytes(),
                         positions_BL[slot].numpy().tobytes(),
                     )
                     sample_hashes.append(digest)
@@ -138,7 +136,14 @@ def _write_plan() -> None:
             "sample_sha256": sample_hashes,
             "step_sha256": step_hashes,
             "files": {
-                "tokens": {"name": token_path.name, "sha256": sha256_file(token_path)},
+                "inputs": {
+                    "name": input_path.name,
+                    "sha256": sha256_file(input_path),
+                },
+                "labels": {
+                    "name": label_path.name,
+                    "sha256": sha256_file(label_path),
+                },
                 "positions": {
                     "name": position_path.name,
                     "sha256": sha256_file(position_path),

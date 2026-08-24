@@ -75,8 +75,10 @@ PASS/FAIL. All thresholds live in `standards.py` or in the experiment script's
 `--data` creates one unsharded TorchTitan seed checkpoint with
 `checkpoint.create_seed_checkpoint`. It also runs the configured text loader and
 tokenizer once with `dp_world_size=1`, then stores a fixed token plan with shape
-`[steps, global_batch_size, sequence_length + 1]` plus positions and per-step
-SHA-256 digests. Both endpoints load that synchronized checkpoint and token plan.
+`[steps, global_batch_size, sequence_length]` for inputs, labels, and positions,
+plus per-step SHA-256 digests. Inputs and labels are stored independently because
+packed text batches can cross document boundaries and are not always one globally
+shifted token row. Both endpoints load that synchronized checkpoint and token plan.
 The fixture manifest records checkpoint, token plan, and local dataset/tokenizer
 SHA-256 digests. Captures also fix:
 

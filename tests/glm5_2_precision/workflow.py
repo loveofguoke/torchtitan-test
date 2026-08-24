@@ -838,6 +838,14 @@ def _run_process(
             check=False,
         )
     if process.returncode:
+        print(f"Process failed; runtime log: {log_path}", file=sys.stderr)
+        try:
+            lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            lines = []
+        if lines:
+            print("Last 80 log lines:", file=sys.stderr)
+            print("\n".join(lines[-80:]), file=sys.stderr)
         raise subprocess.CalledProcessError(process.returncode, list(command))
 
 
@@ -888,11 +896,13 @@ def prepare_fixture(
         config.training.config,
         *config.training.extra_args,
     ]
+    token_generation_log = fixture_directory / "token_generation.log"
+    print(f"Token-plan generation log: {token_generation_log}", flush=True)
     _run_process(
         token_plan_command,
         root=root,
         environment=token_plan_environment,
-        log_path=fixture_directory / "token_generation.log",
+        log_path=token_generation_log,
     )
     token_plan = load_token_plan(token_plan_path)
     data_digests["fixed_token_plan"] = sha256_file(token_plan_path / "manifest.json")
@@ -946,11 +956,13 @@ def prepare_fixture(
                 "--checkpoint.create_seed_checkpoint",
             ]
         )
+        seed_generation_log = fixture_directory / "seed_generation.log"
+        print(f"Seed-checkpoint generation log: {seed_generation_log}", flush=True)
         _run_process(
             command,
             root=root,
             environment=environment,
-            log_path=fixture_directory / "seed_generation.log",
+            log_path=seed_generation_log,
         )
         matches = list(output.rglob("step-0"))
         if len(matches) != 1:

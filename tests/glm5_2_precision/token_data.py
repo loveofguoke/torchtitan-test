@@ -14,7 +14,8 @@ from typing import Any, Iterable
 
 
 TOKEN_PLAN_SCHEMA = "torchtitan.glm5_2.fixed_token_plan"
-TOKEN_PLAN_VERSION = 1
+TOKEN_PLAN_VERSION = 2
+SUPPORTED_TOKEN_PLAN_VERSIONS = (1, TOKEN_PLAN_VERSION)
 INPUT_MAPPING = "optimizer-step-global-slot-v1"
 
 
@@ -33,6 +34,18 @@ def sha256_file(path: str | Path) -> str:
 def sample_digest(token_bytes: bytes, position_bytes: bytes) -> str:
     digest = hashlib.sha256(b"glm5-fixed-token-sample-v1\0")
     digest.update(token_bytes)
+    digest.update(position_bytes)
+    return digest.hexdigest()
+
+
+def sample_digest_v2(
+    input_bytes: bytes,
+    label_bytes: bytes,
+    position_bytes: bytes,
+) -> str:
+    digest = hashlib.sha256(b"glm5-fixed-token-sample-v2\0")
+    digest.update(input_bytes)
+    digest.update(label_bytes)
     digest.update(position_bytes)
     return digest.hexdigest()
 
@@ -56,10 +69,12 @@ def step_series_digest(step_digests: Iterable[str]) -> str:
 @dataclass(frozen=True)
 class TokenPlan:
     path: Path
+    schema_version: int
     steps: int
     global_batch_size: int
     sequence_length: int
-    token_file: Path
+    input_file: Path
+    label_file: Path | None
     position_file: Path
     sample_sha256: tuple[str, ...]
     step_sha256: tuple[str, ...]
@@ -86,10 +101,11 @@ def load_token_plan(path: str | Path, *, verify_files: bool = True) -> TokenPlan
         raise TokenDataError(
             f"unsupported token-plan schema: {manifest.get('schema')!r}"
         )
-    if manifest.get("schema_version") != TOKEN_PLAN_VERSION:
+    schema_version = int(manifest.get("schema_version", 0))
+    if schema_version not in SUPPORTED_TOKEN_PLAN_VERSIONS:
         raise TokenDataError(
             "unsupported token-plan schema version: "
-            f"{manifest.get('schema_version')!r}"
+            f"{schema_version!r}"
         )
 
     steps = int(manifest["steps"])
@@ -116,14 +132,29 @@ def load_token_plan(path: str | Path, *, verify_files: bool = True) -> TokenPlan
             )
 
     files = manifest["files"]
-    token_file = directory / files["tokens"]["name"]
     position_file = directory / files["positions"]["name"]
-    expected_token_bytes = expected_samples * (sequence_length + 1) * 4
     expected_position_bytes = expected_samples * sequence_length * 4
-    for label, file_path, expected_bytes in (
-        ("tokens", token_file, expected_token_bytes),
-        ("positions", position_file, expected_position_bytes),
-    ):
+    if schema_version == 1:
+        input_file = directory / files["tokens"]["name"]
+        label_file = None
+        file_contract = (
+            (
+                "tokens",
+                input_file,
+                expected_samples * (sequence_length + 1) * 4,
+            ),
+            ("positions", position_file, expected_position_bytes),
+        )
+    else:
+        input_file = directory / files["inputs"]["name"]
+        label_file = directory / files["labels"]["name"]
+        expected_tensor_bytes = expected_samples * sequence_length * 4
+        file_contract = (
+            ("inputs", input_file, expected_tensor_bytes),
+            ("labels", label_file, expected_tensor_bytes),
+            ("positions", position_file, expected_position_bytes),
+        )
+    for label, file_path, expected_bytes in file_contract:
         if not file_path.is_file():
             raise TokenDataError(f"token-plan {label} file not found: {file_path}")
         if file_path.stat().st_size != expected_bytes:
@@ -140,10 +171,12 @@ def load_token_plan(path: str | Path, *, verify_files: bool = True) -> TokenPlan
                 )
     return TokenPlan(
         path=directory,
+        schema_version=schema_version,
         steps=steps,
         global_batch_size=global_batch_size,
         sequence_length=sequence_length,
-        token_file=token_file,
+        input_file=input_file,
+        label_file=label_file,
         position_file=position_file,
         sample_sha256=sample_hashes,
         step_sha256=step_hashes,
