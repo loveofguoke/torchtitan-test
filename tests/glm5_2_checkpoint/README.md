@@ -42,6 +42,12 @@ sufficient evidence by itself. Frozen model parameters, including the pretrained
 GLM DSA indexer, remain in the model checkpoint but are excluded from this
 optimizer-state audit.
 
+Each launched training job owns a separate POSIX process group. The controller
+always cleans that group in a `finally` path, escalates from SIGTERM to SIGKILL
+when needed, and acts as a Linux child subreaper so abruptly killed torchrun
+workers do not remain as orphaned or zombie processes. Every runtime log ends
+with a `Process cleanup` record; a surviving process group fails the test.
+
 ## Prepare synchronized inputs
 
 Checkpoint equivalence requires more than using the same seed. First prepare a

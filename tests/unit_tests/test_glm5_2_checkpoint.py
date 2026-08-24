@@ -2,7 +2,10 @@
 # All rights reserved.
 
 import json
+import os
 from pathlib import Path
+import signal
+import sys
 
 import pytest
 import torch
@@ -19,6 +22,7 @@ from tests.glm5_2_checkpoint.checkpoint_benchmark import (
     _metrics_comparison,
     _precision_training,
     _resume_failure_location,
+    _run_process,
     _selected_failure_modes,
 )
 from tests.glm5_2_checkpoint.fault_injection import (
@@ -62,6 +66,36 @@ def test_checkpoint_default_batch_supports_single_and_pp8() -> None:
     assert training_topology_plan(
         training, standard_topologies()["pp8"]
     ).pipeline_microbatches == 8
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux process groups")
+def test_faulted_process_group_is_killed_and_reaped(tmp_path: Path) -> None:
+    ready_path = tmp_path / "ready"
+    child_pid_path = tmp_path / "child-pid"
+    script = (
+        "import pathlib, subprocess, sys, time; "
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time; time.sleep(60)']); "
+        f"pathlib.Path({str(child_pid_path)!r}).write_text(str(child.pid)); "
+        f"pathlib.Path({str(ready_path)!r}).touch(); "
+        "time.sleep(60)"
+    )
+
+    outcome = _run_process(
+        [sys.executable, "-c", script],
+        root=tmp_path,
+        environment=os.environ.copy(),
+        log_path=tmp_path / "runtime.log",
+        expected_failure=True,
+        launcher_signal=signal.SIGKILL,
+        ready_path=ready_path,
+        timeout=10,
+    )
+
+    child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+    assert not Path(f"/proc/{child_pid}").exists()
+    assert not outcome["cleanup"]["group_remaining"]
+    assert outcome["cleanup"]["reaped_children"] >= 1
 
 
 def test_state_fingerprint_handles_scalar_tensor() -> None:

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 from dataclasses import asdict, replace
 import html
 import json
@@ -72,6 +73,8 @@ from tests.glm5_2_precision.workflow import (  # noqa: E402
 
 LOSS_KEY = "loss"
 GRAD_NORM_KEY = "grad_norm"
+_PR_SET_CHILD_SUBREAPER = 36
+_PROCESS_GROUP_GRACE_SECONDS = 5.0
 
 
 class CheckpointFixtureConfig(FormalExperimentConfig):
@@ -146,12 +149,128 @@ def _metrics_rank(topology: ParallelTopology) -> int:
     ) * (topology.pipeline_parallel_degree - 1)
 
 
-def _signal_process_group(process: subprocess.Popen[str], value: int) -> None:
+def _enable_child_subreaper() -> bool:
+    """Make this Linux controller reap orphaned torchrun worker processes."""
+
+    if not sys.platform.startswith("linux"):
+        return False
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(_PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number))
+    return True
+
+
+def _process_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _signal_process_group(process: subprocess.Popen[str], value: int) -> bool:
     if os.name != "posix":
         raise RuntimeError(
             "checkpoint signal-failure tests require a POSIX training host"
         )
-    os.killpg(process.pid, value)
+    try:
+        os.killpg(process.pid, value)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _reap_process_group_children(process_group_id: int) -> int:
+    reaped = 0
+    while True:
+        try:
+            child_pid, _ = os.waitpid(-process_group_id, os.WNOHANG)
+        except ChildProcessError:
+            break
+        if child_pid == 0:
+            break
+        reaped += 1
+    return reaped
+
+
+def _wait_for_process_group_exit(
+    process_group_id: int,
+    *,
+    timeout: float,
+    reap_children: bool,
+) -> tuple[bool, int]:
+    deadline = time.monotonic() + timeout
+    reaped = 0
+    while True:
+        if reap_children:
+            reaped += _reap_process_group_children(process_group_id)
+        if not _process_group_exists(process_group_id):
+            return True, reaped
+        if time.monotonic() >= deadline:
+            return False, reaped
+        time.sleep(0.05)
+
+
+def _cleanup_process_group(
+    process: subprocess.Popen[str],
+    *,
+    reap_children: bool,
+) -> dict[str, Any]:
+    """Stop and reap only the process group created for one training run."""
+
+    if os.name != "posix":
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=_PROCESS_GROUP_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        return {
+            "term_sent": False,
+            "kill_sent": False,
+            "reaped_children": 0,
+            "group_remaining": False,
+        }
+
+    process_group_id = process.pid
+    reaped = (
+        _reap_process_group_children(process_group_id) if reap_children else 0
+    )
+    term_sent = False
+    kill_sent = False
+    if _process_group_exists(process_group_id):
+        term_sent = _signal_process_group(process, signal.SIGTERM)
+    if process.poll() is None:
+        try:
+            process.wait(timeout=_PROCESS_GROUP_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
+    exited, newly_reaped = _wait_for_process_group_exit(
+        process_group_id,
+        timeout=_PROCESS_GROUP_GRACE_SECONDS,
+        reap_children=reap_children,
+    )
+    reaped += newly_reaped
+    if not exited:
+        kill_sent = _signal_process_group(process, signal.SIGKILL)
+        if process.poll() is None:
+            process.wait()
+        exited, newly_reaped = _wait_for_process_group_exit(
+            process_group_id,
+            timeout=_PROCESS_GROUP_GRACE_SECONDS,
+            reap_children=reap_children,
+        )
+        reaped += newly_reaped
+    if process.poll() is None:
+        process.wait()
+    return {
+        "term_sent": term_sent,
+        "kill_sent": kill_sent,
+        "reaped_children": reaped,
+        "group_remaining": not exited,
+    }
 
 
 def _run_process(
@@ -169,6 +288,12 @@ def _run_process(
     with log_path.open("w", encoding="utf-8") as stream:
         stream.write("Command: " + " ".join(command) + "\n\n")
         stream.flush()
+        try:
+            reap_children = _enable_child_subreaper()
+        except OSError as error:
+            reap_children = False
+            stream.write(f"Child subreaper unavailable: {error}\n")
+            stream.flush()
         process = subprocess.Popen(
             command,
             cwd=root,
@@ -179,34 +304,45 @@ def _run_process(
             start_new_session=os.name == "posix",
         )
         signal_sent = None
-        if launcher_signal is not None:
-            if ready_path is None:
-                raise ValueError("ready_path is required when signaling the launcher")
-            deadline = time.monotonic() + timeout
-            while not ready_path.is_file():
-                return_code = process.poll()
-                if return_code is not None:
-                    raise RuntimeError(
-                        "training exited before reaching the fault injection point; "
-                        f"see {log_path}"
-                    )
-                if time.monotonic() >= deadline:
-                    _signal_process_group(process, signal.SIGKILL)
-                    process.wait()
-                    raise TimeoutError(
-                        f"timed out waiting for checkpoint fault marker: {ready_path}"
-                    )
-                time.sleep(0.1)
-            signal_sent = signal.Signals(launcher_signal).name
-            _signal_process_group(process, launcher_signal)
         try:
-            return_code = process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired as error:
-            _signal_process_group(process, signal.SIGKILL)
-            process.wait()
-            raise TimeoutError(
-                f"training did not exit after fault; see {log_path}"
-            ) from error
+            if launcher_signal is not None:
+                if ready_path is None:
+                    raise ValueError(
+                        "ready_path is required when signaling the launcher"
+                    )
+                deadline = time.monotonic() + timeout
+                while not ready_path.is_file():
+                    return_code = process.poll()
+                    if return_code is not None:
+                        raise RuntimeError(
+                            "training exited before reaching the fault injection point; "
+                            f"see {log_path}"
+                        )
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            "timed out waiting for checkpoint fault marker: "
+                            f"{ready_path}"
+                        )
+                    time.sleep(0.1)
+                signal_sent = signal.Signals(launcher_signal).name
+                _signal_process_group(process, launcher_signal)
+            try:
+                return_code = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired as error:
+                raise TimeoutError(
+                    f"training did not exit after fault; see {log_path}"
+                ) from error
+        finally:
+            cleanup = _cleanup_process_group(
+                process,
+                reap_children=reap_children,
+            )
+            stream.write(
+                "\nProcess cleanup: "
+                + json.dumps(cleanup, sort_keys=True)
+                + "\n"
+            )
+            stream.flush()
 
     if expected_failure:
         if return_code == 0:
@@ -215,7 +351,16 @@ def _run_process(
             )
     elif return_code:
         raise subprocess.CalledProcessError(return_code, command)
-    return {"return_code": return_code, "launcher_signal": signal_sent}
+    if cleanup["group_remaining"]:
+        raise RuntimeError(
+            "training process group still exists after TERM/KILL cleanup; "
+            f"see {log_path}"
+        )
+    return {
+        "return_code": return_code,
+        "launcher_signal": signal_sent,
+        "cleanup": cleanup,
+    }
 
 
 def _checkpoint_command(
