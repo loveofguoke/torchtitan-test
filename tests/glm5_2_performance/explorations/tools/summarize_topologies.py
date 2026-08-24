@@ -25,7 +25,13 @@ def _number(value: object, digits: int = 2) -> str:
     return "-" if value is None else f"{float(value):,.{digits}f}"
 
 
-def _latest_runs(root: Path, *, steps: int, replicate: int) -> list[dict]:
+def _latest_runs(
+    root: Path,
+    *,
+    steps: int,
+    replicate: int | None,
+    world_size: int | None,
+) -> list[dict]:
     selected: dict[tuple[str, bool], tuple[int, dict]] = {}
     for manifest_path in root.glob("*/manifest.json"):
         analysis_path = manifest_path.with_name("analysis.json")
@@ -34,17 +40,24 @@ def _latest_runs(root: Path, *, steps: int, replicate: int) -> list[dict]:
         manifest = _read_json(manifest_path)
         config = manifest.get("config", {})
         profiler_enabled = config.get("profiler_enabled", True) is not False
+        topology_name = str(manifest["topology"])
+        topology = performance_topologies().get(topology_name)
         if (
             manifest.get("device") != "npu"
             or manifest.get("preset") != "distributed"
             or int(config.get("steps", -1)) != steps
             or (
                 not profiler_enabled
+                and replicate is not None
                 and int(config.get("replicate", 0)) != replicate
+            )
+            or (
+                world_size is not None
+                and (topology is None or topology.world_size != world_size)
             )
         ):
             continue
-        key = (str(manifest["topology"]), profiler_enabled)
+        key = (topology_name, profiler_enabled)
         candidate = {
             "manifest_path": manifest_path,
             "manifest": manifest,
@@ -60,12 +73,16 @@ def _baseline_row(run: dict) -> dict:
     manifest = run["manifest"]
     analysis = run["analysis"]
     comparison = analysis.get("profile_phases", {}).get("comparison", {})
-    memory = (
-        analysis.get("metrics", {})
+    steady = (
+        analysis.get("profile_phases", {})
+        .get("phases", {})
+        .get("steady", {})
         .get("summary", {})
-        .get("memory/max_active(GiB)", {})
-        .get("max")
     )
+    step = steady.get("time_metrics/end_to_end(s)", {})
+    memory = steady.get("memory/max_active(GiB)", {}).get("max")
+    step_median = step.get("median")
+    step_p90 = step.get("p90")
     return {
         "topology": manifest["topology"],
         "step_ms": (
@@ -76,6 +93,17 @@ def _baseline_row(run: dict) -> dict:
         "device_tps": comparison.get("baseline_median_throughput_tps"),
         "job_tps": comparison.get("baseline_job_throughput_tps"),
         "memory_gib": memory,
+        "step_p90_ms": float(step_p90) * 1000 if step_p90 is not None else None,
+        "step_max_ms": (
+            float(step["max"]) * 1000 if step.get("max") is not None else None
+        ),
+        "p90_over_median_pct": (
+            (float(step_p90) / float(step_median) - 1.0) * 100
+            if step_p90 is not None and step_median
+            else None
+        ),
+        "replicate": int(manifest.get("config", {}).get("replicate", 0)),
+        "visible_devices": manifest.get("visible_devices", []),
         "directory": run["manifest_path"].parent,
         "run_name": manifest["run_name"],
     }
@@ -124,30 +152,57 @@ def _profile_row(run: dict) -> dict:
 
 
 def _markdown(
-    baselines: list[dict], profiles: list[dict], *, steps: int, replicate: int
+    baselines: list[dict],
+    profiles: list[dict],
+    *,
+    steps: int,
+    replicate: int | None,
+    world_size: int | None,
 ) -> str:
+    replicate_text = "latest successful" if replicate is None else str(replicate)
+    world_size_text = "all" if world_size is None else str(world_size)
+    ddp8 = next((row for row in baselines if row["topology"] == "ddp8"), None)
+    ddp8_drift = _number(ddp8["p90_over_median_pct"]) if ddp8 else "unknown"
     lines = [
-        "# GLM-5.2 NPU multi-card topology report",
+        (
+            f"# GLM-5.2 NPU {world_size}-card topology report"
+            if world_size is not None
+            else "# GLM-5.2 NPU multi-card topology report"
+        ),
         "",
         f"Generated: {datetime.now().astimezone().isoformat()}",
         "",
         "## Scope and comparability",
         "",
-        f"This table selects NPU distributed runs with `steps={steps}` and the "
-        f"distributed preset; profiler-off screening uses `replicate={replicate}`, "
+        f"This table selects NPU distributed runs with `steps={steps}`, "
+        f"`world_size={world_size_text}`, and the distributed preset; profiler-off "
+        f"screening uses `{replicate_text}` replicate, "
         "while attribution uses the latest successful replicate. Exact physical "
-        "device mappings are retained per run; NPU0 is excluded because it reports "
-        "an HCCS lane-drop warning. Profiler-off "
+        "device mappings are retained per run. The eight-card runs include NPU0, "
+        "which currently reports a health warning; therefore those results are "
+        "diagnostic comparisons, not healthy-hardware acceptance evidence. Profiler-off "
         "runs are throughput evidence; profiler-active runs are attribution only.",
         "",
         "Job throughput is `world_size × rank throughput`, equivalently the "
         "configured global token budget divided by median step time. Peak HBM is "
         "the maximum `memory/max_active(GiB)` sample on the metrics rank.",
         "",
+        "## Validity constraints",
+        "",
+        "- The first DDP8 profiler-off attempt (`replicate=1`) failed during concurrent "
+        "TSD initialization on physical NPU4/6/7 (`507033: TsdOpen failed`). Sequential "
+        "set-device probes then passed; the table therefore records successful "
+        "`replicate=2` and retains the failed run directory as evidence.",
+        f"- DDP8 replicate 2 has {ddp8_drift}% p90 drift and disagrees with the non-active "
+        "portion of the profiler run. Treat its throughput as contaminated until an "
+        "idle-system repeat converges; the rank/collective attribution remains useful.",
+        "- Every other topology currently has one profiler-off replicate. Rankings are "
+        "screening results and need repeated idle-system confirmation before acceptance.",
+        "",
         "## Profiler-off topology screening",
         "",
-        "| Topology | Degrees (DP-repl/DP-shard/TP/CP/PP/EP) | Median step (ms) | tok/s/device | tok/s/job | Peak active HBM (GiB) | Evidence |",
-        "| --- | --- | ---: | ---: | ---: | ---: | --- |",
+        "| Topology | Degrees (DP-repl/DP-shard/TP/CP/PP/EP) | Replicate | Median / p90 / max step (ms) | p90 drift | tok/s/device | tok/s/job | Peak active HBM (GiB) | Evidence |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
     topologies = performance_topologies()
     for row in sorted(baselines, key=lambda item: float(item["job_tps"] or 0), reverse=True):
@@ -164,7 +219,10 @@ def _markdown(
             )
         )
         lines.append(
-            f'| {row["topology"]} | {degrees} | {_number(row["step_ms"])} | '
+            f'| {row["topology"]} | {degrees} | {row["replicate"]} | '
+            f'{_number(row["step_ms"])} / {_number(row["step_p90_ms"])} / '
+            f'{_number(row["step_max_ms"])} | '
+            f'{_number(row["p90_over_median_pct"])}% | '
             f'{_number(row["device_tps"])} | {_number(row["job_tps"])} | '
             f'{_number(row["memory_gib"], 3)} | `{row["directory"]}/analysis.json` |'
         )
@@ -213,7 +271,9 @@ def _markdown(
     return "\n".join(lines)
 
 
-def _html(baselines: list[dict], profiles: list[dict]) -> str:
+def _html(
+    baselines: list[dict], profiles: list[dict], *, world_size: int | None
+) -> str:
     maximum = max((float(row["job_tps"] or 0) for row in baselines), default=1.0)
     bars = []
     for row in sorted(baselines, key=lambda item: float(item["job_tps"] or 0), reverse=True):
@@ -222,6 +282,22 @@ def _html(baselines: list[dict], profiles: list[dict]) -> str:
             '<div class="row"><strong>' + html.escape(row["topology"]) + '</strong>'
             '<div class="track"><div style="width:' + f"{width:.4f}%" + '"></div></div>'
             '<span>' + _number(row["job_tps"]) + ' tok/s</span></div>'
+        )
+    stability_bars = []
+    maximum_drift = max(
+        (float(row["p90_over_median_pct"] or 0) for row in baselines), default=1.0
+    )
+    for row in sorted(
+        baselines,
+        key=lambda item: float(item["p90_over_median_pct"] or 0),
+        reverse=True,
+    ):
+        drift = float(row["p90_over_median_pct"] or 0)
+        width = drift / maximum_drift * 100 if maximum_drift else 0
+        stability_bars.append(
+            '<div class="row"><strong>' + html.escape(row["topology"]) + '</strong>'
+            '<div class="track drift"><div style="width:' + f"{width:.4f}%" + '"></div></div>'
+            '<span>' + _number(drift) + '%</span></div>'
         )
     profile_rows = ""
     for row in sorted(profiles, key=lambda item: item["topology"]):
@@ -238,9 +314,10 @@ def _html(baselines: list[dict], profiles: list[dict]) -> str:
                 + '</td><td>' + _number(collective.get("transit")) + '</td></tr>'
             )
     return f"""<!doctype html><html><head><meta charset="utf-8"><title>NPU topology comparison</title>
-<style>body{{font:14px system-ui;margin:32px;color:#172033;max-width:1100px}}h1,h2{{margin-top:28px}}.row{{display:grid;grid-template-columns:120px 1fr 150px;gap:12px;align-items:center;margin:10px 0}}.track{{height:24px;background:#e2e8f0}}.track div{{height:100%;background:#2563eb}}table{{border-collapse:collapse;width:100%}}th,td{{padding:9px;border-bottom:1px solid #d7deea;text-align:left}}th{{background:#f4f7fb}}</style></head><body>
-<h1>GLM-5.2 NPU topology comparison</h1><p>Profiler-off job throughput; physical NPU1-4; W0 debug model.</p>
+<style>body{{font:14px system-ui;margin:32px;color:#172033;max-width:1100px}}h1,h2{{margin-top:28px}}.row{{display:grid;grid-template-columns:120px 1fr 150px;gap:12px;align-items:center;margin:10px 0}}.track{{height:24px;background:#e2e8f0}}.track div{{height:100%;background:#2563eb}}.track.drift div{{background:#ea580c}}table{{border-collapse:collapse;width:100%}}th,td{{padding:9px;border-bottom:1px solid #d7deea;text-align:left}}th{{background:#f4f7fb}}</style></head><body>
+<h1>GLM-5.2 NPU topology comparison</h1><p>Profiler-off job throughput; world size {world_size or 'all'}; W0 debug model. NPU0 health warning makes the 8-card set diagnostic rather than acceptance evidence.</p>
 <h2>Job throughput</h2>{''.join(bars)}
+<h2>Step-time stability: p90 drift above median</h2>{''.join(stability_bars)}
 <h2>Profiler attribution</h2><table><thead><tr><th>Topology</th><th>Compute range (ms)</th><th>Exposed communication range (ms)</th><th>Calls/step</th><th>Payload MB/rank/step</th><th>Transit ms/step</th></tr></thead><tbody>{profile_rows}</tbody></table>
 </body></html>"""
 
@@ -249,6 +326,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--steps", type=int, default=20)
     parser.add_argument("--replicate", type=int, default=1)
+    parser.add_argument(
+        "--latest-replicate",
+        action="store_true",
+        help="select the latest successful profiler-off replicate per topology",
+    )
+    parser.add_argument("--world-size", type=int)
     parser.add_argument(
         "--exploration-root",
         type=Path,
@@ -269,7 +352,10 @@ def main() -> None:
     )
     args = parser.parse_args()
     runs = _latest_runs(
-        args.exploration_root, steps=args.steps, replicate=args.replicate
+        args.exploration_root,
+        steps=args.steps,
+        replicate=None if args.latest_replicate else args.replicate,
+        world_size=args.world_size,
     )
     baselines = [
         _baseline_row(run)
@@ -284,10 +370,18 @@ def main() -> None:
     args.markdown.parent.mkdir(parents=True, exist_ok=True)
     args.html.parent.mkdir(parents=True, exist_ok=True)
     args.markdown.write_text(
-        _markdown(baselines, profiles, steps=args.steps, replicate=args.replicate),
+        _markdown(
+            baselines,
+            profiles,
+            steps=args.steps,
+            replicate=None if args.latest_replicate else args.replicate,
+            world_size=args.world_size,
+        ),
         encoding="utf-8",
     )
-    args.html.write_text(_html(baselines, profiles), encoding="utf-8")
+    args.html.write_text(
+        _html(baselines, profiles, world_size=args.world_size), encoding="utf-8"
+    )
     history = args.exploration_root.parent / "history" / "report_generation_commands.jsonl"
     history.parent.mkdir(parents=True, exist_ok=True)
     record = {

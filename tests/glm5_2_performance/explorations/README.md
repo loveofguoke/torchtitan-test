@@ -41,6 +41,16 @@ MindStudio Insight.
      --steps 20 --replicate 1
    ```
 
+   Regenerate the eight-card report, selecting the latest successful repeat
+   for each topology (DDP8 repeat 1 is intentionally retained as a failure):
+
+   ```bash
+   python tests/glm5_2_performance/explorations/tools/summarize_topologies.py \
+     --steps 20 --latest-replicate --world-size 8 \
+     --markdown tests/glm5_2_performance/explorations/reports/eight_card/EIGHT_CARD_TOPOLOGY_REPORT.md \
+     --html performance_reports/eight_card/npu-eight-card-topology-comparison.html
+   ```
+
 ## Interpretation rules
 
 - Profiler-off steady state is throughput evidence.
@@ -51,14 +61,16 @@ MindStudio Insight.
   per-device throughput can still reflect a different global critical path.
 - Use rank min/median/max; a mean hides launch skew.
 - Separate collective payload and physical transit from wait/idle time.
-- NPU0 is excluded from valid communication conclusions while its HCCS
-  lane-drop health warning persists.
+- Runs that include NPU0 are diagnostic topology comparisons, not
+  healthy-hardware acceptance evidence, while its health warning persists.
+- The eight-card summary and derived conclusions live under
+  `reports/eight_card/`; DDP8 has its own attribution subdirectory.
 
 ## Directory layout
 
 ```text
 explorations/
-  reports/   # conclusions, topology comparison, failures, legacy aliases
+  reports/   # conclusions, topology comparisons, and per-exploration subdirs
   runs/      # one immutable evidence directory per run
   tools/     # report-generation utilities
   history/   # commands used to regenerate aggregate reports
