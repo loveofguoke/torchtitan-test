@@ -7,13 +7,15 @@
 | world size | 8 |
 | dp replicate / shard | 1 / 2 |
 | tp / cp / pp / ep | 4 / 1 / 1 / 1 |
-| recorded runs | 1 |
+| recorded runs | 3 |
 
 ## run results
 
 | run | status | mode | preset | median step | tok/s/device | tok/s/job | peak hbm |
 | --- | --- | --- | --- | ---: | ---: | ---: | ---: |
 | [npu-fsdp2-tp4-bf16-s20-l8-b64-seq128-seed61-distributed-profiler-off-r1-ecf6fd22](../../../runs/8-card/fsdp2-tp4/npu-fsdp2-tp4-bf16-s20-l8-b64-seq128-seed61-distributed-profiler-off-r1-ecf6fd22/readme.md) | completed | profiler-off | distributed | 2,231.55 ms | 458.88 | 3,671.06 | 0.257 GiB |
+| [npu-fsdp2-tp4-bf16-s20-l8-b64-seq128-seed61-distributed-r1-754de573](../../../runs/8-card/fsdp2-tp4/npu-fsdp2-tp4-bf16-s20-l8-b64-seq128-seed61-distributed-r1-754de573/readme.md) | failed | profiler-active | - | - ms | - | - | - GiB |
+| [npu-fsdp2-tp4-bf16-s20-l8-b64-seq128-seed61-distributed-r2-7088c3b5](../../../runs/8-card/fsdp2-tp4/npu-fsdp2-tp4-bf16-s20-l8-b64-seq128-seed61-distributed-r2-7088c3b5/readme.md) | completed | profiler-active | distributed | 2,365.60 ms | 432.87 | 3,462.97 | - GiB |
 
 ## experiment sequence
 
@@ -26,6 +28,27 @@
 
 ```bash
 /root/miniconda3/envs/torchtitan-0803/bin/python tests/glm5_2_performance/profiler_benchmark.py --probe --device npu --topology fsdp2-tp4 --preset distributed --profiler-off --visible-devices 0,1,2,3,4,5,6,7 --steps 20 --skip-steps 8 --warmup-steps 2 --active-steps 3 --replicate 1
+```
+
+### 2. npu-fsdp2-tp4-bf16-s20-l8-b64-seq128-seed61-distributed-r1-754de573
+
+- Status: `failed`
+- Started: `2026-08-25T09:14:54.761071+08:00`
+- Full process and outputs: [run readme](../../../runs/8-card/fsdp2-tp4/npu-fsdp2-tp4-bf16-s20-l8-b64-seq128-seed61-distributed-r1-754de573/readme.md)
+
+```bash
+/root/miniconda3/envs/torchtitan-0803/bin/python tests/glm5_2_performance/profiler_benchmark.py --probe --device npu --topology fsdp2-tp4 --preset distributed --visible-devices 0,1,2,3,4,5,6,7 --steps 20 --skip-steps 8 --warmup-steps 2 --active-steps 3 --replicate 1 --cluster
+```
+
+### 3. npu-fsdp2-tp4-bf16-s20-l8-b64-seq128-seed61-distributed-r2-7088c3b5
+
+- Status: `completed`
+- Started: `2026-08-25T12:26:31.693143+08:00`
+- Full process and outputs: [run readme](../../../runs/8-card/fsdp2-tp4/npu-fsdp2-tp4-bf16-s20-l8-b64-seq128-seed61-distributed-r2-7088c3b5/readme.md)
+- HTML report: `/workspace/y50064852_yyb/torchtitan-test/performance_reports/8-card/fsdp2-tp4/npu-fsdp2-tp4-bf16-s20-l8-b64-seq128-seed61-distributed-r2-7088c3b5.html`
+
+```bash
+/root/miniconda3/envs/torchtitan-0803/bin/python tests/glm5_2_performance/profiler_benchmark.py --probe --device npu --topologies pp8,fsdp2-tp4,fsdp2-cp4,tp2-cp4,fsdp4-tp2,fsdp2-pp4,fsdp2-tp2-pp2,fsdp2-tp4-ep8 --preset distributed --visible-devices 0,1,2,3,4,5,6,7 --steps 20 --skip-steps 8 --warmup-steps 2 --active-steps 3 --replicate 2 --cluster
 ```
 
 ## current summary

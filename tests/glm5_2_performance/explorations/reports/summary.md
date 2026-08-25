@@ -1,6 +1,6 @@
 # GLM-5.2 NPU performance exploration
 
-Date: 2026-08-24
+Date: 2026-08-25
 
 This report covers the W0 `glm5_debugmodel` experiments only. It establishes
 the profiler and analysis workflow and produces optimization prototypes; it is
@@ -16,13 +16,14 @@ The completed flow follows the official three stages:
 3. MindStudio Insight: both complete `*_ascend_pt` roots and the generated
    `cluster_analysis_output` are ready to import.
 
-NPU0 was excluded from communication experiments because `npu-smi` reported
-`Health Status: Warning`, error `819B8605`, and an HCCS lane-drop safety state.
-The clean two-rank capture used physical NPU1 and NPU2. During later repeat and
-BF16 attribution runs, another eight-card job increased HBM on NPU1/2 from
-about 3.5 GiB to about 27 GiB and drove AICore utilization close to 100%.
-Those later throughput samples are marked as contended; their profile payload
-and call-count data remain useful.
+NPU0 was excluded from the two- and four-card healthy-card experiments because
+`npu-smi` reported `Health Status: Warning`, error `819B8605`, and an HCCS
+lane-drop safety state. The clean two-rank capture used physical NPU1 and NPU2.
+The later eight-card topology matrix intentionally uses physical NPU0-7 to
+cover full-rank communication patterns; it is therefore diagnostic rather than
+hardware acceptance evidence. During some runs, concurrent user workloads
+increased HBM/AICore occupancy. Profiler-off authority and profiler-active
+attribution are kept separate, and device snapshots remain with every run.
 
 Primary outputs:
 
@@ -166,6 +167,33 @@ This failure follows physical NPU4 rather than logical rank. Exact commands,
 tracebacks, and the successful control are indexed in
 [failures.md](failures.md). NPU4 must be excluded from formal FSDP data
 until its HCCL/link path is diagnosed.
+
+## Complete eight-card topology attribution
+
+All 13 declared eight-rank topologies now have both profiler-off screening and
+all-rank profiler attribution. Every selected attribution run contains eight
+parsed rank roots, 11 official analyses with return code zero, and an HTML and
+MindStudio handoff. The full table is in
+[8-card/comparison.md](8-card/comparison.md), the causal synthesis is in
+[8-card/summary.md](8-card/summary.md), and the mechanical completeness check
+is in [8-card/validation.md](8-card/validation.md).
+
+| Controlled comparison | Measurement | Interpretation |
+| --- | --- | --- |
+| FSDP8 | 39 collectives/step; 37,406.66 clean tok/s/job | Low launch granularity is consistent with the clean leader. |
+| FSDP4-TP2 → FSDP2-TP4 → TP8 | 224 → 440 → 865 AllReduce calls/step | Each TP-degree doubling nearly doubles launches and nearly halves clean throughput. |
+| FSDP2-CP4 → CP8 | 299 → 590 collectives; ~580 → ~1,194 MB/rank/step | Pure CP8 over-shards sequence length 128; clean step is 1.93x slower. |
+| PP8 | <=0.43 ms physical P2P transit versus up to 3.50 s exposed wait | Schedule readiness and bubble dominate link bandwidth. |
+| TP2-CP4 | 871 AllReduce + 488 AllGather + 408 ReduceScatter calls/step | TP and CP launch/wait costs compound. |
+| FSDP2-TP2-PP2 | about 1,815 collective/P2P calls/step; 1.71-6.59 s exposed wait | The 9.15 s clean step is a composite TP/PP path, not one slow link. |
+| FSDP2-TP4 vs +EP8 | +EP adds 140 AllToAllV and more AG/RS; clean throughput -3.94% | EP does not hide the TP4 critical path at this scale. |
+
+The runtime repeatedly reports two sequential AllReduce operations for
+Partial→Replicate DTensor transitions. The affected mesh pairs include
+`fsdp+tp` and, in the EP composition, `efsdp+ep`. This is a concrete future
+patch point at the model parallelization/DTensor placement boundary: flatten
+the relevant mesh dimensions and verify fewer launches before any custom HCCL
+or fused-kernel work.
 
 ## Implementable optimization ladder
 
