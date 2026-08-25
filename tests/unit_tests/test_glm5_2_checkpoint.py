@@ -10,7 +10,7 @@ import sys
 import pytest
 import torch
 
-from tests.glm5_2_common.cli import replace_topology
+from tests.glm5_2_common.cli import replace_topology, reset_output_generation
 from tests.glm5_2_checkpoint.checkpoint_benchmark import (
     CheckpointFixtureConfig,
     _boundary_memory_comparison,
@@ -48,6 +48,21 @@ def test_all_topology_runner_replaces_both_cli_forms() -> None:
     assert replace_topology(
         ["--topology=all", "--force"], "cp8"
     ) == ["--force", "--topology=cp8"]
+
+
+def test_reset_output_generation_removes_every_selected_member(
+    tmp_path: Path,
+) -> None:
+    completed = tmp_path / "completed"
+    pending = tmp_path / "pending"
+    completed.mkdir()
+    pending.mkdir()
+    (completed / "manifest.json").write_text("{}", encoding="utf-8")
+
+    reset_output_generation((completed, pending))
+
+    assert not completed.exists()
+    assert not pending.exists()
 
 
 def test_checkpoint_default_batch_supports_single_and_pp8() -> None:
@@ -543,6 +558,7 @@ def test_checkpoint_member_is_complete_only_for_matching_pass_summary(
                 "schema": "torchtitan.glm5_2.checkpoint_fault_recovery",
                 "schema_version": 2,
                 "run_name": "expected",
+                "fixture_generation_id": "generation-a",
                 "passed": True,
             }
         ),
@@ -550,6 +566,16 @@ def test_checkpoint_member_is_complete_only_for_matching_pass_summary(
     )
 
     assert checkpoint_member_complete(summary, member_name="expected")
+    assert checkpoint_member_complete(
+        summary,
+        member_name="expected",
+        fixture_generation_id="generation-a",
+    )
+    assert not checkpoint_member_complete(
+        summary,
+        member_name="expected",
+        fixture_generation_id="generation-b",
+    )
     assert not checkpoint_member_complete(summary, member_name="different")
     summary.write_text(
         json.dumps(

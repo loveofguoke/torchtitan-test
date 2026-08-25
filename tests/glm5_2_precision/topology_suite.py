@@ -25,6 +25,7 @@ from .workflow import (
     _root,
     capture_endpoint,
     prepare_fixture,
+    reset_capture_outputs,
     training_topology_plan,
 )
 
@@ -311,6 +312,29 @@ def run_topology_suite_cli(
         )
         return
     if role is not None:
+        if args.force:
+            reset_seen: set[Path] = set()
+            for config in configs.values():
+                endpoint = (
+                    config.reference if role == "reference" else config.candidate
+                )
+                repeats = (
+                    (args.repeat,)
+                    if args.repeat
+                    else tuple(range(1, endpoint.repeats + 1))
+                )
+                artifact = _artifact_directory(
+                    root, config, role, endpoint, repeats[0]
+                ).parent
+                if artifact in reset_seen:
+                    continue
+                reset_seen.add(artifact)
+                reset_capture_outputs(
+                    root,
+                    config,
+                    role=role,
+                    repeats=repeats,
+                )
         seen: set[Path] = set()
         for name, config in configs.items():
             endpoint = config.reference if role == "reference" else config.candidate
@@ -326,7 +350,7 @@ def run_topology_suite_cli(
                     config,
                     role=role,
                     repeat=repeat,
-                    force=args.force,
+                    force=False,
                 )
                 print(f"Captured {role} {name} repeat {repeat}: {path}")
         return

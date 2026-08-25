@@ -119,10 +119,21 @@ def test_only_passed_stability_summary_is_complete(tmp_path: Path) -> None:
         "schema": "torchtitan.glm5_2.stability",
         "schema_version": 1,
         "run_name": "stability-member",
+        "fixture_generation_id": "generation-a",
         "status": "PASS",
     }
     path.write_text(json.dumps(payload), encoding="utf-8")
     assert _completed_stability_member(path, member_name="stability-member")
+    assert _completed_stability_member(
+        path,
+        member_name="stability-member",
+        fixture_generation_id="generation-a",
+    )
+    assert not _completed_stability_member(
+        path,
+        member_name="stability-member",
+        fixture_generation_id="generation-b",
+    )
 
     payload["status"] = "INSUFFICIENT_DURATION"
     path.write_text(json.dumps(payload), encoding="utf-8")

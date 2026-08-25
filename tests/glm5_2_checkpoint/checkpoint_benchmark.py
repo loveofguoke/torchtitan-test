@@ -1247,9 +1247,6 @@ def main() -> int:
     fixture = _fixture_directory(root, fixture_config)
     fixture_manifest = fixture / "fixture.json"
     if args.data:
-        if fixture_manifest.is_file() and not args.force:
-            print(f"Reuse prepared checkpoint fixture: {fixture}", flush=True)
-            return 0
         path = prepare_fixture(
             root,
             fixture_config,
@@ -1258,6 +1255,11 @@ def main() -> int:
         )
         print(f"Prepared checkpoint fixture: {path}", flush=True)
         return 0
+    fixture_generation_id = None
+    if fixture_manifest.is_file():
+        fixture_generation_id = json.loads(
+            fixture_manifest.read_text(encoding="utf-8")
+        ).get("generation_id")
 
     legacy_suite_name, legacy_run_name = legacy_checkpoint_output_names(
         device=device,
@@ -1281,7 +1283,9 @@ def main() -> int:
     )
     if run_root.exists() or report_root.exists():
         if not args.force and checkpoint_member_complete(
-            summary_path, member_name=run_name
+            summary_path,
+            member_name=run_name,
+            fixture_generation_id=fixture_generation_id,
         ):
             print(
                 f"Skip completed checkpoint topology: {topology.name}\n"
@@ -1659,6 +1663,7 @@ def main() -> int:
         "schema": CHECKPOINT_SCHEMA,
         "schema_version": 2,
         "run_name": run_name,
+        "fixture_generation_id": fixture_generation_id,
         "passed": bool(passed),
         "total_steps": args.total_steps,
         "split_step": args.split_step,

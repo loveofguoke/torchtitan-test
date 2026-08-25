@@ -74,7 +74,7 @@ with a `Process cleanup` record; a surviving process group fails the test.
 | `--restart-delay` | Seconds allowed for accelerator/process cleanup before restart. | `2` |
 | `--extra-train-arg` | Append one raw TorchTitan argument; repeat for graph or other orthogonal features. | none |
 | `--run-tag` | Short output-identity label for feature variants such as `inductor`. | unset |
-| `--force` | Replace completed topology output. Without it, PASS members are skipped and incomplete/failed members are archived and retried. | disabled |
+| `--force` | Start a new generation for the selected topology range. All selected members are removed before execution; rerun without it after interruption to skip completed members and continue. | disabled |
 
 The fixture-defining options (`precision`, steps, batches, sequence length,
 seed, run tag, extra training arguments, async mode, comparison mode, and

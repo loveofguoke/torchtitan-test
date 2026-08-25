@@ -32,6 +32,7 @@ from tests.glm5_2_precision.workflow import (
     _run_directory,
     capture_endpoint,
     prepare_fixture,
+    reset_capture_outputs,
 )
 
 from .config import ProfilerFeatureConfig
@@ -434,8 +435,9 @@ def run_combination_cli(
         )
         return
     if args.capture:
-        seen: set[Path] = set()
-        for name, config in configs.items():
+        prepared: list[tuple[FormalExperimentConfig, tuple[int, ...]]] = []
+        reset_parents: set[Path] = set()
+        for config in configs.values():
             endpoint = (
                 config.reference
                 if args.capture == "reference"
@@ -443,10 +445,30 @@ def run_combination_cli(
             )
             endpoint = _endpoint_from_process_environment(endpoint)
             config = replace(config, **{args.capture: endpoint})
-            repeats = (
+            repeats = tuple(
                 (args.repeat,)
                 if args.repeat
                 else range(1, endpoint.repeats + 1)
+            )
+            prepared.append((config, repeats))
+            if args.force:
+                parent = _artifact_directory(
+                    root, config, args.capture, endpoint, repeats[0]
+                ).parent
+                if parent not in reset_parents:
+                    reset_parents.add(parent)
+                    reset_capture_outputs(
+                        root,
+                        config,
+                        role=args.capture,
+                        repeats=repeats,
+                    )
+        seen: set[Path] = set()
+        for (name, _), (config, repeats) in zip(configs.items(), prepared):
+            endpoint = (
+                config.reference
+                if args.capture == "reference"
+                else config.candidate
             )
             for repeat in repeats:
                 artifact = _artifact_directory(
@@ -456,7 +478,7 @@ def run_combination_cli(
                     continue
                 seen.add(artifact)
                 path = capture_endpoint(
-                    root, config, role=args.capture, repeat=repeat, force=args.force
+                    root, config, role=args.capture, repeat=repeat, force=False
                 )
                 print(f"Captured {args.capture} {name} repeat {repeat}: {path}")
         return
