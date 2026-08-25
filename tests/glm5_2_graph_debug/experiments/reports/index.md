@@ -5,6 +5,7 @@
 - [最终总结](summary.md)
 - [代码实现说明](implementation.md)
 - [失败与修复历史](failures.md)
+- [底层问题定位与提单交接](../../../glm5_2_graph/LOWER_LAYER_ISSUE_HANDOFF.md)
 - [完整命令账本](../history/commands.md)
 - [主交付报告](../../FINAL_GRAPH_DEBUG_REPORT.md)
 - [CANN 9.1.0 安装](../../CANN_9_1_INSTALLATION.md)

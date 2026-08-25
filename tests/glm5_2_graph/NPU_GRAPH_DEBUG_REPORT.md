@@ -110,7 +110,7 @@ tests/glm5_2_graph_debug/run_graph_mode.sh inductor precision \
 
 | 仓库 | 入口 | 职责 |
 |---|---|---|
-| `torchtitan-test` | [图模式使用入口](README.md)、[原始调试入口](../glm5_2_graph_debug/README.md)、[报告索引](../glm5_2_graph_debug/experiments/reports/index.md)、[失败历史](../glm5_2_graph_debug/experiments/reports/failures.md) | 组织 eager/graph、single/all 拓扑实验，保存日志和报告，记录完整调试证据并给出验收结论。 |
+| `torchtitan-test` | [图模式使用入口](README.md)、[底层提单交接](LOWER_LAYER_ISSUE_HANDOFF.md)、[原始调试入口](../glm5_2_graph_debug/README.md)、[报告索引](../glm5_2_graph_debug/experiments/reports/index.md)、[失败历史](../glm5_2_graph_debug/experiments/reports/failures.md) | 组织 eager/graph、single/all 拓扑实验，保存日志和报告，记录完整调试证据并给出验收结论。 |
 | `TorchTitanTurbo` | [图模式 patch 说明](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/torchtitanturbo/tools/GRAPH_MODE.md)、[patch 清单](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/PATCHES.md)、`torchtitanturbo/tools/graph_compat.py` | 实现默认关闭的 Ascend 专用兼容 patch；说明触发变量、patch 对象和后端限制。 |
 | `torchtitan` | `torchtitan/distributed/compile.py` | 提供设备无关的 compile 配置和调用流程；不承载 CANN、HCCL、torch_npu 或 NPUGraph workaround。 |
 
@@ -192,6 +192,11 @@ tests/glm5_2_graph_debug/run_graph_mode.sh npugraphs smoke
 ```
 
 ## 6. 仍需继续解决的问题
+
+每个问题对应的底层仓库、源码文件、函数、当前行号、最小分界实验、建议 patch 方向和
+关闭 workaround 后的验收标准，统一维护在
+[NPU 图模式底层问题定位与提单交接](LOWER_LAYER_ISSUE_HANDOFF.md)。本节只保留项目级
+状态，不能替代该文档中的问题级定位。
 
 - NPUGraph native replay：必须在 torch_npu/CANN graph tree 层解决 grouped-mm 捕获
   同步和非 Tensor `DeviceMesh` 输入 contract；应用层跳过 replay 不是最终方案。
