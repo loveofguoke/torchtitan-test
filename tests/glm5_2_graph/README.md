@@ -24,7 +24,8 @@ order when reproducing or extending the graph work:
 | Experiment interface | This README | Commands, options, outputs, reports, and acceptance rules. |
 | Current engineering status | [NPU_GRAPH_DEBUG_REPORT.md](NPU_GRAPH_DEBUG_REPORT.md) | Complete single/multi-card bring-up process, solved and unresolved issues, downgrade boundary, and three-repository ownership. |
 | Raw debug evidence | [graph debug README](../glm5_2_graph_debug/README.md), [report index](../glm5_2_graph_debug/experiments/reports/index.md), and [failure history](../glm5_2_graph_debug/experiments/reports/failures.md) | Immutable command history, topology evidence, failed attempts, and detailed root-cause records. |
-| Ascend implementation | [TorchTitanTurbo graph-mode document](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/torchtitanturbo/tools/GRAPH_MODE.md) and [patch inventory](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/PATCHES.md) | Opt-in NPU compatibility patches, activation variables, patched objects, and limitations. |
+| Full DSA extension | [Full DSA test map](../glm5_2_smoke/FULL_DSA.md), [optimization experiments](../glm5_2_performance/OPTIMIZATION.md), and [combination runner](../glm5_2_combination/README.md) | Adds cross-layer index sharing and selectable reference/Triton/native SparseMLA as orthogonal graph experiment factors. |
+| Ascend implementation | [TorchTitanTurbo graph-mode document](https://github.com/loveofguoke/TorchTitanTurbo/blob/feat/glm5-full-dsa-npu/torchtitanturbo/tools/GRAPH_MODE.md) and [patch inventory](https://github.com/loveofguoke/TorchTitanTurbo/blob/feat/glm5-full-dsa-npu/PATCHES.md) | Opt-in NPU compatibility patches, activation variables, patched objects, and limitations. |
 | Device-neutral framework | `torchtitan/distributed/compile.py` in the source-installed TorchTitan checkout | Native `torch.compile` component selection and backend invocation. It contains no NPU workaround. |
 
 The test report is authoritative for experiment results and issue status. Turbo
@@ -36,6 +37,48 @@ Supported modes are:
 - `eager`: no compile arguments;
 - `inductor`: TorchTitan `torch.compile`, backend `inductor`;
 - `npugraphs`: NPU-only NPUGraph backend, model component only.
+
+## Full DSA graph experiments
+
+On the Full DSA branches, the same graph entry points also accept
+`--full-dsa`, `--reference-full-dsa-kernel`, and
+`--candidate-full-dsa-kernel`. These are orthogonal factors: graph mode chooses
+the execution backend, while the Full DSA kernel option chooses the component
+implementation. Neither is enabled by default.
+
+For example, compare the readable NPU eager reference with the NPU Inductor
+Triton-Ascend implementation:
+
+```bash
+python tests/glm5_2_graph/precision_benchmark.py \
+  --data --data-device npu --topology all --full-dsa \
+  --reference-graph eager --candidate-graph inductor \
+  --reference-full-dsa-kernel reference \
+  --candidate-full-dsa-kernel auto
+
+python tests/glm5_2_graph/precision_benchmark.py \
+  --capture reference --topology all --full-dsa \
+  --reference-graph eager --candidate-graph inductor \
+  --reference-full-dsa-kernel reference \
+  --candidate-full-dsa-kernel auto
+
+python tests/glm5_2_graph/precision_benchmark.py \
+  --capture candidate --topology all --full-dsa \
+  --reference-graph eager --candidate-graph inductor \
+  --reference-full-dsa-kernel reference \
+  --candidate-full-dsa-kernel auto
+
+python tests/glm5_2_graph/precision_benchmark.py \
+  --compare --topology all --require-all --full-dsa \
+  --reference-graph eager --candidate-graph inductor \
+  --reference-full-dsa-kernel reference \
+  --candidate-full-dsa-kernel auto
+```
+
+Full DSA `all` excludes PP because shared top-k is not transported across
+pipeline stages. `ops_candidate` prototypes are never accepted as CLI values;
+they become runnable only after promotion into `ops` with numerical,
+distributed, graph, and profiler evidence.
 
 ## Direct NPU training
 

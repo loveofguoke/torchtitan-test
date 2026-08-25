@@ -2,11 +2,11 @@
 
 The Full DSA feature is split across three repositories:
 
-| Responsibility | Repository |
+| Responsibility | Repository and document |
 |---|---|
-| PyTorch reference model, sharing schedule, distributed contracts, GPU ops | TorchTitan |
-| Ascend SparseMLA operator | TorchTitanTurbo |
-| Smoke, parity, precision, performance, and failure artifacts | torchtitan-test |
+| PyTorch reference model, sharing schedule, distributed contracts, GPU ops, and general candidates | TorchTitan `torchtitan/models/glm5/FULL_DSA.md`, `ops/README.md`, and `ops_candidate/README.md` |
+| Triton-Ascend/native SparseMLA, graph/HCCL compatibility, and NPU candidates | [TorchTitanTurbo Full DSA](https://github.com/loveofguoke/TorchTitanTurbo/blob/feat/glm5-full-dsa-npu/torchtitanturbo/models/glm5/FULL_DSA.md), [ops](https://github.com/loveofguoke/TorchTitanTurbo/blob/feat/glm5-full-dsa-npu/torchtitanturbo/models/glm5/ops/README.md), and [ops_candidate](https://github.com/loveofguoke/TorchTitanTurbo/blob/feat/glm5-full-dsa-npu/torchtitanturbo/models/glm5/ops_candidate/README.md) |
+| Smoke, parity, precision, graph/performance A/B, reports, failure artifacts, and promotion decisions | torchtitan-test; [performance optimization matrix](../glm5_2_performance/OPTIMIZATION.md) |
 
 ## Test layers
 

@@ -37,10 +37,13 @@ workflow is split by responsibility as follows:
 | Layer | Document or implementation | Purpose |
 |---|---|---|
 | Experiment interface | This README | Commands, parameters, presets, output layout, report contents, and interpretation rules. |
+| Full DSA runnable A/B | [OPTIMIZATION.md](OPTIMIZATION.md) and [性能优化实验与面试速查.md](性能优化实验与面试速查.md) | Reference, Triton-Ascend, native SparseMLA, communication, memory, and recomputation profiles that are actually exposed by the harness. |
 | Evidence layout | [exploration index](explorations/index.md) and [report index](explorations/reports/index.md) | Immutable run evidence and navigation by card count/topology. |
-| Current analysis | [cross-topology summary](explorations/reports/summary.md) and [failed attempts](explorations/reports/failures.md) | Measured bottlenecks, hardware caveats, optimization backlog, and failed experiments. |
-| Ascend collection implementation | [TorchTitanTurbo profiler document](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/torchtitanturbo/tools/PROFILER.md), [profiler patch](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/torchtitanturbo/tools/profiler.py), and [patch inventory](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/PATCHES.md) | Translation of TorchTitan's lifecycle to `torch_npu.profiler`, NPU-only controls, and memory snapshots. |
-| Device-neutral framework | `torchtitan/tools/profiler.py` in the source-installed TorchTitan checkout | Profiler schedule, lifecycle, step calls, and public configuration. |
+| Current analysis | [cross-topology summary](explorations/reports/summary.md), [optimization backlog](explorations/optimization_backlog.md), and [failed attempts](explorations/reports/failures.md) | Measured bottlenecks, hardware caveats, one-patch-at-a-time task cards, promotion gates, and failed experiments. |
+| Device-neutral model and GPU implementation | TorchTitan `torchtitan/models/glm5/性能优化实践.md`, `ops/README.md`, and `ops_candidate/README.md` | Readable Full DSA math, optional CUDA Triton operators, and isolated model/general distributed prototypes. |
+| Ascend model implementation | [Turbo Full DSA guide](https://github.com/loveofguoke/TorchTitanTurbo/blob/feat/glm5-full-dsa-npu/torchtitanturbo/models/glm5/FULL_DSA.md), [confirmed NPU ops](https://github.com/loveofguoke/TorchTitanTurbo/blob/feat/glm5-full-dsa-npu/torchtitanturbo/models/glm5/ops/README.md), and [NPU candidates](https://github.com/loveofguoke/TorchTitanTurbo/blob/feat/glm5-full-dsa-npu/torchtitanturbo/models/glm5/ops_candidate/README.md) | Triton-Ascend registrations, Ascend-native SparseMLA, and isolated HCCL/CANN/NPUGraph prototypes. |
+| Ascend collection implementation | [TorchTitanTurbo profiler document](https://github.com/loveofguoke/TorchTitanTurbo/blob/feat/glm5-full-dsa-npu/torchtitanturbo/tools/PROFILER.md), [profiler patch](https://github.com/loveofguoke/TorchTitanTurbo/blob/feat/glm5-full-dsa-npu/torchtitanturbo/tools/profiler.py), and [patch inventory](https://github.com/loveofguoke/TorchTitanTurbo/blob/feat/glm5-full-dsa-npu/PATCHES.md) | Translation of TorchTitan's lifecycle to `torch_npu.profiler`, NPU-only controls, and memory snapshots. |
+| Device-neutral framework | TorchTitan `torchtitan/tools/profiler.py` | Profiler schedule, lifecycle, step calls, and public configuration. |
 
 The test repository is authoritative for commands, measurements, analysis,
 reports, and optimization acceptance. Turbo is authoritative only for the
@@ -48,6 +51,11 @@ Ascend collection implementation. TorchTitan remains the device-neutral owner
 of the profiler lifecycle. A proposed optimization in an exploration report
 is not an implemented optimization unless its target repository, switch,
 tests, and A/B evidence are linked explicitly.
+
+The imported 1/2/4/8-card exploration reports were captured with the ordinary
+W0 debug model. They motivate Full DSA optimization tasks but do not prove the
+Full DSA reference, `ops`, or any candidate is faster. Each promoted Full DSA
+path requires a new, identically configured reference/candidate A/B run.
 
 The workflow is deliberately top-down:
 

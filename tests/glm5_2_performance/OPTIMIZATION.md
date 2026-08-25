@@ -9,6 +9,23 @@ The all-topology NPU evidence and one-patch-at-a-time task cards are in
 Files under either repository's `ops_candidate/` are deliberately absent from
 this CLI; they are code-reviewable hypotheses, not runnable optimizations.
 
+## Three-repository implementation map
+
+This test document is the authoritative entry for commands, measurements,
+reports, and promotion decisions. Implementation details remain with their
+owning repository:
+
+| State | TorchTitan | TorchTitanTurbo | torchtitan-test |
+|---|---|---|---|
+| Readable reference | `models/glm5/model.py`, `FULL_DSA.md` | no duplicated model | `--full-dsa --*-kernel reference` |
+| Confirmed optional implementation | `models/glm5/ops/` for CUDA Triton | `models/glm5/ops/` for Triton-Ascend and native SparseMLA | named `--full-dsa-kernel` / `--optimization` choices |
+| Isolated candidate | `models/glm5/ops_candidate/` for model/general distributed prototypes | `models/glm5/ops_candidate/` for HCCL/CANN/NPUGraph prototypes | indexed by [optimization_backlog.md](explorations/optimization_backlog.md), never executable |
+| Evidence and decision | supplies the component contract | supplies the backend implementation | fixed inputs, precision, profiler-off A/B, active trace, report, and promotion gate |
+
+The repository-level implementation documents are TorchTitan
+`torchtitan/models/glm5/性能优化实践.md` and TorchTitanTurbo
+[`torchtitanturbo/models/glm5/性能优化实践.md`](https://github.com/loveofguoke/TorchTitanTurbo/blob/feat/glm5-full-dsa-npu/torchtitanturbo/models/glm5/%E6%80%A7%E8%83%BD%E4%BC%98%E5%8C%96%E5%AE%9E%E8%B7%B5.md).
+
 ## Full DSA as an orthogonal factor
 
 The smoke interface supports explicit model and operator selection:

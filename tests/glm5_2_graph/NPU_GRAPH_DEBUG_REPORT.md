@@ -15,6 +15,9 @@ nightly 和 triton-ascend 3.2.1。统一 smoke contract 为 10 steps、global ba
 - 以上 15/15 结果来自兼容逻辑仍位于 test launcher 时的服务器实验。相同逻辑现已
   迁入 TorchTitanTurbo 的 opt-in 模块；三仓职责重构后的源码安装复验尚未完成，不能
   把“已实现”误写成“新版本已验证”。
+- 以上矩阵也没有启用 Full DSA、跨层 index sharing、Triton-Ascend 或 native
+  SparseMLA。它只建立普通 debug model 的图模式基线；Full DSA reference/`ops` 必须
+  按主 README 的独立 A/B 流程重新验证，`ops_candidate` 不属于可运行实验。
 - 本轮是跑通性 smoke，不替代 eager-vs-graph 的 5000-step precision、performance、
   checkpoint 或 stability 验收。
 
@@ -111,7 +114,7 @@ tests/glm5_2_graph_debug/run_graph_mode.sh inductor precision \
 | 仓库 | 入口 | 职责 |
 |---|---|---|
 | `torchtitan-test` | [图模式使用入口](README.md)、[原始调试入口](../glm5_2_graph_debug/README.md)、[报告索引](../glm5_2_graph_debug/experiments/reports/index.md)、[失败历史](../glm5_2_graph_debug/experiments/reports/failures.md) | 组织 eager/graph、single/all 拓扑实验，保存日志和报告，记录完整调试证据并给出验收结论。 |
-| `TorchTitanTurbo` | [图模式 patch 说明](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/torchtitanturbo/tools/GRAPH_MODE.md)、[patch 清单](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/PATCHES.md)、`torchtitanturbo/tools/graph_compat.py` | 实现默认关闭的 Ascend 专用兼容 patch；说明触发变量、patch 对象和后端限制。 |
+| `TorchTitanTurbo` | [图模式 patch 说明](https://github.com/loveofguoke/TorchTitanTurbo/blob/feat/glm5-full-dsa-npu/torchtitanturbo/tools/GRAPH_MODE.md)、[patch 清单](https://github.com/loveofguoke/TorchTitanTurbo/blob/feat/glm5-full-dsa-npu/PATCHES.md)、`torchtitanturbo/tools/graph_compat.py` | 实现默认关闭的 Ascend 专用兼容 patch；说明触发变量、patch 对象和后端限制。 |
 | `torchtitan` | `torchtitan/distributed/compile.py` | 提供设备无关的 compile 配置和调用流程；不承载 CANN、HCCL、torch_npu 或 NPUGraph workaround。 |
 
 问题级原始证据使用 `G001` 至 `G019` 编号保留在失败历史中；下表是面向当前代码和
@@ -150,12 +153,12 @@ TorchTitan 保持设备无关，没有加入 CANN、HCCL、torch_npu 或 NPUGrap
 NPU 兼容逻辑已从 test 根目录迁入
 `torchtitanturbo/tools/graph_compat.py`；`train_npu.py` 只负责导入 Turbo 和注入实验级
 process-group timeout。所有 Turbo patch 均由环境变量选择，普通 eager 不启用。
-对应开发分支为 TorchTitanTurbo `glm-dev`；服务器复验前需要源码安装
+Full DSA 开发分支对应 TorchTitanTurbo `feat/glm5-full-dsa-npu`；服务器复验前需要源码安装
 该分支，并确认 `torchtitanturbo.__file__` 指向当前工作树。
 
 ```bash
 cd /workspace/y50064852_yyb/TorchTitanTurbo
-git switch glm-dev
+git switch feat/glm5-full-dsa-npu
 python -m pip install -e . --no-deps
 python - <<'PY'
 import torchtitanturbo
