@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 import time
@@ -27,6 +28,16 @@ def archive_previous_output(path: Path) -> Path | None:
         suffix += 1
     path.rename(destination)
     return destination
+
+
+def reset_output_generation(paths: Sequence[Path]) -> None:
+    """Remove every selected output before a new suite generation starts."""
+
+    for path in dict.fromkeys(paths):
+        if path.is_dir():
+            shutil.rmtree(path)
+        elif path.exists():
+            path.unlink()
 
 
 def replace_topology(argv: Sequence[str], topology: str) -> list[str]:

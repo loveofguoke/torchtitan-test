@@ -1198,6 +1198,24 @@ def run_profiler_cli(
         topologies=args.topologies,
         default=(effective.topology,),
     )
+    if args.force and (args.capture or args.probe):
+        # Clear every selected member before launching the first capture. A
+        # mid-suite failure can then be resumed without mixing generations.
+        for topology_name in selected:
+            topology_config = replace(effective, topology=topology_name)
+            run_name = _run_name(topology_config, device, preset)
+            run_parent = _scoped_parent(
+                root, topology_config.run_root, topology_config.topology
+            )
+            artifact_parent = _scoped_parent(
+                root, topology_config.artifact_root, topology_config.topology
+            )
+            report_parent = _scoped_parent(
+                root, topology_config.report_root, topology_config.topology
+            )
+            _remove_known_output(run_parent / run_name, run_parent)
+            _remove_known_output(artifact_parent / run_name, artifact_parent)
+            _remove_known_output(report_parent / f"{run_name}.html", report_parent)
     reports: list[tuple[str, Path]] = []
     for topology_name in selected:
         topology_config = replace(effective, topology=topology_name)
@@ -1222,7 +1240,7 @@ def run_profiler_cli(
                 topology_config,
                 device=device,
                 preset=preset,
-                force=args.force,
+                force=False,
             )
         if args.analyze or args.probe:
             report = analyze(

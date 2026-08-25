@@ -23,7 +23,11 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from tests.glm5_2_common.cli import archive_previous_output, run_all_topologies
+from tests.glm5_2_common.cli import (
+    archive_previous_output,
+    reset_output_generation,
+    run_all_topologies,
+)
 from tests.glm5_2_common.device import resolve_accelerator
 from tests.glm5_2_common.naming import config_name
 from tests.glm5_2_common.topology import (
@@ -335,7 +339,10 @@ def _legacy_stability_output_names(
 
 
 def _completed_stability_member(
-    summary_path: Path, *, member_name: str
+    summary_path: Path,
+    *,
+    member_name: str,
+    fixture_generation_id: str | None = None,
 ) -> bool:
     if not summary_path.is_file():
         return False
@@ -343,7 +350,11 @@ def _completed_stability_member(
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
     except (OSError, TypeError, ValueError):
         return False
-    return (
+    generation_matches = (
+        fixture_generation_id is None
+        or summary.get("fixture_generation_id") == fixture_generation_id
+    )
+    return generation_matches and (
         summary.get("schema") == STABILITY_SCHEMA
         and summary.get("schema_version") == 1
         and summary.get("run_name") == member_name
@@ -441,17 +452,13 @@ def main() -> int:
     )
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
-    if args.topology == "all" and not args.data:
-        return run_all_topologies(
-            __file__, argv=sys.argv[1:], topology_names=suite_topologies
-        )
     if args.steps < 1 or args.minimum_hours < 0 or args.stall_timeout_minutes <= 0:
         raise ValueError("steps and timing limits must be positive")
 
     root = Path(__file__).resolve().parents[2]
     # Stability fixtures are global-input contracts, not topology-specific
     # outputs. `--data --topology all` therefore prepares one single-card copy.
-    topology_name = "single" if args.data else args.topology
+    topology_name = "single" if args.data or args.topology == "all" else args.topology
     topology = standard_topologies()[topology_name]
     training = _precision_training(
         args.precision,
@@ -468,6 +475,41 @@ def main() -> int:
         device_type=device,
         arguments=args.extra_train_arg,
     )
+    if args.topology == "all" and not args.data:
+        child_argv = [value for value in sys.argv[1:] if value != "--force"]
+        if args.force:
+            selected_paths: list[Path] = []
+            for member_topology_name in suite_topologies:
+                member_topology = standard_topologies()[member_topology_name]
+                suite_name, _ = _stability_output_names(
+                    device=device,
+                    topology_slug=member_topology.slug,
+                    precision=args.precision,
+                    steps=training.steps,
+                    local_batch_size=training.local_batch_size,
+                    global_batch_size=training.global_batch_size,
+                    sequence_length=training.sequence_length,
+                    seed=training.seed,
+                    run_tag=args.run_tag,
+                    extra_args=training.extra_args,
+                    topology_identity=asdict(member_topology),
+                )
+                selected_paths.extend(
+                    (
+                        root
+                        / "stability_runs"
+                        / suite_name
+                        / member_topology.slug,
+                        root
+                        / "stability_reports"
+                        / suite_name
+                        / member_topology.slug,
+                    )
+                )
+            reset_output_generation(selected_paths)
+        return run_all_topologies(
+            __file__, argv=child_argv, topology_names=suite_topologies
+        )
     visible_count = len([value for value in visible_devices.split(",") if value.strip()])
     if visible_count < topology.world_size:
         raise ValueError(
@@ -510,9 +552,6 @@ def main() -> int:
     fixture_directory = _fixture_directory(root, fixture_config)
     fixture_manifest = fixture_directory / "fixture.json"
     if args.data:
-        if fixture_manifest.is_file() and not args.force:
-            print(f"Reuse prepared stability fixture: {fixture_directory}")
-            return 0
         path = prepare_fixture(
             root,
             fixture_config,
@@ -521,6 +560,11 @@ def main() -> int:
         )
         print(f"Prepared stability fixture: {path}")
         return 0
+    fixture_generation_id = None
+    if fixture_manifest.is_file():
+        fixture_generation_id = json.loads(
+            fixture_manifest.read_text(encoding="utf-8")
+        ).get("generation_id")
     if not fixture_manifest.is_file():
         if fixture_directory.exists():
             raise RuntimeError(
@@ -567,7 +611,9 @@ def main() -> int:
     summary_path = report_directory / f"{run_name}.json"
     if run_directory.exists() or report_directory.exists():
         if not args.force and _completed_stability_member(
-            summary_path, member_name=run_name
+            summary_path,
+            member_name=run_name,
+            fixture_generation_id=fixture_generation_id,
         ):
             print(
                 f"Skip completed stability topology: {topology.name}\n"
@@ -738,6 +784,7 @@ def main() -> int:
         "schema": STABILITY_SCHEMA,
         "schema_version": 1,
         "run_name": run_name,
+        "fixture_generation_id": fixture_generation_id,
         "status": status,
         "device": device,
         "visible_devices": visible_devices,

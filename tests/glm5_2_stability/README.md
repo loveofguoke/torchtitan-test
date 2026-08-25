@@ -26,7 +26,7 @@ finishes every step in less than one hour is reported as
 | `--seed` | Model, data, and trainer seed. | `61` |
 | `--extra-train-arg` | Append one raw TorchTitan argument; repeat for multiple graph or training feature arguments. | none |
 | `--run-tag` | Short label included in output identity, for example `inductor`. | unset |
-| `--force` | Replace completed PASS members. Without it, incomplete/failed/insufficient members are archived and retried. | disabled |
+| `--force` | Start a new generation for the selected topology range. All selected members are removed before execution; rerun without it after interruption to resume. | disabled |
 
 Keep precision, steps, batch sizes, sequence length, seed, run tag, and every
 extra training argument identical between `--data` and execution. `--topology`

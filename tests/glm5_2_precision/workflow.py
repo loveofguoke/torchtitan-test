@@ -14,8 +14,10 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import uuid
 from typing import Any, Literal, Sequence
 
+from tests.glm5_2_common.cli import archive_previous_output, reset_output_generation
 from tests.glm5_2_common.naming import config_name, slug
 from tests.glm5_2_common.topology import (
     ParallelTopology,
@@ -858,11 +860,23 @@ def prepare_fixture(
 ) -> Path:
     fixture_directory = _fixture_directory(root, config)
     if fixture_directory.exists():
-        if not force:
-            raise FileExistsError(
-                f"fixture already exists; pass --force to replace it: {fixture_directory}"
+        if not force and _stored_training_matches(fixture_directory, config):
+            try:
+                resolve_fixture_inputs(root, config)
+            except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+                pass
+            else:
+                print(f"Reuse completed fixture: {fixture_directory}", flush=True)
+                return fixture_directory
+        if force:
+            shutil.rmtree(fixture_directory)
+        else:
+            archived = archive_previous_output(fixture_directory)
+            print(
+                "Retry incomplete or incompatible fixture; archived previous "
+                f"output: {archived}",
+                flush=True,
             )
-        shutil.rmtree(fixture_directory)
     fixture_directory.mkdir(parents=True)
 
     data_digests = {
@@ -975,6 +989,7 @@ def prepare_fixture(
     manifest = {
         "schema": "torchtitan.glm5_2.precision_fixture",
         "schema_version": 1,
+        "generation_id": uuid.uuid4().hex,
         "scenario_name": config.fixture_storage_name,
         "scenario_description": config.scenario_name,
         "checkpoint_kind": config.training.checkpoint_kind,
@@ -1019,22 +1034,33 @@ def capture_endpoint(
     if not 1 <= repeat <= endpoint.repeats:
         raise ValueError(f"repeat must be in [1, {endpoint.repeats}]")
     artifact_directory = _artifact_directory(root, config, role, endpoint, repeat)
+    fixture_directory = _fixture_directory(root, config)
+    fixture_manifest = json.loads(
+        (fixture_directory / "fixture.json").read_text(encoding="utf-8")
+    )
+    fixture_generation = fixture_manifest.get("generation_id")
     artifact_complete = False
+    artifact_generation_mismatch = False
     if endpoint.node_rank == metrics_node_rank and artifact_directory.exists():
         try:
-            PrecisionArtifactReader(artifact_directory)
-            artifact_complete = True
+            artifact = PrecisionArtifactReader(artifact_directory)
+            artifact_generation_mismatch = (
+                fixture_generation is not None
+                and artifact.training_contract.get("fixture_generation_id")
+                != fixture_generation
+            )
+            artifact_complete = not artifact_generation_mismatch
         except (KeyError, OSError, TypeError, ValueError, PrecisionArtifactError):
             artifact_complete = False
         if artifact_complete and not force:
             print(f"Skip completed capture: {artifact_directory}")
             return artifact_directory
-    fixture_directory = _fixture_directory(root, config)
     checkpoint_path = _seed_checkpoint_path(fixture_directory)
     token_plan_path = _token_plan_path(fixture_directory)
     run_directory = _run_directory(root, config, role, endpoint, repeat)
     metrics_path = run_directory / "raw_metrics.jsonl"
     runtime_log = run_directory / "runtime.log"
+    run_generation_path = run_directory / "fixture_generation.json"
     input_contract_directory = root / config.run_root / config.storage_name
     if config.topology_subdirectory:
         input_contract_directory /= endpoint.topology.slug
@@ -1044,6 +1070,17 @@ def capture_endpoint(
     )
     finalize_existing = False
     if run_directory.exists():
+        run_generation_matches = fixture_generation is None
+        if fixture_generation is not None and run_generation_path.is_file():
+            try:
+                run_generation_matches = (
+                    json.loads(run_generation_path.read_text(encoding="utf-8")).get(
+                        "fixture_generation_id"
+                    )
+                    == fixture_generation
+                )
+            except (OSError, TypeError, ValueError):
+                run_generation_matches = False
         retry_incomplete = (
             not artifact_complete
             and endpoint.num_nodes == 1
@@ -1051,10 +1088,15 @@ def capture_endpoint(
         )
         if not force and not retry_incomplete:
             raise FileExistsError(f"run output already exists: {run_directory}")
-        finalize_existing = retry_incomplete and _completed_capture_can_be_finalized(
-            metrics_path,
-            input_contract_directory,
-            expected_steps=config.training.steps,
+        finalize_existing = (
+            retry_incomplete
+            and not artifact_generation_mismatch
+            and run_generation_matches
+            and _completed_capture_can_be_finalized(
+                metrics_path,
+                input_contract_directory,
+                expected_steps=config.training.steps,
+            )
         )
         if finalize_existing and not force:
             print(
@@ -1069,6 +1111,11 @@ def capture_endpoint(
         if not finalize_existing:
             shutil.rmtree(run_directory)
     run_directory.mkdir(parents=True, exist_ok=True)
+    if fixture_generation is not None:
+        _write_json(
+            run_generation_path,
+            {"fixture_generation_id": fixture_generation},
+        )
 
     environment = os.environ.copy()
     environment.update(endpoint.environment)
@@ -1127,9 +1174,6 @@ def capture_endpoint(
         raise RuntimeError(
             f"captured {len(metrics)} metric steps, expected {config.training.steps}"
         )
-    fixture_manifest = json.loads(
-        (fixture_directory / "fixture.json").read_text(encoding="utf-8")
-    )
     input_contract = validate_runtime_input_contract(
         contract_directory=input_contract_directory,
         plan=load_token_plan(token_plan_path),
@@ -1160,6 +1204,8 @@ def capture_endpoint(
             "input_contract": input_contract,
         },
     }
+    if fixture_generation is not None:
+        training_contract["fixture_generation_id"] = fixture_generation
     metadata = {
         "experiment_kind": config.kind,
         "role": role,
@@ -1181,6 +1227,33 @@ def capture_endpoint(
             "input_contract.json": input_contract_directory / "summary.json"
         },
     )
+
+
+def reset_capture_outputs(
+    root: Path,
+    config: FormalExperimentConfig,
+    *,
+    role: Literal["reference", "candidate"],
+    repeats: Sequence[int],
+) -> None:
+    """Remove the complete selected capture generation before rerunning it.
+
+    Suite-level callers must reset every selected member before starting the
+    first training process. Otherwise a mid-suite failure can combine newly
+    captured members with untouched members from an older generation.
+    """
+
+    endpoint = config.reference if role == "reference" else config.candidate
+    report_directory = _report_directory(root, config)
+    selected_paths = [report_directory]
+    for repeat in repeats:
+        selected_paths.extend(
+            (
+                _artifact_directory(root, config, role, endpoint, repeat),
+                _run_directory(root, config, role, endpoint, repeat),
+            )
+        )
+    reset_output_generation(selected_paths)
 
 
 def _apply_endpoint_overrides(
@@ -1381,14 +1454,25 @@ def run_formal_cli(
         print(f"Prepared fixture: {path}")
     elif args.capture:
         endpoint = config.reference if args.capture == "reference" else config.candidate
-        repeats = (args.repeat,) if args.repeat is not None else range(1, endpoint.repeats + 1)
+        repeats = tuple(
+            (args.repeat,)
+            if args.repeat is not None
+            else range(1, endpoint.repeats + 1)
+        )
+        if args.force:
+            reset_capture_outputs(
+                root,
+                config,
+                role=args.capture,
+                repeats=repeats,
+            )
         for repeat in repeats:
             path = capture_endpoint(
                 root,
                 config,
                 role=args.capture,
                 repeat=repeat,
-                force=args.force,
+                force=False,
             )
             if path is None:
                 print(

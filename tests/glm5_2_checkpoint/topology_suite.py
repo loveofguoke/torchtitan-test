@@ -13,7 +13,11 @@ import subprocess
 import sys
 from typing import Any, Sequence
 
-from tests.glm5_2_common.cli import archive_previous_output, replace_topology
+from tests.glm5_2_common.cli import (
+    archive_previous_output,
+    replace_topology,
+    reset_output_generation,
+)
 from tests.glm5_2_common.naming import config_name
 from tests.glm5_2_common.topology import standard_topologies
 
@@ -212,14 +216,23 @@ def checkpoint_member_paths(
     return run_directory, report_directory, summary_path, report_path
 
 
-def checkpoint_member_complete(summary_path: Path, *, member_name: str) -> bool:
+def checkpoint_member_complete(
+    summary_path: Path,
+    *,
+    member_name: str,
+    fixture_generation_id: str | None = None,
+) -> bool:
     if not summary_path.is_file():
         return False
     try:
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
     except (OSError, TypeError, ValueError):
         return False
-    return (
+    generation_matches = (
+        fixture_generation_id is None
+        or summary.get("fixture_generation_id") == fixture_generation_id
+    )
+    return generation_matches and (
         summary.get("schema") == CHECKPOINT_SCHEMA
         and summary.get("schema_version") == 2
         and summary.get("run_name") == member_name
@@ -337,11 +350,28 @@ def run_checkpoint_topology_suite(
                 "checkpoint topology members resolved different suites"
             )
         members.append((topology_slug, member_name))
+    force_requested = "--force" in argv
+    child_argv = [argument for argument in argv if argument != "--force"]
+    if force_requested:
+        # Reset the full suite generation before the first child starts. If a
+        # later topology fails, rerunning without --force resumes only this
+        # generation instead of accepting untouched output from an older run.
+        assert suite_name is not None
+        selected_paths: list[Path] = []
+        for topology_slug, member_name in members:
+            run_directory, report_directory, _, _ = checkpoint_member_paths(
+                root,
+                suite_name=suite_name,
+                topology_slug=topology_slug,
+                member_name=member_name,
+            )
+            selected_paths.extend((run_directory, report_directory))
+        reset_output_generation(selected_paths)
     for topology_name in topology_names:
         command = [
             sys.executable,
             str(Path(script_path).resolve()),
-            *replace_topology(argv, topology_name),
+            *replace_topology(child_argv, topology_name),
         ]
         print(f"Starting topology suite member: {topology_name}", flush=True)
         process = subprocess.run(command, check=False)

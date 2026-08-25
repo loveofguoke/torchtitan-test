@@ -104,3 +104,23 @@ are excluded, so report-only changes never require another training run.
 When a pre-digest output directory contains the same stored training contract,
 the workflow renames it to the current config-digested name and continues. A
 different contract is never adopted silently.
+
+## Rerun and generation rules
+
+Experiment output is resumed per suite member:
+
+- Without `--force`, a completed member is reused only when its stored
+  contract belongs to the current fixture generation. Failed, incomplete, or
+  incompatible output is archived and that member is retried.
+- `--force` starts a new generation for the complete selected range. Every
+  selected member is removed before the first training process starts; this
+  prevents a mid-suite failure from mixing newly captured members with
+  untouched output from an older run.
+- After a forced suite stops part way through, rerun the same command without
+  `--force`. Completed members from that generation are skipped and execution
+  continues at the first incomplete member.
+- `--data --force` creates a new fixture generation. Captures tied to an older
+  generation are not finalized or reused, even when their files are complete.
+
+Use `--topology NAME --force` to replace only one topology. Use `--topology
+all --force` only when the whole suite should start over.
