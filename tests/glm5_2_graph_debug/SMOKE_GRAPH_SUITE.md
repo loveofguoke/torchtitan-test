@@ -69,7 +69,7 @@ TASK_QUEUE_ENABLE=0                  # 当前两个 graph profile 均使用 0
 TORCHTITAN_PIPELINE_META_USE_BATCH=0 # PP metadata uses regular P2P
 TORCHTITAN_REGISTER_COMPLEX_DTENSOR_STRATEGY=1
 TORCHTITAN_NPUGRAPH_UNSAFE_OPS=aten._grouped_mm.default,\
-torchtitan_graph_debug.safe_grouped_mm.default  # NPUGraphs
+torchtitanturbo_graph.safe_grouped_mm.default  # NPUGraphs
 TORCHTITAN_NPUGRAPH_SKIP_ALL=1       # 最终 profile：保留 AOT，关闭 replay
 TORCHTITAN_SAFE_EMPTY_GROUPED_MM=1
 TORCHTITAN_SAFE_ZERO_NUMEL_TRITON=1
@@ -108,10 +108,8 @@ NPUGraphs 捕获不支持 CANN 默认环境中的 `TASK_QUEUE_ENABLE=2`。PP8 In
 如工具链版本变化需要复核，可用 `GRAPH_TASK_QUEUE_ENABLE` 覆盖，实际值会进入每次
 调用报告。
 
-`train_npu.py` 会先导入 TorchTitanTurbo，而 Turbo 的通用训练 patch 会把 task queue
-无条件重写为 `2`。因此入口同时传递 `TORCHTITAN_TASK_QUEUE_ENABLE`；NPU bootstrap
-只在该变量显式存在时，于 Turbo patch 完成后恢复请求值。普通训练不设置该变量，
-原有行为不变。
+入口传递 `TORCHTITAN_TASK_QUEUE_ENABLE`；TorchTitanTurbo 的环境初始化现在直接尊重
+该显式值，不会再无条件覆盖为 `2`。普通训练不设置该变量时仍使用原默认值 2。
 
 PyTorch 2.14 的 `PipelineStage` 默认通过 batched P2P 发送序列化的 shape/dtype
 元数据。PP8 首次并行编译时，HCCL 路径收到损坏的 object size，随后表现为

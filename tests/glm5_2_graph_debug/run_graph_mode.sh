@@ -206,7 +206,11 @@ RESOURCE_ERROR_COUNT=$(grep -Eic 'EE1023|Too many streams|resource alloc fail|Fa
 NUMERICAL_ERROR_COUNT=$(grep -Eic 'Loss or gradient norm is not finite|(loss|grad_norm): *-?([0-9]{7,}|nan|inf)' "$RUNTIME_LOG" || true)
 RESULT=FAILED
 if [[ $STATUS -eq 0 ]]; then
-    RESULT=PASSED
+    if [[ "$BACKEND" == npugraphs && "${NPUGRAPH_SKIP_ALL:-0}" == 1 ]]; then
+        RESULT=PASSED_AOT_COMPAT
+    else
+        RESULT=PASSED
+    fi
 fi
 if [[ $STATUS -eq 0 && $NUMERICAL_ERROR_COUNT -gt 0 ]]; then
     RESULT=FAILED_NUMERICS

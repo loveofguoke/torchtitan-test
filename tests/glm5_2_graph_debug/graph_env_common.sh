@@ -112,7 +112,7 @@ graph_env_init() {
         default_fallback_list=aten.sum,_c10d_functional.all_reduce
         default_task_queue=0
     elif [[ "$GRAPH_BACKEND" == npugraphs ]]; then
-        default_unsafe_ops=aten._grouped_mm.default,torchtitan_graph_debug.safe_grouped_mm.default
+        default_unsafe_ops=aten._grouped_mm.default,torchtitanturbo_graph.safe_grouped_mm.default
         default_npugraph_skip_all=1
         # The default compatibility profile skips replay and therefore does
         # not require NPUGraph's asynchronous queue mode.  Queue 0 also avoids

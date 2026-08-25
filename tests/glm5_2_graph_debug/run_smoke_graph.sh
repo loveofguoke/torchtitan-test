@@ -87,7 +87,11 @@ NUMERICAL_ERROR_COUNT=$(grep -Eic 'Loss or gradient norm is not finite|(loss|gra
 
 RESULT=FAILED
 if [[ $STATUS -eq 0 && $NUMERICAL_ERROR_COUNT -eq 0 ]]; then
-    RESULT=PASSED
+    if [[ "$BACKEND" == npugraphs && "${NPUGRAPH_SKIP_ALL:-0}" == 1 ]]; then
+        RESULT=PASSED_AOT_COMPAT
+    else
+        RESULT=PASSED
+    fi
 elif [[ $STATUS -eq 0 ]]; then
     RESULT=FAILED_NUMERICS
     STATUS=86

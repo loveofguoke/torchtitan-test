@@ -196,7 +196,7 @@ export TASK_QUEUE_ENABLE=0
 export TORCHTITAN_TASK_QUEUE_ENABLE=0
 export TORCHTITAN_NPUGRAPH_SKIP_ALL=1
 export TORCHTITAN_NPUGRAPH_UNSAFE_OPS=aten._grouped_mm.default,\
-torchtitan_graph_debug.safe_grouped_mm.default
+torchtitanturbo_graph.safe_grouped_mm.default
 ```
 
 当前 CANN 9.1/torch 2.14/torch_npu 2.14 组合同时存在 grouped-mm capture 失败和 TP

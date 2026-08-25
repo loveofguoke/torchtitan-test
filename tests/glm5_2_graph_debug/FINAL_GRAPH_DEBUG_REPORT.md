@@ -97,7 +97,7 @@ NPUGraphs 兼容 profile 默认：
 TASK_QUEUE_ENABLE=0
 TORCHTITAN_NPUGRAPH_SKIP_ALL=1
 TORCHTITAN_NPUGRAPH_UNSAFE_OPS=aten._grouped_mm.default,\
-torchtitan_graph_debug.safe_grouped_mm.default
+torchtitanturbo_graph.safe_grouped_mm.default
 ```
 
 若要继续验证原生 NPUGraph capture，可显式设置：

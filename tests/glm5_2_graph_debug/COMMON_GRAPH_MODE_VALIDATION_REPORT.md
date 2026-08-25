@@ -57,7 +57,7 @@ tests/glm5_2_graph_debug/run_graph_mode.sh npugraphs env
 ```text
 ASCEND_HOME_PATH=/usr/local/Ascend/cann-9.1.0
 TASK_QUEUE_ENABLE=1
-TORCHTITAN_NPUGRAPH_UNSAFE_OPS=aten._grouped_mm.default,torchtitan_graph_debug.safe_grouped_mm.default
+TORCHTITAN_NPUGRAPH_UNSAFE_OPS=aten._grouped_mm.default,torchtitanturbo_graph.safe_grouped_mm.default
 TORCHTITAN_SAFE_EMPTY_GROUPED_MM=1
 TORCHTITAN_SAFE_ZERO_NUMEL_TRITON=1
 ```

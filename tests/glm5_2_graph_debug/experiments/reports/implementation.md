@@ -91,16 +91,20 @@ graph_debug_runs/launcher-<target>-<backend>-<stamp>-<pid>/
 - 不接管 per-topology 目录；manifest、trainer output 和 runtime log 仍由 smoke 管理。
 - 额外生成 invocation report，记录环境、命令、started/passed/skipped 数量以及错误分类。
 
-## `train_npu.py`
+## TorchTitanTurbo `tools/graph_compat.py`
 
-文件：仓库根目录 `train_npu.py`。
+当前实现文件：`TorchTitanTurbo/torchtitanturbo/tools/graph_compat.py`。
+
+首次服务器调试时这些逻辑位于仓库根目录 `train_npu.py`，便于快速验证；确认问题
+边界后已迁入 NPU 适配仓库。现在 `train_npu.py` 仅导入 TorchTitanTurbo，并处理
+实验级 process-group timeout。
 
 它仍是 TorchTitan NPU bootstrap，但新增的行为全部受 `TORCHTITAN_*` 环境变量控制。
 
 ### task queue 恢复
 
-校验 `TORCHTITAN_TASK_QUEUE_ENABLE=0|1|2`。导入 TorchTitanTurbo 后重新设置
-`TASK_QUEUE_ENABLE`，避免 Turbo 覆盖 launcher profile。
+Turbo 初始化直接尊重 `TORCHTITAN_TASK_QUEUE_ENABLE=0|1|2`，不再先覆盖为 2 再由
+test bootstrap 恢复。
 
 ### process-group timeout
 

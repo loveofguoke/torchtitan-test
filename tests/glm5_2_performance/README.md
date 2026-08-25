@@ -20,6 +20,26 @@ Those reports follow the three-stage Ascend
 Profiler → `msprof-analyze` → MindStudio Insight workflow and do not redefine
 the acceptance topology matrix.
 
+## Documentation map
+
+This README is the primary performance-experiment entry point. The complete
+workflow is split by responsibility as follows:
+
+| Layer | Document or implementation | Purpose |
+|---|---|---|
+| Experiment interface | This README | Commands, parameters, presets, output layout, report contents, and interpretation rules. |
+| Evidence layout | [exploration index](explorations/index.md) and [report index](explorations/reports/index.md) | Immutable run evidence and navigation by card count/topology. |
+| Current analysis | [cross-topology summary](explorations/reports/summary.md) and [failed attempts](explorations/reports/failures.md) | Measured bottlenecks, hardware caveats, optimization backlog, and failed experiments. |
+| Ascend collection implementation | [TorchTitanTurbo profiler document](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/torchtitanturbo/tools/PROFILER.md), [profiler patch](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/torchtitanturbo/tools/profiler.py), and [patch inventory](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/PATCHES.md) | Translation of TorchTitan's lifecycle to `torch_npu.profiler`, NPU-only controls, and memory snapshots. |
+| Device-neutral framework | `torchtitan/tools/profiler.py` in the source-installed TorchTitan checkout | Profiler schedule, lifecycle, step calls, and public configuration. |
+
+The test repository is authoritative for commands, measurements, analysis,
+reports, and optimization acceptance. Turbo is authoritative only for the
+Ascend collection implementation. TorchTitan remains the device-neutral owner
+of the profiler lifecycle. A proposed optimization in an exploration report
+is not an implemented optimization unless its target repository, switch,
+tests, and A/B evidence are linked explicitly.
+
 The workflow is deliberately top-down:
 
 1. `overview`: Level0 timing with low collection overhead.
