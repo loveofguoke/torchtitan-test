@@ -111,7 +111,7 @@ fixture once with `--data --force`, then rerun reference and candidate captures.
 
 ## Command-line parameters
 
-The maintained `migration_benchmark.py` and
+The maintained `migration_benchmark.py`, `full_dsa_migration_benchmark.py`, and
 `self_consistency_benchmark.py` entry points share this suite CLI.
 
 | Parameter | Purpose and choices | Default |
@@ -297,6 +297,45 @@ pairs in the suite.
 Use `--precision fp32`, `--precision bf16`, or `--precision full-bf16` to
 override both endpoints consistently. `bf16` means FP32 master training with
 BF16 mixed-precision parameters; `full-bf16` sets the full training dtype.
+
+## Full DSA migration workflow
+
+`full_dsa_migration_benchmark.py` is independent from the established eager
+migration baseline. It selects `glm5_full_dsa_debugmodel`, preserves the same
+5000-step/token-plan/checkpoint/error-standard contract, and deliberately
+excludes PP topologies because cross-stage top-k transport is not implemented.
+For this entry point, `--topology all` means every registered non-PP topology.
+
+Generate the shared fixture on either server, then capture all NPU candidates:
+
+```bash
+unset CUDA_VISIBLE_DEVICES
+export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+python tests/glm5_2_precision/full_dsa_migration_benchmark.py \
+  --data --data-device npu --topology all
+python tests/glm5_2_precision/full_dsa_migration_benchmark.py \
+  --capture candidate --topology all
+```
+
+After synchronizing the fixture, capture the matching GPU references:
+
+```bash
+unset ASCEND_RT_VISIBLE_DEVICES
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+python tests/glm5_2_precision/full_dsa_migration_benchmark.py \
+  --capture reference --topology all
+```
+
+After synchronizing the portable artifacts, compare on CPU:
+
+```bash
+python tests/glm5_2_precision/full_dsa_migration_benchmark.py \
+  --compare --topology all --require-all
+```
+
+Replace `all` with `single`, one distributed topology, or use
+`--topologies single,fsdp8,tp8` for a subset. Completed captures are reused and
+incomplete captures are retried under the normal precision workflow rules.
 
 ## Distributed self-consistency
 

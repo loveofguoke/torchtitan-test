@@ -62,6 +62,42 @@ python tests/glm5_2_smoke/train_smoke.py \
   --topologies ddp8,fsdp8,tp8
 ```
 
+On the dedicated full-DSA branches, cross-layer index sharing is selected by
+the new model config. It does not replace the default smoke configuration:
+
+```bash
+python tests/glm5_2_smoke/train_smoke.py \
+  --device npu --topology single \
+  --config glm5_full_dsa_debugmodel
+python tests/glm5_2_smoke/train_smoke.py \
+  --device npu --topologies ddp8,fsdp8,tp8,ep8 \
+  --config glm5_full_dsa_debugmodel
+```
+
+Do not use `--topology all` with an index-sharing debug flavor: the common
+suite includes PP layouts whose stage boundaries begin on shared layers. GLM-5
+does not move top-k tensors across PP stages, matching the released training
+implementation, so every PP stage must start on a full-index layer. The default
+`glm5_debugmodel` retains an indexer on every layer and continues to support the
+complete smoke topology suite.
+
+The Ascend SparseMLA kernel is a second, independent opt-in. The reduced debug
+shape may be rejected by the released operator, so validate its production
+geometry with the operator probe below before passing
+`torchtitanturbo.models.glm5.ops.sparse_mla.npu_sparse_mla` through
+`--override-imports` to a compatible production configuration.
+
+See [FULL_DSA.md](FULL_DSA.md) for the three-repository implementation and
+test correspondence, including the HF-compatible no-sharing mode.
+
+Use the same-device production-geometry operator probe before enabling an
+optimized operator in a training run:
+
+```bash
+python tests/glm5_2_smoke/full_dsa_operator_probe.py --device gpu
+python tests/glm5_2_smoke/full_dsa_operator_probe.py --device npu
+```
+
 ## NPU graph-mode smoke tests
 
 The same topology selector can add the shared graph execution feature. Compiled
@@ -121,6 +157,7 @@ replace successful output as well.
 | `--seed` | TorchTitan deterministic seed. | `61` |
 | `--module` | TorchTitan model module passed to `run_train.sh`. | `glm5` |
 | `--config` | TorchTitan registered model/training config. | `glm5_debugmodel` |
+| `--override-imports` | Comma-separated explicit TorchTitan component overrides. No override is loaded unless requested. | unset |
 | `--graph` | Execution mode: `eager`, `inductor`, or `npugraphs`. Compiled choices are NPU-only. | `eager` |
 | `--compile-loss` | Compile both `model` and `loss`; without it only `model` is compiled. NPUGraph currently rejects this option. | disabled |
 | `--compiler-diagnostics` | Set the shared compiler diagnostic environment for graph breaks, recompiles, and dynamic-shape events. | disabled |

@@ -970,7 +970,8 @@ def _annotate_known_compute_dtypes(pair: ParityModelPair) -> None:
         hf_attention._parity_compute_dtype = "mixed(fp32_softmax)"
         titan_attention._parity_compute_dtype = "mixed(fp32_softmax)"
         hf_attention.indexer._parity_compute_dtype = "mixed(fp32_scores)"
-        titan_attention.indexer._parity_compute_dtype = "mixed(fp32_scores)"
+        if titan_attention.indexer is not None:
+            titan_attention.indexer._parity_compute_dtype = "mixed(fp32_scores)"
         titan_layer = pair.titan_layer(layer_index)
         if getattr(titan_layer, "moe_enabled", False):
             titan_layer.moe.router.gate._parity_compute_dtype = torch.float32
@@ -994,7 +995,8 @@ def _annotate_endpoint_compute_dtypes(
         return
     for layer in model.layers.values():
         layer.attention._parity_compute_dtype = "mixed(fp32_softmax)"
-        layer.attention.indexer._parity_compute_dtype = "mixed(fp32_scores)"
+        if layer.attention.indexer is not None:
+            layer.attention.indexer._parity_compute_dtype = "mixed(fp32_scores)"
         if getattr(layer, "moe_enabled", False):
             layer.moe.router.gate._parity_compute_dtype = torch.float32
             experts = layer.moe.routed_experts.inner_experts
@@ -3371,6 +3373,13 @@ def _tensor_leaves(output: Any, prefix: str = "") -> list[tuple[str, torch.Tenso
     return []
 
 
+def _traceable_module_output(module: torch.nn.Module, output: Any) -> Any:
+    """Exclude GLM-5's internal cross-layer index carrier from tensor traces."""
+    if module.__class__.__name__ in {"Glm5Attention", "Glm5TransformerBlock"}:
+        return _first_tensor(output)
+    return output
+
+
 def _dtype_name(dtype: torch.dtype) -> str:
     return str(dtype).removeprefix("torch.")
 
@@ -3437,9 +3446,12 @@ class LayerTrace:
             handles.append(hf_layer.self_attn.indexer.register_forward_hook(
                 lambda _m, _i, o, layer=layer_index: save(trace.indexer_hf, layer, o)
             ))
-            handles.append(titan_layer.attention.indexer.register_forward_hook(
-                lambda _m, _i, o, layer=layer_index: save(trace.indexer_titan, layer, o)
-            ))
+            if titan_layer.attention.indexer is not None:
+                handles.append(titan_layer.attention.indexer.register_forward_hook(
+                    lambda _m, _i, o, layer=layer_index: save(
+                        trace.indexer_titan, layer, o
+                    )
+                ))
             if getattr(titan_layer, "moe_enabled", False):
                 def save_hf_router(
                     _module, inputs, output, *, layer=layer_index
@@ -3526,11 +3538,11 @@ class EndpointTrace:
                     *,
                     label=label,
                     layer_index=layer_index,
-                    implementation=endpoint.implementation,
                 ) -> None:
                     record_order("decoder_block", layer_index, label=label)
-                    value = output[0] if implementation == "hf" else output
-                    trace.blocks[label][layer_index] = _first_tensor(value).detach().cpu()
+                    trace.blocks[label][layer_index] = (
+                        _first_tensor(output).detach().cpu()
+                    )
 
                 def capture_indexer(
                     _module, _inputs, output, *, label=label, layer_index=layer_index
@@ -3544,8 +3556,9 @@ class EndpointTrace:
                     if endpoint.implementation == "hf"
                     else layer.attention.indexer
                 )
-                handles.append(indexer.register_forward_hook(capture_indexer))
-                if endpoint.implementation == "titan":
+                if indexer is not None:
+                    handles.append(indexer.register_forward_hook(capture_indexer))
+                if endpoint.implementation == "titan" and indexer is not None:
                     def capture_indexer_scores(
                         module,
                         inputs,
@@ -3704,7 +3717,8 @@ class RecursiveModuleTrace:
                         label=label,
                         path=path,
                     ) -> None:
-                        for suffix, value in _tensor_leaves(output):
+                        trace_output = _traceable_module_output(_module, output)
+                        for suffix, value in _tensor_leaves(trace_output):
                             output_path = path + suffix
                             if output_path not in trace.execution_orders[label]:
                                 trace.execution_orders[label][output_path] = len(
@@ -3747,7 +3761,8 @@ class RecursiveModuleTrace:
                         label=label,
                         path=path,
                     ) -> None:
-                        for branch, value in _tensor_leaves(output):
+                        trace_output = _traceable_module_output(_module, output)
+                        for branch, value in _tensor_leaves(trace_output):
                             output_path = path + branch
                             if output_path not in trace.execution_orders[label]:
                                 trace.execution_orders[label][output_path] = len(
@@ -4062,7 +4077,14 @@ class ComponentParityMixin:
                 raise ValueError(f"layer {layer_index} does not contain an MoE module")
             return hf_layer.mlp, titan_layer.moe
         if component in paths:
-            return paths[component]
+            hf_module, titan_module = paths[component]
+            if titan_module is None:
+                raise ValueError(
+                    f"layer {layer_index} reuses DSA indices from layer "
+                    f"{titan_layer.attention.index_source_layer} and does not "
+                    f"contain an independent {component} module"
+                )
+            return hf_module, titan_module
         return self.get_component(layer_index, component)
 
     def compare_model_component_trace(
@@ -4259,6 +4281,8 @@ class ComponentParityMixin:
         for layer_index in layer_indices:
             hf_attention = self.pair.hf_layer(layer_index).self_attn
             titan_attention = self.pair.titan_layer(layer_index).attention
+            if titan_attention.indexer is None:
+                continue
             hidden_states = self._normalized(layer_index)
             titan_hidden, titan_positions, titan_mask = _titan_token_first_inputs(
                 hidden_states, self.batch.positions
@@ -4352,7 +4376,7 @@ class ComponentParityMixin:
             )
             recorder.tensor(
                 scope="component", component="attention", layer=layer_index,
-                actual=titan_output, expected=hf_output,
+                actual=_first_tensor(titan_output), expected=hf_output,
                 module_path=self._module_path(layer_index, "attention"),
                 parent_path=f"layers.{layer_index}",
                 level=3,
@@ -4378,7 +4402,7 @@ class ComponentParityMixin:
             )
             recorder.tensor(
                 scope="composition", component="decoder_block", layer=layer_index,
-                actual=titan_output, expected=hf_output,
+                actual=_first_tensor(titan_output), expected=hf_output,
                 module_path=self._module_path(layer_index, "block"),
                 parent_path="layers",
                 level=2,
@@ -5672,6 +5696,8 @@ class TestGlm5Parity(
                         if endpoint.implementation == "hf"
                         else layer.attention
                     )
+                    if attention.indexer is None:
+                        continue
                     q_residual = (
                         attention.q_a_layernorm(attention.q_a_proj(normalized))
                         if endpoint.implementation == "hf"
@@ -5798,7 +5824,7 @@ class TestGlm5Parity(
                     self._capture_add(
                         key=f"{case.section_id}/exact/{parent_path}.attention",
                         section_id=case.section_id,
-                        tensor=output,
+                        tensor=_first_tensor(output),
                         scope="component",
                         component="attention",
                         layer=layer_index,
@@ -5826,7 +5852,7 @@ class TestGlm5Parity(
                     self._capture_add(
                         key=f"{case.section_id}/exact/{parent_path}",
                         section_id=case.section_id,
-                        tensor=output,
+                        tensor=_first_tensor(output),
                         scope="composition",
                         component="decoder_block",
                         layer=layer_index,

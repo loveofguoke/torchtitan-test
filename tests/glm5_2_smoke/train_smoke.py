@@ -75,6 +75,7 @@ def _contract(
     seed: int,
     module: str,
     config: str,
+    override_imports: str | None = None,
     graph: GraphFeatureConfig = GraphFeatureConfig(),
 ) -> dict[str, Any]:
     topology_contract = asdict(topology)
@@ -99,6 +100,8 @@ def _contract(
             "components": list(graph.components),
             "diagnostics": graph.diagnostics,
         }
+    if override_imports:
+        contract["override_imports"] = override_imports
     return contract
 
 
@@ -140,6 +143,7 @@ def _run_topology(
     seed: int,
     module: str,
     config: str,
+    override_imports: str | None = None,
     graph: GraphFeatureConfig = GraphFeatureConfig(),
     force: bool,
 ) -> Path:
@@ -158,6 +162,7 @@ def _run_topology(
         seed=seed,
         module=module,
         config=config,
+        override_imports=override_imports,
         graph=graph,
     )
     if not force and _completed(run_directory, contract):
@@ -187,6 +192,8 @@ def _run_topology(
         *topology.command_args(),
         *execution.command_args(),
     ]
+    if override_imports:
+        command.append(f"--override.imports={override_imports}")
     environment = os.environ.copy()
     environment.update(
         {
@@ -242,6 +249,10 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=61)
     parser.add_argument("--module", default="glm5")
     parser.add_argument("--config", default="glm5_debugmodel")
+    parser.add_argument(
+        "--override-imports",
+        help="comma-separated explicit TorchTitan component overrides",
+    )
     parser.add_argument(
         "--graph",
         choices=("eager", "inductor", "npugraphs"),
@@ -299,6 +310,12 @@ def main() -> int:
         suite_name += f"-{graph.mode}-{'-'.join(graph.components)}"
         if graph.diagnostics:
             suite_name += "-diag"
+    if args.override_imports:
+        override_names = "-".join(
+            target.rsplit(".", 1)[-1]
+            for target in args.override_imports.split(",")
+        )
+        suite_name += f"-override-{override_names}"
     root = _root()
     suite_root = root / "smoke_runs" / suite_name
     for name in selected:
@@ -315,6 +332,7 @@ def main() -> int:
             seed=args.seed,
             module=args.module,
             config=args.config,
+            override_imports=args.override_imports,
             graph=graph,
             force=args.force,
         )

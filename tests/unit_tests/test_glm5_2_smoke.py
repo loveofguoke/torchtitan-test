@@ -99,6 +99,39 @@ def test_npu_smoke_can_compile_each_topology(
     assert environments[0]["TORCH_LOGS"] == "graph_breaks,recompiles,dynamic"
 
 
+def test_smoke_passes_explicit_component_override(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands: list[list[str]] = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("tests.glm5_2_smoke.train_smoke.subprocess.run", run)
+    override = "torchtitanturbo.models.glm5.ops.sparse_mla.npu_sparse_mla"
+    output = _run_topology(
+        root=tmp_path,
+        suite_root=tmp_path / "smoke_runs",
+        device="npu",
+        visible_devices="0",
+        topology=ParallelTopology("single", 1),
+        steps=1,
+        local_batch_size=1,
+        global_batch_size=1,
+        sequence_length=8,
+        seed=61,
+        module="glm5",
+        config="glm5_full_dsa_debugmodel",
+        override_imports=override,
+        force=False,
+    )
+
+    assert f"--override.imports={override}" in commands[0]
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["contract"]["override_imports"] == override
+
+
 def test_gpu_smoke_reserves_compiled_graph_interface(tmp_path) -> None:
     with pytest.raises(NotImplementedError, match="only NPU endpoints"):
         _run_topology(

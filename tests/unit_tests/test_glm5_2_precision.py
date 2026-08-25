@@ -861,6 +861,28 @@ def test_migration_topologies_share_one_fixture_identity() -> None:
     assert fsdp.reference.topology == fsdp.candidate.topology
 
 
+def test_full_dsa_migration_uses_shared_model_and_excludes_pp() -> None:
+    from tests.glm5_2_precision.full_dsa_migration_benchmark import (
+        CONFIG,
+        FULL_DSA_TOPOLOGIES,
+        TOPOLOGIES,
+    )
+
+    assert CONFIG.training.config == "glm5_full_dsa_debugmodel"
+    assert CONFIG.training.steps == 5000
+    assert CONFIG.storage_base_name.startswith(
+        "migration-cuda-npu-single-full-dsa-bf16-"
+    )
+    assert FULL_DSA_TOPOLOGIES[0] == "single"
+    assert "tp8" in FULL_DSA_TOPOLOGIES
+    assert "cp8" in FULL_DSA_TOPOLOGIES
+    assert "ep8" in FULL_DSA_TOPOLOGIES
+    assert all(
+        TOPOLOGIES[name].pipeline_parallel_degree == 1
+        for name in FULL_DSA_TOPOLOGIES
+    )
+
+
 def test_report_standard_does_not_change_capture_storage_name() -> None:
     topology = ParallelTopology("single", 1)
     config = FormalExperimentConfig(

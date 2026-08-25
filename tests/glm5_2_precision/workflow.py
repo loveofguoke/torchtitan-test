@@ -209,6 +209,7 @@ class FormalExperimentConfig:
     fixture_name: str | None = None
     allow_endpoint_argument_difference: bool = False
     storage_name_override: str | None = None
+    storage_tag: str | None = None
     topology_subdirectory: bool = False
     legacy_storage_names: tuple[str, ...] = ()
 
@@ -249,6 +250,8 @@ class FormalExperimentConfig:
                 experiment += f"-{self.reference.topology.slug}"
         else:
             experiment = f"self-{self.reference.device_type}"
+        if self.storage_tag:
+            experiment += f"-{_slug(self.storage_tag)}"
         checkpoint = (
             "random" if self.training.checkpoint_kind == "random_seed" else "converged"
         )
