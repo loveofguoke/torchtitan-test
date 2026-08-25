@@ -38,3 +38,7 @@ use the same sharing schedule.
 Every invocation must preserve its command, environment, source revisions,
 runtime log, manifest, and failure traceback. A failed run directory is an
 artifact to diagnose, not evidence that the next topology should be skipped.
+
+Use `--full-dsa` and `--full-dsa-kernel` instead of manually coupling model and
+operator choices. See `tests/glm5_2_performance/OPTIMIZATION.md` for the formal
+kernel, communication, memory, and recomputation A/B matrix.

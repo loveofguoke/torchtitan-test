@@ -4,6 +4,11 @@ This directory is independent from `tests/glm5_2_precision`. It does not
 replace the precision data loader, checkpoint, metrics, or PASS/FAIL logic.
 Profiling is enabled only for commands launched by this directory.
 
+For opt-in Full DSA compute, communication, memory, and recomputation A/B
+profiles, see [OPTIMIZATION.md](OPTIMIZATION.md).
+For a Chinese explanation of the implemented profiles, metrics, commands, and
+interview concepts, see [性能优化实验与面试速查.md](性能优化实验与面试速查.md).
+
 Current executable support is Ascend NPU only. The CLI retains `--device cuda`
 as a reserved interface, but raises `NotImplementedError` until the CUDA
 `torch.profiler` activities, parsing, and report contract are defined. Use the
@@ -16,6 +21,10 @@ contract. See the [exploration index](explorations/index.md), the
 [1/2/4/8-card report index](explorations/reports/index.md). Each topology owns
 an `experiment.md`, and each immutable run owns a readable `readme.md` beside
 its machine-readable evidence.
+The evidence-backed candidate work is decomposed in
+[explorations/optimization_backlog.md](explorations/optimization_backlog.md);
+none of those tasks becomes a benchmark option until it passes its promotion
+gates.
 Those reports follow the three-stage Ascend
 Profiler → `msprof-analyze` → MindStudio Insight workflow and do not redefine
 the acceptance topology matrix.
@@ -67,7 +76,7 @@ sequence length 32.
 | `--cluster` | Run `msprof-analyze cluster -m all`; intended for multi-rank captures. | disabled |
 | `--compare-baseline` | Baseline profiler path passed to `msprof-analyze compare`. | unset |
 | `--extra-train-arg` | Append one raw TorchTitan argument; repeat the flag for multiple arguments. | none |
-| `--force` | Remove and recapture completed output. Incomplete output is archived and retried without it. | disabled |
+| `--force` | Start a new generation for the selected topology range. All selected captures are removed before execution; rerun without it after interruption to resume. | disabled |
 
 The fixed seed is 61, parameter dtype is BF16, reduction/training master dtype
 is FP32, and deterministic algorithms are disabled in the profiler benchmark

@@ -883,6 +883,23 @@ def test_full_dsa_migration_uses_shared_model_and_excludes_pp() -> None:
     )
 
 
+def test_full_dsa_operator_variants_reuse_reference_fixture() -> None:
+    from tests.glm5_2_precision.full_dsa_migration_benchmark import (
+        CONFIG,
+        full_dsa_variant_config,
+    )
+
+    optimized = full_dsa_variant_config(
+        reference_kernel="triton",
+        candidate_kernel="npu-sparse",
+    )
+
+    assert optimized.fixture_storage_name == CONFIG.fixture_storage_name
+    assert optimized.storage_name != CONFIG.storage_name
+    assert "triton_sparse_mla" in optimized.reference.extra_args[-1]
+    assert "npu_sparse_mla" in optimized.candidate.extra_args[-1]
+
+
 def test_report_standard_does_not_change_capture_storage_name() -> None:
     topology = ParallelTopology("single", 1)
     config = FormalExperimentConfig(

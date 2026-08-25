@@ -14,6 +14,13 @@ from pathlib import Path
 from typing import Sequence
 
 from tests.glm5_2_common.execution import compose_execution
+from tests.glm5_2_common.full_dsa import (
+    FULL_DSA_CONFIG,
+    FULL_DSA_KERNELS,
+    REFERENCE_KERNEL,
+    full_dsa_override_targets,
+    merge_override_argument,
+)
 from tests.glm5_2_common.topology import ParallelTopology, select_topologies
 from tests.glm5_2_graph.config import GraphFeatureConfig
 from tests.glm5_2_performance.analysis import build_analysis, render_html_report
@@ -69,6 +76,8 @@ def _combination_storage_base(
         if config.kind == "migration"
         else f"self-{config.reference.device_type}"
     )
+    if config.storage_tag:
+        experiment += f"-{config.storage_tag}"
     checkpoint = (
         "random" if config.training.checkpoint_kind == "random_seed" else "converged"
     )
@@ -353,6 +362,21 @@ def run_combination_cli(
     )
     parser.add_argument("--repeat", type=int)
     parser.add_argument("--precision", choices=("fp32", "bf16", "full-bf16"))
+    parser.add_argument(
+        "--full-dsa",
+        action="store_true",
+        help="run the Full DSA model as an orthogonal experiment factor",
+    )
+    parser.add_argument(
+        "--reference-full-dsa-kernel",
+        choices=FULL_DSA_KERNELS,
+        default=REFERENCE_KERNEL,
+    )
+    parser.add_argument(
+        "--candidate-full-dsa-kernel",
+        choices=FULL_DSA_KERNELS,
+        default=REFERENCE_KERNEL,
+    )
     parser.add_argument("--objectives", default=default_objectives)
     graph_choices = ("eager", "inductor", "npugraphs")
     parser.add_argument(
@@ -375,18 +399,68 @@ def run_combination_cli(
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--require-all", action="store_true")
     args = parser.parse_args()
-    selected = select_topologies(
-        available=topology_names,
-        topology=args.topology,
-        topologies=args.topologies,
-        default=(
-            tuple(topology_names)
-            if default_topology == "all"
-            else (default_topology,)
-        ),
+    if not args.full_dsa and (
+        args.reference_full_dsa_kernel != REFERENCE_KERNEL
+        or args.candidate_full_dsa_kernel != REFERENCE_KERNEL
+    ):
+        parser.error("Full DSA kernel selection requires --full-dsa")
+    if args.full_dsa:
+        training = replace(base.training, config=FULL_DSA_CONFIG)
+        fixture_base = replace(base, training=training, storage_tag="full-dsa")
+        try:
+            reference_targets = full_dsa_override_targets(
+                device_type=base.reference.device_type,
+                kernel=args.reference_full_dsa_kernel,
+            )
+            candidate_targets = full_dsa_override_targets(
+                device_type=base.candidate.device_type,
+                kernel=args.candidate_full_dsa_kernel,
+            )
+        except ValueError as error:
+            parser.error(str(error))
+        base = replace(
+            fixture_base,
+            reference=replace(
+                base.reference,
+                extra_args=merge_override_argument(
+                    base.reference.extra_args,
+                    reference_targets,
+                ),
+            ),
+            candidate=replace(
+                base.candidate,
+                extra_args=merge_override_argument(
+                    base.candidate.extra_args,
+                    candidate_targets,
+                ),
+            ),
+            storage_tag=(
+                "full-dsa-"
+                f"{args.reference_full_dsa_kernel}-vs-"
+                f"{args.candidate_full_dsa_kernel}"
+            ),
+            fixture_name=fixture_base.fixture_storage_name,
+        )
+    available_topologies = tuple(
+        name
+        for name in topology_names
+        if not args.full_dsa or topologies[name].pipeline_parallel_degree == 1
     )
+    try:
+        selected = select_topologies(
+            available=available_topologies,
+            topology=args.topology,
+            topologies=args.topologies,
+            default=(
+                available_topologies
+                if default_topology == "all"
+                else (default_topology,)
+            ),
+        )
+    except ValueError as error:
+        parser.error(str(error))
     if args.list_topologies:
-        for name in topology_names:
+        for name in available_topologies:
             print(f"{name}: {asdict(topologies[name])}")
         return
     objectives = frozenset(

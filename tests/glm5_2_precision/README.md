@@ -126,7 +126,7 @@ The maintained `migration_benchmark.py`, `full_dsa_migration_benchmark.py`, and
 | `--repeat` | Capture only repeat `N`; omit it for every configured repeat. | all configured repeats (`2`) |
 | `--precision` | `fp32`, `bf16`, or `full-bf16`. | `bf16` from the experiment config |
 | `--data-device` | Fixture backend override: `cuda` or `npu`. Normally inferred from exactly one exported visibility variable. | inferred |
-| `--force` | Replace a valid existing fixture/capture. Without it, completed output is reused and incomplete output is retried. | disabled |
+| `--force` | Start a new generation for the selected fixture/capture range. All selected members are removed before execution; rerun without it after interruption to resume only that generation. | disabled |
 | `--require-all` | Require every selected topology and repeat for a final suite decision. Without it, missing members are reported as `NOT RUN`. | disabled |
 
 Both maintained experiments define 5000 steps, local batch 8, global batch 64,
@@ -336,6 +336,19 @@ python tests/glm5_2_precision/full_dsa_migration_benchmark.py \
 Replace `all` with `single`, one distributed topology, or use
 `--topologies single,fsdp8,tp8` for a subset. Completed captures are reused and
 incomplete captures are retried under the normal precision workflow rules.
+
+Operator implementation is an independent factor. The defaults keep both
+endpoints on the readable reference. To compare CUDA Triton with the same
+kernel source compiled by Triton-Ascend, append the same flags to data, both
+captures, and compare:
+
+```bash
+--reference-kernel triton --candidate-kernel triton
+```
+
+The optimized captures have distinct names but reuse the reference Full DSA
+fixture because the checkpoint and token plan are unchanged. See
+`tests/glm5_2_performance/OPTIMIZATION.md` for the complete A/B matrix.
 
 ## Distributed self-consistency
 

@@ -4,11 +4,17 @@
 
 """GPU-to-NPU formal precision benchmark for the Full DSA reference path."""
 
+import argparse
+from dataclasses import replace
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from tests.glm5_2_common.full_dsa import (  # noqa: E402
+    full_dsa_override_targets,
+    merge_override_argument,
+)
 from tests.glm5_2_common.topology import DISTRIBUTED_TOPOLOGY_NAMES  # noqa: E402
 from tests.glm5_2_precision.standards import (  # noqa: E402
     AnyOfErrorLimit,
@@ -97,9 +103,73 @@ CONFIG = FormalExperimentConfig(
 )
 
 
-if __name__ == "__main__":
-    run_topology_suite_cli(
+def full_dsa_variant_config(
+    *,
+    reference_kernel: str = "reference",
+    candidate_kernel: str = "reference",
+) -> FormalExperimentConfig:
+    """Select endpoint implementations while reusing the reference fixture."""
+
+    if reference_kernel == "reference" and candidate_kernel == "reference":
+        return CONFIG
+    reference = replace(
+        CONFIG.reference,
+        name=f"gpu-{reference_kernel}",
+        extra_args=merge_override_argument(
+            CONFIG.reference.extra_args,
+            full_dsa_override_targets(
+                device_type="cuda",
+                kernel=reference_kernel,
+            ),
+        ),
+    )
+    candidate = replace(
+        CONFIG.candidate,
+        name=f"npu-{candidate_kernel}",
+        extra_args=merge_override_argument(
+            CONFIG.candidate.extra_args,
+            full_dsa_override_targets(
+                device_type="npu",
+                kernel=candidate_kernel,
+            ),
+        ),
+    )
+    return replace(
         CONFIG,
+        reference=reference,
+        candidate=candidate,
+        storage_tag=f"full-dsa-{reference_kernel}-vs-{candidate_kernel}",
+        fixture_name=CONFIG.fixture_storage_name,
+    )
+
+
+def _parse_variant(argv: list[str]) -> tuple[FormalExperimentConfig, list[str]]:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument(
+        "--reference-kernel",
+        choices=("reference", "triton"),
+        default="reference",
+    )
+    parser.add_argument(
+        "--candidate-kernel",
+        choices=("reference", "triton", "npu-sparse"),
+        default="reference",
+    )
+    arguments, remaining = parser.parse_known_args(argv)
+    return (
+        full_dsa_variant_config(
+            reference_kernel=arguments.reference_kernel,
+            candidate_kernel=arguments.candidate_kernel,
+        ),
+        remaining,
+    )
+
+
+if __name__ == "__main__":
+    effective_config, forwarded_arguments = _parse_variant(sys.argv[1:])
+    sys.argv = [sys.argv[0], *forwarded_arguments]
+    run_topology_suite_cli(
+        effective_config,
         __file__,
         topologies=TOPOLOGIES,
         topology_names=FULL_DSA_TOPOLOGIES,

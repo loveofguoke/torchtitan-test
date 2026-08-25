@@ -63,29 +63,46 @@ python tests/glm5_2_smoke/train_smoke.py \
 ```
 
 On the dedicated full-DSA branches, cross-layer index sharing is selected by
-the new model config. It does not replace the default smoke configuration:
+an explicit experiment flag. It does not replace the default smoke
+configuration:
 
 ```bash
 python tests/glm5_2_smoke/train_smoke.py \
-  --device npu --topology single \
-  --config glm5_full_dsa_debugmodel
+  --device npu --topology single --full-dsa
 python tests/glm5_2_smoke/train_smoke.py \
   --device npu --topologies ddp8,fsdp8,tp8,ep8 \
-  --config glm5_full_dsa_debugmodel
+  --full-dsa
+python tests/glm5_2_smoke/train_smoke.py \
+  --device npu --topology all --full-dsa
 ```
 
-Do not use `--topology all` with an index-sharing debug flavor: the common
-suite includes PP layouts whose stage boundaries begin on shared layers. GLM-5
-does not move top-k tensors across PP stages, matching the released training
-implementation, so every PP stage must start on a full-index layer. The default
-`glm5_debugmodel` retains an indexer on every layer and continues to support the
-complete smoke topology suite.
+For Full DSA, `--topology all` automatically selects every supported non-PP
+layout. PP layouts are omitted because GLM-5 does not move shared top-k tensors
+across pipeline-stage boundaries; an explicit Full DSA PP selection is rejected.
+The default `glm5_debugmodel` retains an indexer on every layer and continues to
+support the complete smoke topology suite, including PP.
 
 The Ascend SparseMLA kernel is a second, independent opt-in. The reduced debug
 shape may be rejected by the released operator, so validate its production
 geometry with the operator probe below before passing
 `torchtitanturbo.models.glm5.ops.sparse_mla.npu_sparse_mla` through
 `--override-imports` to a compatible production configuration.
+
+The equivalent explicit selector is:
+
+```bash
+# reference, auto, triton, or npu-sparse
+python tests/glm5_2_smoke/train_smoke.py \
+  --device npu --topology single --full-dsa \
+  --full-dsa-kernel auto
+```
+
+`auto` maps GPU to CUDA Triton and NPU to Triton-Ascend indexer/SparseMLA.
+`npu-sparse` selects the Ascend-native SparseMLA while retaining the reference
+indexer. Unregistered `ops_candidate` prototypes are intentionally not exposed
+as smoke options. Repeat
+`--extra-train-arg` to test an isolated TorchTitan tuning option; these values
+are included in the manifest and run identity.
 
 See [FULL_DSA.md](FULL_DSA.md) for the three-repository implementation and
 test correspondence, including the HF-compatible no-sharing mode.
@@ -94,8 +111,12 @@ Use the same-device production-geometry operator probe before enabling an
 optimized operator in a training run:
 
 ```bash
-python tests/glm5_2_smoke/full_dsa_operator_probe.py --device gpu
-python tests/glm5_2_smoke/full_dsa_operator_probe.py --device npu
+python tests/glm5_2_smoke/full_dsa_operator_probe.py \
+  --device gpu --candidate triton
+python tests/glm5_2_smoke/full_dsa_operator_probe.py \
+  --device npu --candidate triton
+python tests/glm5_2_smoke/full_dsa_operator_probe.py \
+  --device npu --candidate npu-sparse
 ```
 
 ## NPU graph-mode smoke tests
@@ -161,7 +182,7 @@ replace successful output as well.
 | `--graph` | Execution mode: `eager`, `inductor`, or `npugraphs`. Compiled choices are NPU-only. | `eager` |
 | `--compile-loss` | Compile both `model` and `loss`; without it only `model` is compiled. NPUGraph currently rejects this option. | disabled |
 | `--compiler-diagnostics` | Set the shared compiler diagnostic environment for graph breaks, recompiles, and dynamic-shape events. | disabled |
-| `--force` | Remove and rerun completed topology output. Without it, completed runs are skipped and incomplete runs are archived before retry. | disabled |
+| `--force` | Start a new generation for the selected topology range. All selected members are removed before execution; rerun without it after interruption to resume. | disabled |
 
 Use either `--topology` or `--topologies`, not both. The available names are
 defined centrally in `tests/glm5_2_common/topology.py`.

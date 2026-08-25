@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 from datetime import datetime
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -19,13 +20,21 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from tests.glm5_2_common.cli import reset_output_generation  # noqa: E402
+from tests.glm5_2_common.execution import compose_execution  # noqa: E402
+from tests.glm5_2_common.full_dsa import (  # noqa: E402
+    FULL_DSA_KERNELS,
+    REFERENCE_KERNEL,
+    full_dsa_override_targets,
+    merge_override_imports,
+    resolve_full_dsa_config,
+)
 from tests.glm5_2_common.topology import (  # noqa: E402
     ParallelTopology,
     select_topologies,
     standard_topologies,
     training_command_args,
 )
-from tests.glm5_2_common.execution import compose_execution  # noqa: E402
 from tests.glm5_2_graph.config import GraphFeatureConfig  # noqa: E402
 
 
@@ -76,6 +85,7 @@ def _contract(
     module: str,
     config: str,
     override_imports: str | None = None,
+    extra_args: tuple[str, ...] = (),
     graph: GraphFeatureConfig = GraphFeatureConfig(),
 ) -> dict[str, Any]:
     topology_contract = asdict(topology)
@@ -94,6 +104,8 @@ def _contract(
         "module": module,
         "config": config,
     }
+    if extra_args:
+        contract["extra_args"] = list(extra_args)
     if graph.mode != "eager":
         contract["graph"] = {
             "mode": graph.mode,
@@ -144,6 +156,7 @@ def _run_topology(
     module: str,
     config: str,
     override_imports: str | None = None,
+    extra_args: tuple[str, ...] = (),
     graph: GraphFeatureConfig = GraphFeatureConfig(),
     force: bool,
 ) -> Path:
@@ -163,6 +176,7 @@ def _run_topology(
         module=module,
         config=config,
         override_imports=override_imports,
+        extra_args=extra_args,
         graph=graph,
     )
     if not force and _completed(run_directory, contract):
@@ -191,6 +205,7 @@ def _run_topology(
         "--metrics.log_freq=1",
         *topology.command_args(),
         *execution.command_args(),
+        *extra_args,
     ]
     if override_imports:
         command.append(f"--override.imports={override_imports}")
@@ -248,7 +263,18 @@ def main() -> int:
     parser.add_argument("--sequence-length", type=int, default=128)
     parser.add_argument("--seed", type=int, default=61)
     parser.add_argument("--module", default="glm5")
-    parser.add_argument("--config", default="glm5_debugmodel")
+    parser.add_argument("--config")
+    parser.add_argument(
+        "--full-dsa",
+        action="store_true",
+        help="select glm5_full_dsa_debugmodel without changing default smoke runs",
+    )
+    parser.add_argument(
+        "--full-dsa-kernel",
+        choices=FULL_DSA_KERNELS,
+        default=REFERENCE_KERNEL,
+        help="optional Full DSA implementation; auto selects by device",
+    )
     parser.add_argument(
         "--override-imports",
         help="comma-separated explicit TorchTitan component overrides",
@@ -268,6 +294,12 @@ def main() -> int:
         action="store_true",
         help="enable graph-break, recompile, and dynamic-shape diagnostics",
     )
+    parser.add_argument(
+        "--extra-train-arg",
+        action="append",
+        default=[],
+        help="append one raw TorchTitan training argument",
+    )
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
@@ -275,6 +307,25 @@ def main() -> int:
         parser.error("--steps must be positive")
     device = _device(args.device)
     visible_devices = _visible_devices(device)
+    if args.full_dsa_kernel != REFERENCE_KERNEL and not args.full_dsa:
+        parser.error("--full-dsa-kernel requires --full-dsa")
+    try:
+        config = resolve_full_dsa_config(
+            enabled=args.full_dsa,
+            requested_config=args.config,
+        )
+        override_imports = merge_override_imports(
+            args.override_imports,
+            full_dsa_override_targets(
+                device_type=device,
+                kernel=args.full_dsa_kernel,
+            )
+            if args.full_dsa
+            else (),
+        )
+    except ValueError as error:
+        parser.error(str(error))
+    extra_args = tuple(args.extra_train_arg)
     graph = GraphFeatureConfig(
         mode=args.graph,
         components=("model", "loss") if args.compile_loss else ("model",),
@@ -284,14 +335,20 @@ def main() -> int:
     _check_runtime_dependencies()
     topologies = standard_topologies()
     available = tuple(
-        name for name, topology in topologies.items() if topology.world_size <= 8
+        name
+        for name, topology in topologies.items()
+        if topology.world_size <= 8
+        and (not args.full_dsa or topology.pipeline_parallel_degree == 1)
     )
-    selected = select_topologies(
-        available=available,
-        topology=args.topology,
-        topologies=args.topologies,
-        default=("single",),
-    )
+    try:
+        selected = select_topologies(
+            available=available,
+            topology=args.topology,
+            topologies=args.topologies,
+            default=("single",),
+        )
+    except ValueError as error:
+        parser.error(str(error))
     num_visible_devices = len(
         [value for value in visible_devices.split(",") if value.strip()]
     )
@@ -303,21 +360,33 @@ def main() -> int:
                 f"devices, but only {num_visible_devices} were exported"
             )
     suite_name = (
-        f"{device}-{args.config}-s{args.steps}-b{args.global_batch_size}-"
+        f"{device}-{config}-s{args.steps}-b{args.global_batch_size}-"
         f"seq{args.sequence_length}-seed{args.seed}"
     )
     if graph.mode != "eager":
         suite_name += f"-{graph.mode}-{'-'.join(graph.components)}"
         if graph.diagnostics:
             suite_name += "-diag"
-    if args.override_imports:
+    if override_imports:
         override_names = "-".join(
             target.rsplit(".", 1)[-1]
-            for target in args.override_imports.split(",")
+            for target in override_imports.split(",")
         )
         suite_name += f"-override-{override_names}"
+    if extra_args:
+        options_digest = hashlib.sha256(
+            "\0".join(extra_args).encode("utf-8")
+        ).hexdigest()[:8]
+        suite_name += f"-opts-{options_digest}"
     root = _root()
     suite_root = root / "smoke_runs" / suite_name
+    if args.force:
+        # Reset the whole selected generation before launching its first
+        # topology. This prevents a failed all-topology rerun from later
+        # reusing untouched members from the previous generation.
+        reset_output_generation(
+            [suite_root / topologies[name].slug for name in selected]
+        )
     for name in selected:
         _run_topology(
             root=root,
@@ -331,10 +400,11 @@ def main() -> int:
             sequence_length=args.sequence_length,
             seed=args.seed,
             module=args.module,
-            config=args.config,
-            override_imports=args.override_imports,
+            config=config,
+            override_imports=override_imports,
+            extra_args=extra_args,
             graph=graph,
-            force=args.force,
+            force=False,
         )
     print(f"Smoke suite passed: {suite_root}")
     return 0

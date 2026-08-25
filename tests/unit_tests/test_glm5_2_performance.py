@@ -22,6 +22,8 @@ from tests.glm5_2_performance.dynamic_profile import (
     build_dynamic_profile_config,
     write_dynamic_profile_config,
 )
+from tests.glm5_2_performance.optimization_benchmark import _select_profile
+from tests.glm5_2_performance.optimizations import optimization_profiles
 from tests.glm5_2_performance.workflow import (
     _config_is_compatible,
     _msprof_analyze_executable,
@@ -31,6 +33,56 @@ from tests.glm5_2_performance.workflow import (
 
 
 class TestPerformanceConfig(unittest.TestCase):
+    def test_full_dsa_optimization_profiles_are_opt_in_and_named(self):
+        profiles = optimization_profiles()
+        base = PerformanceConfig(name="full-dsa")
+
+        reference = profiles["reference"].apply(base)
+        sparse = profiles["sparse-mla"].apply(base)
+        triton = profiles["triton-full-dsa"].apply(base)
+        recompute = profiles["full-recompute"].apply(base)
+
+        self.assertEqual(reference.model_config, "glm5_full_dsa_debugmodel")
+        self.assertIn("--override.imports=", sparse.extra_args[0])
+        self.assertIn("npu_triton_dsa_indexer", triton.extra_args[0])
+        self.assertEqual(
+            recompute.module,
+            "tests.glm5_2_performance",
+        )
+        self.assertIn("-opt-sparse-mla-", _run_name(sparse, "npu"))
+
+    def test_async_tp_profile_rejects_non_tp_topology(self):
+        profile = optimization_profiles()["async-tp"]
+        profile.validate_topologies(("tp8", "fsdp2-tp4"))
+        with self.assertRaisesRegex(ValueError, "supported TP topology"):
+            profile.validate_topologies(("single",))
+
+    def test_optimization_all_expands_to_supported_full_dsa_topologies(self):
+        _, forwarded = _select_profile(
+            ["--optimization", "reference", "--topology", "all", "--probe"]
+        )
+        selected = forwarded[forwarded.index("--topologies") + 1].split(",")
+        self.assertIn("single", selected)
+        self.assertIn("tp8", selected)
+        self.assertNotIn("pp8", selected)
+        self.assertIn("--probe", forwarded)
+
+    def test_async_tp_all_expands_only_to_tp_profiles(self):
+        _, forwarded = _select_profile(
+            ["--optimization", "async-tp", "--topology", "all", "--probe"]
+        )
+        selected = forwarded[forwarded.index("--topologies") + 1].split(",")
+        self.assertEqual(
+            selected,
+            ["tp2", "tp4", "tp8", "fsdp2-tp2", "fsdp2-tp4", "fsdp4-tp2"],
+        )
+
+    def test_optimization_rejects_full_dsa_pp(self):
+        with self.assertRaisesRegex(ValueError, "non-PP"):
+            _select_profile(
+                ["--optimization", "reference", "--topology", "pp8", "--probe"]
+            )
+
     def test_run_name_uses_readable_config_and_digest(self):
         config = PerformanceConfig(name="glm5-probe")
         run_name = _run_name(config, "npu")

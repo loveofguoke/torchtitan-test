@@ -178,6 +178,9 @@ def _run_name(
         f"l{config.local_batch_size}-b{config.global_batch_size}-"
         f"seq{config.sequence_length}-seed{config.seed}-{config.preset}"
     )
+    optimization = config.environment.get("GLM5_PERFORMANCE_OPTIMIZATION")
+    if optimization:
+        base += f"-opt-{_slug(optimization)}"
     if config.mixed_precision_reduce != "float32":
         reduce_precision = {
             "bfloat16": "bf16",

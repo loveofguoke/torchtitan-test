@@ -35,6 +35,13 @@ candidate-graph=inductor or npugraphs
 The runner also supports eager/eager and graph/graph diagnostics. Reference and
 candidate graph modes are independent.
 
+Full DSA is another independent factor. Add `--full-dsa`, then choose each
+endpoint implementation with `--reference-full-dsa-kernel` and
+`--candidate-full-dsa-kernel`. Defaults are `reference`; `auto` selects the
+device implementation. Full DSA `all` omits PP layouts whose stage boundary
+cannot receive shared top-k. Existing non-Full-DSA combination behavior is
+unchanged.
+
 Topology selection:
 
 ```text
@@ -218,7 +225,7 @@ python tests/glm5_2_combination/combination_benchmark.py \
 | `--profile-warmup-steps` | Profiler warmup steps. | `1` |
 | `--profile-active-steps` | Profiler active collection steps. | `3` |
 | `--data-device` | Generic fixture backend override (`cuda` or `npu`). The current NPU/NPU combined config uses `npu`. | inferred from the NPU visibility variable |
-| `--force` | Replace valid existing fixture/capture output. | disabled |
+| `--force` | Start a new generation for the selected fixture/capture range. All selected members are removed before execution; rerun without it after interruption to resume. | disabled |
 | `--require-all` | Require all selected topology/repeat artifacts during compare. | disabled |
 
 The built-in combined profile uses 5000 steps, local batch 8, global batch 64,

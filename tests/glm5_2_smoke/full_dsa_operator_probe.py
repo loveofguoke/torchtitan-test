@@ -19,6 +19,12 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", choices=("gpu", "npu"), required=True)
     parser.add_argument(
+        "--candidate",
+        choices=("triton", "npu-sparse"),
+        default="triton",
+        help="operator implementation; npu-sparse is valid only on NPU",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=None,
@@ -41,6 +47,7 @@ def _sparse_mla_probe(
     *,
     device: torch.device,
     device_kind: str,
+    candidate_kind: str,
     queries: int,
     keys: int,
 ) -> dict[str, float | bool]:
@@ -74,16 +81,26 @@ def _sparse_mla_probe(
     scale = (latent_dim + rope_dim) ** -0.5
 
     reference = SparseMLA.Config(attention_dropout=0.0).build().to(device)
-    if device_kind == "gpu":
-        from torchtitan.models.glm5.ops.tilelang import TileLangSparseMLA
-
-        candidate = TileLangSparseMLA.Config(attention_dropout=0.0).build().to(
-            device
-        )
-    else:
+    if candidate_kind == "npu-sparse":
+        if device_kind != "npu":
+            raise ValueError("npu-sparse is valid only with --device npu")
         from torchtitanturbo.models.glm5.ops.sparse_mla import NpuSparseMLA
 
         candidate = NpuSparseMLA.Config(attention_dropout=0.0).build().to(device)
+    elif device_kind == "gpu":
+        from torchtitan.models.glm5.ops.triton import TritonSparseMLA
+
+        candidate = TritonSparseMLA.Config(attention_dropout=0.0).build().to(
+            device
+        )
+    else:
+        from torchtitanturbo.models.glm5.ops.triton import (
+            AscendTritonSparseMLA,
+        )
+
+        candidate = AscendTritonSparseMLA.Config(
+            attention_dropout=0.0
+        ).build().to(device)
 
     reference.train()
     candidate.train()
@@ -121,14 +138,13 @@ def _sparse_mla_probe(
 
 
 @torch.no_grad()
-def _gpu_indexer_probe(
+def _indexer_probe(
     *,
     device: torch.device,
+    device_kind: str,
     queries: int,
     keys: int,
 ) -> dict[str, float]:
-    from torchtitan.models.glm5.ops.tilelang import TileLangDSAIndexerTopK
-
     num_heads = 32
     head_dim = 128
     topk = min(64, keys)
@@ -152,7 +168,15 @@ def _gpu_indexer_probe(
         index_topk=topk,
         softmax_scale=scale,
     ).build()
-    candidate = TileLangDSAIndexerTopK.Config(
+    if device_kind == "gpu":
+        from torchtitan.models.glm5.ops.triton import (
+            TritonDSAIndexerTopK as CandidateIndexer,
+        )
+    else:
+        from torchtitanturbo.models.glm5.ops.triton import (
+            AscendTritonDSAIndexerTopK as CandidateIndexer,
+        )
+    candidate = CandidateIndexer.Config(
         index_topk=topk,
         softmax_scale=scale,
         query_block_size=8,
@@ -197,26 +221,33 @@ def main() -> int:
     sparse = _sparse_mla_probe(
         device=device,
         device_kind=args.device,
+        candidate_kind=args.candidate,
         queries=args.queries,
         keys=args.keys,
     )
     indexer = (
-        _gpu_indexer_probe(device=device, queries=args.queries, keys=args.keys)
-        if args.device == "gpu"
-        else {"status": "reference_only"}
+        {"status": "reference_only"}
+        if args.candidate == "npu-sparse"
+        else _indexer_probe(
+            device=device,
+            device_kind=args.device,
+            queries=args.queries,
+            keys=args.keys,
+        )
     )
     passed = (
         sparse["output_max_abs"] <= args.output_atol
         and sparse["q_grad_max_abs"] <= args.grad_atol
         and sparse["kv_grad_max_abs"] <= args.grad_atol
         and (
-            args.device != "gpu"
+            "mean_topk_overlap" not in indexer
             or indexer["mean_topk_overlap"] >= args.index_overlap
         )
     )
     result = {
         "passed": passed,
         "device": args.device,
+        "candidate": args.candidate,
         "seed": args.seed,
         "queries": args.queries,
         "keys": args.keys,

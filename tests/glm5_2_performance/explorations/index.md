@@ -5,6 +5,11 @@ run name. Start from [reports/index.md](reports/index.md) for conclusions, or
 from a topology's `experiment.md` for exact run order, commands, results, and
 links.
 
+After reading the evidence, use
+[`optimization_backlog.md`](optimization_backlog.md) for the numbered,
+one-patch-at-a-time prototype tasks, exact source symbols, risks, and promotion
+gates.
+
 ## Directory contract
 
 ```text
