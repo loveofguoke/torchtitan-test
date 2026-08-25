@@ -1,5 +1,9 @@
 # NPU Inductor 图模式运行手册
 
+> 本文记录首轮专用入口 `run_npu_inductor.sh`，用于复现早期 probe-sized 调试。
+> 新的 smoke、正常训练、graph benchmark 和 combination 应统一使用
+> `run_graph_mode.sh`；完整 common export 和覆盖项见 `GRAPH_MODE_COMMON.md`。
+
 本目录用于图模式环境调试和快速定位，不作为 precision、performance、stability
 或 combination 的正式验收结果。`probe` 子命令复用既有实验框架时，仍遵循该框架
 原有的结果目录与报告规范；`smoke/train` 的调试日志则统一写到用户主目录。
@@ -8,6 +12,15 @@ CANN 9.1.0 的实际安装来源、复制命令、SHA-256 和隔离激活方法�
 `CANN_9_1_INSTALLATION.md`。
 
 ## 推荐入口
+
+统一入口优先：
+
+```bash
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor env
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor train --training.steps=10
+```
+
+以下是旧专用 action 的兼容用法。
 
 在 `glm5-npu-dev` 容器内运行：
 

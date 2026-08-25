@@ -148,8 +148,8 @@ docker exec glm5-npu-dev readlink -f /usr/local/Ascend/ascend-toolkit/latest
 推荐直接使用调试脚本，它会通过 `env -i` 创建干净子进程，再加载 CANN 9.1：
 
 ```bash
-tests/glm5_2_graph_debug/run_npu_inductor.sh env
-tests/glm5_2_graph_debug/run_npu_inductor.sh smoke
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor env
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor smoke --topology single
 ```
 
 需要手工验证时：
@@ -164,15 +164,54 @@ set +u
 source /usr/local/Ascend/cann-9.1.0/set_env.sh
 set -u
 export PATH=/root/miniconda3/envs/torchtitan-0803-graph-adapt/bin:$PATH
+export PATH=/usr/local/Ascend/nnal/atb/latest/atb/cxx_abi_1/bin:$PATH
+export LD_LIBRARY_PATH=/usr/local/Ascend/nnal/atb/latest/atb/cxx_abi_1/lib:\
+${LD_LIBRARY_PATH:-}
+export TORCHTITAN_DEVICE=npu
+export ASCEND_RT_VISIBLE_DEVICES=0
+unset CUDA_VISIBLE_DEVICES
 ```
 
 CANN 自带的 `set_env.sh` 会读取若干可选变量，因此在启用 Bash `nounset` 时需要在
 source 前后临时执行 `set +u` / `set -u`。
 
+在 `env -i` 干净子进程中，本次 CANN 9.1.0 的 `set_env.sh` 实际导出如下。这里把
+完整值列出用于审计；日常运行应 source `set_env.sh`，不要手工复制这组内部路径，
+否则安装目录升级后很容易漏项：
+
+```bash
+export ASCEND_AICPU_PATH=/usr/local/Ascend/cann-9.1.0
+export ASCEND_HOME_PATH=/usr/local/Ascend/cann-9.1.0
+export ASCEND_OPP_PATH=/usr/local/Ascend/cann-9.1.0/opp
+export ASCEND_TOOLKIT_HOME=/usr/local/Ascend/cann-9.1.0
+export TOOLCHAIN_HOME=/usr/local/Ascend/cann-9.1.0/toolkit
+
+export PATH=/usr/local/Ascend/cann-9.1.0/bin:\
+/usr/local/Ascend/cann-9.1.0/tools/ccec_compiler/bin:\
+/usr/local/Ascend/cann-9.1.0/tools/profiler/bin:\
+/usr/local/Ascend/cann-9.1.0/tools/ascend_system_advisor/asys:\
+/usr/local/Ascend/cann-9.1.0/tools/show_kernel_debug_data:\
+/usr/local/Ascend/cann-9.1.0/tools/msobjdump:$PATH
+
+export LD_LIBRARY_PATH=/usr/local/Ascend/cann-9.1.0/lib64:\
+/usr/local/Ascend/cann-9.1.0/lib64/plugin/opskernel:\
+/usr/local/Ascend/cann-9.1.0/lib64/plugin/nnengine:\
+/usr/local/Ascend/cann-9.1.0/opp/built-in/op_impl/ai_core/tbe/op_tiling/lib/linux/aarch64:\
+/usr/local/Ascend/driver/lib64:/usr/local/Ascend/driver/lib64/common:\
+/usr/local/Ascend/driver/lib64/driver
+
+export PYTHONPATH=/usr/local/Ascend/cann-9.1.0/python/site-packages:\
+/usr/local/Ascend/cann-9.1.0/opp/built-in/op_impl/ai_core/tbe
+```
+
+common 随后再把图模式 Conda 和 ATB 放到上述环境前面；HCCL、Inductor、
+NPUGraphs、cache 和 launcher-only 兼容项的完整 export 见
+`GRAPH_MODE_COMMON.md`。
+
 ## 验证实际加载路径
 
 ```bash
-tests/glm5_2_graph_debug/run_npu_inductor.sh env
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor env
 ```
 
 应看到：
@@ -184,6 +223,8 @@ CONDA_ENV=/root/miniconda3/envs/torchtitan-0803-graph-adapt
 
 训练日志中的 `LD_LIBRARY_PATH` 不应出现 CANN 9.0 或
 `ascend-toolkit/latest`。必要时还可在 Python 进程内检查 `/proc/self/maps`。
+Inductor、NPUGraphs、HCCL 和缓存所需的完整 export 以及所有可覆盖项见
+`GRAPH_MODE_COMMON.md`；不要只 source CANN 后遗漏这些 profile 变量。
 
 ## 容器重建后的恢复
 
