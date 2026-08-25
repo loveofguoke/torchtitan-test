@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime
 import json
@@ -310,6 +311,11 @@ def _record_exploration_command(
                 "ASCEND_HOME_PATH",
                 "ASCEND_OPP_PATH",
                 "ASCEND_TOOLKIT_HOME",
+                "CONDA_DEFAULT_ENV",
+                "HCCL_NPU_SOCKET_PORT_RANGE",
+                "HCCL_IF_BASE_PORT",
+                "HCCL_CONNECT_TIMEOUT",
+                "TORCHTITAN_MSPROF_ANALYZE_WORKERS",
             )
             if name in os.environ
         },
@@ -827,6 +833,21 @@ def _msprof_analyze_executable() -> str:
     return executable
 
 
+def _msprof_analyze_workers() -> int:
+    value = os.environ.get("TORCHTITAN_MSPROF_ANALYZE_WORKERS", "1")
+    try:
+        workers = int(value)
+    except ValueError as error:
+        raise ValueError(
+            "TORCHTITAN_MSPROF_ANALYZE_WORKERS must be an integer"
+        ) from error
+    if not 1 <= workers <= 8:
+        raise ValueError(
+            "TORCHTITAN_MSPROF_ANALYZE_WORKERS must be between 1 and 8"
+        )
+    return workers
+
+
 def run_cluster_analysis(run_directory: Path) -> dict[str, Any]:
     """Run the official cluster, time, bottleneck, and idle recipes."""
 
@@ -880,8 +901,9 @@ def run_cluster_analysis(run_directory: Path) -> dict[str, Any]:
         },
         key=int,
     )
+    communication_recipes = {}
     for rank_id in rank_ids:
-        recipes[f"communication_bottleneck_rank_{rank_id}"] = [
+        communication_recipes[f"communication_bottleneck_rank_{rank_id}"] = [
             executable,
             "-m",
             "communication_bottleneck",
@@ -900,6 +922,29 @@ def run_cluster_analysis(run_directory: Path) -> dict[str, Any]:
         results[name] = _run_msprof_analyze(
             run_directory, name=name, command=recipe
         )
+    workers = _msprof_analyze_workers()
+    if workers == 1:
+        for name, recipe in communication_recipes.items():
+            results[name] = _run_msprof_analyze(
+                run_directory, name=name, command=recipe
+            )
+    else:
+        print(
+            "Running communication_bottleneck recipes with "
+            f"{workers} workers"
+        )
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                name: executor.submit(
+                    _run_msprof_analyze,
+                    run_directory,
+                    name=name,
+                    command=recipe,
+                )
+                for name, recipe in communication_recipes.items()
+            }
+            for name, future in futures.items():
+                results[name] = future.result()
     return results
 
 

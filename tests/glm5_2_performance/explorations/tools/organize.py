@@ -307,6 +307,16 @@ def _write_topology_document(
                 "",
             ]
         )
+    analysis_document = output.parent / "analysis.md"
+    if analysis_document.is_file():
+        lines.extend(
+            [
+                "## analysis",
+                "",
+                "- [Detailed topology analysis](analysis.md)",
+                "",
+            ]
+        )
     output.write_text("\n".join(lines), encoding="utf-8")
     return output
 
@@ -322,8 +332,8 @@ def _write_scope_index(
     lines = [
         f"# {scope} performance experiments",
         "",
-        "| topology | runs | best profiler-off tok/s/job | experiment document |",
-        "| --- | ---: | ---: | --- |",
+        "| topology | runs | best profiler-off tok/s/job | experiment | analysis |",
+        "| --- | ---: | ---: | --- | --- |",
     ]
     comparisons = []
     for topology in topologies:
@@ -341,9 +351,11 @@ def _write_scope_index(
             default=None,
         )
         experiment = reports_root / scope / topology / "experiment.md"
+        analysis = reports_root / scope / topology / "analysis.md"
+        analysis_link = f"[analysis]({_link(output, analysis)})" if analysis.is_file() else "-"
         lines.append(
             f"| {topology} | {len(directories)} | {_number(best)} | "
-            f"[experiment]({_link(output, experiment)}) |"
+            f"[experiment]({_link(output, experiment)}) | {analysis_link} |"
         )
         if best is not None:
             comparisons.append((topology, best))
@@ -364,6 +376,8 @@ def _write_scope_index(
     lines.extend(["", "- [scope summary](summary.md)"])
     if (reports_root / scope / "comparison.md").is_file():
         lines.append("- [scope comparison](comparison.md)")
+    if (reports_root / scope / "validation.md").is_file():
+        lines.append("- [scope validation](validation.md)")
     lines.append("")
     output.write_text("\n".join(lines), encoding="utf-8")
     summary = reports_root / scope / "summary.md"

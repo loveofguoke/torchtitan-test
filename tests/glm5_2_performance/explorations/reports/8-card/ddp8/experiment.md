@@ -54,3 +54,7 @@
 ## current summary
 
 The highest recorded job throughput is 37,382.71 tok/s from `npu-ddp8-bf16-s20-l8-b64-seq128-seed61-distributed-r1-488247ce`. Profiler-off runs are throughput evidence; profiler-active runs are attribution evidence only.
+
+## analysis
+
+- [Detailed topology analysis](analysis.md)

@@ -25,6 +25,7 @@ from tests.glm5_2_performance.dynamic_profile import (
 from tests.glm5_2_performance.workflow import (
     _config_is_compatible,
     _msprof_analyze_executable,
+    _msprof_analyze_workers,
     _run_name,
 )
 
@@ -82,6 +83,22 @@ class TestPerformanceConfig(unittest.TestCase):
                 selected = _msprof_analyze_executable()
 
         self.assertEqual(selected, str(executable.resolve()))
+
+    def test_msprof_analyze_workers_are_bounded(self):
+        with mock.patch.dict(
+            os.environ,
+            {"TORCHTITAN_MSPROF_ANALYZE_WORKERS": "2"},
+        ):
+            self.assertEqual(_msprof_analyze_workers(), 2)
+        for value in ("0", "9", "invalid"):
+            with self.subTest(value=value), mock.patch.dict(
+                os.environ,
+                {"TORCHTITAN_MSPROF_ANALYZE_WORKERS": value},
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "TORCHTITAN_MSPROF_ANALYZE_WORKERS"
+                ):
+                    _msprof_analyze_workers()
 
     def test_additive_default_fields_match_old_capture_manifests(self):
         config = PerformanceConfig(name="legacy")

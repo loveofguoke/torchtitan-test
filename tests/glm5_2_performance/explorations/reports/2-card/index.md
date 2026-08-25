@@ -1,8 +1,8 @@
 # 2-card performance experiments
 
-| topology | runs | best profiler-off tok/s/job | experiment document |
-| --- | ---: | ---: | --- |
-| ddp2 | 11 | 11,234.19 | [experiment](ddp2/experiment.md) |
+| topology | runs | best profiler-off tok/s/job | experiment | analysis |
+| --- | ---: | ---: | --- | --- |
+| ddp2 | 11 | 11,234.19 | [experiment](ddp2/experiment.md) | - |
 
 ## comparison
 

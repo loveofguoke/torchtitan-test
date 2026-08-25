@@ -2,13 +2,20 @@
 
 ## Executive summary
 
-All 13 declared eight-rank performance topologies have completed one
-profiler-off screening run. FSDP8 and EP8 are the strongest clean signals:
-37,406.66 and 30,677.33 tok/s/job, with p90 step drift of 1.21% and 2.11%.
-Tensor-parallel degree is the clearest negative scaling signal. Pipeline-only
-and context-only shapes are also inefficient at this small debug-model/token
-scale. DDP8 throughput is unresolved because its profiler-off run was highly
-variable and conflicts with the profiler run's non-active window.
+All 13 declared eight-rank performance topologies have now completed both a
+profiler-off screening run and an all-rank Ascend PyTorch Profiler → offline
+parse → `msprof-analyze` → MindStudio handoff. Every selected attribution run
+contains eight parsed rank roots, 11 successful official tool invocations, a
+structured analysis, a readable run record, and an HTML report.
+
+FSDP8 and EP8 remain the strongest clean signals: 37,406.66 and 30,677.33
+tok/s/job, with p90 step drift of 1.21% and 2.11%. The completed attribution
+matrix explains the ranking primarily through collective granularity and host
+launch/dependency waits. Tensor-parallel degree is the clearest negative
+scaling signal; CP8 doubles the useful CP4 collective work at this short
+sequence; PP waits for stage readiness rather than link transfer. DDP8
+throughput remains unresolved because its profiler-off run was highly variable
+and conflicts with the profiler run's non-active window.
 
 These are diagnostic comparisons. They include physical NPU0, which currently
 reports a health warning, and most topologies have only one successful
@@ -116,23 +123,42 @@ The complete derivation is in [ddp8/analysis.md](ddp8/analysis.md). The immediat
 measurement, not optimization: repeat profiler-off DDP8 on an idle system and
 test whether high-wait ranks follow logical rank or physical device mapping.
 
-## Remaining profiler matrix
+## Completed profiler matrix
 
-The profiler-off matrix covers all declared eight-rank shapes. All-rank
-Profiler + official analysis is complete for DDP8. The minimum attribution set
-to cover distinct communication patterns is:
+The profiler-off and profiler-active matrices both cover all 13 declared
+eight-rank shapes. Each attribution run uses the same all-rank three-step
+active window and runs cluster, time-summary, free, and per-rank
+communication-bottleneck analyses.
 
-| Priority | Topology | Primary question |
-| ---: | --- | --- |
-| 1 | FSDP8 | ReduceScatter/AllGather count, overlap, and why it leads throughput |
-| 2 | TP8 | serialized AllReduce/redistribution cost and host launch gaps |
-| 3 | EP8 | AllToAll count, payload, routing imbalance, and AiCPU routing work |
-| 4 | CP8 and FSDP2-CP4 | CP collective granularity and the 1.93x topology gap |
-| 5 | PP8 | stage balance, send/recv time, and pipeline bubble |
-| 6 | FSDP2-TP2-PP2 | compound PP/TP critical path behind the 9.15 s step |
+| Topology family | Measured attribution | Concrete conclusion |
+| --- | --- | --- |
+| FSDP8 | 21 AllGather + 11 ReduceScatter + 7 tiny AllReduce calls/step | Only 39 launches/step; this low granularity is consistent with the clean throughput lead. |
+| TP degree 2/4/8 | FSDP4-TP2: 224 AllReduce; FSDP2-TP4: 440; TP8: 865 | Each TP-degree doubling nearly doubles AllReduce launches and nearly halves clean throughput. |
+| CP8 vs FSDP2-CP4 | 590 vs 299 collective calls; ~1,194 vs ~580 MB/rank/step | CP8 almost exactly doubles calls/bytes and takes 1.93x the clean step time at sequence 128. |
+| EP8 | 35 AllToAllV + 21 AllGather + 11 ReduceScatter + 8 tiny AllReduce | AllToAllV payload is imbalanced 1.56x, but physical transit is only ~2 ms; host readiness dominates. |
+| PP8 | rank-dependent P2P counts; <=0.43 ms physical transit/rank/step | Seconds of exposed wait are pipeline readiness/bubble, not HCCS bandwidth. |
+| FSDP2-PP4 | FSDP collectives plus rank-dependent P2P; 137.53-299.42 ms compute | FSDP improves stage work but does not remove the PP critical path; clean gain over PP8 is only 1.17x. |
+| TP2-CP4 | 871 AllReduce + 488 AllGather + 408 ReduceScatter calls/step | TP and CP launch costs compound; physical transit is tens of ms while exposed wait reaches 1.77-4.19 s. |
+| FSDP2-TP2-PP2 | ~1,815 collective/P2P calls/step | The 9.15 s clean step is a composite launch/bubble path; active exposed wait reaches 1.71-6.59 s. |
+| FSDP2-TP4-EP8 | 362 AllReduce + 220 AllGather + 212 ReduceScatter + 140 AllToAllV | Adding EP reduces some TP AllReduce payload but adds 352 EP/FSDP launches; clean throughput is 3.94% below FSDP2-TP4. |
 
-Each run uses the same all-rank three-step active window and runs the official
-cluster, time-summary, free, and per-rank communication-bottleneck analyses.
+Three deductions are especially implementation-ready:
+
+1. TP launch count is a controlled scaling law in this matrix, not a single
+   anomalous run. The first patch target is the logged Partial→Replicate path
+   that performs two sequential AllReduce operations; flatten the relevant
+   mesh dimensions at the model parallelization/DTensor placement boundary.
+2. The CP8→FSDP2-CP4 comparison isolates a topology fix before any custom
+   kernel: CP4 halves calls and payload and nearly halves step time. Longer
+   sequence sweeps determine when CP8 becomes worthwhile.
+3. PP physical Send/Receive time is sub-millisecond while exposed waits are
+   seconds. Schedule/microbatch/stage-balance experiments precede HCCL or P2P
+   kernel work.
+
+Detailed derivations are in the per-topology `analysis.md` documents for DDP8,
+FSDP8, TP8, EP8, CP8, FSDP2-CP4, and PP8; every remaining topology has a
+generated `experiment.md` with exact runs, commands, outputs, and evidence
+links. The complete numerical table is [comparison.md](comparison.md).
 
 ## Potential optimization plan after attribution
 
