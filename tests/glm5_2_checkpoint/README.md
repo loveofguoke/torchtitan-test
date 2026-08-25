@@ -45,8 +45,12 @@ optimizer-state audit.
 Each launched training job owns a separate POSIX process group. The controller
 always cleans that group in a `finally` path, escalates from SIGTERM to SIGKILL
 when needed, and acts as a Linux child subreaper so abruptly killed torchrun
-workers do not remain as orphaned or zombie processes. Every runtime log ends
-with a `Process cleanup` record; a surviving process group fails the test.
+workers do not remain as orphaned or zombie processes. Every job also receives
+a unique inherited process token. Cleanup searches `/proc/*/environ` for that
+token and terminates workers that escaped torchrun's original process group,
+without matching another experiment or another user's training. Every runtime
+log ends with a `Process cleanup` record; a surviving process group or token-
+matched worker fails the test.
 
 ## Command-line parameters
 
