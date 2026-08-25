@@ -90,7 +90,7 @@ def test_faulted_process_group_is_killed_and_reaped(tmp_path: Path) -> None:
     script = (
         "import pathlib, subprocess, sys, time; "
         "child = subprocess.Popen([sys.executable, '-c', "
-        "'import time; time.sleep(60)']); "
+        "'import time; time.sleep(60)'], start_new_session=True); "
         f"pathlib.Path({str(child_pid_path)!r}).write_text(str(child.pid)); "
         f"pathlib.Path({str(ready_path)!r}).touch(); "
         "time.sleep(60)"

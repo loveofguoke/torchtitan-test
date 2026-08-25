@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -76,6 +77,7 @@ LOSS_KEY = "loss"
 GRAD_NORM_KEY = "grad_norm"
 _PR_SET_CHILD_SUBREAPER = 36
 _PROCESS_GROUP_GRACE_SECONDS = 5.0
+_PROCESS_TOKEN_ENV = "GLM5_CHECKPOINT_PROCESS_TOKEN"
 
 
 class CheckpointFixtureConfig(FormalExperimentConfig):
@@ -195,6 +197,60 @@ def _reap_process_group_children(process_group_id: int) -> int:
     return reaped
 
 
+def _processes_with_token(token: str) -> list[int]:
+    """Find every surviving Linux process belonging to one benchmark run."""
+
+    if not sys.platform.startswith("linux"):
+        return []
+    marker = f"{_PROCESS_TOKEN_ENV}={token}".encode()
+    matches: list[int] = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid == os.getpid():
+            continue
+        try:
+            environment = (entry / "environ").read_bytes().split(b"\0")
+        except (FileNotFoundError, PermissionError, ProcessLookupError):
+            continue
+        if marker in environment:
+            matches.append(pid)
+    return matches
+
+
+def _signal_token_processes(token: str, value: int) -> list[int]:
+    signaled: list[int] = []
+    for pid in _processes_with_token(token):
+        try:
+            os.kill(pid, value)
+        except ProcessLookupError:
+            continue
+        signaled.append(pid)
+    return signaled
+
+
+def _reap_pids(pids: list[int]) -> int:
+    reaped = 0
+    for pid in pids:
+        try:
+            child_pid, _ = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            continue
+        if child_pid:
+            reaped += 1
+    return reaped
+
+
+def _wait_for_token_exit(token: str, *, timeout: float) -> list[int]:
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = _processes_with_token(token)
+        if not remaining or time.monotonic() >= deadline:
+            return remaining
+        time.sleep(0.05)
+
+
 def _wait_for_process_group_exit(
     process_group_id: int,
     *,
@@ -217,8 +273,9 @@ def _cleanup_process_group(
     process: subprocess.Popen[str],
     *,
     reap_children: bool,
+    process_token: str,
 ) -> dict[str, Any]:
-    """Stop and reap only the process group created for one training run."""
+    """Stop one run's process group and workers that escaped that group."""
 
     if os.name != "posix":
         if process.poll() is None:
@@ -233,6 +290,7 @@ def _cleanup_process_group(
             "kill_sent": False,
             "reaped_children": 0,
             "group_remaining": False,
+            "token_remaining": [],
         }
 
     process_group_id = process.pid
@@ -266,11 +324,27 @@ def _cleanup_process_group(
         reaped += newly_reaped
     if process.poll() is None:
         process.wait()
+    token_term_pids = _signal_token_processes(process_token, signal.SIGTERM)
+    token_remaining = _wait_for_token_exit(
+        process_token,
+        timeout=_PROCESS_GROUP_GRACE_SECONDS,
+    )
+    token_kill_pids: list[int] = []
+    if token_remaining:
+        token_kill_pids = _signal_token_processes(process_token, signal.SIGKILL)
+        token_remaining = _wait_for_token_exit(
+            process_token,
+            timeout=_PROCESS_GROUP_GRACE_SECONDS,
+        )
+    reaped += _reap_pids(list(set(token_term_pids + token_kill_pids)))
     return {
         "term_sent": term_sent,
         "kill_sent": kill_sent,
         "reaped_children": reaped,
         "group_remaining": not exited,
+        "token_term_pids": token_term_pids,
+        "token_kill_pids": token_kill_pids,
+        "token_remaining": token_remaining,
     }
 
 
@@ -295,10 +369,13 @@ def _run_process(
             reap_children = False
             stream.write(f"Child subreaper unavailable: {error}\n")
             stream.flush()
+        process_token = uuid.uuid4().hex
+        process_environment = dict(environment)
+        process_environment[_PROCESS_TOKEN_ENV] = process_token
         process = subprocess.Popen(
             command,
             cwd=root,
-            env=environment,
+            env=process_environment,
             stdout=stream,
             stderr=subprocess.STDOUT,
             text=True,
@@ -337,6 +414,7 @@ def _run_process(
             cleanup = _cleanup_process_group(
                 process,
                 reap_children=reap_children,
+                process_token=process_token,
             )
             stream.write(
                 "\nProcess cleanup: "
@@ -356,6 +434,11 @@ def _run_process(
         raise RuntimeError(
             "training process group still exists after TERM/KILL cleanup; "
             f"see {log_path}"
+        )
+    if cleanup["token_remaining"]:
+        raise RuntimeError(
+            "training worker processes still exist after token-scoped "
+            f"TERM/KILL cleanup: {cleanup['token_remaining']}; see {log_path}"
         )
     return {
         "return_code": return_code,

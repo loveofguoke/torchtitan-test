@@ -381,9 +381,8 @@ def main() -> int:
     root = _root()
     suite_root = root / "smoke_runs" / suite_name
     if args.force:
-        # Reset the whole selected generation before launching its first
-        # topology. This prevents a failed all-topology rerun from later
-        # reusing untouched members from the previous generation.
+        # Reset the complete selected generation before launching its first
+        # topology, so a later resume cannot mix old and new suite members.
         reset_output_generation(
             [suite_root / topologies[name].slug for name in selected]
         )

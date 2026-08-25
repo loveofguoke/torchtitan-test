@@ -10,6 +10,27 @@ Current executable support is Ascend NPU only. The `cuda` device vocabulary is
 reserved, but selecting Inductor or NPUGraph for a CUDA endpoint raises
 `NotImplementedError` until the CUDA `torch.compile` policy is defined.
 
+The complete 15-topology debug history, downgrade boundary, three-repository
+fix ownership, runnable commands, and remaining backend issues are summarized
+in [NPU_GRAPH_DEBUG_REPORT.md](NPU_GRAPH_DEBUG_REPORT.md).
+
+## Documentation map
+
+This README is the primary user entry point. Read the documents below in this
+order when reproducing or extending the graph work:
+
+| Layer | Document or implementation | Purpose |
+|---|---|---|
+| Experiment interface | This README | Commands, options, outputs, reports, and acceptance rules. |
+| Current engineering status | [NPU_GRAPH_DEBUG_REPORT.md](NPU_GRAPH_DEBUG_REPORT.md) | Complete single/multi-card bring-up process, solved and unresolved issues, downgrade boundary, and three-repository ownership. |
+| Raw debug evidence | [graph debug README](../glm5_2_graph_debug/README.md), [report index](../glm5_2_graph_debug/experiments/reports/index.md), and [failure history](../glm5_2_graph_debug/experiments/reports/failures.md) | Immutable command history, topology evidence, failed attempts, and detailed root-cause records. |
+| Ascend implementation | [TorchTitanTurbo graph-mode document](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/torchtitanturbo/tools/GRAPH_MODE.md) and [patch inventory](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/PATCHES.md) | Opt-in NPU compatibility patches, activation variables, patched objects, and limitations. |
+| Device-neutral framework | `torchtitan/distributed/compile.py` in the source-installed TorchTitan checkout | Native `torch.compile` component selection and backend invocation. It contains no NPU workaround. |
+
+The test report is authoritative for experiment results and issue status. Turbo
+documents are authoritative for the implementation of an Ascend patch. Raw
+debug reports are evidence, not a second user interface.
+
 Supported modes are:
 
 - `eager`: no compile arguments;
