@@ -19,6 +19,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from tests.glm5_2_common.cli import reset_output_generation  # noqa: E402
 from tests.glm5_2_common.topology import (  # noqa: E402
     ParallelTopology,
     select_topologies,
@@ -301,6 +302,12 @@ def main() -> int:
             suite_name += "-diag"
     root = _root()
     suite_root = root / "smoke_runs" / suite_name
+    if args.force:
+        # Reset the complete selected generation before launching its first
+        # topology, so a later resume cannot mix old and new suite members.
+        reset_output_generation(
+            [suite_root / topologies[name].slug for name in selected]
+        )
     for name in selected:
         _run_topology(
             root=root,
@@ -316,7 +323,7 @@ def main() -> int:
             module=args.module,
             config=args.config,
             graph=graph,
-            force=args.force,
+            force=False,
         )
     print(f"Smoke suite passed: {suite_root}")
     return 0

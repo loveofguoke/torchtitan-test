@@ -104,8 +104,9 @@ This shared profile is valid for every built-in topology through eight ranks,
 including the eight microbatches required by PP8 with the 1F1B schedule.
 
 Successful topologies are skipped on the next invocation. Incomplete output is
-preserved with a `.failed-<timestamp>` suffix and retried. Use `--force` to
-replace successful output as well.
+preserved with a `.failed-<timestamp>` suffix and retried. `--force` removes
+every selected topology before the first run starts; if that fresh suite is
+interrupted, rerun without `--force` to continue from its incomplete member.
 
 ## Command-line parameters
 
