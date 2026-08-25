@@ -51,6 +51,13 @@ NPU integration is active before the trainer is constructed. Use
 `run_train_gpu.sh` or `run_train_npu.sh` when an explicit backend is preferable,
 or set `TORCHTITAN_DEVICE=gpu|npu` when calling `run_train.sh`.
 
+## GPU performance profiling
+
+The standalone [`tests/glm5_2_performance-gpu`](tests/glm5_2_performance-gpu/README.md)
+suite captures bounded CPU/CUDA Torch Profiler windows, per-step training
+metrics, per-rank Chrome traces, JSON analysis, and an HTML report. It is kept
+separate from the Ascend-specific `tests/glm5_2_performance` pipeline.
+
 Short eager or NPU graph-mode launch checks across `single`, a selected
 topology/subset, or every topology through eight ranks are provided by
 [tests/glm5_2_smoke/README.md](tests/glm5_2_smoke/README.md).
