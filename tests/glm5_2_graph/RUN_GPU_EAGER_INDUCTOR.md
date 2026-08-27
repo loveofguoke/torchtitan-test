@@ -108,3 +108,52 @@ If Inductor compilation fails, start with the candidate `runtime.log` and the
 `TORCH_LOGS=graph_breaks,recompiles,dynamic` diagnostics recorded by the entry
 point. Do not enable whole-step CUDA Graph while diagnosing eager/Inductor
 precision, because that introduces a second execution difference.
+
+## Post-failure CUDA localization
+
+After a reproducible 1000-step eager/Inductor loss failure, run the CUDA
+diagnostic sequence below. It reuses the NPU investigation's proven order while
+keeping all CUDA hooks and outputs independent from NPU patches:
+
+1. Minimal FP32/BF16 SiLU-multiply and linear-residual checks.
+2. Block 0 input/output forward and backward-gradient fingerprints at steps
+   1, 2, 8, 9, and 10.
+3. Block 0 parameter gradients immediately before clipping.
+4. Two Inductor repeats compiled in separate Inductor and Triton cache roots.
+
+Run the complete FP32 and BF16 diagnostic in one command:
+
+```bash
+GPU_DIAG_RUN_ID=h20-eager-inductor-v1 tests/glm5_2_graph/run_gpu_inductor_diagnostics.sh all all
+```
+
+The stable run ID makes the output location predictable:
+
+```text
+graph_debug_runs/gpu-inductor/h20-eager-inductor-v1/
+```
+
+Run only the minimal fusion checks or only the Block trace when needed:
+
+```bash
+GPU_DIAG_RUN_ID=h20-minimal-v1 tests/glm5_2_graph/run_gpu_inductor_diagnostics.sh minimal all
+GPU_DIAG_RUN_ID=h20-trace-v1 tests/glm5_2_graph/run_gpu_inductor_diagnostics.sh trace all
+```
+
+Each minimal precision/repeat writes JSONL containing exact hashes, mismatch
+counts, mean/max errors, CUDA versions, TF32 flags, and reduced-precision
+reduction flags. Each trace precision writes a compact comparison JSON and also
+prints these four comparisons:
+
+```text
+eager-r1 vs eager-r2
+inductor-r1 vs inductor-r2
+eager-r1 vs inductor-r1
+eager-r1 vs inductor-r2
+```
+
+The two Inductor cache directories are distinct, so exact Inductor r1/r2 traces
+prove cold-build reproducibility rather than only same-cache replay. An exact
+Block input followed by a mismatching Block output localizes the first observed
+difference inside Block 0. A mismatching parameter gradient before clipping
+proves the difference has reached the first optimizer update.

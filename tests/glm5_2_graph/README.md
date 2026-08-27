@@ -201,7 +201,8 @@ minimum-observation requirement; its generated `suite_summary.json` is the
 machine-readable PASS/FAIL result.
 
 See `RUN_GPU_EAGER_INDUCTOR.md` for environment preflight, manual per-phase
-commands, artifact locations, and result interpretation.
+commands, artifact locations, result interpretation, and the post-failure CUDA
+minimal-fusion/Block-trace/cold-cache diagnostic sequence.
 
 The reference remains single-card even when the candidate is FSDP8, TP8, or
 another distributed topology. Run `--capture reference` with at least one

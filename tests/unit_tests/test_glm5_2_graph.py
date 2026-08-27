@@ -1,6 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
+import json
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,8 @@ from tests.glm5_2_combination.workflow import (
     _apply_selection,
     _relative_link,
 )
+from tests.glm5_2_graph.compare_gpu_block_traces import compare_traces
+from tests.glm5_2_graph.compare_gpu_minimal_results import compare_minimal_results
 from tests.glm5_2_common.execution import TrainingFeature, compose_execution
 from tests.glm5_2_common.topology import select_topologies, standard_topologies
 from tests.glm5_2_graph.config import (
@@ -22,6 +25,7 @@ from tests.glm5_2_graph.config import (
 )
 from tests.glm5_2_graph.precision_benchmark import CONFIG as GRAPH_CONFIG
 from tests.glm5_2_graph.gpu_compile_probe import PROBE_CONFIG as GPU_PROBE_CONFIG
+from tests.glm5_2_graph.gpu_block_trace_probe import TRACE_CONFIG as GPU_TRACE_CONFIG
 from tests.glm5_2_graph.gpu_precision_benchmark import CONFIG as GPU_GRAPH_CONFIG
 from tests.glm5_2_performance.analysis import _compiler_diagnostics
 from tests.glm5_2_precision.topology_suite import topology_config
@@ -109,6 +113,109 @@ def test_gpu_graph_benchmark_is_single_cuda_and_isolates_inductor() -> None:
     assert configured.candidate.environment["TORCH_LOGS"] == (
         "graph_breaks,recompiles,dynamic"
     )
+
+
+def test_gpu_block_trace_uses_dedicated_cuda_capture() -> None:
+    assert GPU_TRACE_CONFIG.training.steps == 20
+    assert GPU_TRACE_CONFIG.reference.device_type == "cuda"
+    assert GPU_TRACE_CONFIG.candidate.device_type == "cuda"
+    assert GPU_TRACE_CONFIG.reference.entry_module == (
+        "tests.glm5_2_graph.gpu_diagnostic_capture"
+    )
+    assert GPU_TRACE_CONFIG.candidate.entry_module == (
+        "tests.glm5_2_graph.gpu_diagnostic_capture"
+    )
+    assert GPU_TRACE_CONFIG.reference.environment["GLM5_GPU_DIAGNOSTIC"] == (
+        "block-trace-v1"
+    )
+
+
+def test_gpu_block_trace_comparison_reports_replays_and_eager_drift(
+    tmp_path: Path,
+) -> None:
+    def write_trace(path: Path, *, output_digest: str, output_mean: float) -> None:
+        rows = (
+            {
+                "step": 1,
+                "name": "block_input",
+                "kind": "forward",
+                "sha256": "input",
+                "mean": 0.0,
+                "max_abs": 1.0,
+                "l2": 2.0,
+            },
+            {
+                "step": 1,
+                "name": "block_output",
+                "kind": "forward",
+                "sha256": output_digest,
+                "mean": output_mean,
+                "max_abs": 3.0,
+                "l2": 4.0,
+            },
+        )
+        path.write_text(
+            "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+        )
+
+    paths = {
+        name: tmp_path / f"{name}.jsonl"
+        for name in ("eager-r1", "eager-r2", "inductor-r1", "inductor-r2")
+    }
+    write_trace(paths["eager-r1"], output_digest="eager", output_mean=1.0)
+    write_trace(paths["eager-r2"], output_digest="eager", output_mean=1.0)
+    write_trace(paths["inductor-r1"], output_digest="graph", output_mean=1.25)
+    write_trace(paths["inductor-r2"], output_digest="graph", output_mean=1.25)
+
+    result = compare_traces(paths)
+    comparisons = {
+        (row["left"], row["right"]): row for row in result["comparisons"]
+    }
+
+    assert comparisons[("eager-r1", "eager-r2")]["mismatch_records"] == 0
+    assert comparisons[("inductor-r1", "inductor-r2")][
+        "mismatch_records"
+    ] == 0
+    eager_graph = comparisons[("eager-r1", "inductor-r1")]
+    assert eager_graph["mismatch_records"] == 1
+    assert eager_graph["first_mismatches"][0]["name"] == "block_output"
+    assert eager_graph["max_mean_abs_delta"] == pytest.approx(0.25)
+
+
+def test_gpu_minimal_comparison_reports_cold_compile_reproducibility(
+    tmp_path: Path,
+) -> None:
+    metadata = {
+        "type": "metadata",
+        "dtype": "bf16",
+        "allow_tf32_matmul": False,
+    }
+
+    def write_result(path: Path, *, compiled_digest: str) -> None:
+        result = {
+            "name": "silu_multiply",
+            "exact": False,
+            "mismatch_count": 3,
+            "max_abs_diff": 0.125,
+            "eager_sha256": "eager",
+            "inductor_sha256": compiled_digest,
+        }
+        path.write_text(
+            json.dumps(metadata) + "\n" + json.dumps(result) + "\n",
+            encoding="utf-8",
+        )
+
+    first = tmp_path / "first.jsonl"
+    second = tmp_path / "second.jsonl"
+    write_result(first, compiled_digest="compiled")
+    write_result(second, compiled_digest="compiled")
+
+    result = compare_minimal_results(first, second)
+
+    assert result["dtype"] == "bf16"
+    assert result["results"][0]["repeat_1_mismatch_count"] == 3
+    assert result["results"][0]["cold_eager_reproducible"]
+    assert result["results"][0]["cold_inductor_reproducible"]
 
 
 def test_combination_defaults_to_npu_self_consistency() -> None:
