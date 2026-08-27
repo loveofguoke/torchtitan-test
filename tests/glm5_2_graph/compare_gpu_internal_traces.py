@@ -6,7 +6,10 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tests.glm5_2_graph.gpu_internal_block_trace import STAGE_NAMES
 
