@@ -132,12 +132,15 @@ def _apply_selection(
         if selection.profiler is not None:
             features.append(selection.profiler.feature())
         plan = compose_execution(endpoint.topology, features)
+        entry_module = endpoint.entry_module
+        if entry_module == "tests.glm5_2_precision.capture_metrics":
+            entry_module = "tests.glm5_2_combination.capture_metrics"
         endpoints[role] = replace(
             endpoint,
             name=f"{endpoint.name}-{graph.mode}",
             extra_args=endpoint.extra_args + plan.command_args(),
             environment={**endpoint.environment, **plan.environment()},
-            entry_module="tests.glm5_2_combination.capture_metrics",
+            entry_module=entry_module,
         )
     storage_base = _combination_storage_base(config, selection)
     legacy_storage_name = _legacy_combination_storage_name(config, selection)

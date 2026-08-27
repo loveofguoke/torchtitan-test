@@ -113,6 +113,9 @@ def test_gpu_graph_benchmark_is_single_cuda_and_isolates_inductor() -> None:
     assert configured.candidate.environment["TORCH_LOGS"] == (
         "graph_breaks,recompiles,dynamic"
     )
+    assert configured.reference.entry_module == (
+        "tests.glm5_2_combination.capture_metrics"
+    )
 
 
 def test_gpu_block_trace_uses_dedicated_cuda_capture() -> None:
@@ -127,6 +130,27 @@ def test_gpu_block_trace_uses_dedicated_cuda_capture() -> None:
     )
     assert GPU_TRACE_CONFIG.reference.environment["GLM5_GPU_DIAGNOSTIC"] == (
         "block-trace-v1"
+    )
+
+    selection = CombinationSelection(
+        objectives=frozenset(("precision",)),
+        reference_graph=GraphFeatureConfig("eager"),
+        candidate_graph=GraphFeatureConfig("inductor", diagnostics=True),
+        profiler=None,
+    )
+    configured = _apply_selection(
+        topology_config(
+            GPU_TRACE_CONFIG,
+            GPU_TRACE_CONFIG.candidate.topology,
+            precision="fp32",
+        ),
+        selection,
+    )
+    assert configured.reference.entry_module == (
+        "tests.glm5_2_graph.gpu_diagnostic_capture"
+    )
+    assert configured.candidate.entry_module == (
+        "tests.glm5_2_graph.gpu_diagnostic_capture"
     )
 
 
