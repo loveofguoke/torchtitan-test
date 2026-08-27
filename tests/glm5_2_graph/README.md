@@ -6,9 +6,8 @@ stability framework. Graph-aware comparisons delegate to
 `tests/glm5_2_combination`, which reuses the formal fixed-checkpoint and
 fixed-token workflow.
 
-Current executable support is Ascend NPU only. The `cuda` device vocabulary is
-reserved, but selecting Inductor or NPUGraph for a CUDA endpoint raises
-`NotImplementedError` until the CUDA `torch.compile` policy is defined.
+Executable support covers CUDA eager/Inductor and Ascend NPU
+eager/Inductor/NPUGraph. NPUGraph remains NPU-only.
 
 Supported modes are:
 
@@ -166,10 +165,43 @@ python tests/glm5_2_graph/precision_benchmark.py \
   --reference-graph eager --candidate-graph inductor
 ```
 
-CUDA eager remains available in the ordinary precision/smoke suites. Compiled
-CUDA graph commands are intentionally not shown as runnable examples because
-selecting `--device gpu` with `inductor` or `npugraphs` currently raises
-`NotImplementedError`.
+## CUDA eager versus Inductor
+
+The CUDA entry points use one GPU, two independent repeats per side, a shared
+checkpoint/token plan, strict deterministic mode, and disabled whole-step CUDA
+Graph. This isolates the execution difference to eager versus model-block
+`torch.compile(backend="inductor")`.
+
+Run the 10-step FP32 and BF16 gate first, then the 1000-step benchmark:
+
+```bash
+export CUDA_VISIBLE_DEVICES=0
+unset ASCEND_RT_VISIBLE_DEVICES
+
+tests/glm5_2_graph/run_gpu_eager_inductor.sh probe all
+tests/glm5_2_graph/run_gpu_eager_inductor.sh benchmark all
+```
+
+Use `fp32` or `bf16` instead of `all` to run one precision. Complete captures
+are reused. An existing fixture is not overwritten; append `--force` only when
+intentionally replacing the fixture and requested captures:
+
+```bash
+tests/glm5_2_graph/run_gpu_eager_inductor.sh probe bf16 --force
+```
+
+The wrapper runs fixture generation, two eager captures, two Inductor captures,
+and the final required-artifact comparison. Runtime logs are written below
+`combination_runs/`, portable metrics below `combination_artifacts/`, and the
+HTML/JSON precision result below `combination_reports/precision/`.
+
+The 10-step probe is a run-through gate and is expected to be reported as
+insufficient for formal acceptance. The 1000-step benchmark meets the configured
+minimum-observation requirement; its generated `suite_summary.json` is the
+machine-readable PASS/FAIL result.
+
+See `RUN_GPU_EAGER_INDUCTOR.md` for environment preflight, manual per-phase
+commands, artifact locations, and result interpretation.
 
 The reference remains single-card even when the candidate is FSDP8, TP8, or
 another distributed topology. Run `--capture reference` with at least one

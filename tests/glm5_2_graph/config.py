@@ -20,16 +20,23 @@ def validate_graph_training_args(
     device_type: str,
     arguments: Sequence[str],
 ) -> None:
-    """Enforce the current device boundary for raw compile arguments."""
+    """Enforce backend/device compatibility for raw compile arguments."""
 
     compile_requested = any(
         argument.startswith("--compile.") for argument in arguments
     )
-    if compile_requested and device_type != "npu":
+    if not compile_requested:
+        return
+    if device_type not in {"cuda", "npu"}:
         raise NotImplementedError(
-            "graph-mode experiments currently support only NPU endpoints; "
-            "the CUDA interface is reserved until the torch.compile policy "
-            "is defined"
+            "graph-mode experiments support only CUDA and NPU endpoints"
+        )
+    npugraphs_requested = any(
+        argument == "--compile.backend=npugraphs" for argument in arguments
+    )
+    if npugraphs_requested and device_type != "npu":
+        raise NotImplementedError(
+            "the npugraphs backend supports only NPU endpoints"
         )
 
 
@@ -44,12 +51,17 @@ class GraphFeatureConfig:
     def feature(self, *, device_type: str) -> TrainingFeature:
         if self.mode == "eager":
             return TrainingFeature(name="graph:eager", metadata={"mode": "eager"})
-        validate_graph_training_args(
-            device_type=device_type,
-            arguments=("--compile.enable",),
-        )
         if self.mode == "npugraphs" and self.components != ("model",):
             raise ValueError("npugraphs supports model compilation only")
+        compile_arguments = (
+            "--compile.enable",
+            f"--compile.components={','.join(self.components)}",
+            f"--compile.backend={self.mode}",
+        )
+        validate_graph_training_args(
+            device_type=device_type,
+            arguments=compile_arguments,
+        )
         environment = (
             {"TORCH_LOGS": "graph_breaks,recompiles,dynamic"}
             if self.diagnostics
@@ -57,11 +69,7 @@ class GraphFeatureConfig:
         )
         return TrainingFeature(
             name=f"graph:{self.mode}",
-            arguments=(
-                "--compile.enable",
-                f"--compile.components={','.join(self.components)}",
-                f"--compile.backend={self.mode}",
-            ),
+            arguments=compile_arguments,
             environment=environment,
             metadata={"mode": self.mode, "components": list(self.components)},
         )

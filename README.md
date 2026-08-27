@@ -96,14 +96,17 @@ self-consistency.
 
 The standalone Ascend Profiler workflow is documented in
 [tests/glm5_2_performance/README.md](tests/glm5_2_performance/README.md).
-Compiled graph and standalone performance execution currently support NPU
-only; CUDA values remain reserved interfaces that fail explicitly. CUDA/NPU
-eager precision remains device-neutral.
+Compiled graph precision supports CUDA eager/Inductor and NPU
+eager/Inductor/NPUGraph. Combined performance execution remains NPU-only;
+CUDA/NPU eager precision remains device-neutral.
 
 Graph mode owns only graph execution policy and convenience entry points. Its
-primary correctness experiment compares NPU eager single-card reference data
-with NPU graph-mode single or distributed candidates. See
+correctness experiments compare same-device eager reference data with a graph
+candidate. CUDA validation is single-card eager versus Inductor; NPU validation
+also supports distributed candidates and NPUGraph. See
 [tests/glm5_2_graph/README.md](tests/glm5_2_graph/README.md).
+The CUDA machine procedure is documented in
+[tests/glm5_2_graph/RUN_GPU_EAGER_INDUCTOR.md](tests/glm5_2_graph/RUN_GPU_EAGER_INDUCTOR.md).
 
 Use [tests/glm5_2_combination/README.md](tests/glm5_2_combination/README.md)
 when one training execution must independently select eager/graph modes and

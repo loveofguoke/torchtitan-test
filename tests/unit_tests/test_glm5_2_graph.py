@@ -20,6 +20,8 @@ from tests.glm5_2_graph.config import (
     validate_graph_training_args,
 )
 from tests.glm5_2_graph.precision_benchmark import CONFIG as GRAPH_CONFIG
+from tests.glm5_2_graph.gpu_compile_probe import PROBE_CONFIG as GPU_PROBE_CONFIG
+from tests.glm5_2_graph.gpu_precision_benchmark import CONFIG as GPU_GRAPH_CONFIG
 from tests.glm5_2_performance.analysis import _compiler_diagnostics
 from tests.glm5_2_precision.topology_suite import topology_config
 from tests.glm5_2_precision.workflow import (
@@ -41,9 +43,10 @@ def test_graph_feature_generates_only_compile_arguments() -> None:
     )
 
 
-def test_graph_backends_are_npu_only() -> None:
-    with pytest.raises(NotImplementedError, match="only NPU"):
-        GraphFeatureConfig("inductor").feature(device_type="cuda")
+def test_inductor_supports_cuda_and_npu_but_npugraphs_is_npu_only() -> None:
+    assert "--compile.backend=inductor" in GraphFeatureConfig(
+        "inductor"
+    ).feature(device_type="cuda").arguments
     with pytest.raises(NotImplementedError, match="only NPU"):
         GraphFeatureConfig("npugraphs").feature(device_type="cuda")
     assert "--compile.backend=npugraphs" in GraphFeatureConfig(
@@ -53,10 +56,14 @@ def test_graph_backends_are_npu_only() -> None:
 
 def test_raw_compile_arguments_use_the_same_device_gate() -> None:
     validate_graph_training_args(device_type="cuda", arguments=("--debug.seed=61",))
+    validate_graph_training_args(
+        device_type="cuda",
+        arguments=("--compile.enable", "--compile.backend=inductor"),
+    )
     with pytest.raises(NotImplementedError, match="only NPU"):
         validate_graph_training_args(
             device_type="cuda",
-            arguments=("--compile.enable",),
+            arguments=("--compile.enable", "--compile.backend=npugraphs"),
         )
 
 
@@ -65,6 +72,42 @@ def test_graph_benchmark_compares_npu_eager_and_npu_graph() -> None:
     assert GRAPH_CONFIG.reference.device_type == "npu"
     assert GRAPH_CONFIG.candidate.device_type == "npu"
     assert GRAPH_CONFIG.reference.topology == GRAPH_CONFIG.candidate.topology
+
+
+def test_gpu_graph_benchmark_is_single_cuda_and_isolates_inductor() -> None:
+    assert GPU_GRAPH_CONFIG.kind == "self_consistency"
+    assert GPU_GRAPH_CONFIG.reference.device_type == "cuda"
+    assert GPU_GRAPH_CONFIG.candidate.device_type == "cuda"
+    assert GPU_GRAPH_CONFIG.reference.topology.name == "single"
+    assert GPU_GRAPH_CONFIG.candidate.topology.name == "single"
+    assert GPU_GRAPH_CONFIG.training.steps == 1000
+    assert GPU_GRAPH_CONFIG.training.extra_args == (
+        "--training.disable_cuda_graphs",
+    )
+    assert GPU_PROBE_CONFIG.training.steps == 10
+
+    selection = CombinationSelection(
+        objectives=frozenset(("precision",)),
+        reference_graph=GraphFeatureConfig("eager"),
+        candidate_graph=GraphFeatureConfig("inductor", diagnostics=True),
+        profiler=None,
+    )
+    configured = _apply_selection(
+        topology_config(
+            GPU_GRAPH_CONFIG,
+            GPU_GRAPH_CONFIG.candidate.topology,
+            precision="bf16",
+        ),
+        selection,
+    )
+    assert not any(
+        argument.startswith("--compile.")
+        for argument in configured.reference.extra_args
+    )
+    assert "--compile.backend=inductor" in configured.candidate.extra_args
+    assert configured.candidate.environment["TORCH_LOGS"] == (
+        "graph_breaks,recompiles,dynamic"
+    )
 
 
 def test_combination_defaults_to_npu_self_consistency() -> None:
