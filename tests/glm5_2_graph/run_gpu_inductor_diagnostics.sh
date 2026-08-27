@@ -3,13 +3,15 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: run_gpu_inductor_diagnostics.sh [minimal|trace|all] [fp32|bf16|all]
+Usage: run_gpu_inductor_diagnostics.sh [minimal|trace|internal|all] [fp32|bf16|all]
 
   minimal  Run minimal SiLU/multiply and linear/residual eager/Inductor checks
            in two independent cold caches.
   trace    Capture eager r1/r2 and independently cold-compiled Inductor r1/r2
            Block 0 forward/backward/parameter-gradient fingerprints.
-  all      Run minimal followed by trace.
+  internal Capture the ordered Block 0 internal forward stages for five steps
+           and report the first eager/Inductor divergence at each step.
+  all      Run minimal, Block trace, and internal trace.
 
 CUDA_VISIBLE_DEVICES defaults to 0. Set GPU_DIAG_RUN_ID to choose a stable
 output identity; otherwise a UTC timestamp is used.
@@ -24,7 +26,7 @@ fi
 action=$1
 precision=${2:-all}
 case "$action" in
-  minimal|trace|all) ;;
+  minimal|trace|internal|all) ;;
   *) usage >&2; exit 2 ;;
 esac
 case "$precision" in
@@ -139,10 +141,71 @@ run_trace() {
   done
 }
 
+capture_internal_trace() {
+  role=$1
+  repeat=$2
+  current_precision=$3
+  trace_name=$4
+  cache_name=${5:-}
+  trace_path="$output_root/$trace_name.jsonl"
+  command=(
+    "$python_bin" tests/glm5_2_graph/gpu_internal_trace_probe.py
+    --capture "$role"
+    --repeat "$repeat"
+    --precision "$current_precision"
+    "${common_args[@]}"
+    --force
+  )
+  if [[ -n "$cache_name" ]]; then
+    cache_root="$output_root/$cache_name"
+    GLM5_GPU_INTERNAL_TRACE_PATH="$trace_path" \
+    GLM5_GPU_INTERNAL_TRACE_STEPS=1,2,8,9,10 \
+    TORCHINDUCTOR_CACHE_DIR="$cache_root/inductor" \
+    TRITON_CACHE_DIR="$cache_root/triton" \
+    "${command[@]}"
+  else
+    GLM5_GPU_INTERNAL_TRACE_PATH="$trace_path" \
+    GLM5_GPU_INTERNAL_TRACE_STEPS=1,2,8,9,10 \
+    "${command[@]}"
+  fi
+}
+
+run_internal_trace() {
+  for current_precision in "${precisions[@]}"; do
+    echo "==> internal trace $current_precision prepare fixture"
+    "$python_bin" tests/glm5_2_graph/gpu_internal_trace_probe.py \
+      --data --data-device cuda --precision "$current_precision" \
+      "${common_args[@]}" --force
+
+    echo "==> internal trace $current_precision eager repeats"
+    capture_internal_trace reference 1 "$current_precision" \
+      "$current_precision-internal-eager-r1"
+    capture_internal_trace reference 2 "$current_precision" \
+      "$current_precision-internal-eager-r2"
+
+    echo "==> internal trace $current_precision independent cold Inductor repeats"
+    capture_internal_trace candidate 1 "$current_precision" \
+      "$current_precision-internal-inductor-cold-r1" \
+      "$current_precision-internal-inductor-cold-r1-cache"
+    capture_internal_trace candidate 2 "$current_precision" \
+      "$current_precision-internal-inductor-cold-r2" \
+      "$current_precision-internal-inductor-cold-r2-cache"
+
+    echo "==> internal trace $current_precision compare ordered forward stages"
+    "$python_bin" tests/glm5_2_graph/compare_gpu_internal_traces.py \
+      --eager-r1 "$output_root/$current_precision-internal-eager-r1.jsonl" \
+      --eager-r2 "$output_root/$current_precision-internal-eager-r2.jsonl" \
+      --inductor-r1 "$output_root/$current_precision-internal-inductor-cold-r1.jsonl" \
+      --inductor-r2 "$output_root/$current_precision-internal-inductor-cold-r2.jsonl" \
+      --output "$output_root/$current_precision-internal-trace-comparison.json"
+  done
+}
+
 case "$action" in
   minimal) run_minimal ;;
   trace) run_trace ;;
-  all) run_minimal; run_trace ;;
+  internal) run_internal_trace ;;
+  all) run_minimal; run_trace; run_internal_trace ;;
 esac
 
 echo "Diagnostics complete: $output_root"

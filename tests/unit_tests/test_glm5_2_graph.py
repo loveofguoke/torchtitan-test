@@ -16,6 +16,7 @@ from tests.glm5_2_combination.workflow import (
     _relative_link,
 )
 from tests.glm5_2_graph.compare_gpu_block_traces import compare_traces
+from tests.glm5_2_graph.compare_gpu_internal_traces import compare_internal_traces
 from tests.glm5_2_graph.compare_gpu_minimal_results import compare_minimal_results
 from tests.glm5_2_common.execution import TrainingFeature, compose_execution
 from tests.glm5_2_common.topology import select_topologies, standard_topologies
@@ -26,6 +27,10 @@ from tests.glm5_2_graph.config import (
 from tests.glm5_2_graph.precision_benchmark import CONFIG as GRAPH_CONFIG
 from tests.glm5_2_graph.gpu_compile_probe import PROBE_CONFIG as GPU_PROBE_CONFIG
 from tests.glm5_2_graph.gpu_block_trace_probe import TRACE_CONFIG as GPU_TRACE_CONFIG
+from tests.glm5_2_graph.gpu_internal_block_trace import STAGE_NAMES
+from tests.glm5_2_graph.gpu_internal_trace_probe import (
+    INTERNAL_TRACE_CONFIG as GPU_INTERNAL_TRACE_CONFIG,
+)
 from tests.glm5_2_graph.gpu_precision_benchmark import CONFIG as GPU_GRAPH_CONFIG
 from tests.glm5_2_performance.analysis import _compiler_diagnostics
 from tests.glm5_2_precision.topology_suite import topology_config
@@ -204,6 +209,69 @@ def test_gpu_block_trace_comparison_reports_replays_and_eager_drift(
     assert eager_graph["mismatch_records"] == 1
     assert eager_graph["first_mismatches"][0]["name"] == "block_output"
     assert eager_graph["max_mean_abs_delta"] == pytest.approx(0.25)
+
+
+def test_gpu_internal_trace_preserves_capture_and_orders_first_divergence(
+    tmp_path: Path,
+) -> None:
+    selection = CombinationSelection(
+        objectives=frozenset(("precision",)),
+        reference_graph=GraphFeatureConfig("eager"),
+        candidate_graph=GraphFeatureConfig("inductor", diagnostics=True),
+        profiler=None,
+    )
+    configured = _apply_selection(
+        topology_config(
+            GPU_INTERNAL_TRACE_CONFIG,
+            GPU_INTERNAL_TRACE_CONFIG.candidate.topology,
+            precision="bf16",
+        ),
+        selection,
+    )
+    assert configured.training.steps == 10
+    assert configured.reference.entry_module == (
+        "tests.glm5_2_graph.gpu_diagnostic_capture"
+    )
+    assert configured.candidate.entry_module == (
+        "tests.glm5_2_graph.gpu_diagnostic_capture"
+    )
+
+    def write_trace(path: Path, *, divergent: bool) -> None:
+        rows = []
+        for index, stage in enumerate(STAGE_NAMES):
+            changed = divergent and stage in STAGE_NAMES[2:]
+            rows.append(
+                {
+                    "step": 1,
+                    "name": stage,
+                    "kind": "forward",
+                    "sha256": f"{stage}-{'different' if changed else 'same'}",
+                    "mean": float(index) + (0.25 if changed else 0.0),
+                    "max_abs": float(index + 1),
+                    "l2": float(index + 2) + (0.5 if changed else 0.0),
+                }
+            )
+        path.write_text(
+            "".join(json.dumps(row) + "\n" for row in rows),
+            encoding="utf-8",
+        )
+
+    paths = {
+        name: tmp_path / f"{name}.jsonl"
+        for name in ("eager-r1", "eager-r2", "inductor-r1", "inductor-r2")
+    }
+    write_trace(paths["eager-r1"], divergent=False)
+    write_trace(paths["eager-r2"], divergent=False)
+    write_trace(paths["inductor-r1"], divergent=True)
+    write_trace(paths["inductor-r2"], divergent=True)
+
+    result = compare_internal_traces(paths)
+    eager_replay, inductor_replay, eager_inductor = result["comparisons"][:3]
+    assert eager_replay["exact_records"] == len(STAGE_NAMES)
+    assert inductor_replay["exact_records"] == len(STAGE_NAMES)
+    first = eager_inductor["first_divergence_by_step"][0]["first_divergence"]
+    assert first["stage"] == "attention_output"
+    assert first["mean_abs_delta"] == pytest.approx(0.25)
 
 
 def test_gpu_minimal_comparison_reports_cold_compile_reproducibility(

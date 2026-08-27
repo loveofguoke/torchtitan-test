@@ -28,6 +28,13 @@ def main() -> None:
 
         install_gpu_block_trace()
 
+    if os.environ.get("GLM5_GPU_INTERNAL_TRACE_PATH"):
+        from tests.glm5_2_graph.gpu_internal_block_trace import (
+            install_gpu_internal_block_trace,
+        )
+
+        install_gpu_internal_block_trace()
+
     from torchtitan.train import main as train_main
 
     train_main()

@@ -204,6 +204,19 @@ See `RUN_GPU_EAGER_INDUCTOR.md` for environment preflight, manual per-phase
 commands, artifact locations, result interpretation, and the post-failure CUDA
 minimal-fusion/Block-trace/cold-cache diagnostic sequence.
 
+After the Block 0 boundary trace has established a step-1 internal divergence,
+run the ordered internal-stage trace. It compares attention, residual, norm,
+and dense SwiGLU stages across two eager and two independently cold-compiled
+runs:
+
+```bash
+GPU_DIAG_RUN_ID=h20-internal-v1 tests/glm5_2_graph/run_gpu_inductor_diagnostics.sh internal all
+```
+
+Intermediate stages are graph outputs in this diagnostic, so the trace is for
+locating the first divergent stage. Fusion causality remains covered by the
+separate minimal materialization A/B checks.
+
 The reference remains single-card even when the candidate is FSDP8, TP8, or
 another distributed topology. Run `--capture reference` with at least one
 visible NPU; the artifact is shared by all selected candidates.

@@ -120,6 +120,8 @@ keeping all CUDA hooks and outputs independent from NPU patches:
    1, 2, 8, 9, and 10.
 3. Block 0 parameter gradients immediately before clipping.
 4. Two Inductor repeats compiled in separate Inductor and Triton cache roots.
+5. Ordered internal forward stages for attention, residuals, norms, and dense
+   SwiGLU projections after a Block-internal divergence is established.
 
 Run the complete FP32 and BF16 diagnostic in one command:
 
@@ -138,6 +140,7 @@ Run only the minimal fusion checks or only the Block trace when needed:
 ```bash
 GPU_DIAG_RUN_ID=h20-minimal-v1 tests/glm5_2_graph/run_gpu_inductor_diagnostics.sh minimal all
 GPU_DIAG_RUN_ID=h20-trace-v1 tests/glm5_2_graph/run_gpu_inductor_diagnostics.sh trace all
+GPU_DIAG_RUN_ID=h20-internal-v1 tests/glm5_2_graph/run_gpu_inductor_diagnostics.sh internal all
 ```
 
 Each minimal precision/repeat writes JSONL containing exact hashes, mismatch
@@ -157,3 +160,8 @@ prove cold-build reproducibility rather than only same-cache replay. An exact
 Block input followed by a mismatching Block output localizes the first observed
 difference inside Block 0. A mismatching parameter gradient before clipping
 proves the difference has reached the first optimizer update.
+
+The internal trace prints the first divergent stage at steps 1, 2, 8, 9, and
+10. Its intermediate tensors are additional graph outputs and therefore
+materialization points; use it to localize the first stage, then use the
+minimal A/B checks to establish fusion causality.
