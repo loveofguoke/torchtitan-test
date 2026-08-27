@@ -80,6 +80,11 @@ matched worker fails the test.
 | `--run-tag` | Short output-identity label for feature variants such as `inductor`. | unset |
 | `--force` | Start a new generation for the selected topology range. All selected members are removed before execution; rerun without it after interruption to skip completed members and continue. | disabled |
 
+Each topology member records a top-level `run_state.json`; every baseline,
+interruption, and resumed runtime log carries the same attempt ID. `--force`
+checks that no recorded orchestrator is alive, then prints and verifies removal
+of the selected run/report generation before executing any child topology.
+
 The fixture-defining options (`precision`, steps, batches, sequence length,
 seed, run tag, extra training arguments, async mode, comparison mode, and
 requested failure modes) must match between `--data` and execution. For

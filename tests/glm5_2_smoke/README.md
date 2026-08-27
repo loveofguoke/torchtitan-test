@@ -143,6 +143,11 @@ by their dedicated suites.
 
 Every run writes `runtime.log`, `manifest.json`, and TorchTitan output below:
 
+The topology directory also writes `run_state.json`. Its attempt ID and
+orchestrator PID distinguish a newly forced run from an older log at the same
+path. `--force` prints and verifies every removed topology directory and refuses
+to overwrite a run whose orchestrator is still alive.
+
 ```text
 smoke_runs/<device-and-training-config>/<topology>/
 ```

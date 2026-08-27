@@ -23,7 +23,12 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from tests.glm5_2_common.cli import archive_previous_output
+from tests.glm5_2_common.cli import (
+    RunAttempt,
+    archive_previous_output,
+    assert_run_not_active,
+    reset_output_generation,
+)
 from tests.glm5_2_common.device import resolve_accelerator
 from tests.glm5_2_common.naming import config_name
 from tests.glm5_2_common.topology import (
@@ -361,6 +366,8 @@ def _run_process(
 ) -> dict[str, Any]:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("w", encoding="utf-8") as stream:
+        if attempt_id := environment.get("GLM5_RUN_ATTEMPT_ID"):
+            stream.write(f"Run attempt: {attempt_id}\n\n")
         stream.write("Command: " + " ".join(command) + "\n\n")
         stream.flush()
         try:
@@ -1377,9 +1384,13 @@ def main() -> int:
             )
             return 0
         if args.force:
-            shutil.rmtree(run_root, ignore_errors=True)
-            shutil.rmtree(report_root, ignore_errors=True)
+            reset_output_generation(
+                (run_root, report_root),
+                active_run_directories=(run_root,),
+                label="checkpoint",
+            )
         else:
+            assert_run_not_active(run_root)
             archived_run = archive_previous_output(run_root)
             archived_report = archive_previous_output(report_root)
             archived = [
@@ -1394,6 +1405,16 @@ def main() -> int:
             )
     run_root.mkdir(parents=True, exist_ok=True)
     report_root.mkdir(parents=True, exist_ok=True)
+    attempt = RunAttempt.start(
+        run_root,
+        kind="checkpoint",
+        context={
+            "device": device,
+            "topology": topology.slug,
+            "fixture_generation_id": fixture_generation_id,
+            "failure_modes": list(failure_modes),
+        },
+    )
 
     if not fixture_manifest.is_file():
         if fixture.exists():
@@ -1406,6 +1427,7 @@ def main() -> int:
     initial_checkpoint, token_plan = resolve_fixture_inputs(root, fixture_config)
 
     common_environment = os.environ.copy()
+    common_environment["GLM5_RUN_ATTEMPT_ID"] = attempt.attempt_id
     baseline_root = run_root / "baseline"
     baseline_log = baseline_root / "runtime.log"
     print(
@@ -1747,6 +1769,7 @@ def main() -> int:
         "schema_version": 2,
         "run_name": run_name,
         "fixture_generation_id": fixture_generation_id,
+        "attempt_id": attempt.attempt_id,
         "passed": bool(passed),
         "total_steps": args.total_steps,
         "split_step": args.split_step,
@@ -1781,6 +1804,11 @@ def main() -> int:
         json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     _write_report(report_path, summary)
+    attempt.update(
+        "completed" if passed else "failed",
+        passed=bool(passed),
+        report=str(report_path),
+    )
     print(
         f"Checkpoint resume status: {'PASS' if passed else 'FAIL'}\n"
         f"Report: {report_path}",

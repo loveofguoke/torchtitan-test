@@ -140,6 +140,16 @@ training config. Topology selection may be narrowed during capture and expanded
 later during compare because every topology shares the same fixture. `--force`
 is never required merely to resume an interrupted suite.
 
+Every capture writes `capture_state.json` with its attempt ID, fixture
+generation, orchestrator PID, and lifecycle status. The same attempt ID and
+fixture generation are written at the beginning of `runtime.log`. A forced
+capture prints every run, artifact, input-contract, and report path it removed
+and verifies that removal before training starts. It refuses to replace a
+capture whose recorded orchestrator PID is still alive. After an external
+interruption, rerun the same capture command without `--force`: completed
+repeats are reused, while the incomplete repeat and its rank-level input
+contract are replaced together.
+
 ## Report contents and acceptance
 
 Every detailed report shows the complete loss and global-grad-norm curves,

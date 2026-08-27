@@ -28,6 +28,10 @@ finishes every step in less than one hour is reported as
 | `--run-tag` | Short label included in output identity, for example `inductor`. | unset |
 | `--force` | Start a new generation for the selected topology range. All selected members are removed before execution; rerun without it after interruption to resume. | disabled |
 
+Each topology run records `run_state.json` and writes the attempt ID into its
+runtime log. A forced suite refuses to overwrite a live orchestrator and prints
+and verifies every selected run/report directory it removes.
+
 Keep precision, steps, batch sizes, sequence length, seed, run tag, and every
 extra training argument identical between `--data` and execution. `--topology`
 does not change the fixture; `--data --topology all` therefore still creates

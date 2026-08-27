@@ -480,7 +480,17 @@ def run_combination_cli(
                 path = capture_endpoint(
                     root, config, role=args.capture, repeat=repeat, force=False
                 )
-                print(f"Captured {args.capture} {name} repeat {repeat}: {path}")
+                capture_topology = endpoint.topology.slug
+                if path is None:
+                    print(
+                        f"Completed {args.capture} {capture_topology} repeat "
+                        f"{repeat}; this node does not own the metrics artifact."
+                    )
+                else:
+                    print(
+                        f"Captured {args.capture} {capture_topology} repeat "
+                        f"{repeat}: {path}"
+                    )
         return
     print(
         "Combined report:",

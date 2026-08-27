@@ -219,6 +219,11 @@ python tests/glm5_2_combination/combination_benchmark.py \
 | `--profile-active-steps` | Profiler active collection steps. | `3` |
 | `--data-device` | Generic fixture backend override (`cuda` or `npu`). The current NPU/NPU combined config uses `npu`. | inferred from the NPU visibility variable |
 | `--force` | Replace valid existing fixture/capture output. | disabled |
+
+Combination captures inherit the same audited lifecycle as precision and graph:
+attempt/generation/PID state is recorded, live runs cannot be overwritten, and
+forced execution prints and verifies deletion of every selected capture output
+and exact-name failed archive before any topology starts.
 | `--require-all` | Require all selected topology/repeat artifacts during compare. | disabled |
 
 The built-in combined profile uses 5000 steps, local batch 8, global batch 64,

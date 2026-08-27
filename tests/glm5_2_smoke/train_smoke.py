@@ -12,14 +12,17 @@ from datetime import datetime
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from tests.glm5_2_common.cli import reset_output_generation  # noqa: E402
+from tests.glm5_2_common.cli import (  # noqa: E402
+    RunAttempt,
+    assert_run_not_active,
+    reset_output_generation,
+)
 from tests.glm5_2_common.topology import (  # noqa: E402
     ParallelTopology,
     select_topologies,
@@ -117,6 +120,7 @@ def _completed(path: Path, contract: dict[str, Any]) -> bool:
 def _preserve_failed_run(path: Path) -> None:
     if not path.exists():
         return
+    assert_run_not_active(path)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     target = path.with_name(f"{path.name}.failed-{stamp}")
     suffix = 1
@@ -165,10 +169,23 @@ def _run_topology(
         print(f"Skip completed topology {topology.name}: {run_directory}")
         return run_directory
     if force and run_directory.exists():
-        shutil.rmtree(run_directory)
+        reset_output_generation(
+            (run_directory,),
+            active_run_directories=(run_directory,),
+            label="smoke",
+        )
     else:
         _preserve_failed_run(run_directory)
     run_directory.mkdir(parents=True)
+    attempt = RunAttempt.start(
+        run_directory,
+        kind="smoke",
+        context={
+            "device": device,
+            "topology": topology.slug,
+            "steps": steps,
+        },
+    )
 
     runtime_log = run_directory / "runtime.log"
     command = [
@@ -219,10 +236,15 @@ def _run_topology(
         "contract": contract,
         "command": command,
         "runtime_log": str(runtime_log),
+        "attempt_id": attempt.attempt_id,
     }
     (run_directory / "manifest.json").write_text(
         json.dumps(record, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
+    )
+    attempt.update(
+        "completed" if result.returncode == 0 else "failed",
+        return_code=result.returncode,
     )
     if result.returncode:
         raise subprocess.CalledProcessError(result.returncode, command)
@@ -306,7 +328,11 @@ def main() -> int:
         # Reset the complete selected generation before launching its first
         # topology, so a later resume cannot mix old and new suite members.
         reset_output_generation(
-            [suite_root / topologies[name].slug for name in selected]
+            [suite_root / topologies[name].slug for name in selected],
+            active_run_directories=[
+                suite_root / topologies[name].slug for name in selected
+            ],
+            label="smoke suite",
         )
     for name in selected:
         _run_topology(

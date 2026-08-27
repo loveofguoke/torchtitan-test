@@ -122,5 +122,22 @@ Experiment output is resumed per suite member:
 - `--data --force` creates a new fixture generation. Captures tied to an older
   generation are not finalized or reused, even when their files are complete.
 
+Long-running mutable experiments use the shared `RunAttempt` lifecycle. Each
+run directory contains `run_state.json` with an attempt ID, orchestrator PID,
+context, and `running`/`failed`/`completed` status. Runtime logs record the same
+attempt ID where the experiment owns log creation. Before `--force` removes
+anything, the complete selected range is preflighted for live orchestrators;
+all selected run/artifact/report/input-contract paths and their exact-name
+`.previous-*`/`.failed-*` siblings are then removed, printed, and verified
+absent before the first new process starts. An interrupted command
+is resumed without `--force`: completed members are retained, while incomplete
+members are archived or replaced as one unit.
+
+This policy applies to precision (including graph and combination captures),
+performance/profiler, stability, checkpoint, and smoke. Parity artifacts remain
+immutable and graph-debug probes create timestamped directories, so those two
+workflows never overwrite an existing generation and intentionally do not add a
+mutable `--force` lifecycle.
+
 Use `--topology NAME --force` to replace only one topology. Use `--topology
 all --force` only when the whole suite should start over.

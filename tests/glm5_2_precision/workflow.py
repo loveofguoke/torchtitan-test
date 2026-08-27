@@ -635,6 +635,28 @@ def _run_directory(
     return directory / name
 
 
+def _input_contract_directory(
+    root: Path,
+    config: FormalExperimentConfig,
+    role: str,
+    endpoint: TrainingEndpoint,
+    repeat: int,
+) -> Path:
+    """Return the rank-level fixed-input evidence owned by one capture.
+
+    This directory is deliberately outside the trainer run directory because
+    every rank writes into the same contract. It must nevertheless follow the
+    same reset/retry lifecycle as the run and artifact; otherwise rank files
+    left by an interrupted generation can be mixed into the next capture.
+    """
+
+    directory = root / config.run_root / config.storage_name
+    if config.topology_subdirectory:
+        directory /= endpoint.topology.slug
+    artifact_name = _artifact_directory(root, config, role, endpoint, repeat).name
+    return directory / f"{artifact_name}-input-contract"
+
+
 def _report_directory(root: Path, config: FormalExperimentConfig) -> Path:
     parent = root / config.report_root
     destination = parent / config.storage_name
@@ -825,9 +847,14 @@ def _run_process(
     root: Path,
     environment: dict[str, str],
     log_path: Path,
+    log_context: dict[str, Any] | None = None,
 ) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("w", encoding="utf-8") as log:
+        for key, value in (log_context or {}).items():
+            log.write(f"{key}: {value}\n")
+        if log_context:
+            log.write("\n")
         log.write("Command: " + " ".join(command) + "\n\n")
         log.flush()
         process = subprocess.run(
@@ -869,7 +896,24 @@ def prepare_fixture(
                 print(f"Reuse completed fixture: {fixture_directory}", flush=True)
                 return fixture_directory
         if force:
-            shutil.rmtree(fixture_directory)
+            previous_generation = None
+            fixture_manifest = fixture_directory / "fixture.json"
+            if fixture_manifest.is_file():
+                try:
+                    previous_generation = json.loads(
+                        fixture_manifest.read_text(encoding="utf-8")
+                    ).get("generation_id")
+                except (OSError, TypeError, ValueError):
+                    pass
+            _assert_fixture_generation_not_running(
+                root,
+                config,
+                previous_generation,
+            )
+            reset_output_generation(
+                (fixture_directory,),
+                label="fixture",
+            )
         else:
             archived = archive_previous_output(fixture_directory)
             print(
@@ -1011,6 +1055,41 @@ def prepare_fixture(
     return fixture_directory
 
 
+def _assert_fixture_generation_not_running(
+    root: Path,
+    config: FormalExperimentConfig,
+    generation_id: str | None,
+) -> None:
+    if generation_id is None:
+        return
+    run_root = root / config.run_root
+    if not run_root.is_dir():
+        return
+    state_paths = (
+        *run_root.rglob("capture_state.json"),
+        *run_root.rglob("run_state.json"),
+    )
+    for state_path in state_paths:
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state_generation = state.get("fixture_generation_id") or state.get(
+                "context", {}
+            ).get("fixture_generation_id")
+            pid = int(state.get("pid", -1))
+        except (OSError, TypeError, ValueError):
+            continue
+        if (
+            state.get("status") == "running"
+            and state_generation == generation_id
+            and _process_is_running(pid)
+        ):
+            raise RuntimeError(
+                "fixture generation is still used by a live experiment: "
+                f"PID {pid}, state {state_path}; stop that process before "
+                "recreating the fixture"
+            )
+
+
 def capture_endpoint(
     root: Path,
     config: FormalExperimentConfig,
@@ -1061,15 +1140,17 @@ def capture_endpoint(
     metrics_path = run_directory / "raw_metrics.jsonl"
     runtime_log = run_directory / "runtime.log"
     run_generation_path = run_directory / "fixture_generation.json"
-    input_contract_directory = root / config.run_root / config.storage_name
-    if config.topology_subdirectory:
-        input_contract_directory /= endpoint.topology.slug
-    input_contract_directory /= (
-        f"{_artifact_directory(root, config, role, endpoint, repeat).name}"
-        "-input-contract"
+    capture_state_path = run_directory / "capture_state.json"
+    input_contract_directory = _input_contract_directory(
+        root,
+        config,
+        role,
+        endpoint,
+        repeat,
     )
     finalize_existing = False
     if run_directory.exists():
+        _assert_capture_not_running(run_directory)
         run_generation_matches = fixture_generation is None
         if fixture_generation is not None and run_generation_path.is_file():
             try:
@@ -1110,6 +1191,15 @@ def capture_endpoint(
             )
         if not finalize_existing:
             shutil.rmtree(run_directory)
+            if input_contract_directory.exists():
+                shutil.rmtree(input_contract_directory)
+    elif input_contract_directory.exists():
+        print(
+            "Discard orphaned input contract before capture retry: "
+            f"{input_contract_directory}",
+            flush=True,
+        )
+        shutil.rmtree(input_contract_directory)
     run_directory.mkdir(parents=True, exist_ok=True)
     if fixture_generation is not None:
         _write_json(
@@ -1147,25 +1237,53 @@ def capture_endpoint(
         f"repeat={repeat}/{endpoint.repeats}, device={endpoint.device_type}, "
         f"world_size={endpoint.topology.world_size}"
     )
+    capture_attempt_id = uuid.uuid4().hex
     if not finalize_existing:
         print(
             f"Starting capture: {capture_label}\nRuntime log: {runtime_log}",
             flush=True,
         )
+        capture_state = {
+            "schema": "torchtitan.glm5_2.precision_capture_state",
+            "status": "running",
+            "pid": os.getpid(),
+            "capture_attempt_id": capture_attempt_id,
+            "fixture_generation_id": fixture_generation,
+            "capture": capture_label,
+        }
+        _write_json(capture_state_path, capture_state)
         try:
             _run_process(
                 command,
                 root=root,
                 environment=environment,
                 log_path=runtime_log,
+                log_context={
+                    "Capture": capture_label,
+                    "Capture attempt": capture_attempt_id,
+                    "Fixture generation": fixture_generation,
+                    "Orchestrator PID": os.getpid(),
+                },
             )
-        except subprocess.CalledProcessError:
+        except subprocess.CalledProcessError as error:
+            _write_json(
+                capture_state_path,
+                {
+                    **capture_state,
+                    "status": "failed",
+                    "returncode": error.returncode,
+                },
+            )
             print(
                 f"Capture failed: {capture_label}\nRuntime log: {runtime_log}",
                 file=sys.stderr,
                 flush=True,
             )
             raise
+        _write_json(
+            capture_state_path,
+            {**capture_state, "status": "training_completed"},
+        )
 
     if endpoint.node_rank != metrics_node_rank:
         return None
@@ -1213,13 +1331,14 @@ def capture_endpoint(
         "device_type": endpoint.device_type,
         "repeat": repeat,
         "node_rank": endpoint.node_rank,
+        "capture_attempt_id": capture_attempt_id,
         "source": _source_metadata(root),
     }
     if "--profiler.enable_profiling" in endpoint.extra_args:
         metadata["profiler_output"] = str(
             run_directory / "trainer_output" / "profiling" / "traces"
         )
-    return PrecisionArtifactWriter(artifact_directory).write(
+    artifact_path = PrecisionArtifactWriter(artifact_directory).write(
         metadata=metadata,
         training_contract=training_contract,
         metrics=metrics,
@@ -1227,6 +1346,56 @@ def capture_endpoint(
             "input_contract.json": input_contract_directory / "summary.json"
         },
     )
+    _write_json(
+        capture_state_path,
+        {
+            "schema": "torchtitan.glm5_2.precision_capture_state",
+            "status": "completed",
+            "pid": os.getpid(),
+            "capture_attempt_id": capture_attempt_id,
+            "fixture_generation_id": fixture_generation,
+            "capture": capture_label,
+            "artifact": str(artifact_path),
+        },
+    )
+    return artifact_path
+
+
+def _process_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _assert_capture_not_running(run_directory: Path) -> None:
+    """Refuse to replace output while its recorded orchestrator is alive."""
+
+    state_path = run_directory / "capture_state.json"
+    if not state_path.is_file():
+        return
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        pid = int(state.get("pid", -1))
+    except (OSError, TypeError, ValueError):
+        return
+    if (
+        state.get("status") == "running"
+        and pid != os.getpid()
+        and _process_is_running(pid)
+    ):
+        raise RuntimeError(
+            f"capture is still running with orchestrator PID {pid}: "
+            f"{run_directory}; stop that process before retrying or forcing "
+            "the capture"
+        )
 
 
 def reset_capture_outputs(
@@ -1246,14 +1415,22 @@ def reset_capture_outputs(
     endpoint = config.reference if role == "reference" else config.candidate
     report_directory = _report_directory(root, config)
     selected_paths = [report_directory]
+    run_directories: list[Path] = []
     for repeat in repeats:
+        run_directory = _run_directory(root, config, role, endpoint, repeat)
+        run_directories.append(run_directory)
         selected_paths.extend(
             (
                 _artifact_directory(root, config, role, endpoint, repeat),
-                _run_directory(root, config, role, endpoint, repeat),
+                run_directory,
+                _input_contract_directory(
+                    root, config, role, endpoint, repeat
+                ),
             )
         )
-    reset_output_generation(selected_paths)
+    for run_directory in run_directories:
+        _assert_capture_not_running(run_directory)
+    reset_output_generation(selected_paths, label="precision capture")
 
 
 def _apply_endpoint_overrides(

@@ -56,9 +56,14 @@ from tests.glm5_2_precision.workflow import (
     FormalTrainingConfig,
     ParallelTopology,
     TrainingEndpoint,
+    _artifact_directory,
     _completed_capture_can_be_finalized,
     _endpoint_from_process_environment,
     _fixture_endpoint_from_environment,
+    _input_contract_directory,
+    _report_directory,
+    _run_directory,
+    reset_capture_outputs,
     standard_topologies,
     training_topology_plan,
 )
@@ -859,6 +864,163 @@ def test_migration_topologies_share_one_fixture_identity() -> None:
         == fsdp.storage_name.rsplit("-", 1)[1]
     )
     assert fsdp.reference.topology == fsdp.candidate.topology
+
+
+def test_force_reset_removes_rank_contract_with_run_and_artifact(
+    tmp_path: Path,
+) -> None:
+    topology = ParallelTopology("single", 1)
+    endpoint = TrainingEndpoint("reference", "cuda", "0", topology, repeats=2)
+    config = FormalExperimentConfig(
+        name="reset-capture",
+        kind="self_consistency",
+        reference=endpoint,
+        candidate=replace(endpoint, name="candidate"),
+        fixture_root="fixtures",
+        artifact_root="artifacts",
+        run_root="runs",
+        report_root="reports",
+    )
+    fixture = tmp_path / config.fixture_root / config.fixture_storage_name
+    fixture.mkdir(parents=True)
+    (fixture / "fixture.json").write_text("{}\n", encoding="utf-8")
+    selected: list[Path] = [_report_directory(tmp_path, config)]
+    for repeat in (1, 2):
+        selected.extend(
+            (
+                _artifact_directory(
+                    tmp_path, config, "reference", endpoint, repeat
+                ),
+                _run_directory(tmp_path, config, "reference", endpoint, repeat),
+                _input_contract_directory(
+                    tmp_path, config, "reference", endpoint, repeat
+                ),
+            )
+        )
+    for path in selected:
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "stale").write_text("old generation\n", encoding="utf-8")
+
+    reset_capture_outputs(
+        tmp_path,
+        config,
+        role="reference",
+        repeats=(1, 2),
+    )
+
+    assert fixture.is_dir()
+    assert all(not path.exists() for path in selected)
+
+
+def test_force_reset_refuses_to_delete_a_live_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.glm5_2_precision import workflow
+
+    topology = ParallelTopology("single", 1)
+    endpoint = TrainingEndpoint("reference", "cuda", "0", topology, repeats=1)
+    config = FormalExperimentConfig(
+        name="live-capture",
+        kind="self_consistency",
+        reference=endpoint,
+        candidate=replace(endpoint, name="candidate"),
+        artifact_root="artifacts",
+        run_root="runs",
+        report_root="reports",
+    )
+    run_directory = _run_directory(
+        tmp_path, config, "reference", endpoint, 1
+    )
+    run_directory.mkdir(parents=True)
+    (run_directory / "capture_state.json").write_text(
+        json.dumps({"status": "running", "pid": 12345}) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(workflow, "_process_is_running", lambda pid: True)
+
+    with pytest.raises(RuntimeError, match="capture is still running"):
+        reset_capture_outputs(
+            tmp_path,
+            config,
+            role="reference",
+            repeats=(1,),
+        )
+
+    assert run_directory.is_dir()
+
+
+def test_self_consistency_reference_capture_is_shared_and_labeled_single(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from tests.glm5_2_precision import topology_suite
+
+    topologies = {
+        "single": ParallelTopology("single", 1),
+        "ddp2": ParallelTopology(
+            "ddp2", 2, data_parallel_replicate_degree=2
+        ),
+        "fsdp2": ParallelTopology(
+            "fsdp2", 2, data_parallel_shard_degree=2
+        ),
+    }
+    reference = TrainingEndpoint(
+        "reference", "cuda", "0,1", topologies["single"], repeats=2
+    )
+    config = FormalExperimentConfig(
+        name="shared-reference",
+        kind="self_consistency",
+        reference=reference,
+        candidate=replace(
+            reference, name="candidate", topology=topologies["ddp2"]
+        ),
+        training=FormalTrainingConfig(
+            steps=2,
+            local_batch_size=2,
+            global_batch_size=4,
+        ),
+        fixture_root="fixtures",
+        artifact_root="artifacts",
+        run_root="runs",
+        report_root="reports",
+    )
+    calls: list[tuple[str, str, int]] = []
+
+    def fake_capture_endpoint(
+        root: Path,
+        member: FormalExperimentConfig,
+        *,
+        role: str,
+        repeat: int,
+        force: bool,
+    ) -> Path:
+        endpoint = member.reference if role == "reference" else member.candidate
+        calls.append((role, endpoint.topology.slug, repeat))
+        return _artifact_directory(root, member, role, endpoint, repeat)
+
+    script = tmp_path / "tests" / "glm5_2_precision" / "benchmark.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("", encoding="utf-8")
+    monkeypatch.setattr(topology_suite, "capture_endpoint", fake_capture_endpoint)
+    monkeypatch.setattr(
+        "sys.argv",
+        [str(script), "--capture", "reference", "--topology", "all"],
+    )
+
+    topology_suite.run_topology_suite_cli(
+        config,
+        str(script),
+        topologies=topologies,
+        topology_names=("ddp2", "fsdp2"),
+    )
+
+    assert calls == [("reference", "single", 1), ("reference", "single", 2)]
+    output = capsys.readouterr().out
+    assert "Captured reference single repeat 1" in output
+    assert "Captured reference single repeat 2" in output
+    assert "Captured reference ddp2" not in output
 
 
 def test_report_standard_does_not_change_capture_storage_name() -> None:

@@ -358,6 +358,7 @@ def run_checkpoint_topology_suite(
         # generation instead of accepting untouched output from an older run.
         assert suite_name is not None
         selected_paths: list[Path] = []
+        selected_runs: list[Path] = []
         for topology_slug, member_name in members:
             run_directory, report_directory, _, _ = checkpoint_member_paths(
                 root,
@@ -365,8 +366,13 @@ def run_checkpoint_topology_suite(
                 topology_slug=topology_slug,
                 member_name=member_name,
             )
+            selected_runs.append(run_directory)
             selected_paths.extend((run_directory, report_directory))
-        reset_output_generation(selected_paths)
+        reset_output_generation(
+            selected_paths,
+            active_run_directories=selected_runs,
+            label="checkpoint suite",
+        )
     for topology_name in topology_names:
         command = [
             sys.executable,

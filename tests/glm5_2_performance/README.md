@@ -89,6 +89,11 @@ sequence length 32.
 | `--extra-train-arg` | Append one raw TorchTitan argument; repeat the flag for multiple arguments. | none |
 | `--force` | Remove and recapture completed output. Incomplete output is archived and retried without it. | disabled |
 
+Each mutable capture writes `run_state.json`, and `runtime.log` begins with the
+same attempt ID. Forced suite execution preflights all selected topologies for
+live orchestrators, then prints and verifies removal of run, artifact, and
+report output before starting the first capture.
+
 The fixed seed is 61, parameter dtype is BF16, reduction/training master dtype
 is FP32, and deterministic algorithms are disabled in the profiler benchmark
 to avoid measuring a different execution policy. These values live in

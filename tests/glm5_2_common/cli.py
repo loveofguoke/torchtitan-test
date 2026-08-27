@@ -5,12 +5,16 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+import json
+import os
 import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
+import uuid
 
 
 def archive_previous_output(path: Path) -> Path | None:
@@ -30,14 +34,164 @@ def archive_previous_output(path: Path) -> Path | None:
     return destination
 
 
-def reset_output_generation(paths: Sequence[Path]) -> None:
-    """Remove every selected output before a new suite generation starts."""
+def process_is_running(pid: int) -> bool:
+    """Return whether a recorded orchestrator PID is still alive."""
 
-    for path in dict.fromkeys(paths):
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def assert_run_not_active(
+    path: Path,
+    *,
+    state_name: str | None = None,
+) -> None:
+    """Refuse to replace a run whose recorded orchestrator is still alive."""
+
+    state_names = (
+        (state_name,)
+        if state_name is not None
+        else ("run_state.json", "capture_state.json")
+    )
+    for candidate in state_names:
+        state_path = path / candidate
+        if not state_path.is_file():
+            continue
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            pid = int(state.get("pid", -1))
+        except (OSError, TypeError, ValueError):
+            continue
+        if (
+            state.get("status") == "running"
+            and pid != os.getpid()
+            and process_is_running(pid)
+        ):
+            raise RuntimeError(
+                f"run is still active with orchestrator PID {pid}: {path}; "
+                "stop that process before retrying or forcing the experiment"
+            )
+
+
+@dataclass
+class RunAttempt:
+    """Auditable lifecycle marker shared by long-running experiments."""
+
+    directory: Path
+    kind: str
+    context: dict[str, Any] = field(default_factory=dict)
+    attempt_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    pid: int = field(default_factory=os.getpid)
+    state_name: str = "run_state.json"
+
+    @classmethod
+    def start(
+        cls,
+        directory: Path,
+        *,
+        kind: str,
+        context: dict[str, Any] | None = None,
+        state_name: str = "run_state.json",
+    ) -> "RunAttempt":
+        assert_run_not_active(directory, state_name=state_name)
+        attempt = cls(
+            directory=directory,
+            kind=kind,
+            context=dict(context or {}),
+            state_name=state_name,
+        )
+        attempt.update("running")
+        return attempt
+
+    @property
+    def state_path(self) -> Path:
+        return self.directory / self.state_name
+
+    @property
+    def log_context(self) -> dict[str, Any]:
+        return {
+            "Run kind": self.kind,
+            "Run attempt": self.attempt_id,
+            "Orchestrator PID": self.pid,
+            **self.context,
+        }
+
+    def update(self, status: str, **values: Any) -> None:
+        self.directory.mkdir(parents=True, exist_ok=True)
+        state = {
+            "schema": "torchtitan.glm5_2.run_state",
+            "schema_version": 1,
+            "kind": self.kind,
+            "status": status,
+            "attempt_id": self.attempt_id,
+            "pid": self.pid,
+            "context": self.context,
+            **values,
+        }
+        temporary = self.state_path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(state, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(self.state_path)
+
+
+def reset_output_generation(
+    paths: Sequence[Path],
+    *,
+    active_run_directories: Sequence[Path] = (),
+    label: str = "experiment",
+    include_archives: bool = True,
+) -> None:
+    """Remove and verify every selected output before a new generation."""
+
+    selected_paths = list(dict.fromkeys(paths))
+    expanded_paths = list(selected_paths)
+    if include_archives:
+        for path in selected_paths:
+            if not path.parent.exists():
+                continue
+            patterns = (
+                f".{path.name}.previous-*",
+                f"{path.name}.previous-*",
+                f".{path.name}.failed-*",
+                f"{path.name}.failed-*",
+            )
+            for pattern in patterns:
+                expanded_paths.extend(path.parent.glob(pattern))
+    unique_paths = list(dict.fromkeys(expanded_paths))
+    for run_directory in dict.fromkeys(active_run_directories):
+        assert_run_not_active(run_directory)
+    for path in unique_paths:
+        if path.is_dir():
+            assert_run_not_active(path)
+    existing_paths = [path for path in unique_paths if path.exists()]
+    for path in unique_paths:
         if path.is_dir():
             shutil.rmtree(path)
         elif path.exists():
             path.unlink()
+    remaining = [path for path in existing_paths if path.exists()]
+    if remaining:
+        raise RuntimeError(
+            f"failed to reset {label} outputs: "
+            + ", ".join(str(path) for path in remaining)
+        )
+    if existing_paths:
+        print(f"Removed {label} outputs for forced rerun:", flush=True)
+        for path in existing_paths:
+            print(f"  {path}", flush=True)
+    else:
+        print(f"No existing {label} outputs required removal.", flush=True)
 
 
 def replace_topology(argv: Sequence[str], topology: str) -> list[str]:

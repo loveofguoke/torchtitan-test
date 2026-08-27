@@ -238,6 +238,12 @@ same options. Their entry-point defaults differ only where noted below.
 | `--profile-active-steps` | Recorded Profiler steps. | `3` |
 | `--data-device` | Fixture-generation backend override. The generic choices are `cuda` and `npu`; current NPU graph entry points use `npu`. | inferred from the NPU visibility variable |
 | `--force` | Replace an existing valid fixture/capture instead of reusing it. | disabled |
+
+Graph precision captures use the shared precision lifecycle: each capture has a
+unique attempt ID and PID state, and `--force` removes and verifies the selected
+run/artifact/input-contract/report generation plus exact-name failed archives.
+An eager/graph capture whose previous orchestrator is still alive is never
+overwritten.
 | `--require-all` | Make compare fail unless every selected topology and repeat is present. | disabled |
 
 The fixed training profile is 5000 steps, local batch 8, global batch 64,

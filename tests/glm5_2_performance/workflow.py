@@ -17,6 +17,11 @@ import time
 from pathlib import Path
 from typing import Any, Sequence
 
+from tests.glm5_2_common.cli import (
+    RunAttempt,
+    assert_run_not_active,
+    reset_output_generation,
+)
 from tests.glm5_2_common.device import resolve_device_type
 from tests.glm5_2_common.naming import config_name, slug
 from tests.glm5_2_common.topology import select_topologies, training_command_args
@@ -522,9 +527,14 @@ def _run_process(
     root: Path,
     environment: dict[str, str],
     log_path: Path,
+    log_context: dict[str, Any] | None = None,
 ) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("w", encoding="utf-8") as log:
+        for key, value in (log_context or {}).items():
+            log.write(f"{key}: {value}\n")
+        if log_context:
+            log.write("\n")
         log.write("Command: " + " ".join(command) + "\n\n")
         log.flush()
         process = subprocess.Popen(
@@ -546,6 +556,7 @@ def _run_process(
 
 
 def _recover_partial_run(run_directory: Path) -> Path:
+    assert_run_not_active(run_directory)
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     destination = run_directory.with_name(f"{run_directory.name}.failed-{timestamp}")
     suffix = 1
@@ -556,17 +567,6 @@ def _recover_partial_run(run_directory: Path) -> Path:
         suffix += 1
     run_directory.rename(destination)
     return destination
-
-
-def _remove_known_output(path: Path, parent: Path) -> None:
-    resolved_path = path.resolve()
-    resolved_parent = parent.resolve()
-    if resolved_path.parent != resolved_parent:
-        raise RuntimeError(f"refusing to remove unexpected output path: {path}")
-    if path.is_dir():
-        shutil.rmtree(path)
-    elif path.exists():
-        path.unlink()
 
 
 def capture(
@@ -589,6 +589,7 @@ def capture(
     run_name = _run_name(config, device, preset)
     run_parent = _scoped_parent(root, config.run_root, config.topology)
     artifact_parent = _scoped_parent(root, config.artifact_root, config.topology)
+    report_parent = _scoped_parent(root, config.report_root, config.topology)
     run_directory = _adopt_legacy_performance_output(
         run_parent,
         config=config,
@@ -620,8 +621,16 @@ def capture(
         print(f"Skip completed performance capture: {artifact_directory}")
         return run_directory, artifact_directory
     if force:
-        _remove_known_output(run_directory, run_parent)
-        _remove_known_output(artifact_directory, artifact_parent)
+        reset_output_generation(
+            (
+                run_directory,
+                artifact_directory,
+                report_parent / f"{run_name}.html",
+                _exploration_directory(root, config.topology, run_name),
+            ),
+            active_run_directories=(run_directory,),
+            label="performance capture",
+        )
     elif run_directory.exists():
         recovered = _recover_partial_run(run_directory)
         print(f"Archived incomplete run before retry: {recovered}")
@@ -630,6 +639,15 @@ def capture(
         print(f"Archived incomplete artifact before retry: {recovered}")
 
     run_directory.mkdir(parents=True, exist_ok=False)
+    attempt = RunAttempt.start(
+        run_directory,
+        kind="performance",
+        context={
+            "device": device,
+            "topology": config.topology,
+            "preset": config.preset,
+        },
+    )
     metrics_path = run_directory / "metrics.jsonl"
     runtime_log = run_directory / "runtime.log"
     environment = os.environ.copy()
@@ -670,8 +688,10 @@ def capture(
             root=root,
             environment=environment,
             log_path=runtime_log,
+            log_context=attempt.log_context,
         )
     except Exception as error:
+        attempt.update("failed", error=repr(error))
         failure = {"error": repr(error), "command": command}
         failure_path = run_directory / "failure.json"
         _write_json(failure_path, failure)
@@ -721,12 +741,14 @@ def capture(
         "source": _source_metadata(root),
         "preflight": preflight,
         "run_directory": str(run_directory),
+        "attempt_id": attempt.attempt_id,
     }
     _write_json(run_directory / "manifest.json", manifest)
     artifact_directory.mkdir(parents=True, exist_ok=True)
     _write_json(artifact_directory / "manifest.json", manifest)
     if metrics_path.is_file():
         shutil.copy2(metrics_path, artifact_directory / "metrics.jsonl")
+    attempt.update("completed", artifact=str(artifact_directory))
     _sync_exploration_bundle(
         root,
         topology=config.topology,
@@ -1201,6 +1223,14 @@ def run_profiler_cli(
     if args.force and (args.capture or args.probe):
         # Clear every selected member before launching the first capture. A
         # mid-suite failure can then be resumed without mixing generations.
+        selected_paths: list[Path] = []
+        selected_runs: list[Path] = []
+        selected_paths.append(
+            root
+            / effective.report_root
+            / "suites"
+            / f"{_slug(effective.name)}-{device}-suite.html"
+        )
         for topology_name in selected:
             topology_config = replace(effective, topology=topology_name)
             run_name = _run_name(topology_config, device, preset)
@@ -1213,9 +1243,21 @@ def run_profiler_cli(
             report_parent = _scoped_parent(
                 root, topology_config.report_root, topology_config.topology
             )
-            _remove_known_output(run_parent / run_name, run_parent)
-            _remove_known_output(artifact_parent / run_name, artifact_parent)
-            _remove_known_output(report_parent / f"{run_name}.html", report_parent)
+            run_directory = run_parent / run_name
+            selected_runs.append(run_directory)
+            selected_paths.extend(
+                (
+                    run_directory,
+                    artifact_parent / run_name,
+                    report_parent / f"{run_name}.html",
+                    _exploration_directory(root, topology_name, run_name),
+                )
+            )
+        reset_output_generation(
+            selected_paths,
+            active_run_directories=selected_runs,
+            label="performance suite",
+        )
     reports: list[tuple[str, Path]] = []
     for topology_name in selected:
         topology_config = replace(effective, topology=topology_name)

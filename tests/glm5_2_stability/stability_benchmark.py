@@ -24,7 +24,9 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tests.glm5_2_common.cli import (
+    RunAttempt,
     archive_previous_output,
+    assert_run_not_active,
     reset_output_generation,
     run_all_topologies,
 )
@@ -479,6 +481,7 @@ def main() -> int:
         child_argv = [value for value in sys.argv[1:] if value != "--force"]
         if args.force:
             selected_paths: list[Path] = []
+            selected_runs: list[Path] = []
             for member_topology_name in suite_topologies:
                 member_topology = standard_topologies()[member_topology_name]
                 suite_name, _ = _stability_output_names(
@@ -494,19 +497,27 @@ def main() -> int:
                     extra_args=training.extra_args,
                     topology_identity=asdict(member_topology),
                 )
+                run_path = (
+                    root
+                    / "stability_runs"
+                    / suite_name
+                    / member_topology.slug
+                )
+                selected_runs.append(run_path)
                 selected_paths.extend(
                     (
-                        root
-                        / "stability_runs"
-                        / suite_name
-                        / member_topology.slug,
+                        run_path,
                         root
                         / "stability_reports"
                         / suite_name
                         / member_topology.slug,
                     )
                 )
-            reset_output_generation(selected_paths)
+            reset_output_generation(
+                selected_paths,
+                active_run_directories=selected_runs,
+                label="stability suite",
+            )
         return run_all_topologies(
             __file__, argv=child_argv, topology_names=suite_topologies
         )
@@ -622,9 +633,13 @@ def main() -> int:
             )
             return 0
         if args.force:
-            shutil.rmtree(run_directory, ignore_errors=True)
-            shutil.rmtree(report_directory, ignore_errors=True)
+            reset_output_generation(
+                (run_directory, report_directory),
+                active_run_directories=(run_directory,),
+                label="stability",
+            )
         else:
+            assert_run_not_active(run_directory)
             archived = [
                 str(path)
                 for path in (
@@ -640,6 +655,15 @@ def main() -> int:
             )
     run_directory.mkdir(parents=True, exist_ok=True)
     report_directory.mkdir(parents=True, exist_ok=True)
+    attempt = RunAttempt.start(
+        run_directory,
+        kind="stability",
+        context={
+            "device": device,
+            "topology": topology.slug,
+            "fixture_generation_id": fixture_generation_id,
+        },
+    )
     metrics_path = run_directory / "raw_metrics.jsonl"
     runtime_log = run_directory / "runtime.log"
     command = _command(
@@ -677,6 +701,9 @@ def main() -> int:
     stalled = False
     interrupted = False
     with runtime_log.open("w", encoding="utf-8") as log:
+        for key, value in attempt.log_context.items():
+            log.write(f"{key}: {value}\n")
+        log.write("\n")
         log.write("Command: " + " ".join(command) + "\n\n")
         log.flush()
         process = subprocess.Popen(
@@ -811,8 +838,15 @@ def main() -> int:
         "input_contract": input_contract,
         "metric_ranges": ranges,
         "command": command,
+        "attempt_id": attempt.attempt_id,
     }
     _write_report(report_path=report_path, summary_path=summary_path, summary=summary)
+    attempt.update(
+        "completed" if status == "PASS" else "failed",
+        status_result=status,
+        return_code=return_code,
+        report=str(report_path),
+    )
     print(f"Stability status: {status}\nReport: {report_path}", flush=True)
     return 0 if status == "PASS" else 2 if status == "INSUFFICIENT_DURATION" else 1
 

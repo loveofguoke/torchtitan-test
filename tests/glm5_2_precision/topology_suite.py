@@ -352,7 +352,17 @@ def run_topology_suite_cli(
                     repeat=repeat,
                     force=False,
                 )
-                print(f"Captured {role} {name} repeat {repeat}: {path}")
+                capture_topology = endpoint.topology.slug
+                if path is None:
+                    print(
+                        f"Completed {role} {capture_topology} repeat {repeat}; "
+                        "this node does not own the metrics artifact."
+                    )
+                else:
+                    print(
+                        f"Captured {role} {capture_topology} repeat {repeat}: "
+                        f"{path}"
+                    )
         return
     print(
         "Topology suite report:",
