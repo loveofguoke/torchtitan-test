@@ -27,7 +27,10 @@ from tests.glm5_2_graph.config import (
 from tests.glm5_2_graph.precision_benchmark import CONFIG as GRAPH_CONFIG
 from tests.glm5_2_graph.gpu_compile_probe import PROBE_CONFIG as GPU_PROBE_CONFIG
 from tests.glm5_2_graph.gpu_block_trace_probe import TRACE_CONFIG as GPU_TRACE_CONFIG
-from tests.glm5_2_graph.gpu_internal_block_trace import STAGE_NAMES
+from tests.glm5_2_graph.gpu_internal_block_trace import (
+    STAGE_NAMES,
+    _split_primary_and_auxiliary,
+)
 from tests.glm5_2_graph.gpu_internal_trace_probe import (
     INTERNAL_TRACE_CONFIG as GPU_INTERNAL_TRACE_CONFIG,
 )
@@ -272,6 +275,16 @@ def test_gpu_internal_trace_preserves_capture_and_orders_first_divergence(
     first = eager_inductor["first_divergence_by_step"][0]["first_divergence"]
     assert first["stage"] == "attention_output"
     assert first["mean_abs_delta"] == pytest.approx(0.25)
+
+
+def test_gpu_internal_trace_preserves_shared_indexer_auxiliary_output() -> None:
+    primary, auxiliary = _split_primary_and_auxiliary(("hidden", "topk"))
+    assert primary == "hidden"
+    assert auxiliary == ("topk",)
+
+    primary, auxiliary = _split_primary_and_auxiliary("hidden")
+    assert primary == "hidden"
+    assert auxiliary == ()
 
 
 def test_gpu_minimal_comparison_reports_cold_compile_reproducibility(

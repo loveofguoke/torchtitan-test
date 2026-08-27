@@ -25,6 +25,12 @@ STAGE_NAMES = (
 )
 
 
+def _split_primary_and_auxiliary(value):
+    if isinstance(value, tuple):
+        return value[0], value[1:]
+    return value, ()
+
+
 def install_gpu_internal_block_trace() -> None:
     output_path = os.environ.get("GLM5_GPU_INTERNAL_TRACE_PATH")
     if not output_path:
@@ -94,10 +100,19 @@ def install_gpu_internal_block_trace() -> None:
             x_TD: torch.Tensor,
             attention_masks: torch.Tensor,
             positions: torch.Tensor | None = None,
+            *attention_args,
+            **attention_kwargs,
         ):
             attention_norm_TD = layer.attention_norm(x_TD)
-            attention_output_TD = layer.attention(
-                attention_norm_TD, attention_masks, positions
+            attention_result = layer.attention(
+                attention_norm_TD,
+                attention_masks,
+                positions,
+                *attention_args,
+                **attention_kwargs,
+            )
+            attention_output_TD, auxiliary_outputs = (
+                _split_primary_and_auxiliary(attention_result)
             )
             attention_residual_TD = x_TD + attention_output_TD
             ffn_norm_TD = layer.ffn_norm(attention_residual_TD)
@@ -108,7 +123,12 @@ def install_gpu_internal_block_trace() -> None:
             ffn_gated_product_TF = ffn_gate_silu_TF * ffn_up_linear_TF
             ffn_down_projection_TD = feed_forward.w2(ffn_gated_product_TF)
             block_output_TD = attention_residual_TD + ffn_down_projection_TD
-            return (
+            model_output = (
+                (block_output_TD, *auxiliary_outputs)
+                if auxiliary_outputs
+                else block_output_TD
+            )
+            stage_outputs = (
                 x_TD,
                 attention_norm_TD,
                 attention_output_TD,
@@ -121,15 +141,17 @@ def install_gpu_internal_block_trace() -> None:
                 ffn_down_projection_TD,
                 block_output_TD,
             )
+            return model_output, stage_outputs
 
         def unwrap_and_record(outputs):
+            model_output, stage_outputs = outputs
             step = int(self.step)
             if step in selected_steps:
-                for name, value in zip(STAGE_NAMES, outputs, strict=True):
+                for name, value in zip(STAGE_NAMES, stage_outputs, strict=True):
                     tensor = first_tensor(value)
                     if tensor is not None:
                         record(step=step, name=name, tensor=tensor)
-            return outputs[-1]
+            return model_output
 
         was_compiled = getattr(layer, "_compiled_call_impl", None) is not None
         layer.forward = diagnostic_forward
@@ -153,4 +175,8 @@ def install_gpu_internal_block_trace() -> None:
     Trainer.__init__ = traced_init
 
 
-__all__ = ["STAGE_NAMES", "install_gpu_internal_block_trace"]
+__all__ = [
+    "STAGE_NAMES",
+    "_split_primary_and_auxiliary",
+    "install_gpu_internal_block_trace",
+]
