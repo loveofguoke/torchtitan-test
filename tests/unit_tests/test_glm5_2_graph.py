@@ -12,6 +12,7 @@ from tests.glm5_2_combination.combination_benchmark import (
 from tests.glm5_2_combination.workflow import (
     CombinationSelection,
     _apply_selection,
+    _relative_link,
 )
 from tests.glm5_2_common.execution import TrainingFeature, compose_execution
 from tests.glm5_2_common.topology import select_topologies, standard_topologies
@@ -213,6 +214,23 @@ def test_compiler_diagnostics_summarize_runtime_log(tmp_path: Path) -> None:
     assert diagnostics["graph_breaks"] == 1
     assert diagnostics["recompiles"] == 1
     assert diagnostics["backend_failures"] == 1
+
+
+def test_combination_report_can_link_to_sibling_precision_report(
+    tmp_path: Path,
+) -> None:
+    report_root = tmp_path / "combination_reports" / "experiment"
+    precision_report = (
+        tmp_path
+        / "combination_reports"
+        / "precision"
+        / "experiment"
+        / "suite.html"
+    )
+
+    assert _relative_link(precision_report, report_root) == (
+        "../precision/experiment/suite.html"
+    )
 
 
 def test_combination_topologies_share_one_suite_root(tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass, replace
 import hashlib
 import html
 import json
+import os
 from pathlib import Path
 from typing import Sequence
 
@@ -166,7 +167,7 @@ def _metric_median(analysis: dict, fragment: str) -> float | None:
 
 
 def _relative_link(path: Path, root: Path) -> str:
-    return html.escape(path.relative_to(root).as_posix())
+    return html.escape(Path(os.path.relpath(path, start=root)).as_posix())
 
 
 def _performance_report(
