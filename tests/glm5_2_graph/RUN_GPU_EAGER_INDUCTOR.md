@@ -185,3 +185,12 @@ tests/glm5_2_graph/run_gpu_silu_materialization.sh benchmark
 
 Run the 10-step probe first. Start the 1000-step benchmark only after the probe
 reduces the original eager/Inductor drift without introducing instability.
+
+If the candidate-only intervention does not improve both loss and gradient
+alignment, run the strict symmetric control. It materializes the same SiLU
+output in eager and Inductor, uses independent cold compiler caches, and prints
+all Step 1 Block 0 forward/backward and trainable parameter-gradient matches:
+
+```bash
+GPU_DIAG_RUN_ID=h20-silu-control-v1 tests/glm5_2_graph/run_gpu_silu_symmetric_control.sh
+```
