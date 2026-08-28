@@ -184,6 +184,11 @@ def _parity_device() -> tuple[torch.device, Any, str]:
 
     requested = os.environ.get("GLM5_PARITY_DEVICE", "auto").lower()
     device_type = _get_available_device_type()
+    if requested == "auto" and device_type == "npu":
+        raise RuntimeError(
+            "NPU parity requires GLM5_PARITY_DEVICE=npu so TorchTitanTurbo "
+            "is loaded before the model is built"
+        )
     if requested != "auto":
         if device_type != requested:
             raise RuntimeError(
@@ -4437,7 +4442,7 @@ class _ParityDiagnostics:
         }
         diagnostics = _format_parity_diagnostics(records, torch.tensor([[0, 1]]))
         self.assertIn(
-            "block_shape_error=expected [B, L, D] compatible with positions",
+            "block_shape_error=expected token-aligned activations",
             diagnostics,
         )
 
@@ -4497,7 +4502,7 @@ class _ParityDiagnostics:
 
 
 class _ParityRouterPrecision:
-    def _check_router_gate_is_evaluated_in_float32(self) -> None:
+    def _check_router_gate_uses_upstream_module_contract(self) -> None:
         model_size = ParityModelSize.router_unit_profile()
         titan_model = _titan_config(model_size).build()
         titan_model.init_states()
@@ -4506,14 +4511,26 @@ class _ParityRouterPrecision:
         hidden_states = torch.randn(
             1, 16, model_size.dim, dtype=torch.bfloat16
         )
-        _, _, scores = router(hidden_states, titan_model.layers["1"].moe.expert_bias_E)
-        expected_scores = torch.sigmoid(
-            F.linear(hidden_states.float(), router.gate.weight.float())
-        )
-        self.assertEqual(scores.dtype, torch.float32)
+        calls = 0
+
+        def count_gate_calls(*_args) -> None:
+            nonlocal calls
+            calls += 1
+
+        hook = router.gate.register_forward_hook(count_gate_calls)
+        try:
+            _, _, scores = router(
+                hidden_states,
+                titan_model.layers["1"].moe.expert_bias_E,
+            )
+        finally:
+            hook.remove()
+
+        expected_scores = torch.sigmoid(router.gate(hidden_states))
+        self.assertEqual(calls, 1)
         torch.testing.assert_close(scores, expected_scores, rtol=0, atol=0)
 
-    def _check_router_uses_gate_forward_for_fp32_biased_computation(self) -> None:
+    def _check_router_uses_gate_forward_for_biased_computation(self) -> None:
         router = TokenChoiceTopKRouter.Config(
             num_experts=4,
             gate=Linear.Config(in_features=3, out_features=4, bias=True),
@@ -4534,7 +4551,7 @@ class _ParityRouterPrecision:
         finally:
             hook.remove()
         expected_scores = torch.sigmoid(
-            F.linear(hidden_states.float(), router.gate.weight.float(), router.gate.bias.float())
+            router.gate(hidden_states)
         )
         self.assertEqual(calls, 1)
         torch.testing.assert_close(scores, expected_scores, rtol=0, atol=0)
@@ -8064,11 +8081,11 @@ class Glm5ParitySuite(
     def test_recorder_reports_extended_metrics_and_explosions(self) -> None:
         self._check_recorder_reports_extended_metrics_and_explosions()
 
-    def test_router_gate_is_evaluated_in_float32(self) -> None:
-        self._check_router_gate_is_evaluated_in_float32()
+    def test_router_gate_uses_upstream_module_contract(self) -> None:
+        self._check_router_gate_uses_upstream_module_contract()
 
-    def test_router_uses_gate_forward_for_fp32_biased_computation(self) -> None:
-        self._check_router_uses_gate_forward_for_fp32_biased_computation()
+    def test_router_uses_gate_forward_for_biased_computation(self) -> None:
+        self._check_router_uses_gate_forward_for_biased_computation()
 
     def test_indexer_topk_matches_transformers_exactly(self) -> None:
         if not self.gpu_ready:

@@ -69,6 +69,18 @@ def test_parity_model_dtype_cast_preserves_complex_buffers() -> None:
     )
 
 
+def test_auto_parity_does_not_reuse_an_incidentally_loaded_npu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GLM5_PARITY_DEVICE", raising=False)
+    monkeypatch.setattr(
+        torch._utils, "_get_available_device_type", lambda: "npu"
+    )
+
+    with pytest.raises(RuntimeError, match="GLM5_PARITY_DEVICE=npu"):
+        glm5_parity._parity_device()
+
+
 def test_parity_artifact_round_trip_preserves_dtype_and_metadata(
     tmp_path: Path,
 ) -> None:
