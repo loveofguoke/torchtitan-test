@@ -31,6 +31,9 @@ from tests.glm5_2_graph.compare_gpu_silu_control_traces import (
     ORDERED_KEYS as SILU_CONTROL_KEYS,
     compare_control_traces,
 )
+from tests.glm5_2_graph.compare_gpu_shared_attention_traces import (
+    compare_shared_attention_traces,
+)
 from tests.glm5_2_common.execution import TrainingFeature, compose_execution
 from tests.glm5_2_common.topology import select_topologies, standard_topologies
 from tests.glm5_2_graph.config import (
@@ -70,6 +73,9 @@ from tests.glm5_2_graph.gpu_silu_staged_control import (
 )
 from tests.glm5_2_graph.gpu_silu_symmetric_probe import (
     SYMMETRIC_CONFIG as GPU_SILU_SYMMETRIC_CONFIG,
+)
+from tests.glm5_2_graph.gpu_shared_attention_layer_trace import (
+    SHARED_ATTENTION_STAGE_NAMES,
 )
 from tests.glm5_2_performance.analysis import _compiler_diagnostics
 from tests.glm5_2_precision.topology_suite import topology_config
@@ -516,6 +522,46 @@ def test_gpu_moe_layer_trace_orders_attention_router_and_experts(
     assert result["comparisons"][1]["exact_records"] == len(MOE_STAGE_NAMES)
     first = result["comparisons"][2]["first_divergence"]
     assert first["stage"] == "router_scores"
+
+
+def test_gpu_shared_attention_trace_checks_incoming_and_effective_topk(
+    tmp_path: Path,
+) -> None:
+    assert SHARED_ATTENTION_STAGE_NAMES[1] == "incoming_topk_indices"
+    assert "effective_topk_indices" in SHARED_ATTENTION_STAGE_NAMES
+
+    def write_trace(path: Path, *, divergent: bool) -> None:
+        rows = []
+        for index, stage in enumerate(SHARED_ATTENTION_STAGE_NAMES):
+            changed = divergent and stage in SHARED_ATTENTION_STAGE_NAMES[4:]
+            rows.append(
+                {
+                    "step": 1,
+                    "name": stage,
+                    "kind": "forward",
+                    "sha256": f"{stage}-{'changed' if changed else 'same'}",
+                    "mean": float(index) + (0.25 if changed else 0.0),
+                    "max_abs": float(index + 1),
+                    "l2": float(index + 2) + (0.5 if changed else 0.0),
+                }
+            )
+        path.write_text(
+            "".join(json.dumps(row) + "\n" for row in rows),
+            encoding="utf-8",
+        )
+
+    paths = {
+        name: tmp_path / f"{name}.jsonl"
+        for name in ("eager-r1", "eager-r2", "inductor-r1", "inductor-r2")
+    }
+    write_trace(paths["eager-r1"], divergent=False)
+    write_trace(paths["eager-r2"], divergent=False)
+    write_trace(paths["inductor-r1"], divergent=True)
+    write_trace(paths["inductor-r2"], divergent=True)
+
+    result = compare_shared_attention_traces(paths)
+    first = result["comparisons"][2]["first_divergence"]
+    assert first["stage"] == "q_norm"
 
 
 def test_gpu_silu_materialization_is_candidate_only_and_has_two_lengths() -> None:

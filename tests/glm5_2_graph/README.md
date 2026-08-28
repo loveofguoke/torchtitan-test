@@ -236,6 +236,8 @@ Use `probe attention-residual` for the symmetric 10-step training control and
 boundary gradient in reverse model order.
 If Layer 1 is the first forward mismatch, use `moe attention-residual` to split
 its attention, router, routed experts, shared expert, and merge boundaries.
+If attention is first, use `attention1 attention-residual` to compare incoming
+DSA top-k indices and the detailed absorbed-attention path in Layer 1.
 
 The reference remains single-card even when the candidate is FSDP8, TP8, or
 another distributed topology. Run `--capture reference` with at least one

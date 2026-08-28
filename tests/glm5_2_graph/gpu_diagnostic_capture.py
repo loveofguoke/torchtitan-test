@@ -56,6 +56,13 @@ def main() -> None:
 
         install_gpu_moe_layer_trace()
 
+    if os.environ.get("GLM5_GPU_SHARED_ATTENTION_TRACE_PATH"):
+        from tests.glm5_2_graph.gpu_shared_attention_layer_trace import (
+            install_gpu_shared_attention_layer_trace,
+        )
+
+        install_gpu_shared_attention_layer_trace()
+
     if os.environ.get("GLM5_GPU_ATTENTION_TRACE_PATH"):
         from tests.glm5_2_graph.gpu_attention_internal_trace import (
             install_gpu_attention_internal_trace,

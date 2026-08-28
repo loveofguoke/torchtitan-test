@@ -3,11 +3,12 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: run_gpu_silu_staged_controls.sh [step1|backward|moe|probe] VARIANT
+Usage: run_gpu_silu_staged_controls.sh [step1|backward|moe|attention1|probe] VARIANT
 
   step1  One training step with Block 0 forward/backward/gradient tracing.
   backward  One step with all-layer forward/backward boundary tracing.
   moe      One step with ordered Layer 1 attention/router/expert tracing.
+  attention1  One step with detailed Layer 1 shared-index attention tracing.
   probe  Ten training steps plus the Step 1 trace.
   VARIANT is one named variant, matrix (FFN), or frontier-matrix.
 EOF
@@ -19,7 +20,7 @@ if [[ $# -ne 2 ]]; then
 fi
 length=$1
 selection=$2
-case "$length" in step1|backward|moe|probe) ;; *) usage >&2; exit 2 ;; esac
+case "$length" in step1|backward|moe|attention1|probe) ;; *) usage >&2; exit 2 ;; esac
 case "$selection" in
   silu-product|silu-product-down|all|ffn-input|attention-output|attention-residual|block-frontier)
     variants=("$selection")
@@ -82,6 +83,12 @@ run_variant() {
         GLM5_GPU_MOE_LAYER_TRACE_STEP=1
         GLM5_GPU_MOE_LAYER=1
       )
+    elif [[ "$length" == "attention1" ]]; then
+      trace_environment=(
+        GLM5_GPU_SHARED_ATTENTION_TRACE_PATH="$trace_path"
+        GLM5_GPU_SHARED_ATTENTION_TRACE_STEP=1
+        GLM5_GPU_SHARED_ATTENTION_LAYER=1
+      )
     else
       trace_environment=(
         GLM5_GPU_BLOCK_TRACE_PATH="$trace_path"
@@ -124,6 +131,9 @@ run_variant() {
   elif [[ "$length" == "moe" ]]; then
     comparator=tests/glm5_2_graph/compare_gpu_moe_layer_traces.py
     comparison_label="ordered Layer 1 attention/router/expert stages"
+  elif [[ "$length" == "attention1" ]]; then
+    comparator=tests/glm5_2_graph/compare_gpu_shared_attention_traces.py
+    comparison_label="detailed Layer 1 shared-index attention stages"
   else
     comparator=tests/glm5_2_graph/compare_gpu_silu_control_traces.py
     comparison_label="Step 1 Block/gradients"

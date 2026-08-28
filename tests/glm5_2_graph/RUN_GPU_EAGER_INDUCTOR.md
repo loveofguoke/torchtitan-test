@@ -239,3 +239,10 @@ GPU_DIAG_RUN_ID=h20-layer1-moe-v1 tests/glm5_2_graph/run_gpu_silu_staged_control
 
 The runner preserves shared-index attention auxiliary outputs and reproduces
 the MoE router token-count side effect used by training.
+
+If `attention_output` is the first Layer 1 mismatch, compare its incoming and
+effective shared DSA top-k indices followed by all absorbed-attention stages:
+
+```bash
+GPU_DIAG_RUN_ID=h20-layer1-attention-v1 tests/glm5_2_graph/run_gpu_silu_staged_controls.sh attention1 attention-residual
+```
