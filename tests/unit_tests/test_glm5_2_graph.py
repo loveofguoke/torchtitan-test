@@ -529,6 +529,9 @@ def test_gpu_shared_attention_trace_checks_incoming_and_effective_topk(
 ) -> None:
     assert SHARED_ATTENTION_STAGE_NAMES[1] == "incoming_topk_indices"
     assert "effective_topk_indices" in SHARED_ATTENTION_STAGE_NAMES
+    assert "indexer_qk_scores" in SHARED_ATTENTION_STAGE_NAMES
+    assert "indexer_topk_boundary_values" in SHARED_ATTENTION_STAGE_NAMES
+    assert "indexer_topk_margin" in SHARED_ATTENTION_STAGE_NAMES
 
     def write_trace(path: Path, *, divergent: bool) -> None:
         rows = []
@@ -562,6 +565,8 @@ def test_gpu_shared_attention_trace_checks_incoming_and_effective_topk(
     result = compare_shared_attention_traces(paths)
     first = result["comparisons"][2]["first_divergence"]
     assert first["stage"] == "q_norm"
+    first_indexer = result["comparisons"][2]["first_indexer_divergence"]
+    assert first_indexer["stage"] == "indexer_q_projection"
 
 
 def test_gpu_silu_materialization_is_candidate_only_and_has_two_lengths() -> None:

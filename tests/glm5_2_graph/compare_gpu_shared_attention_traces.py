@@ -50,7 +50,24 @@ def _compare_pair(left_name, left, right_name, right):
                 mean_abs_delta=abs(left_row["mean"] - right_row["mean"]),
                 l2_abs_delta=abs(left_row["l2"] - right_row["l2"]),
             )
+            if "values" in left_row and "values" in right_row:
+                left_values = left_row["values"]
+                right_values = right_row["values"]
+                row["value_mismatch_count"] = sum(
+                    left_value != right_value
+                    for left_value, right_value in zip(
+                        left_values, right_values, strict=True
+                    )
+                )
+            if stage == "indexer_topk_margin" and "min" in left_row:
+                row.update(
+                    left_min=left_row["min"],
+                    right_min=right_row["min"],
+                    left_mean=left_row["mean"],
+                    right_mean=right_row["mean"],
+                )
         rows.append(row)
+    indexer_start = SHARED_ATTENTION_STAGE_NAMES.index("indexer_q_projection")
     return {
         "left": left_name,
         "right": right_name,
@@ -59,6 +76,9 @@ def _compare_pair(left_name, left, right_name, right):
         "compared_records": len(rows),
         "first_divergence": next(
             (row for row in rows if not row["exact"]), None
+        ),
+        "first_indexer_divergence": next(
+            (row for row in rows[indexer_start:] if not row["exact"]), None
         ),
     }
 
@@ -112,13 +132,31 @@ def main() -> None:
                 f"mean_delta={first.get('mean_abs_delta', float('nan')):.9g} "
                 f"l2_delta={first.get('l2_abs_delta', float('nan')):.9g}"
             )
+            first_indexer = comparison["first_indexer_divergence"]
+            if first_indexer is not None:
+                print(
+                    f"  first_indexer={first_indexer['stage']} "
+                    "mean_delta="
+                    f"{first_indexer.get('mean_abs_delta', float('nan')):.9g} "
+                    "l2_delta="
+                    f"{first_indexer.get('l2_abs_delta', float('nan')):.9g}"
+                )
             if comparison["left"] == "eager-r1":
                 for row in comparison["records"]:
                     print(
                         f"  {row['stage']}: exact={row['exact']} "
                         f"mean_delta={row.get('mean_abs_delta', float('nan')):.9g} "
-                        f"l2_delta={row.get('l2_abs_delta', float('nan')):.9g}"
+                        f"l2_delta={row.get('l2_abs_delta', float('nan')):.9g} "
+                        f"value_mismatches={row.get('value_mismatch_count', 'n/a')}"
                     )
+                    if row["stage"] == "indexer_topk_margin" and "left_min" in row:
+                        print(
+                            "    top-k boundary margin: "
+                            f"eager_min={row['left_min']:.9g} "
+                            f"inductor_min={row['right_min']:.9g} "
+                            f"eager_mean={row['left_mean']:.9g} "
+                            f"inductor_mean={row['right_mean']:.9g}"
+                        )
     print(f"Wrote comparison: {args.output}")
 
 

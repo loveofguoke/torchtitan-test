@@ -24,6 +24,21 @@ SHARED_ATTENTION_STAGE_NAMES = (
     "q_nope_absorbed",
     "q_sparse",
     "kv_sparse",
+    "indexer_q_projection",
+    "indexer_k_projection",
+    "indexer_k_norm",
+    "indexer_q_rope",
+    "indexer_k_rope",
+    "indexer_q",
+    "indexer_k",
+    "indexer_weights",
+    "indexer_qk_scores",
+    "indexer_relu_scores",
+    "indexer_weighted_scores",
+    "indexer_masked_scores",
+    "indexer_topk_values",
+    "indexer_topk_boundary_values",
+    "indexer_topk_margin",
     "effective_topk_indices",
     "inner_attention",
     "value_unabsorbed",
@@ -63,9 +78,16 @@ def install_gpu_shared_attention_layer_trace() -> None:
             "dtype": str(cpu.dtype),
             "sha256": hashlib.sha256(raw).hexdigest(),
             "mean": float(fp32.mean().item()),
+            "min": float(fp32.min().item()),
+            "max": float(fp32.max().item()),
             "max_abs": float(fp32.abs().max().item()),
             "l2": float(torch.linalg.vector_norm(fp32).item()),
         }
+        if not cpu.is_floating_point() or name in {
+            "indexer_topk_boundary_values",
+            "indexer_topk_margin",
+        }:
+            payload["values"] = fp32.reshape(-1).tolist()
         with lock, path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, sort_keys=True) + "\n")
 
@@ -145,14 +167,86 @@ def install_gpu_shared_attention_layer_trace() -> None:
             kv_sparse_T1H = torch.cat(
                 (kv_norm_TR.unsqueeze(1), k_rope_T1R), dim=-1
             )
-            effective_topk_indices_QS = incoming_topk_indices_QS
-            if attention.indexer is not None:
-                effective_topk_indices_QS = attention.indexer(
-                    attention_norm_TD,
-                    q_norm_TR,
-                    positions_T,
-                    attention_masks[0],
+            indexer = attention.indexer
+            if indexer is None:
+                raise RuntimeError(
+                    f"Layer {selected_layer} has no DSA indexer to trace"
                 )
+            with torch.no_grad():
+                indexer_q_projection_TNH = indexer.wq_b(q_norm_TR).view(
+                    T, indexer.n_heads, indexer.head_dim
+                )
+                indexer_q_rot_TNR, indexer_q_pass_TNP = torch.split(
+                    indexer_q_projection_TNH,
+                    [
+                        indexer.qk_rope_head_dim,
+                        indexer.head_dim - indexer.qk_rope_head_dim,
+                    ],
+                    dim=-1,
+                )
+                indexer_k_projection_TH = indexer.wk(attention_norm_TD)
+                indexer_k_norm_T1H = indexer.k_norm(
+                    indexer_k_projection_TH
+                ).unsqueeze(1)
+                indexer_k_rot_T1R, indexer_k_pass_T1P = torch.split(
+                    indexer_k_norm_T1H,
+                    [
+                        indexer.qk_rope_head_dim,
+                        indexer.head_dim - indexer.qk_rope_head_dim,
+                    ],
+                    dim=-1,
+                )
+                indexer_q_rot_TNR, indexer_k_rot_T1R = indexer.rope(
+                    indexer_q_rot_TNR,
+                    indexer_k_rot_T1R,
+                    positions_T,
+                )
+                indexer_q_TNH = torch.cat(
+                    (indexer_q_rot_TNR, indexer_q_pass_TNP), dim=-1
+                )
+                indexer_k_TH = torch.cat(
+                    (indexer_k_rot_T1R, indexer_k_pass_T1P), dim=-1
+                ).squeeze(1)
+                indexer_weights_TN = indexer.weights_proj(
+                    attention_norm_TD.to(indexer.weights_proj.weight.dtype)
+                ).float() * (indexer.n_heads**-0.5)
+                indexer_qk_scores_NQK = torch.matmul(
+                    indexer_q_TNH.float().transpose(0, 1),
+                    indexer_k_TH.float().transpose(0, 1),
+                ) * indexer.topk.softmax_scale
+                indexer_relu_scores_NQK = torch.relu(indexer_qk_scores_NQK)
+                indexer_weighted_scores_QK = torch.matmul(
+                    indexer_weights_TN.unsqueeze(1),
+                    indexer_relu_scores_NQK.transpose(0, 1),
+                ).squeeze(1)
+                indexer_masked_scores_QK = (
+                    indexer_weighted_scores_QK + attention_masks[0].float()
+                )
+                topk = min(
+                    indexer.topk.index_topk,
+                    indexer_masked_scores_QK.shape[-1],
+                )
+                (
+                    indexer_topk_values_QS,
+                    effective_topk_indices_QS,
+                ) = indexer_masked_scores_QK.topk(topk, dim=-1)
+                boundary_k = min(
+                    topk + 1, indexer_masked_scores_QK.shape[-1]
+                )
+                indexer_topk_boundary_values_QB = (
+                    indexer_masked_scores_QK.topk(
+                        boundary_k, dim=-1
+                    ).values
+                )
+                if boundary_k > topk:
+                    indexer_topk_margin_Q = (
+                        indexer_topk_boundary_values_QB[..., topk - 1]
+                        - indexer_topk_boundary_values_QB[..., topk]
+                    )
+                else:
+                    indexer_topk_margin_Q = torch.zeros(
+                        (T,), dtype=torch.float32, device=x_TD.device
+                    )
             latent_output_TNC = attention.inner_attention(
                 q_sparse_TNH,
                 kv_sparse_T1H,
@@ -195,6 +289,21 @@ def install_gpu_shared_attention_layer_trace() -> None:
                 q_nope_absorbed_TNC,
                 q_sparse_TNH,
                 kv_sparse_T1H,
+                indexer_q_projection_TNH,
+                indexer_k_projection_TH,
+                indexer_k_norm_T1H,
+                indexer_q_rot_TNR,
+                indexer_k_rot_T1R,
+                indexer_q_TNH,
+                indexer_k_TH,
+                indexer_weights_TN,
+                indexer_qk_scores_NQK,
+                indexer_relu_scores_NQK,
+                indexer_weighted_scores_QK,
+                indexer_masked_scores_QK,
+                indexer_topk_values_QS,
+                indexer_topk_boundary_values_QB,
+                indexer_topk_margin_Q,
                 effective_topk_indices_QS,
                 latent_output_TNC,
                 value_unabsorbed_TNV,

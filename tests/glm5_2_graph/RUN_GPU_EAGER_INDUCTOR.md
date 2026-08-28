@@ -246,3 +246,8 @@ effective shared DSA top-k indices followed by all absorbed-attention stages:
 ```bash
 GPU_DIAG_RUN_ID=h20-layer1-attention-v1 tests/glm5_2_graph/run_gpu_silu_staged_controls.sh attention1 attention-residual
 ```
+
+This trace expands the Layer 1 indexer through Q/K projections, indexer RoPE,
+FP32 score matmuls, ReLU, weighted and masked scores, top-k values, indices,
+and the selected/unselected boundary margin. Integer index records include an
+elementwise mismatch count.
