@@ -55,15 +55,32 @@ def install_gpu_shared_attention_layer_trace() -> None:
     from torch.distributed.tensor import DTensor
     from torchtitan.trainer import Trainer
 
+    from tests.glm5_2_graph.gpu_indexer_boundary_control import (
+        indexer_control_points,
+    )
+
     selected_layer = str(os.environ.get("GLM5_GPU_SHARED_ATTENTION_LAYER", "1"))
     selected_step = int(
         os.environ.get("GLM5_GPU_SHARED_ATTENTION_TRACE_STEP", "1")
+    )
+    indexer_control_variant = os.environ.get(
+        "GLM5_GPU_INDEXER_CONTROL_VARIANT"
+    )
+    indexer_boundaries = (
+        indexer_control_points(indexer_control_variant)
+        if indexer_control_variant
+        else frozenset()
     )
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         path.unlink()
     lock = threading.Lock()
+
+    def indexer_boundary(point: str, tensor: torch.Tensor) -> torch.Tensor:
+        if point not in indexer_boundaries:
+            return tensor
+        return torch.ops.torchtitan_test.gpu_training_materialize(tensor)
 
     def record(name: str, tensor: torch.Tensor) -> None:
         local = tensor.to_local() if isinstance(tensor, DTensor) else tensor
@@ -176,8 +193,11 @@ def install_gpu_shared_attention_layer_trace() -> None:
                     f"Layer {selected_layer} has no DSA indexer to trace"
                 )
             with torch.no_grad():
-                indexer_q_projection_TNH = indexer.wq_b(q_norm_TR).view(
-                    T, indexer.n_heads, indexer.head_dim
+                indexer_q_projection_TNH = indexer_boundary(
+                    "q-proj",
+                    indexer.wq_b(q_norm_TR).view(
+                        T, indexer.n_heads, indexer.head_dim
+                    ),
                 )
                 indexer_q_rot_TNR, indexer_q_pass_TNP = torch.split(
                     indexer_q_projection_TNH,
@@ -187,9 +207,11 @@ def install_gpu_shared_attention_layer_trace() -> None:
                     ],
                     dim=-1,
                 )
-                indexer_k_projection_TH = indexer.wk(attention_norm_TD)
-                indexer_k_norm_T1H = indexer.k_norm(
-                    indexer_k_projection_TH
+                indexer_k_projection_TH = indexer_boundary(
+                    "k-proj", indexer.wk(attention_norm_TD)
+                )
+                indexer_k_norm_T1H = indexer_boundary(
+                    "k-norm", indexer.k_norm(indexer_k_projection_TH)
                 ).unsqueeze(1)
                 indexer_k_rot_T1R, indexer_k_pass_T1P = torch.split(
                     indexer_k_norm_T1H,
@@ -204,26 +226,52 @@ def install_gpu_shared_attention_layer_trace() -> None:
                     indexer_k_rot_T1R,
                     positions_T,
                 )
-                indexer_q_TNH = torch.cat(
-                    (indexer_q_rot_TNR, indexer_q_pass_TNP), dim=-1
+                indexer_q_rot_TNR = indexer_boundary(
+                    "q-rope", indexer_q_rot_TNR
                 )
-                indexer_k_TH = torch.cat(
-                    (indexer_k_rot_T1R, indexer_k_pass_T1P), dim=-1
-                ).squeeze(1)
-                indexer_weights_TN = indexer.weights_proj(
-                    attention_norm_TD.to(indexer.weights_proj.weight.dtype)
-                ).float() * (indexer.n_heads**-0.5)
-                indexer_qk_scores_NQK = torch.matmul(
-                    indexer_q_TNH.float().transpose(0, 1),
-                    indexer_k_TH.float().transpose(0, 1),
-                ) * indexer.topk.softmax_scale
-                indexer_relu_scores_NQK = torch.relu(indexer_qk_scores_NQK)
-                indexer_weighted_scores_QK = torch.matmul(
-                    indexer_weights_TN.unsqueeze(1),
-                    indexer_relu_scores_NQK.transpose(0, 1),
-                ).squeeze(1)
-                indexer_masked_scores_QK = (
-                    indexer_weighted_scores_QK + attention_masks[0].float()
+                indexer_k_rot_T1R = indexer_boundary(
+                    "k-rope", indexer_k_rot_T1R
+                )
+                indexer_q_TNH = indexer_boundary(
+                    "final-q",
+                    torch.cat(
+                        (indexer_q_rot_TNR, indexer_q_pass_TNP), dim=-1
+                    ),
+                )
+                indexer_k_TH = indexer_boundary(
+                    "final-k",
+                    torch.cat(
+                        (indexer_k_rot_T1R, indexer_k_pass_T1P), dim=-1
+                    ).squeeze(1),
+                )
+                indexer_weights_TN = indexer_boundary(
+                    "weights",
+                    indexer.weights_proj(
+                        attention_norm_TD.to(indexer.weights_proj.weight.dtype)
+                    ).float()
+                    * (indexer.n_heads**-0.5),
+                )
+                indexer_qk_scores_NQK = indexer_boundary(
+                    "qk",
+                    torch.matmul(
+                        indexer_q_TNH.float().transpose(0, 1),
+                        indexer_k_TH.float().transpose(0, 1),
+                    )
+                    * indexer.topk.softmax_scale,
+                )
+                indexer_relu_scores_NQK = indexer_boundary(
+                    "relu", torch.relu(indexer_qk_scores_NQK)
+                )
+                indexer_weighted_scores_QK = indexer_boundary(
+                    "weighted",
+                    torch.matmul(
+                        indexer_weights_TN.unsqueeze(1),
+                        indexer_relu_scores_NQK.transpose(0, 1),
+                    ).squeeze(1),
+                )
+                indexer_masked_scores_QK = indexer_boundary(
+                    "masked",
+                    indexer_weighted_scores_QK + attention_masks[0].float(),
                 )
                 topk = min(
                     indexer.topk.index_topk,

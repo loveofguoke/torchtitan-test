@@ -2,11 +2,12 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: run_gpu_indexer_boundary_controls.sh [downstream|upstream|cumulative|all]"
+  echo "Usage: run_gpu_indexer_boundary_controls.sh [minimal|downstream|upstream|cumulative|all]"
 }
 
 selection=${1:-upstream}
 case "$selection" in
+  minimal) controls=(q-rope-k-norm) ;;
   downstream) controls=(original decomposed-none qk relu weighted masked) ;;
   upstream) controls=(q-proj k-proj k-norm q-rope k-rope final-q final-k weights) ;;
   cumulative) controls=(cum-qk-proj cum-k-norm cum-rope cum-final-qk cum-weights) ;;

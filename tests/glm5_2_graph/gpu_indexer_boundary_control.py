@@ -29,6 +29,7 @@ INDEXER_CONTROL_VARIANTS = (
     "cum-rope",
     "cum-final-qk",
     "cum-weights",
+    "q-rope-k-norm",
 )
 
 _CUMULATIVE_POINTS = {
@@ -54,7 +55,14 @@ _CUMULATIVE_POINTS = {
         "final-k",
         "weights",
     },
+    "q-rope-k-norm": {"q-rope", "k-norm"},
 }
+
+
+def indexer_control_points(variant: str) -> frozenset[str]:
+    if variant not in INDEXER_CONTROL_VARIANTS:
+        raise ValueError(f"unknown GPU indexer control variant: {variant}")
+    return frozenset(_CUMULATIVE_POINTS.get(variant, {variant}))
 
 
 def install_gpu_indexer_boundary_control() -> None:
@@ -67,8 +75,7 @@ def install_gpu_indexer_boundary_control() -> None:
     from torchtitan.trainer import Trainer
 
     variant = os.environ.get("GLM5_GPU_INDEXER_CONTROL_VARIANT", "original")
-    if variant not in INDEXER_CONTROL_VARIANTS:
-        raise ValueError(f"unknown GPU indexer control variant: {variant}")
+    active_points = indexer_control_points(variant)
     selected_layer = str(os.environ.get("GLM5_GPU_INDEXER_CONTROL_LAYER", "1"))
     selected_step = int(os.environ.get("GLM5_GPU_INDEXER_CONTROL_STEP", "1"))
     path = Path(trace_path_value)
@@ -115,7 +122,6 @@ def install_gpu_indexer_boundary_control() -> None:
         return torch.ops.torchtitan_test.record_indexer_control(indices)
 
     def boundary(point: str, tensor: torch.Tensor) -> torch.Tensor:
-        active_points = _CUMULATIVE_POINTS.get(variant, {variant})
         if point not in active_points:
             return tensor
         return torch.ops.torchtitan_test.gpu_training_materialize(tensor)
@@ -256,5 +262,6 @@ def install_gpu_indexer_boundary_control() -> None:
 
 __all__ = [
     "INDEXER_CONTROL_VARIANTS",
+    "indexer_control_points",
     "install_gpu_indexer_boundary_control",
 ]
