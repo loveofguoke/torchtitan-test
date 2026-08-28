@@ -51,6 +51,7 @@ from tests.glm5_2_precision.token_data import (
     step_series_digest,
     validate_runtime_input_contract,
 )
+from tests.glm5_2_precision.topology_suite import self_consistency_device_config
 from tests.glm5_2_precision.workflow import (
     FormalExperimentConfig,
     FormalTrainingConfig,
@@ -61,6 +62,7 @@ from tests.glm5_2_precision.workflow import (
     _endpoint_from_process_environment,
     _fixture_endpoint_from_environment,
     _input_contract_directory,
+    _recorded_capture_attempt_id,
     _report_directory,
     _run_directory,
     reset_capture_outputs,
@@ -831,6 +833,47 @@ def test_self_consistency_suite_reuses_reference_and_reports_partial_results(
     ).is_file()
 
 
+def test_self_consistency_backend_is_inferred_from_npu_visibility(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    topology = ParallelTopology("single", 1)
+    endpoint = TrainingEndpoint("endpoint", "cuda", "0,1", topology)
+    config = FormalExperimentConfig(
+        name="self-suite",
+        kind="self_consistency",
+        reference=endpoint,
+        candidate=endpoint,
+    )
+    monkeypatch.setenv("ASCEND_RT_VISIBLE_DEVICES", "4,5")
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+
+    resolved = self_consistency_device_config(config, None)
+
+    assert resolved.reference.device_type == "npu"
+    assert resolved.candidate.device_type == "npu"
+    assert resolved.reference.visible_devices_env == "ASCEND_RT_VISIBLE_DEVICES"
+    assert resolved.storage_base_name.startswith("self-npu-")
+
+
+def test_self_consistency_explicit_backend_overrides_visibility(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    topology = ParallelTopology("single", 1)
+    endpoint = TrainingEndpoint("endpoint", "cuda", "0", topology)
+    config = FormalExperimentConfig(
+        name="self-suite",
+        kind="self_consistency",
+        reference=endpoint,
+        candidate=endpoint,
+    )
+    monkeypatch.setenv("ASCEND_RT_VISIBLE_DEVICES", "0")
+
+    resolved = self_consistency_device_config(config, "cuda")
+
+    assert resolved.reference.device_type == "cuda"
+    assert resolved.candidate.device_type == "cuda"
+
+
 def test_migration_topologies_share_one_fixture_identity() -> None:
     topologies = standard_topologies()
     endpoint = TrainingEndpoint(
@@ -916,7 +959,7 @@ def test_force_reset_refuses_to_delete_a_live_capture(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from tests.glm5_2_precision import workflow
+    from tests.glm5_2_common import cli
 
     topology = ParallelTopology("single", 1)
     endpoint = TrainingEndpoint("reference", "cuda", "0", topology, repeats=1)
@@ -937,9 +980,9 @@ def test_force_reset_refuses_to_delete_a_live_capture(
         json.dumps({"status": "running", "pid": 12345}) + "\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(workflow, "_process_is_running", lambda pid: True)
+    monkeypatch.setattr(cli, "process_is_running", lambda pid: True)
 
-    with pytest.raises(RuntimeError, match="capture is still running"):
+    with pytest.raises(RuntimeError, match="run is still active"):
         reset_capture_outputs(
             tmp_path,
             config,
@@ -948,6 +991,33 @@ def test_force_reset_refuses_to_delete_a_live_capture(
         )
 
     assert run_directory.is_dir()
+
+
+def test_recorded_capture_attempt_id_preserves_training_identity(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "capture_state.json"
+    state.write_text(
+        json.dumps(
+            {
+                "status": "training_completed",
+                "capture_attempt_id": "training-attempt-123",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert _recorded_capture_attempt_id(state) == "training-attempt-123"
+
+
+def test_recorded_capture_attempt_id_marks_legacy_state(
+    tmp_path: Path,
+) -> None:
+    assert (
+        _recorded_capture_attempt_id(tmp_path / "missing.json")
+        == "legacy-unrecorded"
+    )
 
 
 def test_self_consistency_reference_capture_is_shared_and_labeled_single(

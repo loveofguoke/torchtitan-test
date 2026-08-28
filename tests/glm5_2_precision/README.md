@@ -125,6 +125,7 @@ The maintained `migration_benchmark.py` and
 | `--topologies` | Comma-separated subset or `all`; mutually exclusive with `--topology`. | unset |
 | `--repeat` | Capture only repeat `N`; omit it for every configured repeat. | all configured repeats (`2`) |
 | `--precision` | `fp32`, `bf16`, or `full-bf16`. | `bf16` from the experiment config |
+| `--device` | Self-consistency backend: `cuda` or `npu`. It applies to both the single-card reference and every distributed candidate. | inferred from exactly one exported visibility variable; otherwise the maintained CUDA fallback |
 | `--data-device` | Fixture backend override: `cuda` or `npu`. Normally inferred from exactly one exported visibility variable. | inferred |
 | `--force` | Replace a valid existing fixture/capture. Without it, completed output is reused and incomplete output is retried. | disabled |
 | `--require-all` | Require every selected topology and repeat for a final suite decision. Without it, missing members are reported as `NOT RUN`. | disabled |
@@ -310,8 +311,11 @@ BF16 mixed-precision parameters; `full-bf16` sets the full training dtype.
 
 ## Distributed self-consistency
 
-The CUDA self-consistency suite shares one fixture and one single-card
-reference across every distributed topology.
+The self-consistency suite runs on either CUDA or NPU and shares one fixture
+and one single-card reference across every distributed topology. Both sides
+always use the same backend. Export exactly one standard visibility variable
+to select it automatically, or pass `--device cuda|npu` to every data, capture,
+and compare command when no visibility variable is available.
 
 The built-in profile runs 5000 optimizer steps with local batch 8, global batch
 64, and PP microbatch size 1. These are the smallest common batch settings that
@@ -364,6 +368,26 @@ python tests/glm5_2_precision/self_consistency_benchmark.py --capture-all
 python tests/glm5_2_precision/self_consistency_benchmark.py \
   --compare --require-all
 ```
+
+Complete NPU single-reference versus every distributed topology workflow:
+
+```bash
+unset CUDA_VISIBLE_DEVICES
+export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+
+python tests/glm5_2_precision/self_consistency_benchmark.py --data
+python tests/glm5_2_precision/self_consistency_benchmark.py \
+  --capture reference
+python tests/glm5_2_precision/self_consistency_benchmark.py --capture-all
+python tests/glm5_2_precision/self_consistency_benchmark.py \
+  --compare --require-all
+```
+
+These commands infer `npu` from `ASCEND_RT_VISIBLE_DEVICES`. The equivalent
+explicit form adds `--device npu` to each command. NPU captures set
+`TORCHTITAN_DEVICE=npu`, launch through the NPU-aware capture entry, and import
+TorchTitanTurbo before TorchTitan training starts. Their artifacts and reports
+use the separate `self-npu-...` identity.
 
 Run candidates independently so completed work is preserved and can be
 compared immediately:
@@ -449,7 +473,7 @@ precision_reports/self-cuda-bf16-random-s5000-b64-seq128-seed61/
 ```
 
 The previous one-pair command remains available through the workflow module,
-but the suite CLI is the recommended interface for GPU distributed baselines.
+but the suite CLI is the recommended interface for distributed baselines.
 
 To list the exact topology settings:
 
@@ -482,9 +506,9 @@ Parallel decomposition changes reduction order, so the supplied BF16 suite
 uses migration tolerances instead of requiring bitwise equality. Repeat-run
 bitwise differences remain visible as diagnostics.
 
-For NPU self-consistency, use a separate suite configuration and export
-`ASCEND_RT_VISIBLE_DEVICES`; do not mix CUDA and NPU candidates into this CUDA
-self-consistency suite.
+Do not mix CUDA and NPU artifacts in one self-consistency comparison. Backend
+selection moves the reference and candidate together and gives each backend a
+separate fixture, artifact, and report identity.
 
 ## Multi-node status
 

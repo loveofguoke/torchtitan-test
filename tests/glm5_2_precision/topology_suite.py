@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dataclasses import asdict, replace
 import html
 import json
+import os
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -51,6 +52,46 @@ def _training_with_precision(config: FormalExperimentConfig, precision: str | No
             mixed_precision_param="bfloat16",
         )
     return training
+
+
+def self_consistency_device_config(
+    base: FormalExperimentConfig,
+    requested_device: str | None,
+) -> FormalExperimentConfig:
+    """Resolve the execution backend for a self-consistency suite.
+
+    The maintained config provides the fallback backend. At runtime an explicit
+    ``--device`` wins, followed by the standard accelerator visibility
+    variables. Both endpoints are moved together because self-consistency must
+    compare one backend against itself.
+    """
+
+    if base.kind != "self_consistency":
+        if requested_device is not None:
+            raise ValueError("--device is only valid for self-consistency suites")
+        return base
+
+    device = requested_device
+    if device is None:
+        npu_visible = os.environ.get("ASCEND_RT_VISIBLE_DEVICES")
+        cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if npu_visible and cuda_visible:
+            raise ValueError(
+                "both ASCEND_RT_VISIBLE_DEVICES and CUDA_VISIBLE_DEVICES are set; "
+                "unset one or use --device to select the self-consistency backend"
+            )
+        if npu_visible:
+            device = "npu"
+        elif cuda_visible:
+            device = "cuda"
+        else:
+            device = base.reference.device_type
+
+    if device not in ("cuda", "npu"):
+        raise ValueError(f"unsupported self-consistency device: {device!r}")
+    reference = replace(base.reference, device_type=device)
+    candidate = replace(base.candidate, device_type=device)
+    return replace(base, reference=reference, candidate=candidate)
 
 
 def topology_config(
@@ -269,6 +310,14 @@ def run_topology_suite_cli(
     )
     parser.add_argument("--repeat", type=int)
     parser.add_argument("--precision", choices=("fp32", "bf16", "full-bf16"))
+    parser.add_argument(
+        "--device",
+        choices=("cuda", "npu"),
+        help=(
+            "self-consistency backend; otherwise inferred from the exported "
+            "accelerator visibility variable"
+        ),
+    )
     parser.add_argument("--data-device", choices=("cuda", "npu"))
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--require-all", action="store_true")
@@ -290,6 +339,8 @@ def run_topology_suite_cli(
                 schedule = {"invalid": str(error)}
             print(f"{name}: topology={asdict(topology)}, batch_schedule={schedule}")
         return
+
+    base = self_consistency_device_config(base, args.device)
 
     role = "candidate" if args.capture_all else args.capture
     environment_role = role if role is not None else None
