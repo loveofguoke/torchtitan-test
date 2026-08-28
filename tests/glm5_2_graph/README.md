@@ -217,6 +217,14 @@ Intermediate stages are graph outputs in this diagnostic, so the trace is for
 locating the first divergent stage. Fusion causality remains covered by the
 separate minimal materialization A/B checks.
 
+Continue FP32 attention localization and BF16 real-training SiLU A/B with:
+
+```bash
+GPU_DIAG_RUN_ID=h20-attention-v1 tests/glm5_2_graph/run_gpu_inductor_diagnostics.sh attention fp32
+tests/glm5_2_graph/run_gpu_silu_materialization.sh probe
+tests/glm5_2_graph/run_gpu_silu_materialization.sh benchmark
+```
+
 The reference remains single-card even when the candidate is FSDP8, TP8, or
 another distributed topology. Run `--capture reference` with at least one
 visible NPU; the artifact is shared by all selected candidates.

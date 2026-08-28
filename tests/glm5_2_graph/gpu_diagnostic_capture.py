@@ -35,6 +35,20 @@ def main() -> None:
 
         install_gpu_internal_block_trace()
 
+    if os.environ.get("GLM5_GPU_MATERIALIZE_DENSE_SILU") == "1":
+        from tests.glm5_2_graph.gpu_silu_materialization import (
+            install_gpu_silu_materialization,
+        )
+
+        install_gpu_silu_materialization()
+
+    if os.environ.get("GLM5_GPU_ATTENTION_TRACE_PATH"):
+        from tests.glm5_2_graph.gpu_attention_internal_trace import (
+            install_gpu_attention_internal_trace,
+        )
+
+        install_gpu_attention_internal_trace()
+
     from torchtitan.train import main as train_main
 
     train_main()

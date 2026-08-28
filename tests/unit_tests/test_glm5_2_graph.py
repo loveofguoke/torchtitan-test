@@ -16,6 +16,9 @@ from tests.glm5_2_combination.workflow import (
     _relative_link,
 )
 from tests.glm5_2_graph.compare_gpu_block_traces import compare_traces
+from tests.glm5_2_graph.compare_gpu_attention_traces import (
+    compare_attention_traces,
+)
 from tests.glm5_2_graph.compare_gpu_internal_traces import compare_internal_traces
 from tests.glm5_2_graph.compare_gpu_minimal_results import compare_minimal_results
 from tests.glm5_2_common.execution import TrainingFeature, compose_execution
@@ -26,6 +29,10 @@ from tests.glm5_2_graph.config import (
 )
 from tests.glm5_2_graph.precision_benchmark import CONFIG as GRAPH_CONFIG
 from tests.glm5_2_graph.gpu_compile_probe import PROBE_CONFIG as GPU_PROBE_CONFIG
+from tests.glm5_2_graph.gpu_attention_internal_trace import ATTENTION_STAGE_NAMES
+from tests.glm5_2_graph.gpu_attention_trace_probe import (
+    ATTENTION_TRACE_CONFIG as GPU_ATTENTION_TRACE_CONFIG,
+)
 from tests.glm5_2_graph.gpu_block_trace_probe import TRACE_CONFIG as GPU_TRACE_CONFIG
 from tests.glm5_2_graph.gpu_internal_block_trace import (
     STAGE_NAMES,
@@ -35,6 +42,12 @@ from tests.glm5_2_graph.gpu_internal_trace_probe import (
     INTERNAL_TRACE_CONFIG as GPU_INTERNAL_TRACE_CONFIG,
 )
 from tests.glm5_2_graph.gpu_precision_benchmark import CONFIG as GPU_GRAPH_CONFIG
+from tests.glm5_2_graph.gpu_silu_materialization_benchmark import (
+    MATERIALIZATION_CONFIG as GPU_SILU_MATERIALIZATION_CONFIG,
+)
+from tests.glm5_2_graph.gpu_silu_materialization_probe import (
+    PROBE_CONFIG as GPU_SILU_MATERIALIZATION_PROBE_CONFIG,
+)
 from tests.glm5_2_performance.analysis import _compiler_diagnostics
 from tests.glm5_2_precision.topology_suite import topology_config
 from tests.glm5_2_precision.workflow import (
@@ -285,6 +298,89 @@ def test_gpu_internal_trace_preserves_shared_indexer_auxiliary_output() -> None:
     primary, auxiliary = _split_primary_and_auxiliary("hidden")
     assert primary == "hidden"
     assert auxiliary == ()
+
+
+def test_gpu_attention_trace_orders_absorbed_mla_stages(tmp_path: Path) -> None:
+    assert GPU_ATTENTION_TRACE_CONFIG.training.steps == 1
+    assert GPU_ATTENTION_TRACE_CONFIG.reference.entry_module == (
+        "tests.glm5_2_graph.gpu_diagnostic_capture"
+    )
+
+    def write_trace(path: Path, *, divergent: bool) -> None:
+        rows = []
+        for index, stage in enumerate(ATTENTION_STAGE_NAMES):
+            changed = divergent and stage in ATTENTION_STAGE_NAMES[3:]
+            rows.append(
+                {
+                    "step": 1,
+                    "name": stage,
+                    "kind": "forward",
+                    "sha256": f"{stage}-{'different' if changed else 'same'}",
+                    "mean": float(index) + (0.125 if changed else 0.0),
+                    "max_abs": float(index + 1),
+                    "l2": float(index + 2) + (0.25 if changed else 0.0),
+                }
+            )
+        path.write_text(
+            "".join(json.dumps(row) + "\n" for row in rows),
+            encoding="utf-8",
+        )
+
+    paths = {
+        name: tmp_path / f"{name}.jsonl"
+        for name in ("eager-r1", "eager-r2", "inductor-r1", "inductor-r2")
+    }
+    write_trace(paths["eager-r1"], divergent=False)
+    write_trace(paths["eager-r2"], divergent=False)
+    write_trace(paths["inductor-r1"], divergent=True)
+    write_trace(paths["inductor-r2"], divergent=True)
+    result = compare_attention_traces(paths)
+    assert result["comparisons"][0]["exact_records"] == len(
+        ATTENTION_STAGE_NAMES
+    )
+    assert result["comparisons"][1]["exact_records"] == len(
+        ATTENTION_STAGE_NAMES
+    )
+    first = result["comparisons"][2]["first_divergence"]
+    assert first["stage"] == "q_norm"
+    assert first["mean_abs_delta"] == pytest.approx(0.125)
+
+
+def test_gpu_silu_materialization_is_candidate_only_and_has_two_lengths() -> None:
+    assert GPU_SILU_MATERIALIZATION_PROBE_CONFIG.training.steps == 10
+    assert GPU_SILU_MATERIALIZATION_CONFIG.training.steps == 1000
+    assert "GLM5_GPU_MATERIALIZE_DENSE_SILU" not in (
+        GPU_SILU_MATERIALIZATION_CONFIG.reference.environment
+    )
+    assert GPU_SILU_MATERIALIZATION_CONFIG.candidate.environment[
+        "GLM5_GPU_MATERIALIZE_DENSE_SILU"
+    ] == "1"
+    assert GPU_SILU_MATERIALIZATION_CONFIG.reference.entry_module == (
+        "tests.glm5_2_graph.gpu_diagnostic_capture"
+    )
+    assert GPU_SILU_MATERIALIZATION_CONFIG.candidate.entry_module == (
+        "tests.glm5_2_graph.gpu_diagnostic_capture"
+    )
+    selection = CombinationSelection(
+        objectives=frozenset(("precision",)),
+        reference_graph=GraphFeatureConfig("eager"),
+        candidate_graph=GraphFeatureConfig("inductor", diagnostics=True),
+        profiler=None,
+    )
+    configured = _apply_selection(
+        topology_config(
+            GPU_SILU_MATERIALIZATION_CONFIG,
+            GPU_SILU_MATERIALIZATION_CONFIG.candidate.topology,
+            precision="bf16",
+        ),
+        selection,
+    )
+    assert configured.candidate.entry_module == (
+        "tests.glm5_2_graph.gpu_diagnostic_capture"
+    )
+    assert configured.candidate.environment[
+        "GLM5_GPU_MATERIALIZE_DENSE_SILU"
+    ] == "1"
 
 
 def test_gpu_minimal_comparison_reports_cold_compile_reproducibility(

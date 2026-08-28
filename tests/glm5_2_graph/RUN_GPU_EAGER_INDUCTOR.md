@@ -165,3 +165,23 @@ The internal trace prints the first divergent stage at steps 1, 2, 8, 9, and
 10. Its intermediate tensors are additional graph outputs and therefore
 materialization points; use it to localize the first stage, then use the
 minimal A/B checks to establish fusion causality.
+
+After FP32 first diverges at `attention_output`, localize the one-step absorbed
+SparseMLA path through q/KV projections, normalization, RoPE, top-k selection,
+inner attention, value unabsorption, and output projection:
+
+```bash
+GPU_DIAG_RUN_ID=h20-attention-v1 tests/glm5_2_graph/run_gpu_inductor_diagnostics.sh attention fp32
+```
+
+For the BF16 SiLU hypothesis, run the real training path with only the dense
+SwiGLU SiLU output behind an autograd-enabled materialization custom op. The
+reference remains unmodified eager and the candidate is materialized Inductor:
+
+```bash
+tests/glm5_2_graph/run_gpu_silu_materialization.sh probe
+tests/glm5_2_graph/run_gpu_silu_materialization.sh benchmark
+```
+
+Run the 10-step probe first. Start the 1000-step benchmark only after the probe
+reduces the original eager/Inductor drift without introducing instability.
