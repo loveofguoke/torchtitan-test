@@ -13,9 +13,18 @@ graph_debug_runs/launcher-combination-inductor-20260826-111207-4142884/reports/r
 combination_runs/self-npu-bf16-random-s30-b64-seq128-seed61-eager-inductor-performance-no-prof-skip10-eeb6bf36/single/single-r1/runtime.log
 ```
 
-处理方式是新增仅限 `--objectives performance` 的
-`--performance-nondeterministic`。该开关不允许用于 precision/mixed acceptance，因此没有
-放宽精度标准。正式 eager/Inductor 性能矩阵都使用相同的 nondeterministic 合约。
+当时为了完成纯性能诊断矩阵，新增了仅限 `--objectives performance` 的
+`--performance-nondeterministic`；正式 eager/Inductor 性能矩阵两侧都使用相同的
+nondeterministic 合约。该开关不允许用于 precision/mixed acceptance，因此没有放宽精度
+标准。
+
+随后正式 deterministic precision 暴露了同一 torch_npu 调用缺少
+`is_vetted_benchmarking` 的根因。当前配套 Turbo G020 workaround 只把 pointwise heuristic
+声明为 vetted，reduction 仍受 deterministic guard 保护；common launcher 默认启用该
+opt-in。当前 deterministic single cold-cache 与 smoke 已通过，因此新实验应优先保留
+deterministic，不能继续把 performance nondeterministic 当成图模式必需条件。详细调用链与
+底层根治位置见
+[`LOWER_LAYER_ISSUE_HANDOFF.md`](../../../../glm5_2_graph/LOWER_LAYER_ISSUE_HANDOFF.md#10-g020确定性-pointwise-autotune-未声明-vetted)。
 
 ## 环境限制
 

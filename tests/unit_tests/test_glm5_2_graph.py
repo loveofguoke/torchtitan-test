@@ -311,8 +311,51 @@ def test_combination_determinism_is_part_of_storage_identity() -> None:
     )
 
     assert deterministic.storage_name != nondeterministic.storage_name
-    assert "-det-" in deterministic.storage_name
+    assert "-nondet-" not in deterministic.storage_name
     assert "-nondet-" in nondeterministic.storage_name
+
+
+def test_precision_default_keeps_previous_readable_storage_identity() -> None:
+    raw = topology_config(
+        COMBINATION_CONFIG,
+        standard_topologies()["single"],
+        precision="bf16",
+    )
+    selection = CombinationSelection(
+        objectives=frozenset(("precision",)),
+        reference_graph=GraphFeatureConfig("eager"),
+        candidate_graph=GraphFeatureConfig("inductor"),
+        profiler=None,
+    )
+
+    configured = _apply_selection(raw, selection)
+
+    assert "-precision-no-prof-" in configured.storage_name
+    assert "-skip" not in configured.storage_name
+    assert "-nondet" not in configured.storage_name
+    assert any("-skip10-det-" in name for name in configured.legacy_storage_names)
+
+
+def test_performance_adopts_previous_readable_storage_identity() -> None:
+    raw = topology_config(
+        COMBINATION_CONFIG,
+        standard_topologies()["single"],
+        precision="bf16",
+    )
+    selection = CombinationSelection(
+        objectives=frozenset(("performance",)),
+        reference_graph=GraphFeatureConfig("eager"),
+        candidate_graph=GraphFeatureConfig("inductor"),
+        profiler=None,
+    )
+
+    configured = _apply_selection(raw, selection)
+
+    assert "-performance-no-prof-skip10-" in configured.storage_name
+    assert any(
+        "-performance-no-prof-" in name and "-skip" not in name
+        for name in configured.legacy_storage_names
+    )
 
 
 def test_execution_plan_rejects_cross_feature_option_conflicts() -> None:

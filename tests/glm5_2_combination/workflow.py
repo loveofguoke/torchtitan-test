@@ -64,7 +64,7 @@ class CombinationSelection:
             raise ValueError("performance skip steps must be non-negative")
 
 
-def _combination_storage_base(
+def _combination_storage_prefix(
     config: FormalExperimentConfig,
     selection: CombinationSelection,
 ) -> str:
@@ -85,12 +85,35 @@ def _combination_storage_base(
     checkpoint = (
         "random" if config.training.checkpoint_kind == "random_seed" else "converged"
     )
-    determinism = "det" if config.training.deterministic else "nondet"
     return (
         f"{experiment}-{precision}-{checkpoint}-s{config.training.steps}-"
         f"b{config.training.global_batch_size}-seq{config.training.sequence_length}-"
         f"seed{config.training.seed}-{selection.reference_graph.mode}-"
-        f"{selection.candidate_graph.mode}-{objective}-{profiler}-"
+        f"{selection.candidate_graph.mode}-{objective}-{profiler}"
+    )
+
+
+def _combination_storage_base(
+    config: FormalExperimentConfig,
+    selection: CombinationSelection,
+) -> str:
+    base = _combination_storage_prefix(config, selection)
+    if "performance" in selection.objectives:
+        base += f"-skip{selection.performance_skip_steps}"
+    if not config.training.deterministic:
+        base += "-nondet"
+    return base
+
+
+def _transitional_combination_storage_base(
+    config: FormalExperimentConfig,
+    selection: CombinationSelection,
+) -> str:
+    """Return the short-lived storage name used before compatibility review."""
+
+    determinism = "det" if config.training.deterministic else "nondet"
+    return (
+        f"{_combination_storage_prefix(config, selection)}-"
         f"skip{selection.performance_skip_steps}-{determinism}"
     )
 
@@ -155,7 +178,6 @@ def _apply_selection(
             entry_module="tests.glm5_2_combination.capture_metrics",
         )
     storage_base = _combination_storage_base(config, selection)
-    legacy_storage_name = _legacy_combination_storage_name(config, selection)
     selected = replace(
         config,
         reference=endpoints["reference"],
@@ -165,7 +187,27 @@ def _apply_selection(
         run_root="combination_runs",
         storage_name_override=storage_base,
         topology_subdirectory=True,
-        legacy_storage_names=(legacy_storage_name,),
+        legacy_storage_names=(),
+    )
+    legacy_names = (
+        replace(
+            selected,
+            storage_name_override=_combination_storage_prefix(config, selection),
+        ).storage_name,
+        replace(
+            selected,
+            storage_name_override=_transitional_combination_storage_base(
+                config, selection
+            ),
+        ).storage_name,
+        _legacy_combination_storage_name(config, selection),
+    )
+    unique_legacy_names = dict.fromkeys(
+        name for name in legacy_names if name != selected.storage_name
+    )
+    selected = replace(
+        selected,
+        legacy_storage_names=tuple(unique_legacy_names),
     )
     return replace(
         selected,

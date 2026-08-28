@@ -253,37 +253,43 @@ tests/glm5_2_graph_debug/run_graph_mode.sh inductor combination \
 | `--performance-nondeterministic` | Permit performance-only Inductor autotuning with deterministic algorithms disabled. | disabled |
 | `--data-device` | Generic fixture backend override (`cuda` or `npu`). The current NPU/NPU combined config uses `npu`. | inferred from the NPU visibility variable |
 | `--force` | Replace valid existing fixture/capture output. | disabled |
+| `--require-all` | Require all selected topology/repeat artifacts during compare. | disabled |
 
 Combination captures inherit the same audited lifecycle as precision and graph:
 attempt/generation/PID state is recorded, live runs cannot be overwritten, and
 forced execution prints and verifies deletion of every selected capture output
 and exact-name failed archive before any topology starts.
-| `--require-all` | Require all selected topology/repeat artifacts during compare. | disabled |
 
 The built-in combined profile uses 5000 steps, local batch 8, global batch 64,
 sequence length 128, seed 61, BF16 mixed precision, and two repeats. These
 values are defined in `combination_benchmark.py`; changing them defines a new
 maintained experiment rather than a one-off CLI override.
 
-For a bounded performance-only exploration, `--steps N` creates a separate fixture
-and experiment identity without changing the maintained 5000-step default. At
-least 10 steps are required, and the override is rejected for precision or mixed
-objectives. Current NPU Inductor pointwise autotuning is not
-allowed under PyTorch deterministic algorithms, so performance-only graph
-experiments may opt into `--performance-nondeterministic`. That flag is rejected
-when the precision objective is present and is recorded as `nondet` in the
-storage name. Eager and graph endpoints in an A/B comparison must use the same
-setting.
+For a bounded performance-only exploration, `--steps N` creates a separate
+fixture and experiment identity without changing the maintained 5000-step
+default. At least 10 steps are required, and the override is rejected for
+precision or mixed objectives. The common graph launcher enables Turbo's
+pointwise-only vetted-autotune compatibility, so deterministic Inductor is the
+current default for both performance and precision. The optional
+`--performance-nondeterministic` flag is retained only for diagnostic baselines
+and reproducing the 2026-08-26 performance matrix. It is rejected when the
+precision objective is present and is recorded as `nondet` in the storage name.
+Eager and graph endpoints in an A/B comparison must use the same setting.
 
 ```bash
-COMMON_ARGS="--objectives performance --profiler-preset off --steps 30 --performance-skip-steps 10 --performance-nondeterministic"
-python tests/glm5_2_combination/combination_benchmark.py \
+COMMON_ARGS="--objectives performance --profiler-preset off --steps 30 --performance-skip-steps 10"
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor combination \
   --capture candidate --topology fsdp8 \
   --reference-graph eager --candidate-graph eager $COMMON_ARGS
-python tests/glm5_2_combination/combination_benchmark.py \
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor combination \
   --capture candidate --topology fsdp8 \
   --reference-graph eager --candidate-graph inductor $COMMON_ARGS
 ```
+
+Running graph candidates through the common launcher is required: it loads the
+paired Turbo compatibility profile, clean CANN environment, and isolated
+compiler cache. Direct Python invocation is appropriate only for CPU-side
+listing/report operations that do not import an NPU graph backend.
 
 All capture and compare invocations for one experiment must repeat the same
 precision, objectives, graph modes, compiled components, compiler diagnostics,

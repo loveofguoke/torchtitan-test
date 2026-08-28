@@ -2,8 +2,9 @@
 
 ## 结论
 
-Turbo 与 test 的图模式修改是配套修改，建议尽早按两个仓库分别提交并连续推送；不要只推
-test 而长期不推 Turbo。当前修改已经具备代码审查条件，但提交说明必须保留以下边界：
+Turbo 与 test 的图模式修改是配套修改，已经分别形成同名 `graph-review-0828` 审查分支；
+必须成对审查和合并，不能只合入 test 而长期缺少 Turbo。当前修改已经具备代码审查条件，
+但提交说明必须保留以下边界：
 
 - 当前 HEAD 的 Inductor single smoke 和 deterministic cold-cache 10-step 已通过；
 - 2026-08-26 基线的 Inductor 15/15 topology smoke 已通过；
@@ -15,13 +16,13 @@ test 而长期不推 Turbo。当前修改已经具备代码审查条件，但提
 因此适合提交的是“兼容实现、运行入口、实验事实与未完成边界”，不适合把提交标题或 PR
 写成“全拓扑 5000-step 精度已经通过”或“NPUGraph native replay 已根治”。
 
-## 三仓检查基线
+## 三仓检查基线与审查分支
 
-| repository | branch | HEAD | working-tree role |
+| repository | audit base | reviewed submission | role |
 |---|---|---|---|
-| TorchTitan | `feat/glm5-model-distributed` | `59899ade` | clean；device-neutral framework/model |
-| TorchTitanTurbo | `glm-dev` | `a5306484` | graph compatibility implementation/tests/docs |
-| torchtitan-test | `master` | `01f2f3e1` | common launcher, combination workflow, reports/docs |
+| TorchTitan | `feat/glm5-model-distributed@59899ade` | unchanged, clean | device-neutral framework/model |
+| TorchTitanTurbo | `glm-dev@a5306484` | `graph-review-0828@a6132c1` | graph compatibility implementation/tests/docs |
+| torchtitan-test | `master@01f2f3e1` | `graph-review-0828@311329d` plus documentation follow-up | common launcher, combination workflow, reports/docs |
 
 运行栈：CANN 9.1.0、torch `2.14.0.dev20260805+cpu`、torch_npu `2.14.0`、
 triton-ascend `3.2.1`。TorchTitan 和 Turbo 均由当前 checkout editable import。
@@ -103,20 +104,34 @@ smoke_runs/npu-glm5_debugmodel-s10-b64-seq128-seed62-inductor-model/single/
 
 组合 workflow 的 `--steps` 只允许标识化探索，maintained 默认仍为 5000；
 `--performance-nondeterministic` 只允许 performance-only；`--performance-skip-steps`
-同时进入新 storage identity 和 steady-state 统计。legacy identity 必须忽略这些后来新增的
-字段，以便旧 artifact 仍可迁移/采用，本轮已补回归测试。
+同时进入包含 performance objective 的新 storage identity 和 steady-state 统计。纯
+precision 的默认可读 identity 保持不变；紧邻版本生成的 `skip10-det` 路径、此前无 skip
+的可读路径和更早 hash identity 均登记为 legacy，以便旧 artifact 安全迁移/采用，并有
+回归测试覆盖。
 
 现有性能证据为 15 topology × eager/Inductor × 2 repeats = 60/60。统计排除 steps 1-10，
 使用 11-30；所有含 TP topology 为 1.4552x-1.5400x，其余大多 -1.62% 至 +3.82%。这些
 数据使用 performance-only nondeterministic autotune，不能挪作 precision 结论。详见
 [`performance/summary.md`](performance/summary.md)。
 
+## Codex/仓库规范检查
+
+- 已读取并遵守 test `AGENTS.md`、两仓 `DEPENDENCY_AUDIT.md` 和 Turbo `PATCHES.md`。
+- 模型数学没有进入 test/Turbo；NPU 私有 patch 留在 Turbo，launcher/lifecycle/report 留在 test。
+- common graph、naming 和 report 变更已检查 graph、precision、performance、parity 与
+  combination 消费者；force/resume/PID/generation 合约未被绕过。
+- 默认 pure-precision storage identity 保持向后兼容；新增 performance 统计窗口有独立身份。
+- 原始运行、artifact、checkpoint、Profiler trace 和编译 cache 未进入审查提交。
+
 ## 提交边界
 
-建议 Turbo 和 test 分为两个 commit，顺序为 Turbo 后 test：
+审查内容已按职责拆分，合并顺序为 Turbo 后 test：
 
-1. Turbo：graph compatibility implementation、behavioral tests、patch/dependency/root-fix docs；
-2. test：common env、combination workflow/tests、5000-step wrapper、curated experiment docs。
+1. Turbo `9b7ad76`：graph compatibility implementation、behavioral tests、patch/dependency/root-fix docs；
+2. Turbo `a6132c1`：适配当前 TorchTitan 的 attention/RMSNorm/profiler 回归测试；
+3. test `10b2fd9`：显式 NPU parity patch 激活与职责迁移；
+4. test `311329d`：common env、combination workflow/tests、5000-step wrapper、curated experiment docs；
+5. test documentation follow-up：deterministic 默认说明、Markdown 结构与 storage compatibility 回归。
 
 不要把以下内容混入这两个 commit：
 

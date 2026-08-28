@@ -19,6 +19,7 @@ experiments/
     smoke-graph-validation.md
     precision-5000.md
     failures.md
+    submission-readiness-20260828.md
     performance/
       summary.md
       comparison.html
