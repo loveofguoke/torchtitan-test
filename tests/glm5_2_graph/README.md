@@ -234,6 +234,8 @@ When those fail, use `attention bf16` and the staged runner's
 Use `probe attention-residual` for the symmetric 10-step training control and
 `backward attention-residual` to find the first mismatching Transformer-layer
 boundary gradient in reverse model order.
+If Layer 1 is the first forward mismatch, use `moe attention-residual` to split
+its attention, router, routed experts, shared expert, and merge boundaries.
 
 The reference remains single-card even when the candidate is FSDP8, TP8, or
 another distributed topology. Run `--capture reference` with at least one

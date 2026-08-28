@@ -24,6 +24,9 @@ from tests.glm5_2_graph.compare_gpu_layer_boundary_traces import (
     compare_layer_boundary_traces,
 )
 from tests.glm5_2_graph.compare_gpu_minimal_results import compare_minimal_results
+from tests.glm5_2_graph.compare_gpu_moe_layer_traces import (
+    compare_moe_layer_traces,
+)
 from tests.glm5_2_graph.compare_gpu_silu_control_traces import (
     ORDERED_KEYS as SILU_CONTROL_KEYS,
     compare_control_traces,
@@ -48,6 +51,10 @@ from tests.glm5_2_graph.gpu_internal_block_trace import (
 )
 from tests.glm5_2_graph.gpu_internal_trace_probe import (
     INTERNAL_TRACE_CONFIG as GPU_INTERNAL_TRACE_CONFIG,
+)
+from tests.glm5_2_graph.gpu_moe_layer_trace import (
+    MOE_STAGE_NAMES,
+    _split_primary_and_auxiliary as split_moe_primary_and_auxiliary,
 )
 from tests.glm5_2_graph.gpu_precision_benchmark import CONFIG as GPU_GRAPH_CONFIG
 from tests.glm5_2_graph.gpu_silu_materialization_benchmark import (
@@ -464,6 +471,51 @@ def test_gpu_layer_boundary_trace_uses_forward_and_reverse_gradient_order(
     forward, backward = eager_inductor["first_divergences"]
     assert forward["first_divergence"]["name"] == "layer.1.output"
     assert backward["first_divergence"]["name"] == "layer.2.output"
+
+
+def test_gpu_moe_layer_trace_orders_attention_router_and_experts(
+    tmp_path: Path,
+) -> None:
+    assert split_moe_primary_and_auxiliary(("hidden", "topk")) == (
+        "hidden",
+        ("topk",),
+    )
+    assert split_moe_primary_and_auxiliary("hidden") == ("hidden", ())
+
+    def write_trace(path: Path, *, divergent: bool) -> None:
+        rows = []
+        for index, stage in enumerate(MOE_STAGE_NAMES):
+            changed = divergent and stage in MOE_STAGE_NAMES[5:]
+            rows.append(
+                {
+                    "step": 1,
+                    "name": stage,
+                    "kind": "forward",
+                    "sha256": f"{stage}-{'changed' if changed else 'same'}",
+                    "mean": float(index) + (0.25 if changed else 0.0),
+                    "max_abs": float(index + 1),
+                    "l2": float(index + 2) + (0.5 if changed else 0.0),
+                }
+            )
+        path.write_text(
+            "".join(json.dumps(row) + "\n" for row in rows),
+            encoding="utf-8",
+        )
+
+    paths = {
+        name: tmp_path / f"{name}.jsonl"
+        for name in ("eager-r1", "eager-r2", "inductor-r1", "inductor-r2")
+    }
+    write_trace(paths["eager-r1"], divergent=False)
+    write_trace(paths["eager-r2"], divergent=False)
+    write_trace(paths["inductor-r1"], divergent=True)
+    write_trace(paths["inductor-r2"], divergent=True)
+
+    result = compare_moe_layer_traces(paths)
+    assert result["comparisons"][0]["exact_records"] == len(MOE_STAGE_NAMES)
+    assert result["comparisons"][1]["exact_records"] == len(MOE_STAGE_NAMES)
+    first = result["comparisons"][2]["first_divergence"]
+    assert first["stage"] == "router_scores"
 
 
 def test_gpu_silu_materialization_is_candidate_only_and_has_two_lengths() -> None:

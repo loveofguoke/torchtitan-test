@@ -49,6 +49,13 @@ def main() -> None:
 
         install_gpu_layer_boundary_trace()
 
+    if os.environ.get("GLM5_GPU_MOE_LAYER_TRACE_PATH"):
+        from tests.glm5_2_graph.gpu_moe_layer_trace import (
+            install_gpu_moe_layer_trace,
+        )
+
+        install_gpu_moe_layer_trace()
+
     if os.environ.get("GLM5_GPU_ATTENTION_TRACE_PATH"):
         from tests.glm5_2_graph.gpu_attention_internal_trace import (
             install_gpu_attention_internal_trace,

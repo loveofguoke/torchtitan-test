@@ -229,3 +229,13 @@ Transformer layer. Forward comparison walks from the first layer to the last;
 gradient comparison walks from the last layer back to the first. This avoids
 returning diagnostic-only intermediates from a compiled graph. Both endpoints
 use the same materialized program.
+
+If the all-layer trace first diverges at `layer.1.output`, split the first MoE
+layer into attention, router, routed-expert, shared-expert, and merge stages:
+
+```bash
+GPU_DIAG_RUN_ID=h20-layer1-moe-v1 tests/glm5_2_graph/run_gpu_silu_staged_controls.sh moe attention-residual
+```
+
+The runner preserves shared-index attention auxiliary outputs and reproduces
+the MoE router token-count side effect used by training.
