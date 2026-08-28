@@ -104,6 +104,54 @@ self-consistency.
 
 ## Performance, graph, and combined experiments
 
+### Documentation entry and reading order
+
+The repository root README is the user-facing entry. Do not read every report
+and debug note in filename order. Use this path:
+
+1. [Unified environment and external-tool guide](tests/glm5_2_common/PERFORMANCE_GRAPH_DEPENDENCIES_ZH.md):
+   install/verify TorchNPU, CANN, Triton-Ascend, Python readers,
+   `msprof-analyze`, MindStudio Insight, Perfetto, and flame-graph tools.
+2. Select one experiment README:
+   [performance](tests/glm5_2_performance/README.md),
+   [graph](tests/glm5_2_graph/README.md), or
+   [combination](tests/glm5_2_combination/README.md). These are the command and
+   parameter authorities.
+3. Read results with the
+   [performance report tutorial](tests/glm5_2_performance/REPORT_GUIDE_ZH.md)
+   and/or
+   [graph/compiler tutorial](tests/glm5_2_graph/VISUALIZATION_GUIDE_ZH.md).
+4. Open graph debug history, lower-layer handoff, or performance explorations
+   only after the formal report identifies the corresponding problem. Those
+   directories are engineering evidence, not parallel user interfaces.
+
+Output ownership is consistent across these modules:
+
+```text
+performance_runs/<card-scope>/<topology>/<run>/
+  runtime.log, raw metrics, trainer output, Ascend profiles,
+  TensorBoard, flame graphs, memory timeline, graph diagnostics
+performance_artifacts/<card-scope>/<topology>/<run>/
+  manifest.json, metrics.jsonl, analysis.json
+performance_reports/<card-scope>/<topology>/<run>.html
+performance_reports/suites/<suite>.html
+  index of every independently captured topology x preset member
+
+precision_fixtures/<fixture-id>/
+  shared checkpoint, fixed token plan, generation metadata and stage logs
+combination_runs/<experiment-id>/<topology>/<role>-r<repeat>/
+  raw training/profiler/compiler output for one endpoint
+combination_artifacts/<experiment-id>/<topology>/<role>-r<repeat>/
+  portable endpoint metrics and manifest
+combination_reports/<experiment-id>/
+  precision suite, performance details and compiler visualization index
+```
+
+`runs` are heavy and ignored by Git; `artifacts` are compact machine-readable
+handoff data; `reports` are human-facing HTML. A report links raw evidence but
+does not duplicate large profiler databases. `release_artifacts.py` packages
+the selected nested evidence when it must be transferred.
+
 The standalone Ascend Profiler workflow is documented in
 [tests/glm5_2_performance/README.md](tests/glm5_2_performance/README.md).
 Compiled graph and standalone performance execution currently support NPU
@@ -153,9 +201,21 @@ information.
 
 Generated `*_reports/` directories are tracked by Git so HTML, JSON, Markdown,
 and other compact analysis results can be reviewed, compared, and synchronized
-with the code that produced them. Fixtures, metric artifacts, raw runs, profiler
-outputs, and other large generated data remain excluded from Git and are
-transferred with GitHub Releases.
+with the code that produced them. Processed visualizations that live beside one
+run—MindStudio/portable flame graphs, memory timelines, TensorBoard events,
+`tlparse`, FX/IR/generated code, parsed profiler CSV/JSON/DB, advisor, cluster,
+and compare output—are intentionally not flattened into `*_reports`.
+
+Use GitHub Releases in one of two content modes:
+
+- `--content analysis`: transfer reports, compact artifacts, metrics/logs, and
+  processed profiler/compiler visualization results; omit fixtures, raw CANN
+  collection trees, checkpoints, trainer state, and compiler caches. This is
+  the recommended bundle for local review, Codex diagnosis, and documentation.
+- `--content full` (default): lossless transfer of every matched fixture, run,
+  artifact, report, and raw profiler/compiler file. Use this when another
+  machine must continue capture, rerun `tlparse`/`msprof`, or import the complete
+  original profile into MindStudio Insight.
 
 Install and authenticate GitHub CLI first (`gh auth login`) when transferring
 the large outputs. Reports remain accepted in release archives as a convenient
@@ -169,7 +229,8 @@ different release command:
 
 ```bash
 python release_artifacts.py upload \
-  migration-cuda-npu-single-bf16-random-s5000-b64-seq128-seed61
+  migration-cuda-npu-single-bf16-random-s5000-b64-seq128-seed61 \
+  --content analysis
 ```
 
 Most experiment families use one name across fixtures, runs, artifacts, and
@@ -194,6 +255,7 @@ Release CLI parameters:
 | `upload <experiment>` | Discover the named output across every standard experiment root, archive it, write SHA-256, and create/update the same-named Release. | required upload action |
 | `upload --include NAME` | Include another fixture/report/output identity in the same archive; repeat as needed. | none |
 | `upload --repository-root PATH` | Repository root used for output discovery and relative archive paths. | current directory |
+| `upload --content` | `analysis` keeps processed results and compact evidence; `full` preserves every matched file for lossless resume/re-analysis. | `full` |
 | `download <experiment>` | Download, verify, and restore one release archive. | required download action |
 | `download --backend` | `gh` or trusted-network `wget`. | `gh` |
 | `download --destination PATH` | Root below which repository-relative paths are restored. | current directory |

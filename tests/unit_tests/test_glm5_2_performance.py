@@ -14,6 +14,7 @@ from tests.glm5_2_performance.analysis import (
 )
 from tests.glm5_2_performance.config import (
     PerformanceConfig,
+    all_profiler_presets,
     performance_topologies,
     profiler_presets,
     standard_topologies,
@@ -26,7 +27,16 @@ from tests.glm5_2_performance.workflow import (
     _config_is_compatible,
     _msprof_analyze_executable,
     _msprof_analyze_workers,
+    _profiled_rank_count,
     _run_name,
+    _write_suite_report,
+)
+from tests.glm5_2_performance.visualization import (
+    inspect_analysis_outputs,
+    inspect_memory_visualizations,
+    inspect_stack_visualizations,
+    inspect_tensorboard,
+    render_mindstudio_flamegraphs,
 )
 
 
@@ -155,16 +165,49 @@ class TestPerformanceConfig(unittest.TestCase):
         self.assertEqual(presets["distributed"].parse_mode, "offline")
         self.assertTrue(presets["distributed"].system_interconnection)
         self.assertTrue(presets["kernel"].record_shapes)
+        self.assertTrue(presets["flamegraph"].with_stack)
+        self.assertTrue(presets["flamegraph"].export_stacks)
         self.assertTrue(presets["runtime"].with_stack)
         self.assertTrue(presets["runtime"].with_modules)
+        self.assertTrue(presets["runtime"].export_stacks)
+        self.assertTrue(presets["runtime"].export_memory_timeline)
         self.assertEqual(presets["runtime"].gc_detect_threshold, 1.0)
+        self.assertTrue(presets["operator"].with_flops)
+        self.assertTrue(presets["operator"].record_op_args)
+        self.assertTrue(presets["memory"].export_memory_timeline)
+        self.assertTrue(presets["system"].system_io)
+        self.assertTrue(presets["system"].system_interconnection)
+        self.assertNotIn("comparison", all_profiler_presets())
+        self.assertNotIn("standard", all_profiler_presets())
+
+    def test_cluster_requires_a_preset_that_captures_multiple_ranks(self):
+        presets = profiler_presets()
+
+        self.assertEqual(_profiled_rank_count(presets["overview"], 8), 1)
+        self.assertEqual(_profiled_rank_count(presets["distributed"], 8), 8)
+        self.assertEqual(
+            _profiled_rank_count(
+                replace(presets["overview"], profile_ranks="0,2,9"), 8
+            ),
+            2,
+        )
 
     def test_preset_exports_official_profiler_controls(self):
         environment = profiler_presets()["runtime"].environment()
+        overview_environment = profiler_presets()["overview"].environment()
         prefix = "TORCHTITAN_NPU_PROFILER_"
         self.assertEqual(environment[prefix + "PARSE_MODE"], "sync")
         self.assertEqual(environment[prefix + "HOST_SYSTEM"], "cpu,mem")
         self.assertEqual(environment[prefix + "WITH_MODULES"], "true")
+        self.assertEqual(environment[prefix + "EXPORT_STACKS"], "true")
+        self.assertEqual(
+            environment[prefix + "EXPORT_MEMORY_TIMELINE"], "true"
+        )
+        self.assertNotIn(prefix + "EXPORT_STACKS", overview_environment)
+        self.assertNotIn(
+            prefix + "EXPORT_MEMORY_TIMELINE", overview_environment
+        )
+        self.assertNotIn(prefix + "MSPROF_TX", overview_environment)
 
     def test_dynamic_config_uses_official_schema_and_atomic_writer(self):
         preset = replace(profiler_presets()["overview"], parse_mode="async")
@@ -203,6 +246,161 @@ class TestPerformanceConfig(unittest.TestCase):
 
 
 class TestPerformanceAnalysis(unittest.TestCase):
+    def test_official_mindstudio_flamegraph_renderer(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            profiler = root / "profiling"
+            database = (
+                profiler
+                / "rank_0_123_ascend_pt"
+                / "ASCEND_PROFILER_OUTPUT"
+                / "ascend_pytorch_profiler_0.db"
+            )
+            database.parent.mkdir(parents=True)
+            database.write_bytes(b"database")
+            renderer = root / "flamegraph.py"
+            renderer.write_text(
+                "import argparse\n"
+                "from pathlib import Path\n"
+                "parser = argparse.ArgumentParser()\n"
+                "parser.add_argument('db_path')\n"
+                "parser.add_argument('-o', '--output', required=True)\n"
+                "args = parser.parse_args()\n"
+                "output = Path(args.output)\n"
+                "output.mkdir(parents=True, exist_ok=True)\n"
+                "(output / 'flamegraph.html').write_text('<html></html>')\n",
+                encoding="utf-8",
+            )
+            with mock.patch.dict(
+                os.environ,
+                {"TORCHTITAN_MSINSIGHT_FLAMEGRAPH": str(renderer)},
+            ):
+                generated = render_mindstudio_flamegraphs(profiler)
+                inventory = inspect_stack_visualizations(profiler)
+
+        self.assertEqual(len(generated), 1)
+        self.assertEqual(len(inventory["mindstudio_flamegraphs"]), 1)
+        self.assertEqual(len(inventory["mindstudio_flamegraph_logs"]), 1)
+
+    def test_visualization_artifacts_are_discovered(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run = Path(temporary_directory) / "run"
+            profiler = run / "trainer_output" / "profiling" / "traces"
+            stacks = profiler / "stacks"
+            stacks.mkdir(parents=True)
+            stack = stacks / "rank_0_step_12_npu_stacks.log"
+            stack.write_text("train;forward 42\n", encoding="utf-8")
+            flamegraph = stacks / "rank_0_step_12_npu_stacks_flamegraph.svg"
+            flamegraph.write_text("<svg></svg>\n", encoding="utf-8")
+            official_flamegraph = (
+                profiler
+                / "mindstudio_flamegraphs"
+                / "rank_0"
+                / "flamegraph.html"
+            )
+            official_flamegraph.parent.mkdir(parents=True)
+            official_flamegraph.write_text(
+                "<html></html>\n", encoding="utf-8"
+            )
+            tensorboard = run / "trainer_output" / "tensorboard"
+            tensorboard.mkdir(parents=True)
+            event = tensorboard / "events.out.tfevents.1.host.1.0"
+            event.write_bytes(b"event")
+            ascend_output = (
+                profiler
+                / "rank_0_123_ascend_pt"
+                / "ASCEND_PROFILER_OUTPUT"
+            )
+            ascend_output.mkdir(parents=True)
+            (ascend_output / "trace_view.json").write_text(
+                "{}\n", encoding="utf-8"
+            )
+            graph_root = run / "graph_visualization" / "rank_0"
+            (graph_root / "torch_trace").mkdir(parents=True)
+            (graph_root / "torch_trace" / "dedicated_log_torch_trace.log").write_text(
+                "trace\n", encoding="utf-8"
+            )
+            memory_root = profiler / "memory_timeline"
+            memory_root.mkdir(parents=True)
+            (memory_root / "rank_0_memory_timeline.html").write_text(
+                "<html></html>\n", encoding="utf-8"
+            )
+            (memory_root / "rank_0_memory_timeline.json.gz").write_bytes(
+                b"series"
+            )
+            (memory_root / "rank_0_memory_timeline_raw.json.gz").write_bytes(
+                b"raw"
+            )
+            advisor_output = run / "advisor" / "advice.html"
+            advisor_output.parent.mkdir(parents=True)
+            advisor_output.write_text("advice", encoding="utf-8")
+            (run / "advisor.json").write_text(
+                json.dumps(
+                    {
+                        "return_code": 0,
+                        "command": [
+                            "msprof-analyze",
+                            "advisor",
+                            "-o",
+                            str(advisor_output.parent),
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            stack_inventory = inspect_stack_visualizations(profiler)
+            memory_inventory = inspect_memory_visualizations(profiler)
+            advisor_inventory = inspect_analysis_outputs(run)
+            tensorboard_inventory = inspect_tensorboard(run)
+            analysis = build_analysis(run)
+
+        self.assertEqual(
+            stack_inventory["stack_files"],
+            ["stacks/rank_0_step_12_npu_stacks.log"],
+        )
+        self.assertEqual(
+            stack_inventory["flamegraphs"],
+            ["stacks/rank_0_step_12_npu_stacks_flamegraph.svg"],
+        )
+        self.assertEqual(
+            stack_inventory["mindstudio_flamegraphs"],
+            ["mindstudio_flamegraphs/rank_0/flamegraph.html"],
+        )
+        self.assertTrue(tensorboard_inventory["ready"])
+        self.assertTrue(memory_inventory["ready"])
+        self.assertTrue(advisor_inventory["ready"])
+        self.assertEqual(advisor_inventory["entries"][0]["file_count"], 1)
+        self.assertEqual(
+            memory_inventory["raw"],
+            ["memory_timeline/rank_0_memory_timeline_raw.json.gz"],
+        )
+        self.assertEqual(tensorboard_inventory["event_count"], 1)
+        self.assertIn("tensorboard", tensorboard_inventory["command"])
+        self.assertTrue(
+            analysis["deliverables"]["ascend_profiles"][0][
+                "trace_view_files"
+            ]
+        )
+        self.assertTrue(analysis["graph_visualizations"]["structured_traces"])
+        self.assertTrue(analysis["memory_visualizations"]["html"])
+        self.assertTrue(analysis["analysis_outputs"]["ready"])
+
+    def test_suite_report_indexes_topology_and_preset(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            report = root / "suites" / "all.html"
+            child = root / "8-card" / "tp8" / "runtime.html"
+            child.parent.mkdir(parents=True)
+            child.write_text("report", encoding="utf-8")
+
+            _write_suite_report(report, [("tp8", "runtime", child)])
+            content = report.read_text(encoding="utf-8")
+
+        self.assertIn("tp8", content)
+        self.assertIn("runtime", content)
+        self.assertIn("性能采集套件", content)
+
     def test_profile_phases_separate_collection_and_sync_parse_tax(self):
         records = [
             {
@@ -466,6 +664,10 @@ class TestPerformanceAnalysis(unittest.TestCase):
             self.assertIn("Graph-break messages", content)
             self.assertIn("Top kernel shape signatures", content)
             self.assertIn("L2 cache samples", content)
+            self.assertIn("中文阅读路线", content)
+            self.assertIn("Ascend memory timeline", content)
+            self.assertIn("msprof-analyze output index", content)
+            self.assertIn("Official MindStudio interactive HTML", content)
 
 
 if __name__ == "__main__":

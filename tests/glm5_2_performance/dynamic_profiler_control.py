@@ -20,6 +20,9 @@ from tests.glm5_2_performance.dynamic_profile import (  # noqa: E402
 
 def main() -> None:
     presets = profiler_presets()
+    dynamic_presets = tuple(
+        name for name in presets if name not in {"flamegraph", "memory"}
+    )
     parser = argparse.ArgumentParser(
         description="Control non-intrusive torch_npu dynamic profiling"
     )
@@ -34,7 +37,7 @@ def main() -> None:
         default=Path("performance_dynamic/glm5_profiler"),
     )
     parser.add_argument("--profile-dir", type=Path)
-    parser.add_argument("--preset", choices=tuple(presets), default="overview")
+    parser.add_argument("--preset", choices=dynamic_presets, default="overview")
     parser.add_argument(
         "--parse-mode",
         choices=("async", "offline"),

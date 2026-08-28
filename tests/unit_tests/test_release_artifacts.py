@@ -148,6 +148,36 @@ class TestReleaseArtifacts(unittest.TestCase):
             artifact.mkdir(parents=True)
             report.parent.mkdir(parents=True)
             (run / "runtime.log").write_text("run", encoding="utf-8")
+            visualization = (
+                run
+                / "graph_visualization"
+                / "rank_0"
+                / "torch_trace"
+                / "dedicated_log_torch_trace.log"
+            )
+            visualization.parent.mkdir(parents=True)
+            visualization.write_text("trace", encoding="utf-8")
+            memory_timeline = (
+                run
+                / "trainer_output"
+                / "profiling"
+                / "traces"
+                / "memory_timeline"
+                / "rank_0_memory_timeline.html"
+            )
+            memory_timeline.parent.mkdir(parents=True)
+            memory_timeline.write_text("memory", encoding="utf-8")
+            official_flamegraph = (
+                run
+                / "trainer_output"
+                / "profiling"
+                / "traces"
+                / "mindstudio_flamegraphs"
+                / "rank_0"
+                / "flamegraph.html"
+            )
+            official_flamegraph.parent.mkdir(parents=True)
+            official_flamegraph.write_text("flamegraph", encoding="utf-8")
             (artifact / "manifest.json").write_text("{}", encoding="utf-8")
             report.write_text("report", encoding="utf-8")
             archive_path = root / "release.tar.gz"
@@ -161,12 +191,139 @@ class TestReleaseArtifacts(unittest.TestCase):
                 names,
             )
             self.assertIn(
+                "performance_runs/8-card/fsdp8/"
+                f"{experiment}/graph_visualization/rank_0/torch_trace/"
+                "dedicated_log_torch_trace.log",
+                names,
+            )
+            self.assertIn(
+                "performance_runs/8-card/fsdp8/"
+                f"{experiment}/trainer_output/profiling/traces/"
+                "memory_timeline/rank_0_memory_timeline.html",
+                names,
+            )
+            self.assertIn(
+                "performance_runs/8-card/fsdp8/"
+                f"{experiment}/trainer_output/profiling/traces/"
+                "mindstudio_flamegraphs/rank_0/flamegraph.html",
+                names,
+            )
+            self.assertIn(
                 f"performance_artifacts/8-card/fsdp8/{experiment}/manifest.json",
                 names,
             )
             self.assertIn(
                 f"performance_reports/8-card/fsdp8/{experiment}.html",
                 names,
+            )
+
+    def test_analysis_archive_keeps_visualizations_without_raw_capture(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            experiment = "npu-tp8-bf16-r1-analysis"
+            run = root / "performance_runs" / "8-card" / "tp8" / experiment
+            artifact = (
+                root / "performance_artifacts" / "8-card" / "tp8" / experiment
+            )
+            report = (
+                root
+                / "performance_reports"
+                / "8-card"
+                / "tp8"
+                / f"{experiment}.html"
+            )
+            fixture = root / "precision_fixtures" / experiment
+
+            parsed_root = (
+                run
+                / "trainer_output"
+                / "profiling"
+                / "traces"
+                / "rank_0_ascend_pt"
+                / "ASCEND_PROFILER_OUTPUT"
+            )
+            parsed_root.mkdir(parents=True)
+            parsed = (
+                run
+                / "trainer_output"
+                / "profiling"
+                / "traces"
+                / "rank_0_ascend_pt"
+                / "ASCEND_PROFILER_OUTPUT"
+                / "trace_view.json"
+            )
+            parsed.write_text("{}", encoding="utf-8")
+            raw = (
+                run
+                / "trainer_output"
+                / "profiling"
+                / "traces"
+                / "rank_0_ascend_pt"
+                / "PROF_000001"
+                / "device"
+                / "raw.bin"
+            )
+            raw.parent.mkdir(parents=True)
+            raw.write_bytes(b"raw")
+            graph = run / "graph_visualization" / "tlparse" / "index.html"
+            graph.parent.mkdir(parents=True)
+            graph.write_text("graph", encoding="utf-8")
+            flamegraph = (
+                run
+                / "trainer_output"
+                / "profiling"
+                / "traces"
+                / "mindstudio_flamegraphs"
+                / "rank_0"
+                / "flamegraph.html"
+            )
+            flamegraph.parent.mkdir(parents=True)
+            flamegraph.write_text("flame", encoding="utf-8")
+            memory = (
+                run
+                / "trainer_output"
+                / "profiling"
+                / "traces"
+                / "memory_timeline"
+                / "rank_0_memory_timeline.html"
+            )
+            memory.parent.mkdir(parents=True)
+            memory.write_text("memory", encoding="utf-8")
+            tensorboard = (
+                run / "trainer_output" / "tensorboard" / "events.out.tfevents.test"
+            )
+            tensorboard.parent.mkdir(parents=True)
+            tensorboard.write_bytes(b"events")
+            advisor = run / "advisor" / "analysis_output" / "advice.csv"
+            advisor.parent.mkdir(parents=True)
+            advisor.write_text("advice", encoding="utf-8")
+            (run / "runtime.log").write_text("run", encoding="utf-8")
+            artifact.mkdir(parents=True)
+            (artifact / "analysis.json").write_text("{}", encoding="utf-8")
+            report.parent.mkdir(parents=True)
+            report.write_text("report", encoding="utf-8")
+            fixture.mkdir(parents=True)
+            (fixture / "checkpoint.distcp").write_bytes(b"checkpoint")
+
+            archive_path = root / "analysis.tar.gz"
+            create_archive(root, experiment, archive_path, content="analysis")
+
+            with tarfile.open(archive_path, "r:gz") as archive:
+                names = set(archive.getnames())
+            self.assertIn(parsed.relative_to(root).as_posix(), names)
+            self.assertIn(graph.relative_to(root).as_posix(), names)
+            self.assertIn(flamegraph.relative_to(root).as_posix(), names)
+            self.assertIn(memory.relative_to(root).as_posix(), names)
+            self.assertIn(tensorboard.relative_to(root).as_posix(), names)
+            self.assertIn(advisor.relative_to(root).as_posix(), names)
+            self.assertIn((run / "runtime.log").relative_to(root).as_posix(), names)
+            self.assertIn(
+                (artifact / "analysis.json").relative_to(root).as_posix(), names
+            )
+            self.assertIn(report.relative_to(root).as_posix(), names)
+            self.assertNotIn(raw.relative_to(root).as_posix(), names)
+            self.assertNotIn(
+                (fixture / "checkpoint.distcp").relative_to(root).as_posix(), names
             )
 
 

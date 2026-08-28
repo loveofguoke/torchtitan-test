@@ -28,6 +28,8 @@ workflow is split by responsibility as follows:
 | Layer | Document or implementation | Purpose |
 |---|---|---|
 | Experiment interface | This README | Commands, parameters, presets, output layout, report contents, and interpretation rules. |
+| Environment and external tools | [性能与图模式统一依赖清单](../glm5_2_common/PERFORMANCE_GRAPH_DEPENDENCIES_ZH.md) | Required runtime, optional Python packages, Ascend tools, GUI viewers, repositories, installation, verification, and version boundaries. |
+| Report interpretation | [中文性能报告与可视化阅读指南](REPORT_GUIDE_ZH.md) | Every HTML section, table, metric, official artifact, viewer, and PP-specific reading path. |
 | Evidence layout | [exploration index](explorations/index.md) and [report index](explorations/reports/index.md) | Immutable run evidence and navigation by card count/topology. |
 | Current analysis | [cross-topology summary](explorations/reports/summary.md) and [failed attempts](explorations/reports/failures.md) | Measured bottlenecks, hardware caveats, optimization backlog, and failed experiments. |
 | Ascend collection implementation | [TorchTitanTurbo profiler document](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/torchtitanturbo/tools/PROFILER.md), [profiler patch](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/torchtitanturbo/tools/profiler.py), and [patch inventory](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/PATCHES.md) | Translation of TorchTitan's lifecycle to `torch_npu.profiler`, NPU-only controls, and memory snapshots. |
@@ -48,8 +50,21 @@ The workflow is deliberately top-down:
 4. `distributed`: Level1 on every rank with pipe-utilization and interconnect
    data; raw data is parsed offline by default.
 5. `kernel`: Level1 shapes, arithmetic utilization, and L2 information.
-6. `runtime`: Level2 stack, module hierarchy, memory, operator attributes,
+6. `operator`: shapes, operator attributes/arguments, and raw FLOPs capture.
+7. `memory`: official categorized memory timeline in HTML/JSON/raw JSON.
+8. `flamegraph`: Level0 CPU/NPU call stacks and Ascend profiler DB; analysis
+   renders the official MindStudio Host HTML when its script is configured and
+   portable CPU/NPU SVGs when Brendan Gregg's `flamegraph.pl` is available.
+9. `runtime`: Level2 stack, module hierarchy, memory, operator attributes,
    host CPU/memory, and shapes.
+10. `system`: Level2 Host CPU/memory/disk/network/OS runtime/NUMA, I/O,
+    interconnection, GC, and MSTX collection on all ranks.
+
+`all` is a meta-preset. It runs the non-redundant policies above as independent
+captures and creates one suite index; it never enables every high-overhead
+switch inside a single training process. See the
+[Chinese report guide](REPORT_GUIDE_ZH.md#2-preset-到底是什么) for the exact
+coverage matrix and overhead model.
 
 Start at `overview`. Move to a deeper preset only when the previous report
 locates the bottleneck below that layer.
@@ -69,7 +84,7 @@ sequence length 32.
 | `--device` | `auto`, `cuda`, or `npu`. `cuda` is reserved and currently raises `NotImplementedError`. | `auto`, resolved from visibility variables |
 | `--topology` | One common topology or `all`. | `single` |
 | `--topologies` | Comma-separated subset such as `single,fsdp8,cp8`; mutually exclusive with `--topology`. | unset |
-| `--preset` | `overview`, `comparison`, `standard`, `distributed`, `kernel`, or `runtime`. | `overview` |
+| `--preset` | `overview`, `comparison`, `standard`, `distributed`, `kernel`, `operator`, `memory`, `flamegraph`, `runtime`, `system`, or the multi-capture meta-option `all`. | `overview` |
 | `--visible-devices` | Override `ASCEND_RT_VISIBLE_DEVICES` for automation. Environment export is preferred. | unset |
 | `--steps` | Total training optimizer steps. Must reach the full profiler schedule. | `30` |
 | `--skip-steps` | Training steps before Profiler warmup. | `10` |
@@ -85,9 +100,44 @@ sequence length 32.
 | `--parse-workers` | Process limit passed to offline parsing. | torch_npu parser default |
 | `--advisor` | Run `msprof-analyze advisor all` after parsing. | disabled |
 | `--cluster` | Run `msprof-analyze cluster -m all`; intended for multi-rank captures. | disabled |
+| `--analysis-tools` | `none`, `offline`, `advisor`, `cluster`, or `all`. `all` parses offline presets, runs advisor, and runs cluster only for multi-rank captures. | `none` |
 | `--compare-baseline` | Baseline profiler path passed to `msprof-analyze compare`. | unset |
 | `--extra-train-arg` | Append one raw TorchTitan argument; repeat the flag for multiple arguments. | none |
 | `--force` | Remove and recapture completed output. Incomplete output is archived and retried without it. | disabled |
+
+Advanced collection overrides apply to one concrete preset and are rejected
+with `--preset all`, because silently applying one override to every independent
+capture would destroy the suite's meaning:
+
+| Parameter | Purpose | Default |
+|---|---|---|
+| `--profiler-level` | `level_none`, `level0`, `level1`, or `level2`. | selected preset |
+| `--profile-ranks` | `all` or comma-separated global ranks. | selected preset |
+| `--aic-metrics` | `none`, `pipe_utilization`, `arithmetic_utilization`, `memory`, `memory_l0`, `memory_ub`, `resource_conflict_ratio`, `l2_cache`, or `memory_access`. Only one metric family can be collected per profile. | selected preset |
+| `--record-shapes` / `--no-record-shapes` | Input shape and dtype metadata. | selected preset |
+| `--profile-memory` / `--no-profile-memory` | Framework/CANN memory records. | selected preset |
+| `--with-stack` / `--no-with-stack` | Python/framework call stacks. | selected preset |
+| `--with-modules` / `--no-with-modules` | Module hierarchy. | selected preset |
+| `--with-flops` / `--no-with-flops` | Raw FLOPs field. The current official parser does not support it. | selected preset |
+| `--export-stacks` / `--no-export-stacks` | CPU/NPU folded-stack callback export. Requires stack capture and sync parse. | selected preset |
+| `--export-memory-timeline` / `--no-export-memory-timeline` | Official HTML, categorized JSON, and raw JSON memory timeline. Requires shape, memory, and stack/module data. | selected preset |
+| `--l2-cache`, `--op-attr`, `--record-op-args` (and corresponding `--no-*`) | L2 counters, aclnn attributes, and argument statistics. | selected preset |
+| `--data-simplification` / `--no-data-simplification` | Delete or retain redundant CANN raw data after parsing. | selected preset |
+| `--gc-detect-threshold` | Record Python GC events lasting at least this many milliseconds. | selected preset |
+| `--msprof-tx` / `--no-msprof-tx` | Legacy msprof TX range collection. Keep it separate from MSTX when comparing marker mechanisms. | selected preset |
+| `--mstx`, `--mstx-domain-include`, `--mstx-domain-exclude` | Current MSTX collection and optional domain filters. Include/exclude are mutually exclusive. | selected preset |
+| `--host-system` | Comma-separated `cpu,mem,disk,network,osrt,numa`. | selected preset |
+| `--system-io`, `--system-interconnection` (and corresponding `--no-*`) | NIC/RoCE and HCCS/PCIe data. | selected preset |
+| `--export-types` | Comma-separated `text,db`. | `text,db` |
+
+For example, isolate the AI Core memory-access counter without defining a new
+preset:
+
+```bash
+python tests/glm5_2_performance/profiler_benchmark.py \
+  --probe --device npu --topology single --preset kernel \
+  --aic-metrics memory_access --no-l2-cache
+```
 
 Each mutable capture writes `run_state.json`, and `runtime.log` begins with the
 same attempt ID. Forced suite execution preflights all selected topologies for
@@ -108,6 +158,62 @@ Profiler window; charts mark that active window instead of presenting startup
 as steady-state performance. It also inventories parsed operator/kernel files
 and recognized duration tables, records storage/time warnings, and links the
 official `msprof-analyze` advisor, compare, or cluster outputs when requested.
+It also indexes the complete interactive evidence instead of flattening it:
+
+- `trace_view.json` and the complete `*_ascend_pt` root for the expandable
+  PyTorch/CANN/NPU Timeline in MindStudio Insight; the JSON also opens in
+  Perfetto or `chrome://tracing`;
+- the official MindStudio Host flame graph HTML from the Ascend profiler DB,
+  plus folded CPU/NPU stacks and portable click-to-zoom SVGs from the
+  `flamegraph` or `runtime` preset;
+- official memory timeline HTML, categorized JSON series, and raw event JSON
+  from the `memory` or `runtime` preset;
+- TorchTitan TensorBoard event files plus the exact `tensorboard --logdir`
+  command for loss, grad norm, throughput, MFU, and memory curves;
+- when the endpoint is compiled, `TORCH_TRACE`/`tlparse` and Inductor FX/IR/code
+   artifacts captured by the graph diagnostics path.
+
+The generated report starts with a Chinese reading order and metric glossary.
+For a chapter-by-chapter explanation, including StepTrace, HCCL wait/transit,
+operator/shape/L2 tables, flame graphs, memory categories, TensorBoard, and the
+PP8-specific reading path, use [REPORT_GUIDE_ZH.md](REPORT_GUIDE_ZH.md).
+
+## Complete profiler feature suite
+
+One NPU, every non-redundant collection policy, every applicable official
+offline analysis, and one suite index:
+
+```bash
+export ASCEND_RT_VISIBLE_DEVICES=4
+unset CUDA_VISIBLE_DEVICES
+
+python tests/glm5_2_performance/profiler_benchmark.py \
+  --probe --device npu --topology single \
+  --preset all --analysis-tools all
+```
+
+One distributed topology (replace `tp8` with any registered topology):
+
+```bash
+export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+
+python tests/glm5_2_performance/profiler_benchmark.py \
+  --probe --device npu --topology tp8 \
+  --preset all --analysis-tools all
+```
+
+All registered topologies and all profiler dimensions:
+
+```bash
+python tests/glm5_2_performance/profiler_benchmark.py \
+  --probe --device npu --topology all \
+  --preset all --analysis-tools all
+```
+
+The final command is intentionally expensive: it is a formal full matrix, not
+a quick probe. `comparison` is excluded because it requires an explicit
+`--compare-baseline`; `standard` is covered by deeper Level1 captures. Every
+topology × preset run has a separate run/artifact/report path.
 
 This suite is diagnostic and does not impose a universal performance PASS/FAIL
 threshold. A formal regression decision needs an explicit baseline and target
@@ -144,9 +250,28 @@ performance_artifacts/1-card/single/<experiment>/  # manifest + summary
 performance_reports/1-card/single/<experiment>.html
 ```
 
-All generated performance roots are ignored by Git. Transfer portable
-artifacts/reports, and raw runs when official profiler data is needed, with
-`release_artifacts.py`.
+When `--topology all` or `--preset all` selects more than one member, every
+member keeps the same tree above and the navigation index is written to:
+
+```text
+performance_reports/suites/<experiment>-<device>-suite.html
+performance_reports/suites/<experiment>-<device>-all-presets-suite.html
+```
+
+The second form indexes the full `topology x preset` matrix. There is no shared
+raw directory whose files mix different acquisition policies.
+
+All generated performance roots are ignored by Git. For local analysis, the
+following command includes HTML reports, compact artifacts, flame graphs,
+memory timelines, TensorBoard, parsed Ascend outputs, advisor/cluster/compare
+results, and graph visualization while excluding raw collection trees:
+
+```bash
+python release_artifacts.py upload <experiment> --content analysis
+```
+
+Use `--content full` when MindStudio must import the complete original profile
+root or another host must resume/re-parse the experiment.
 
 Do not enable msProbe/precision tensor dumping in the same training process as
 profiling. The official profiler guide notes that dump hooks and tensor writes
@@ -313,12 +438,66 @@ for Insight. Import `cluster_analysis_output` for the official cluster views.
 GPU trace JSON can be used as the baseline for `msprof-analyze compare` and can
 also be inspected in Perfetto. Despite the upstream API name
 `tensorboard_trace_handler`, TensorBoard is not the preferred Ascend trace
-viewer.
+viewer. On Ascend, MindStudio Insight owns device-trace visualization;
+TensorBoard remains the scalar training dashboard.
+
+### Expandable Timeline, memory timeline, flame graph, and TensorBoard
+
+Capture the lightweight stack preset on one NPU, then analyze it:
+
+```bash
+export ASCEND_RT_VISIBLE_DEVICES=4
+unset CUDA_VISIBLE_DEVICES
+
+python tests/glm5_2_performance/profiler_benchmark.py \
+  --capture --device npu --topology single --preset flamegraph
+
+# Optional official MindStudio interactive Host flame graph. Point to the
+# flamegraph.py shipped by MindStudio Insight or cloned from Ascend/msinsight.
+export TORCHTITAN_MSINSIGHT_FLAMEGRAPH=\
+/opt/msinsight/scripts/flame_graph/flamegraph.py
+
+# Optional portable CPU/NPU folded-stack SVG fallback.
+export TORCHTITAN_FLAMEGRAPH_PL=/opt/FlameGraph/flamegraph.pl
+python tests/glm5_2_performance/profiler_benchmark.py \
+  --analyze --device npu --topology single --preset flamegraph
+```
+
+The report links every `trace_view.json`, official MindStudio flame graph,
+folded stack, generated SVG, and TensorBoard event file. Open the complete
+`*_ascend_pt` directory in
+MindStudio Insight for the authoritative multi-level Timeline. For a quick
+browser-only Timeline, load `trace_view.json` in `https://ui.perfetto.dev/`.
+The report prints the exact run-specific TensorBoard command; a root-level view
+can also be started with:
+
+```bash
+tensorboard --logdir performance_runs --port 6006 --bind_all
+```
+
+Stack collection and parsing add material overhead. Use `overview` or a
+profiler-off run for performance baselines and use `flamegraph` only for
+attribution. The dedicated `flamegraph` preset is available to scheduled
+in-process capture, not the non-intrusive dynamic-profiler controller; dynamic
+`runtime` still exposes stack hierarchy in its Timeline.
 
 This is a bounded in-process probe, not an external sampler attached to an
 arbitrary PID. It observes the real training process at a scheduled step
 window, which gives reliable operator correlation while keeping overhead
 controlled.
+
+Capture the official categorized memory timeline separately:
+
+```bash
+python -m pip install matplotlib
+python tests/glm5_2_performance/profiler_benchmark.py \
+  --probe --device npu --topology single --preset memory
+```
+
+The report links the interactive HTML, categorized `.json.gz`, and raw
+`_raw.json.gz` event stream. Parameter, optimizer, input, activation, gradient,
+temporary, autograd-detail, and unknown categories follow the official Ascend
+Profiler definition.
 
 ## Dynamic profiler for a running training job
 
@@ -367,7 +546,7 @@ Dynamic controller parameters are independent of the scheduled benchmark:
 | `--show` | Print the current JSON configuration. | no action; one action is required |
 | `--config-dir` | Directory polled through `PROF_CONFIG_PATH`. | `performance_dynamic/glm5_profiler` |
 | `--profile-dir` | Raw profile destination. | existing value, otherwise `<config-dir>/profiles` |
-| `--preset` | Same six Ascend presets as the scheduled benchmark. | `overview` |
+| `--preset` | Any scheduled preset except `flamegraph`, `memory`, and the `all` meta-preset. Dynamic mode records stack/memory hierarchy but cannot run the scheduled callback exports. | `overview` |
 | `--parse-mode` | `async` or `offline`; dynamic rank filtering cannot use sync parsing. | `async` |
 | `--start-step` | Optimizer step at which profiling becomes active. | `10` |
 | `--warmup-steps` | Dynamic Profiler warmup steps. | `1` |

@@ -27,7 +27,9 @@ artifact checksums. Git cleanliness is diagnostic, not a pass/fail condition.
 | fixed token plan or Trainer data CLI | precision, checkpoint, stability, graph precision, combination precision |
 | precision fixture/capture | self-consistency suite, migration suite, graph and combination precision |
 | graph mode or Turbo compile API | graph debug, graph smoke, graph precision/performance, combination |
-| profiler API or output layout | performance capture, offline analysis, curated explorations, Release |
+| profiler API or output layout | performance capture, preset-all matrix, stack/flamegraph and memory-timeline rendering, TensorBoard discovery, offline analysis, curated explorations, combination reports, Release |
+| graph diagnostics output | per-rank `TORCH_TRACE`, `tlparse`, Inductor FX/IR/code inventory, combination reports, Release |
+| external profiler/compiler tool or environment dependency | common dependency inventory, performance and graph guides/READMEs, combination reports, Release portability |
 | parity trace/report schema | paired and offline parity, artifact reader/writer, HTML regression tests |
 | output directory nesting | rerun reset, report links, docs, release discovery and restore |
 

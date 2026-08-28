@@ -10,14 +10,24 @@ from dataclasses import asdict, dataclass, replace
 import hashlib
 import html
 import json
+import os
 from pathlib import Path
 from typing import Sequence
 
 from tests.glm5_2_common.execution import compose_execution
 from tests.glm5_2_common.topology import ParallelTopology, select_topologies
 from tests.glm5_2_graph.config import GraphFeatureConfig
+from tests.glm5_2_graph.visualization import (
+    generate_tlparse_reports,
+    inspect_graph_visualizations,
+)
 from tests.glm5_2_performance.analysis import build_analysis, render_html_report
 from tests.glm5_2_performance.config import profiler_presets
+from tests.glm5_2_performance.visualization import (
+    inspect_tensorboard,
+    render_flamegraphs,
+    render_mindstudio_flamegraphs,
+)
 from tests.glm5_2_precision.artifacts import PrecisionArtifactReader
 from tests.glm5_2_precision.topology_suite import (
     compare_topology_suite,
@@ -170,6 +180,13 @@ def _relative_link(path: Path, root: Path) -> str:
     return html.escape(path.relative_to(root).as_posix())
 
 
+def _portable_link(path: Path, root: Path) -> str:
+    return html.escape(
+        Path(os.path.relpath(path, root)).as_posix(),
+        quote=True,
+    )
+
+
 def _performance_report(
     root: Path,
     config: FormalExperimentConfig,
@@ -192,6 +209,12 @@ def _performance_report(
     metrics_path = run_directory / "raw_metrics.jsonl"
     if not metrics_path.is_file():
         raise FileNotFoundError(metrics_path)
+    generate_tlparse_reports(run_directory)
+    profiler_directory = (
+        run_directory / "trainer_output" / "profiling" / "traces"
+    )
+    render_mindstudio_flamegraphs(profiler_directory)
+    render_flamegraphs(profiler_directory)
     analysis = build_analysis(run_directory, metrics_path=metrics_path)
     profiler = selection.profiler
     run_name = f"{role}-{endpoint.device_type}-{endpoint.topology.slug}-r{repeat}"
@@ -304,6 +327,78 @@ def _write_combination_report(
                     "candidate</a></td></tr>"
                 )
 
+    graph_rows = []
+    seen_graph_runs: set[Path] = set()
+    for name in selected:
+        raw = topology_config(base, topologies[name], precision=precision)
+        config = _apply_selection(raw, selection)
+        for role, endpoint, graph in (
+            ("reference", config.reference, selection.reference_graph),
+            ("candidate", config.candidate, selection.candidate_graph),
+        ):
+            for repeat in range(1, endpoint.repeats + 1):
+                run_directory = _run_directory(
+                    root, config, role, endpoint, repeat
+                ).resolve()
+                if run_directory in seen_graph_runs:
+                    continue
+                seen_graph_runs.add(run_directory)
+                if graph.mode != "eager" and graph.diagnostics:
+                    generate_tlparse_reports(run_directory)
+                inventory = inspect_graph_visualizations(run_directory)
+                graph_root = Path(inventory["root"])
+                tensorboard = inspect_tensorboard(run_directory)
+
+                def links(kind: str, label: str) -> str:
+                    values = inventory.get(kind, [])[:8]
+                    if not values:
+                        return "-"
+                    return "<br>".join(
+                        f'<a href="{_portable_link(graph_root / value, report_root)}">'
+                        f"{html.escape(label)} {index + 1}</a>"
+                        for index, value in enumerate(values)
+                    )
+
+                if graph.mode == "eager":
+                    status = "not applicable (eager)"
+                elif not graph.diagnostics:
+                    status = "not captured; use --compiler-diagnostics"
+                elif inventory["tlparse_reports"]:
+                    status = "interactive report ready"
+                elif inventory["structured_traces"]:
+                    status = (
+                        "tlparse is not installed; install it and compare again"
+                    )
+                else:
+                    status = "diagnostics requested but no structured trace found"
+                tensorboard_links = "<br>".join(
+                    f'<a href="{_portable_link(run_directory / value, report_root)}">'
+                    f"event {index + 1}</a>"
+                    for index, value in enumerate(
+                        tensorboard.get("event_files", [])[:8]
+                    )
+                ) or "-"
+                tensorboard_command = html.escape(
+                    " ".join(tensorboard.get("command", []))
+                )
+                tensorboard_cell = (
+                    f"<details><summary>{tensorboard.get('event_count', 0)} "
+                    f"event file(s)</summary><code>{tensorboard_command}</code>"
+                    f"<br>{tensorboard_links}</details>"
+                )
+                graph_rows.append(
+                    "<tr>"
+                    f"<td>{html.escape(name)}</td><td>{html.escape(role)}</td>"
+                    f"<td>{repeat}</td><td>{html.escape(graph.mode)}</td>"
+                    f"<td>{html.escape(status)}</td>"
+                    f"<td>{links('tlparse_reports', 'tlparse')}</td>"
+                    f"<td>{links('fx_graphs', 'FX graph')}</td>"
+                    f"<td>{links('inductor_ir', 'IR')}</td>"
+                    f"<td>{links('generated_code', 'code')}</td>"
+                    f"<td>{links('structured_traces', 'trace')}</td>"
+                    f"<td>{tensorboard_cell}</td></tr>"
+                )
+
     report_root.mkdir(parents=True, exist_ok=True)
     precision_link = (
         f'<a href="{_relative_link(precision_report, report_root)}">'
@@ -313,16 +408,22 @@ def _write_combination_report(
     )
     report = report_root / f"{first_config.storage_name}.html"
     report.write_text(
-        f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+        f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>GLM-5.2 combined experiment</title>
 <style>body{{font:14px/1.5 system-ui,sans-serif;max-width:1400px;margin:auto;padding:24px;color:#172033}}
 section{{border:1px solid #dfe5ef;border-radius:12px;padding:20px;margin:16px 0}}table{{border-collapse:collapse;width:100%}}
-th,td{{padding:9px;border-bottom:1px solid #dfe5ef;text-align:left}}th{{position:sticky;top:0;background:#f8fafc}}a{{color:#155eef}}</style>
+th,td{{padding:9px;border-bottom:1px solid #dfe5ef;text-align:left}}th{{position:sticky;top:0;background:#f8fafc}}a{{color:#155eef}}code{{background:#edf2ff;padding:2px 5px;border-radius:4px}}</style>
 </head><body><h1>GLM-5.2 combined experiment</h1>
 <p>Objectives: {html.escape(', '.join(sorted(selection.objectives)))}; reference graph: {selection.reference_graph.mode}; candidate graph: {selection.candidate_graph.mode}.</p>
+<section><h2>中文阅读路线</h2>
+<p>先打开 Precision 套件确认 loss/grad norm 是否通过，再看 Performance 的 profiler-off 中位 step time 与 speedup。图模式表按 topology、端点和 rank 链接编译诊断：Interactive 是 <code>tlparse</code> 总览，FX 是 Dynamo 捕获图，IR 是融合前后调度表示，Code 是后端生成代码，Raw trace 用于复现和重新解析。TensorBoard 只看训练标量，不替代编译图或 NPU 时间线。</p>
+<p>图模式成功的最低证据链是：无未解释 backend failure；graph break/recompile 数量可解释且不会随 step 无界增长；精度通过；再用性能报告证明 steady-state 收益。一次成功启动不等于图模式验收通过。</p></section>
 <section><h2>Precision</h2><p>{precision_link}</p></section>
 <section><h2>Performance</h2><table><thead><tr><th>Topology</th><th>Repeat</th><th>Reference median step time</th><th>Candidate median step time</th><th>Candidate speedup</th><th>Details</th></tr></thead>
 <tbody>{''.join(rows) or '<tr><td colspan="6">Performance objective disabled</td></tr>'}</tbody></table></section>
+<section><h2>torch.compile visualization and TensorBoard</h2><p>Compiled endpoints can emit an official <code>TORCH_TRACE</code>. When <code>tlparse</code> is installed on the compare host, compare converts each rank trace into an interactive HTML stack trie with graph breaks, recompiles, FX graphs, and generated code. Inductor debug files remain linked separately because NPUGraph and Inductor do not expose identical backend artifacts. Every endpoint also exposes its TensorBoard scalar event files and exact launch command.</p>
+<table><thead><tr><th>Topology</th><th>Role</th><th>Repeat</th><th>Mode</th><th>Status</th><th>Interactive</th><th>FX</th><th>IR</th><th>Code</th><th>Raw trace</th><th>TensorBoard</th></tr></thead><tbody>{''.join(graph_rows) or '<tr><td colspan="11">No graph endpoint selected</td></tr>'}</tbody></table>
+<p><code>pip install tlparse</code>. Structured traces contain model source code but no weights; review them before sharing.</p></section>
 </body></html>""",
         encoding="utf-8",
     )

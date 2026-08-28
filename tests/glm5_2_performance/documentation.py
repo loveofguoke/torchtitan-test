@@ -284,6 +284,9 @@ def write_run_readme(directory: Path) -> Path:
         ("compact artifact", "artifact_directory"),
         ("html report", "report_path"),
         ("MindStudio input", "mindstudio_input"),
+        ("TensorBoard logdir", "tensorboard_root"),
+        ("flame graph stacks/SVG root", "flamegraph_root"),
+        ("torch.compile visualization", "graph_visualization_root"),
     ):
         if artifacts.get(key):
             lines.append(f"- {label}: `{artifacts[key]}`")

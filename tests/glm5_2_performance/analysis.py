@@ -6,11 +6,19 @@ import csv
 import html
 import json
 import math
+import os
 import re
 import statistics
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable
+
+from .visualization import (
+    inspect_analysis_outputs,
+    inspect_memory_visualizations,
+    inspect_stack_visualizations,
+    inspect_tensorboard,
+)
 
 
 def read_metrics(path: Path) -> list[dict[str, Any]]:
@@ -775,6 +783,11 @@ def inspect_profiler_deliverables(profiler_directory: Path) -> dict[str, Any]:
         profiler_metadata_files = sorted(
             path.name for path in profile_root.glob("profiler_metadata*.json")
         )
+        trace_view_files = sorted(
+            path.relative_to(profiler_directory).as_posix()
+            for path in output.glob("trace_view.json*")
+            if path.is_file()
+        )
         parsed_text = any(text_files.values())
         parsed_database = bool(database_files)
         ascend_profiles.append(
@@ -791,6 +804,7 @@ def inspect_profiler_deliverables(profiler_directory: Path) -> dict[str, Any]:
                 "database_files": database_files,
                 "profiler_info_files": profiler_info_files,
                 "profiler_metadata_files": profiler_metadata_files,
+                "trace_view_files": trace_view_files,
             }
         )
 
@@ -881,7 +895,10 @@ def build_analysis(
         else {"file_count": 0, "total_bytes": 0, "by_suffix": {}, "largest_files": []}
     )
     deliverables = inspect_profiler_deliverables(profiler_directory)
+    from tests.glm5_2_graph.visualization import inspect_graph_visualizations
+
     return {
+        "run_directory": str(run_directory),
         "metrics": metrics,
         "profile_phases": summarize_profile_phases(
             records,
@@ -916,6 +933,15 @@ def build_analysis(
             else {"rows": []}
         ),
         "deliverables": deliverables,
+        "stack_visualizations": inspect_stack_visualizations(
+            profiler_directory
+        ),
+        "memory_visualizations": inspect_memory_visualizations(
+            profiler_directory
+        ),
+        "analysis_outputs": inspect_analysis_outputs(run_directory),
+        "tensorboard": inspect_tensorboard(run_directory),
+        "graph_visualizations": inspect_graph_visualizations(run_directory),
         "compiler_diagnostics": _compiler_diagnostics(
             run_directory / "runtime.log"
         ),
@@ -1147,6 +1173,18 @@ def render_html_report(
     output_path: Path,
 ) -> None:
     config = manifest["config"]
+
+    def report_href(path: Path) -> str:
+        return html.escape(
+            Path(os.path.relpath(path, output_path.parent)).as_posix(),
+            quote=True,
+        )
+
+    def linked_file(path: Path, label: str | None = None) -> str:
+        return (
+            f'<a href="{report_href(path)}">'
+            f'{html.escape(label or path.name)}</a>'
+        )
     metric_data = analysis["metrics"]
     summary = metric_data["summary"]
     series = metric_data["series"]
@@ -1518,26 +1556,148 @@ time is extracted from the Ascend profiler completion messages.</p>
         return f'<span class="status {css_class}">{html.escape(text)}</span>'
 
     ascend_rows = ""
+    trace_rows = ""
+    profiler_directory = Path(analysis["profiler_directory"])
     for profile in deliverables["ascend_profiles"]:
         files = [
             name for name, present in profile["text_files"].items() if present
         ] + profile["database_files"] + profile["profiler_metadata_files"]
         file_details = ", ".join(files) or "No parsed files"
+        trace_links = ", ".join(
+            linked_file(profiler_directory / relative_path, "trace_view.json")
+            for relative_path in profile.get("trace_view_files", [])
+        ) or "not parsed"
         ascend_rows += (
             f'<tr><td><code>{html.escape(profile["relative_root"])}</code>'
             f'<br><span class="subtle">{html.escape(file_details)}</span></td>'
             f'<td>{badge(profile["raw_ready"], "captured", "metadata missing")}</td>'
             f'<td>{badge(profile["parsed_text"], "text ready", "text pending")}</td>'
             f'<td>{badge(profile["parsed_database"], "DB ready", "DB pending")}</td>'
-            f'<td>{badge(profile["insight_ready"], "ready", "parse required")}</td></tr>'
+            f'<td>{badge(profile["insight_ready"], "ready", "parse required")}</td>'
+            f'<td>{trace_links}</td></tr>'
+        )
+        trace_rows += (
+            f'<tr><td><code>{html.escape(profile["relative_root"])}</code></td>'
+            f'<td>{trace_links}</td><td>'
+            '<a href="https://gitcode.com/Ascend/msinsight">'
+            'MindStudio Insight</a>; '
+            '<a href="https://ui.perfetto.dev/">Perfetto</a>; '
+            '<code>chrome://tracing</code></td></tr>'
         )
     if not ascend_rows:
-        ascend_rows = '<tr><td colspan="5">No Ascend profile root discovered</td></tr>'
+        ascend_rows = '<tr><td colspan="6">No Ascend profile root discovered</td></tr>'
+        trace_rows = '<tr><td colspan="3">No interactive trace discovered</td></tr>'
 
     gpu_trace_items = "".join(
         f"<li><code>{html.escape(path)}</code></li>"
         for path in deliverables["gpu_traces"][:20]
     ) or "<li>No GPU trace discovered</li>"
+
+    tensorboard = analysis.get("tensorboard", {})
+    tensorboard_root = Path(tensorboard.get("root", ""))
+    run_directory = Path(analysis.get("run_directory", profiler_directory.parents[2]))
+    tensorboard_files = "".join(
+        f"<li>{linked_file(run_directory / path, path)}</li>"
+        for path in tensorboard.get("event_files", [])
+    ) or "<li>No TensorBoard event file discovered</li>"
+    tensorboard_command = " ".join(tensorboard.get("command", []))
+
+    analysis_output_rows = ""
+    for entry in analysis.get("analysis_outputs", {}).get("entries", []):
+        output_links = "<br>".join(
+            linked_file(run_directory / path, path)
+            for path in entry.get("files", [])[:30]
+        ) or "No generated file discovered"
+        analysis_output_rows += (
+            f'<tr><td>{html.escape(entry["name"])}</td>'
+            f'<td>{_format_number(entry.get("return_code"))}</td>'
+            f'<td>{entry.get("file_count", 0)} / '
+            f'{_human_bytes(int(entry.get("total_bytes", 0)))}</td>'
+            f'<td><details><summary>Open outputs</summary>{output_links}'
+            f'<pre>{html.escape(" ".join(entry.get("command", [])))}</pre>'
+            "</details></td></tr>"
+        )
+    if not analysis_output_rows:
+        analysis_output_rows = (
+            '<tr><td colspan="4">No msprof-analyze output was requested</td></tr>'
+        )
+
+    stack_visualizations = analysis.get("stack_visualizations", {})
+    flamegraph_items = "".join(
+        f"<li>{linked_file(profiler_directory / path, path)}</li>"
+        for path in stack_visualizations.get("flamegraphs", [])
+    ) or "<li>No rendered flame graph discovered</li>"
+    mindstudio_flamegraph_items = "".join(
+        f"<li>{linked_file(profiler_directory / path, path)}</li>"
+        for path in stack_visualizations.get("mindstudio_flamegraphs", [])
+    ) or "<li>No official MindStudio flame graph discovered</li>"
+    mindstudio_flamegraph_log_items = "".join(
+        f"<li>{linked_file(profiler_directory / path, path)}</li>"
+        for path in stack_visualizations.get("mindstudio_flamegraph_logs", [])
+    ) or "<li>No MindStudio flame graph generation log</li>"
+    stack_items = "".join(
+        f"<li>{linked_file(profiler_directory / path, path)}</li>"
+        for path in stack_visualizations.get("stack_files", [])
+    ) or "<li>No folded stack file discovered</li>"
+    flamegraph_tool = stack_visualizations.get("flamegraph_tool")
+    flamegraph_command = (
+        f'perl "{flamegraph_tool}" --title "NPU time" --countname "us." '
+        'STACK_FILE > flamegraph.svg'
+        if flamegraph_tool
+        else "Set TORCHTITAN_FLAMEGRAPH_PL=/path/to/FlameGraph/flamegraph.pl and rerun --analyze"
+    )
+    mindstudio_flamegraph_tool = stack_visualizations.get(
+        "mindstudio_flamegraph_tool"
+    )
+    mindstudio_flamegraph_command = (
+        f'python "{mindstudio_flamegraph_tool}" ASCEND_PROFILER.db '
+        "--output mindstudio_flamegraph/"
+        if mindstudio_flamegraph_tool
+        else "Set TORCHTITAN_MSINSIGHT_FLAMEGRAPH=/path/to/flamegraph.py and rerun --analyze"
+    )
+
+    memory_visualizations = analysis.get("memory_visualizations", {})
+    memory_html_items = "".join(
+        f"<li>{linked_file(profiler_directory / path, path)}</li>"
+        for path in memory_visualizations.get("html", [])
+    ) or "<li>No memory timeline HTML discovered</li>"
+    memory_series_items = "".join(
+        f"<li>{linked_file(profiler_directory / path, path)}</li>"
+        for path in memory_visualizations.get("series", [])
+    ) or "<li>No memory timeline series discovered</li>"
+    memory_raw_items = "".join(
+        f"<li>{linked_file(profiler_directory / path, path)}</li>"
+        for path in memory_visualizations.get("raw", [])
+    ) or "<li>No raw memory event stream discovered</li>"
+
+    graph_visualizations = analysis.get("graph_visualizations", {})
+    graph_root = Path(graph_visualizations.get("root", ""))
+
+    def graph_links(kind: str, limit: int = 20) -> str:
+        values = graph_visualizations.get(kind, [])[:limit]
+        return "".join(
+            f"<li>{linked_file(graph_root / path, path)}</li>" for path in values
+        ) or "<li>Not captured</li>"
+
+    graph_section = ""
+    if compile_enabled:
+        trace_command = (
+            "pip install tlparse; tlparse STRUCTURED_TRACE.log -o tlparse_report/"
+        )
+        graph_section = f"""
+<section><h2>torch.compile graph visualization</h2>
+<p class="subtle">The interactive compilation view is generated from
+<code>TORCH_TRACE</code> by <code>tlparse</code>. Inductor debug files expose
+the captured FX graph, pre/post-fusion IR, and generated backend code. A
+structured trace contains model source code but no weights.</p>
+<h3>Interactive tlparse reports</h3><ul>{graph_links('tlparse_reports')}</ul>
+<h3>Structured traces</h3><ul>{graph_links('structured_traces')}</ul>
+<h3>Captured FX graphs</h3><ul>{graph_links('fx_graphs')}</ul>
+<details><summary>Inductor IR and generated code</summary>
+<h4>IR</h4><ul>{graph_links('inductor_ir')}</ul>
+<h4>Generated code</h4><ul>{graph_links('generated_code')}</ul></details>
+<div class="callout"><code>{html.escape(trace_command)}</code></div>
+</section>"""
 
     has_capture = inventory["file_count"] > 0
     has_parsed_output = bool(deliverables["gpu_traces"]) or deliverables[
@@ -1596,7 +1756,7 @@ time is extracted from the Ascend profiler completion messages.</p>
         )
 
     report = f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
+<html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html.escape(manifest['run_name'])} performance report</title>
 <style>
@@ -1616,6 +1776,7 @@ th{{background:#f8fafc;position:sticky;top:0}} code{{background:#edf2ff;padding:
 .pipeline{{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0}} .status{{display:inline-flex;align-items:center;padding:5px 9px;border-radius:999px;font-size:12px;font-weight:650}}
 .status.ready{{background:#dcfce7;color:#166534}} .status.pending{{background:#f1f5f9;color:#64748b}} pre{{white-space:pre-wrap;word-break:break-word}}
 .callout.warning{{background:#fff7ed;color:#9a3412;border:1px solid #fed7aa}}
+a{{color:#155eef}} h3{{font-size:15px;margin:16px 0 6px}} h4{{font-size:14px;margin:12px 0 4px}}
 @media(max-width:700px){{main{{padding:14px}}.bar-row{{grid-template-columns:1fr}}.bar-value{{text-align:left}}}}
 </style></head><body><main>
 <h1>GLM-5.2 performance probe</h1>
@@ -1623,21 +1784,49 @@ th{{background:#f8fafc;position:sticky;top:0}} code{{background:#edf2ff;padding:
 <div class="pipeline">{pipeline}</div>
 <div class="cards">{''.join(cards) or '<div class="card"><span>Training metrics</span><strong>Unavailable</strong></div>'}</div>
 {profile_duration_warning}
+<section><h2>中文阅读路线</h2>
+<p>这份 HTML 是实验摘要，不会把官方时间线压扁成一张静态表。建议依次查看：训练卡片和曲线确认整体吞吐；Profiler phase 判断采集开销；Distributed/Communication 判断通信暴露和 rank 偏斜；Top operator、shape、L2 定位算子；最后打开 MindStudio Timeline、火焰图和显存时间线下钻。</p>
+<table><thead><tr><th>对象/指标</th><th>表示什么</th><th>通常如何解释</th></tr></thead><tbody>
+<tr><td>Median step time / Throughput</td><td>训练 step 中位耗时与 token 吞吐</td><td>先用 profiler-off 基线判断真实性；Profiler 内数值主要用于归因。</td></tr>
+<tr><td>Active collection overhead</td><td>采集窗口相对普通 step 的膨胀</td><td>过大时不要把该 run 当性能基线，应缩短窗口或换浅层 preset。</td></tr>
+<tr><td>Computing / Communication / Overlapped / Free</td><td>官方 StepTrace 的计算、通信、重叠和空闲时间</td><td>优先关注 communication_not_overlapped 和跨 rank 最大值，而非通信总时长。</td></tr>
+<tr><td>Transit / Wait / Synchronization</td><td>真实传输、等对端和同步时间</td><td>传输高倾向链路/载荷问题；等待高倾向上游计算或 rank readiness 偏斜。</td></tr>
+<tr><td>Top operator / Input Shapes / L2</td><td>热点算子、调用 shape 和缓存行为</td><td>用于决定是否值得融合、改 layout、写 kernel；不能仅凭名字归因。</td></tr>
+<tr><td>Timeline / Flame graph</td><td>按时间发生的层级事件 / 按调用栈聚合的耗时</td><td>Timeline 看先后、重叠和空洞；火焰图看调用路径累计热点，二者互补。</td></tr>
+<tr><td>Memory timeline</td><td>参数、优化器、输入、激活、梯度、临时量随时间的占用</td><td>看峰值由哪类 tensor 构成，以及 allocated 与 reserved 的差距。</td></tr>
+</tbody></table></section>
 {phase_section}
 {distributed_section}
 {communication_section}
 {''.join(charts)}
 {runtime_section}
 {compiler_section}
+{graph_section}
 {composition_section}
 {top_sections}
 {kernel_shape_sections}
 {l2_sections}
 {diagnostic_sections}
+<section><h2>msprof-analyze output index</h2><p class="subtle">这里索引 advisor、compare、cluster、cluster time、free analysis 和逐 rank communication bottleneck 的实际输出文件。Return code 只表示工具执行状态；结论需要打开对应 HTML/CSV/JSON 阅读。</p>
+<table><thead><tr><th>Recipe</th><th>Return code</th><th>Files / size</th><th>Outputs and command</th></tr></thead><tbody>{analysis_output_rows}</tbody></table></section>
 <section><h2>Official Ascend deliverables</h2><p class="subtle">Each row is one <code>*_ascend_pt</code> profile root. Text/DB readiness is checked against the official PyTorch Profiler output layout.</p>
-<table><thead><tr><th>Profile root and parsed files</th><th>Raw</th><th>Text</th><th>Database</th><th>MindStudio Insight</th></tr></thead><tbody>{ascend_rows}</tbody></table></section>
-<section><h2>Open in MindStudio Insight</h2><div class="callout">Copy the complete <code>*_ascend_pt</code> directory to a local disk, then import that profile root in MindStudio Insight. Do not select only <code>ASCEND_PROFILER_OUTPUT</code>. For cluster analysis, import the generated <code>cluster_analysis_output</code> directory. This HTML is an experiment index and summary; it does not replace the official Timeline, Communication, Operator, or Memory views.</div>
+<table><thead><tr><th>Profile root and parsed files</th><th>Raw</th><th>Text</th><th>Database</th><th>MindStudio Insight</th><th>Timeline</th></tr></thead><tbody>{ascend_rows}</tbody></table></section>
+<section><h2>Interactive Timeline and hierarchy</h2><p class="subtle">The full Host/PyTorch/CANN/NPU hierarchy remains in the official trace instead of being flattened into this summary report. Profiles captured with <code>with_stack=true</code> also expose the Python call stack for framework events.</p>
+<table><thead><tr><th>Profile</th><th>Trace file</th><th>Viewer</th></tr></thead><tbody>{trace_rows}</tbody></table>
+<div class="callout"><strong>Open in MindStudio Insight:</strong> copy the complete <code>*_ascend_pt</code> directory and import that root. The linked <code>trace_view.json</code> can also be loaded into Perfetto or <code>chrome://tracing</code>. Do not import only a partial raw directory into Insight.</div>
 <details><summary>GPU trace inputs available for comparison</summary><ul>{gpu_trace_items}</ul></details></section>
+<section><h2>CPU/NPU flame graphs</h2><p class="subtle">A flame graph is a duration aggregation by call stack; it complements rather than replaces the chronological Timeline. The official MindStudio generator reconstructs the Host CPU PyTorch API hierarchy from the Ascend profiler database. Folded-stack SVGs remain a portable CPU/NPU aggregation fallback.</p>
+<h3>Official MindStudio interactive HTML</h3><ul>{mindstudio_flamegraph_items}</ul>
+<div class="callout"><code>{html.escape(mindstudio_flamegraph_command)}</code></div>
+<details><summary>MindStudio generation logs</summary><ul>{mindstudio_flamegraph_log_items}</ul></details>
+<h3>Portable folded-stack SVG</h3><ul>{flamegraph_items}</ul><h3>Folded stacks</h3><ul>{stack_items}</ul>
+<div class="callout"><code>{html.escape(flamegraph_command)}</code></div></section>
+<section><h2>Ascend memory timeline</h2><p class="subtle">由官方 <code>export_memory_timeline</code> 生成。HTML 用于直接阅读，JSON 是分类后的时间序列，raw JSON.gz 保留 CREATE/DESTROY 等原始内存事件。只有 <code>memory</code> 或 <code>runtime</code> preset 会产生这些文件。</p>
+<h3>Interactive HTML</h3><ul>{memory_html_items}</ul>
+<details><summary>Machine-readable memory data</summary><h4>Category series</h4><ul>{memory_series_items}</ul><h4>Raw events</h4><ul>{memory_raw_items}</ul></details></section>
+<section><h2>TensorBoard training dashboard</h2><p class="subtle">TensorBoard displays TorchTitan scalar series such as loss, grad norm, throughput, memory, and MFU. It is not the primary viewer for Ascend device traces despite the torch_npu callback name.</p>
+<p>Status: {badge(bool(tensorboard.get('ready')), 'event files ready', 'event files missing')}; root: <code>{html.escape(str(tensorboard_root))}</code>; {tensorboard.get('event_count', 0)} files, {_human_bytes(int(tensorboard.get('total_bytes', 0)))}</p>
+<div class="callout"><code>{html.escape(tensorboard_command)}</code></div><details><summary>Event files</summary><ul>{tensorboard_files}</ul></details></section>
 <section><h2>Profiler data inventory</h2><p class="subtle">{inventory['file_count']} files, {_human_bytes(inventory['total_bytes'])}; raw directory: {html.escape(analysis['profiler_directory'])}</p>
 <table><thead><tr><th>Type</th><th>Files</th><th>Size</th></tr></thead><tbody>{suffix_rows}</tbody></table></section>
 <section><h2>Profiling preflight</h2><ul>{warning_items}</ul><table><tbody>{preflight_rows or '<tr><td>No preflight metadata</td></tr>'}</tbody></table></section>

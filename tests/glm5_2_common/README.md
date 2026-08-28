@@ -20,6 +20,11 @@ Experiment modules must not be imported by `glm5_2_common`. Features contribute
 arguments and environment variables through `TrainingFeature`; only the central
 combination workflow assembles them into a training command.
 
+Performance and graph experiments share one external dependency inventory:
+[性能与图模式环境、外部工具和依赖总表](PERFORMANCE_GRAPH_DEPENDENCIES_ZH.md).
+It separates training runtime requirements from optional analysis/GUI tools and
+is the installation authority for performance, graph, and combination reports.
+
 ## Standard experiment lifecycle
 
 Training experiments use one reproducible input contract whenever numerical

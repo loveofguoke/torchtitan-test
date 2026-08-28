@@ -16,6 +16,15 @@ Current graph and profiler execution is NPU-only. CUDA graph/profiler interfaces
 are reserved and raise `NotImplementedError`; ordinary CUDA/NPU eager precision
 experiments remain available from `glm5_2_precision`.
 
+Detailed result interpretation lives in the
+[performance report guide](../glm5_2_performance/REPORT_GUIDE_ZH.md) and
+[graph visualization guide](../glm5_2_graph/VISUALIZATION_GUIDE_ZH.md). The
+top-level combined report also starts with a Chinese reading order so precision,
+performance, compiler, runtime Timeline, and TensorBoard evidence are not mixed.
+Install and verify the shared runtime, Python readers, Ascend analyzers, and GUI
+viewers using the
+[unified dependency guide](../glm5_2_common/PERFORMANCE_GRAPH_DEPENDENCIES_ZH.md).
+
 ## Comparison semantics
 
 The default combined experiment is NPU self-consistency:
@@ -65,7 +74,11 @@ Select a preset explicitly when operator or communication diagnosis is needed:
 --profiler-preset standard
 --profiler-preset distributed
 --profiler-preset kernel
+--profiler-preset operator
+--profiler-preset memory
+--profiler-preset flamegraph
 --profiler-preset runtime
+--profiler-preset system
 ```
 
 Profiler runs are diagnostic and should not replace profiler-off formal
@@ -81,10 +94,17 @@ export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 unset CUDA_VISIBLE_DEVICES
 ```
 
+On the validated graph server, run every stage through the common CANN 9.1
+launcher. This gives eager reference and graph candidate the same clean CANN,
+Conda, ATB, HCCL, and cache policy before TorchNPU import. The launcher injects
+`reference-graph=eager` and the selected candidate backend only when those
+options are absent. Replace the first `inductor` with `npugraphs` for that
+backend; do not mix direct default-shell Python commands with wrapped captures.
+
 Prepare the step-0 checkpoint and fixed token plan once:
 
 ```bash
-python tests/glm5_2_combination/combination_benchmark.py \
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor combination \
   --data --data-device npu --topology all \
   --objectives precision,performance \
   --reference-graph eager --candidate-graph inductor \
@@ -101,7 +121,7 @@ Capture the single-card reference. When `--topology all` is selected, duplicate
 reference work is detected and reused:
 
 ```bash
-python tests/glm5_2_combination/combination_benchmark.py \
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor combination \
   --capture reference --topology all \
   --objectives precision,performance \
   --reference-graph eager --candidate-graph inductor \
@@ -111,7 +131,7 @@ python tests/glm5_2_combination/combination_benchmark.py \
 Capture every candidate topology:
 
 ```bash
-python tests/glm5_2_combination/combination_benchmark.py \
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor combination \
   --capture candidate --topology all \
   --objectives precision,performance \
   --reference-graph eager --candidate-graph inductor \
@@ -121,7 +141,7 @@ python tests/glm5_2_combination/combination_benchmark.py \
 Generate one suite report without launching training:
 
 ```bash
-python tests/glm5_2_combination/combination_benchmark.py \
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor combination \
   --compare --topology all \
   --objectives precision,performance \
   --reference-graph eager --candidate-graph inductor \
@@ -137,10 +157,14 @@ Single-card candidate:
 
 ```bash
 COMMON_ARGS="--topology single --objectives precision,performance --reference-graph eager --candidate-graph inductor --profiler-preset off"
-python tests/glm5_2_combination/combination_benchmark.py --data --data-device npu $COMMON_ARGS
-python tests/glm5_2_combination/combination_benchmark.py --capture reference $COMMON_ARGS
-python tests/glm5_2_combination/combination_benchmark.py --capture candidate $COMMON_ARGS
-python tests/glm5_2_combination/combination_benchmark.py --compare --require-all $COMMON_ARGS
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor combination \
+  --data --data-device npu $COMMON_ARGS
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor combination \
+  --capture reference $COMMON_ARGS
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor combination \
+  --capture candidate $COMMON_ARGS
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor combination \
+  --compare --require-all $COMMON_ARGS
 ```
 
 Distributed candidate example (`fsdp8`; replace it with any registered
@@ -148,10 +172,14 @@ topology):
 
 ```bash
 COMMON_ARGS="--topology fsdp8 --objectives precision,performance --reference-graph eager --candidate-graph inductor --profiler-preset off"
-python tests/glm5_2_combination/combination_benchmark.py --data --data-device npu $COMMON_ARGS
-python tests/glm5_2_combination/combination_benchmark.py --capture reference $COMMON_ARGS
-python tests/glm5_2_combination/combination_benchmark.py --capture candidate $COMMON_ARGS
-python tests/glm5_2_combination/combination_benchmark.py --compare --require-all $COMMON_ARGS
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor combination \
+  --data --data-device npu $COMMON_ARGS
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor combination \
+  --capture reference $COMMON_ARGS
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor combination \
+  --capture candidate $COMMON_ARGS
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor combination \
+  --compare --require-all $COMMON_ARGS
 ```
 
 Reference/candidate capture and compare must use identical training, graph,
@@ -170,7 +198,7 @@ archived and retried. `--force` replaces completed output.
 Eager single versus one eager distributed candidate (`fsdp8` in this example):
 
 ```bash
-python tests/glm5_2_combination/combination_benchmark.py \
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor combination \
   --capture candidate --topology fsdp8 \
   --objectives precision \
   --reference-graph eager --candidate-graph eager
@@ -179,7 +207,7 @@ python tests/glm5_2_combination/combination_benchmark.py \
 Eager single versus Inductor TP8 performance without Profiler:
 
 ```bash
-python tests/glm5_2_combination/combination_benchmark.py \
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor combination \
   --capture candidate --topology tp8 \
   --objectives performance \
   --reference-graph eager --candidate-graph inductor \
@@ -189,7 +217,7 @@ python tests/glm5_2_combination/combination_benchmark.py \
 The same comparison with all-rank distributed profiling:
 
 ```bash
-python tests/glm5_2_combination/combination_benchmark.py \
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor combination \
   --capture candidate --topology tp8 \
   --objectives performance \
   --reference-graph eager --candidate-graph inductor \
@@ -213,7 +241,7 @@ python tests/glm5_2_combination/combination_benchmark.py \
 | `--candidate-graph` | Independent candidate mode: `eager`, `inductor`, or `npugraphs`. | `inductor` |
 | `--compile-loss` | Add `loss` to the default `model` compile component. NPUGraph accepts model-only. | disabled |
 | `--compiler-diagnostics` | Enable graph-break/recompile/dynamic diagnostics on each compiled endpoint; eager endpoints have no compiler diagnostics. | disabled |
-| `--profiler-preset` | `off`, `overview`, `comparison`, `standard`, `distributed`, `kernel`, or `runtime`. Used only when `performance` is selected. | `off` |
+| `--profiler-preset` | `off`, `overview`, `comparison`, `standard`, `distributed`, `kernel`, `operator`, `memory`, `flamegraph`, `runtime`, or `system`. Used only when `performance` is selected. The scheduled performance runner, not one combination capture, owns the `all` multi-preset matrix. | `off` |
 | `--profile-skip-steps` | Steps skipped before scheduled profiling. | `10` |
 | `--profile-warmup-steps` | Profiler warmup steps. | `1` |
 | `--profile-active-steps` | Profiler active collection steps. | `3` |
@@ -244,7 +272,12 @@ links the formal precision topology suite, and presents per-topology/per-repeat
 reference and candidate median step time plus candidate speedup. Each
 performance details link opens the endpoint report containing throughput,
 active profiling window, memory and operator/kernel summaries, and official
-Ascend analysis outputs when profiling was enabled.
+Ascend analysis outputs when profiling was enabled. The endpoint report also
+links MindStudio/Perfetto Timeline inputs, the official MindStudio Host flame
+graph, portable CPU/NPU folded-stack SVGs, and the TensorBoard scalar dashboard.
+The top-level report links per-rank
+`tlparse`, FX graph, Inductor IR, generated code, and raw structured traces for
+compiled endpoints captured with `--compiler-diagnostics`.
 
 The linked precision suite remains the authority for numerical PASS/FAIL and
 contains the full loss/grad-norm curves, standards, distributions, repeat
@@ -258,9 +291,23 @@ separate.
 ```text
 precision_fixtures/<fixture-id>/
 combination_runs/<experiment-id>/<topology>/<role>-r<repeat>/
+combination_runs/<experiment-id>/<topology>/<role>-r<repeat>/graph_visualization/
 combination_artifacts/<experiment-id>/<topology>/<role>-r<repeat>/
 combination_reports/<experiment-id>/
 ```
+
+Directory dimensions have fixed meanings:
+
+- `<experiment-id>`: one immutable fixture/training/feature contract;
+- `<topology>`: selected single or distributed execution layout;
+- `<role>`: reference or candidate;
+- `r<repeat>`: independent repeat of that endpoint;
+- `graph_visualization/rank_<rank>`: rank-local compile evidence;
+- `trainer_output/profiling/traces`: optional rank-local Ascend runtime data.
+
+The report directory contains the combined index plus linked formal precision
+and endpoint performance reports. Raw profiler/compiler output stays in
+`combination_runs`; portable metrics stay in `combination_artifacts`.
 
 `combination_runs` contains runtime logs, raw metrics, trainer output, and large
 Profiler data and is ignored by Git. Artifacts and reports are the portable

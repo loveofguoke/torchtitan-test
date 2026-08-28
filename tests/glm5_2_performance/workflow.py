@@ -30,10 +30,12 @@ from .analysis import build_analysis, render_html_report
 from .config import (
     PerformanceConfig,
     ProfilerPreset,
+    all_profiler_presets,
     performance_topologies,
     profiler_presets,
 )
 from .documentation import card_scope, write_run_readme
+from .visualization import render_flamegraphs, render_mindstudio_flamegraphs
 
 
 def _slug(value: str) -> str:
@@ -356,12 +358,23 @@ def _sync_exploration_bundle(
             continue
         command_directory.mkdir(parents=True, exist_ok=True)
         shutil.copy2(status_path, command_directory / status_path.name)
+    analysis_path = artifact_directory / "analysis.json"
+    analysis = (
+        json.loads(analysis_path.read_text(encoding="utf-8"))
+        if analysis_path.is_file()
+        else {}
+    )
     index = {
         "run_name": run_name,
         "raw_run_directory": str(run_directory),
         "artifact_directory": str(artifact_directory),
         "report_path": str(report_path) if report_path is not None else None,
         "mindstudio_input": str(_find_profiler_directory(run_directory)),
+        "tensorboard_root": analysis.get("tensorboard", {}).get("root"),
+        "flamegraph_root": analysis.get("profiler_directory"),
+        "graph_visualization_root": analysis.get("graph_visualizations", {}).get(
+            "root"
+        ),
     }
     _write_json(directory / "artifacts.json", index)
     write_run_readme(directory)
@@ -1058,6 +1071,9 @@ def analyze(
         run_cluster_analysis(run_directory)
     if compare_baseline is not None:
         run_performance_compare(run_directory, compare_baseline)
+    profiler_directory = _find_profiler_directory(run_directory)
+    render_mindstudio_flamegraphs(profiler_directory)
+    render_flamegraphs(profiler_directory)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     analysis = build_analysis(
         run_directory,
@@ -1084,6 +1100,65 @@ def analyze(
     )
     print(f"Performance report: {report_path}")
     return report_path
+
+
+def _suite_report_path(
+    root: Path,
+    config: PerformanceConfig,
+    device: str,
+    *,
+    multiple_presets: bool,
+) -> Path:
+    suffix = "all-presets-suite" if multiple_presets else "suite"
+    return (
+        root
+        / config.report_root
+        / "suites"
+        / f"{_slug(config.name)}-{device}-{suffix}.html"
+    )
+
+
+def _write_suite_report(
+    output_path: Path,
+    reports: list[tuple[str, str, Path]],
+) -> None:
+    rows = "".join(
+        "<tr>"
+        f"<td>{topology}</td><td>{preset_name}</td>"
+        f'<td><a href="{Path(os.path.relpath(path, output_path.parent)).as_posix()}">'
+        f"{path.name}</a></td></tr>"
+        for topology, preset_name, path in reports
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
+        "<title>GLM-5.2 performance suite</title>"
+        "<style>body{font:14px/1.55 system-ui;max-width:980px;margin:32px auto;"
+        "padding:0 18px;color:#172033}table{border-collapse:collapse;width:100%}"
+        "th,td{padding:9px;border-bottom:1px solid #dfe5ef;text-align:left}"
+        "th{background:#f8fafc;position:sticky;top:0}</style></head><body>"
+        "<h1>GLM-5.2 性能采集套件</h1>"
+        "<p>每一行是一组独立的 topology × preset 采集。不同 preset 不混合："
+        "浅层吞吐、通信、kernel、算子参数、显存、调用栈和系统数据分别落盘，"
+        "避免一次重型采集同时打开所有开关后无法判断测量扰动来源。</p>"
+        "<table><thead><tr><th>Topology</th><th>Preset</th><th>Report</th>"
+        f"</tr></thead><tbody>{rows}</tbody></table></body></html>",
+        encoding="utf-8",
+    )
+
+
+def _profiled_rank_count(preset: ProfilerPreset, world_size: int) -> int:
+    """Return how many ranks from this job the preset actually records."""
+
+    value = preset.profile_ranks.strip().lower()
+    if value in {"all", "*", "-1"}:
+        return world_size
+    ranks = {
+        int(part.strip())
+        for part in value.split(",")
+        if part.strip()
+    }
+    return len({rank for rank in ranks if 0 <= rank < world_size})
 
 
 def run_profiler_cli(
@@ -1114,7 +1189,14 @@ def run_profiler_cli(
     topology_selection.add_argument(
         "--topologies", help="comma-separated topology subset or all"
     )
-    parser.add_argument("--preset", choices=tuple(presets))
+    parser.add_argument(
+        "--preset",
+        choices=(*tuple(presets), "all"),
+        help=(
+            "one acquisition policy or all non-redundant policies; all runs "
+            "each policy as an independent experiment"
+        ),
+    )
     parser.add_argument("--visible-devices")
     parser.add_argument("--steps", type=int)
     parser.add_argument("--skip-steps", type=int)
@@ -1154,6 +1236,85 @@ def run_profiler_cli(
     parser.add_argument("--advisor", action="store_true")
     parser.add_argument("--cluster", action="store_true")
     parser.add_argument(
+        "--analysis-tools",
+        choices=("none", "offline", "advisor", "cluster", "all"),
+        default="none",
+        help=(
+            "offline analysis policy; all enables offline parsing where "
+            "needed, advisor, and multi-rank cluster analysis"
+        ),
+    )
+    parser.add_argument(
+        "--profiler-level",
+        choices=("level_none", "level0", "level1", "level2"),
+        help="override the selected preset's Ascend collection level",
+    )
+    parser.add_argument(
+        "--profile-ranks",
+        help="all or comma-separated global ranks to profile",
+    )
+    parser.add_argument(
+        "--aic-metrics",
+        choices=(
+            "none",
+            "pipe_utilization",
+            "arithmetic_utilization",
+            "memory",
+            "memory_l0",
+            "memory_ub",
+            "resource_conflict_ratio",
+            "l2_cache",
+            "memory_access",
+        ),
+    )
+    for option, destination, help_text in (
+        ("record-shapes", "record_shapes", "operator input shapes and dtypes"),
+        ("profile-memory", "profile_memory", "framework and CANN memory"),
+        ("with-stack", "with_stack", "Python/framework call stacks"),
+        ("with-modules", "with_modules", "module hierarchy"),
+        ("with-flops", "with_flops", "raw FLOPs field (not parsed upstream)"),
+        ("export-stacks", "export_stacks", "CPU/NPU folded stacks"),
+        (
+            "export-memory-timeline",
+            "export_memory_timeline",
+            "official memory timeline HTML and JSON",
+        ),
+        ("l2-cache", "l2_cache", "L2 cache counters"),
+        ("op-attr", "op_attr", "aclnn operator attributes"),
+        (
+            "data-simplification",
+            "data_simplification",
+            "delete redundant raw profiling data after parsing",
+        ),
+        ("record-op-args", "record_op_args", "operator argument statistics"),
+        ("msprof-tx", "msprof_tx", "legacy msprof TX range collection"),
+        ("mstx", "mstx", "MSTX ranges"),
+        ("system-io", "system_io", "NIC and RoCE system I/O"),
+        (
+            "system-interconnection",
+            "system_interconnection",
+            "HCCS and PCIe interconnection data",
+        ),
+    ):
+        parser.add_argument(
+            f"--{option}",
+            dest=destination,
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help=help_text,
+        )
+    parser.add_argument("--gc-detect-threshold", type=float)
+    parser.add_argument(
+        "--host-system",
+        help="comma-separated cpu,mem,disk,network,osrt,numa collectors",
+    )
+    parser.add_argument("--mstx-domain-include")
+    parser.add_argument("--mstx-domain-exclude")
+    parser.add_argument(
+        "--export-types",
+        help="comma-separated official parsed formats: text,db",
+    )
+    parser.add_argument(
         "--compare-baseline",
         type=Path,
         help="GPU trace or NPU profile path for msprof-analyze compare",
@@ -1168,10 +1329,11 @@ def run_profiler_cli(
     args = parser.parse_args()
 
     requested_topology = None if args.topology == "all" else args.topology
+    requested_preset = args.preset or config.preset
     overrides = {
         "device": args.device,
         "topology": requested_topology,
-        "preset": args.preset,
+        "preset": None if requested_preset == "all" else requested_preset,
         "steps": args.steps,
         "skip_steps": args.skip_steps,
         "warmup_steps": args.warmup_steps,
@@ -1206,13 +1368,83 @@ def run_profiler_cli(
             else "CUDA_VISIBLE_DEVICES"
         )
         os.environ[variable] = args.visible_devices
-    preset = presets[effective.preset]
-    if args.offline and args.parse_mode not in {None, "offline"}:
-        parser.error("--offline conflicts with a non-offline --parse-mode")
-    if args.offline:
-        preset = replace(preset, parse_mode="offline")
-    elif args.parse_mode:
-        preset = replace(preset, parse_mode=args.parse_mode)
+    if requested_preset == "all" and args.profiler_off:
+        parser.error("--preset all cannot be combined with --profiler-off")
+    if requested_preset == "all" and (args.offline or args.parse_mode):
+        parser.error(
+            "--preset all keeps each preset's audited parse mode; select one "
+            "preset before overriding --parse-mode"
+        )
+    advanced_overrides: dict[str, Any] = {
+        "level": args.profiler_level,
+        "profile_ranks": args.profile_ranks,
+        "record_shapes": args.record_shapes,
+        "profile_memory": args.profile_memory,
+        "with_stack": args.with_stack,
+        "with_modules": args.with_modules,
+        "with_flops": args.with_flops,
+        "export_stacks": args.export_stacks,
+        "export_memory_timeline": args.export_memory_timeline,
+        "aic_metrics": args.aic_metrics,
+        "l2_cache": args.l2_cache,
+        "op_attr": args.op_attr,
+        "data_simplification": args.data_simplification,
+        "record_op_args": args.record_op_args,
+        "gc_detect_threshold": args.gc_detect_threshold,
+        "msprof_tx": args.msprof_tx,
+        "mstx": args.mstx,
+        "system_io": args.system_io,
+        "system_interconnection": args.system_interconnection,
+    }
+    for field, value in (
+        ("host_system", args.host_system),
+        ("mstx_domain_include", args.mstx_domain_include),
+        ("mstx_domain_exclude", args.mstx_domain_exclude),
+        ("export_types", args.export_types),
+    ):
+        if value is not None:
+            advanced_overrides[field] = tuple(
+                part.strip().lower()
+                for part in value.split(",")
+                if part.strip()
+            )
+    advanced_overrides = {
+        key: value for key, value in advanced_overrides.items() if value is not None
+    }
+    if requested_preset == "all" and advanced_overrides:
+        parser.error(
+            "advanced profiler overrides apply to one preset; select a single "
+            "--preset instead of all"
+        )
+    preset_names = (
+        all_profiler_presets()
+        if requested_preset == "all"
+        else (requested_preset,)
+    )
+    selected_presets: list[tuple[str, ProfilerPreset]] = []
+    for preset_name in preset_names:
+        preset = presets[preset_name]
+        if advanced_overrides:
+            preset = replace(preset, **advanced_overrides)
+        if args.offline and args.parse_mode not in {None, "offline"}:
+            parser.error("--offline conflicts with a non-offline --parse-mode")
+        if args.offline:
+            preset = replace(preset, parse_mode="offline")
+        elif args.parse_mode:
+            preset = replace(preset, parse_mode=args.parse_mode)
+        selected_presets.append((preset_name, preset))
+
+    analysis_tools = set()
+    if args.analysis_tools == "all":
+        analysis_tools.update(("offline", "advisor", "cluster"))
+    elif args.analysis_tools != "none":
+        analysis_tools.add(args.analysis_tools)
+    if args.offline_parse:
+        analysis_tools.add("offline")
+    if args.advisor:
+        analysis_tools.add("advisor")
+    if args.cluster:
+        analysis_tools.add("cluster")
 
     selected = select_topologies(
         available=suite_topologies,
@@ -1226,110 +1458,126 @@ def run_profiler_cli(
         selected_paths: list[Path] = []
         selected_runs: list[Path] = []
         selected_paths.append(
-            root
-            / effective.report_root
-            / "suites"
-            / f"{_slug(effective.name)}-{device}-suite.html"
+            _suite_report_path(
+                root,
+                effective,
+                device,
+                multiple_presets=len(selected_presets) > 1,
+            )
         )
-        for topology_name in selected:
-            topology_config = replace(effective, topology=topology_name)
-            run_name = _run_name(topology_config, device, preset)
-            run_parent = _scoped_parent(
-                root, topology_config.run_root, topology_config.topology
-            )
-            artifact_parent = _scoped_parent(
-                root, topology_config.artifact_root, topology_config.topology
-            )
-            report_parent = _scoped_parent(
-                root, topology_config.report_root, topology_config.topology
-            )
-            run_directory = run_parent / run_name
-            selected_runs.append(run_directory)
-            selected_paths.extend(
-                (
-                    run_directory,
-                    artifact_parent / run_name,
-                    report_parent / f"{run_name}.html",
-                    _exploration_directory(root, topology_name, run_name),
+        for preset_name, preset in selected_presets:
+            for topology_name in selected:
+                topology_config = replace(
+                    effective, topology=topology_name, preset=preset_name
                 )
-            )
+                run_name = _run_name(topology_config, device, preset)
+                run_parent = _scoped_parent(
+                    root, topology_config.run_root, topology_config.topology
+                )
+                artifact_parent = _scoped_parent(
+                    root, topology_config.artifact_root, topology_config.topology
+                )
+                report_parent = _scoped_parent(
+                    root, topology_config.report_root, topology_config.topology
+                )
+                run_directory = run_parent / run_name
+                selected_runs.append(run_directory)
+                selected_paths.extend(
+                    (
+                        run_directory,
+                        artifact_parent / run_name,
+                        report_parent / f"{run_name}.html",
+                        _exploration_directory(root, topology_name, run_name),
+                    )
+                )
         reset_output_generation(
             selected_paths,
             active_run_directories=selected_runs,
             label="performance suite",
         )
-    reports: list[tuple[str, Path]] = []
-    for topology_name in selected:
-        topology_config = replace(effective, topology=topology_name)
-        run_name = _run_name(topology_config, device, preset)
-        action = "probe" if args.probe else "capture" if args.capture else "analyze"
-        if args.capture or args.probe:
-            _record_exploration_command(
-                root,
-                run_name=run_name,
-                action=action,
-                device=device,
-                topology=topology_name,
+    reports: list[tuple[str, str, Path]] = []
+    for preset_name, preset in selected_presets:
+        for topology_name in selected:
+            topology_config = replace(
+                effective, topology=topology_name, preset=preset_name
             )
-        print(
-            f"Starting performance topology: {topology_name} "
-            f"({topologies[topology_name].world_size} ranks)",
-            flush=True,
-        )
-        if args.capture or args.probe:
-            capture(
-                root,
-                topology_config,
-                device=device,
-                preset=preset,
-                force=False,
+            run_name = _run_name(topology_config, device, preset)
+            action = (
+                "probe" if args.probe else "capture" if args.capture else "analyze"
             )
-        if args.analyze or args.probe:
-            report = analyze(
-                root,
-                topology_config,
-                device=device,
-                preset=preset,
-                parse_offline=(
-                    args.offline_parse
-                    or (
-                        args.probe
-                        and device == "npu"
-                        and preset.parse_mode == "offline"
-                    )
-                ),
-                parse_workers=args.parse_workers,
-                advisor=args.advisor,
-                cluster=args.cluster,
-                compare_baseline=args.compare_baseline,
-            )
-            if args.analyze:
+            if args.capture or args.probe:
                 _record_exploration_command(
                     root,
-                    run_name=report.stem,
+                    run_name=run_name,
                     action=action,
                     device=device,
                     topology=topology_name,
                 )
-            reports.append((topology_name, report))
+            print(
+                f"Starting performance capture: topology={topology_name} "
+                f"({topologies[topology_name].world_size} ranks), "
+                f"preset={preset_name}",
+                flush=True,
+            )
+            if args.capture or args.probe:
+                capture(
+                    root,
+                    topology_config,
+                    device=device,
+                    preset=preset,
+                    force=False,
+                )
+            if args.analyze or args.probe:
+                cluster_requested = "cluster" in analysis_tools
+                profiled_rank_count = _profiled_rank_count(
+                    preset, topologies[topology_name].world_size
+                )
+                cluster_enabled = (
+                    cluster_requested and profiled_rank_count > 1
+                )
+                if cluster_requested and not cluster_enabled:
+                    print(
+                        "Skipping cluster analysis because this preset captured "
+                        f"{profiled_rank_count} rank(s); the tool requires a "
+                        "multi-rank capture.",
+                        flush=True,
+                    )
+                report = analyze(
+                    root,
+                    topology_config,
+                    device=device,
+                    preset=preset,
+                    parse_offline=(
+                        (
+                            "offline" in analysis_tools
+                            and preset.parse_mode == "offline"
+                        )
+                        or (
+                            args.probe
+                            and device == "npu"
+                            and preset.parse_mode == "offline"
+                        )
+                    ),
+                    parse_workers=args.parse_workers,
+                    advisor="advisor" in analysis_tools,
+                    cluster=cluster_enabled,
+                    compare_baseline=args.compare_baseline,
+                )
+                if args.analyze:
+                    _record_exploration_command(
+                        root,
+                        run_name=report.stem,
+                        action=action,
+                        device=device,
+                        topology=topology_name,
+                    )
+                reports.append((topology_name, preset_name, report))
     if len(reports) > 1:
-        index = (
-            root
-            / effective.report_root
-            / "suites"
-            / f"{_slug(effective.name)}-{device}-suite.html"
+        index = _suite_report_path(
+            root,
+            effective,
+            device,
+            multiple_presets=len(selected_presets) > 1,
         )
-        index.parent.mkdir(parents=True, exist_ok=True)
-        links = "".join(
-            f'<li><a href="{Path(os.path.relpath(path, index.parent)).as_posix()}">'
-            f"{name}</a></li>"
-            for name, path in reports
-        )
-        index.write_text(
-            "<!doctype html><html><head><meta charset=\"utf-8\">"
-            "<title>GLM-5.2 performance topology suite</title></head>"
-            "<body><h1>GLM-5.2 performance topology suite</h1>"
-            f"<ul>{links}</ul></body></html>",
-            encoding="utf-8",
-        )
+        _write_suite_report(index, reports)
         print(f"Performance suite report: {index}")

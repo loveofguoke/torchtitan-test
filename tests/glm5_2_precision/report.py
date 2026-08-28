@@ -396,6 +396,44 @@ def _metadata_table(
     </tr></thead><tbody>{''.join(rows)}</tbody></table>"""
 
 
+def _runtime_compatibility_signature(
+    artifact: PrecisionArtifactReader,
+) -> dict[str, Any] | None:
+    """Return stable runtime fields that must match in self-consistency runs."""
+
+    source = artifact.metadata.get("source")
+    if not isinstance(source, dict):
+        return None
+    runtime = source.get("runtime")
+    packages = source.get("packages")
+    if not isinstance(runtime, dict) or not isinstance(packages, dict):
+        # Legacy artifacts remain readable; new captures record this contract.
+        return None
+    environment = runtime.get("environment", {})
+    if not isinstance(environment, dict):
+        environment = {}
+    cann_versions = runtime.get("cann_version_files", [])
+    cann_digests = sorted(
+        item["sha256"]
+        for item in cann_versions
+        if isinstance(item, dict) and isinstance(item.get("sha256"), str)
+    )
+    return {
+        "python_version": runtime.get("python_version"),
+        "packages": {
+            name: packages.get(name)
+            for name in ("torch", "torch_npu", "torchtitan", "torchtitanturbo")
+        },
+        "cann_version_sha256": cann_digests,
+        "graph_runtime": {
+            name: environment.get(name)
+            for name in (
+                "TORCHINDUCTOR_NPU_BACKEND",
+            )
+        },
+    }
+
+
 def _validate_contracts(
     reference: PrecisionArtifactReader,
     candidate: PrecisionArtifactReader,
@@ -411,6 +449,18 @@ def _validate_contracts(
     right_endpoint_args = right.pop("endpoint_args", [])
     if left != right:
         raise ValueError("reference and candidate use different training contracts")
+    if experiment_kind == "self_consistency":
+        left_runtime = _runtime_compatibility_signature(reference)
+        right_runtime = _runtime_compatibility_signature(candidate)
+        if (
+            left_runtime is not None
+            and right_runtime is not None
+            and left_runtime != right_runtime
+        ):
+            raise ValueError(
+                "self-consistency artifacts use different Python, Torch, "
+                "TorchNPU, TorchTitan, CANN, or graph runtime environments"
+            )
     same_role = reference.metadata.get("role") == candidate.metadata.get("role")
     endpoint_arguments_differ = left_endpoint_args != right_endpoint_args
     if (

@@ -51,7 +51,10 @@ class GraphFeatureConfig:
         if self.mode == "npugraphs" and self.components != ("model",):
             raise ValueError("npugraphs supports model compilation only")
         environment = (
-            {"TORCH_LOGS": "graph_breaks,recompiles,dynamic"}
+            {
+                "TORCH_LOGS": "graph_breaks,recompiles,dynamic",
+                "GLM5_GRAPH_CAPTURE_DIAGNOSTICS": "true",
+            }
             if self.diagnostics
             else {}
         )

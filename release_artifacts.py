@@ -52,6 +52,44 @@ EXPERIMENT_BOUNDARY_FILES = {
     "run_state.json",
 }
 
+# ``analysis`` archives are intended for local report review and follow-up
+# diagnosis.  They retain rendered/parsed results and compact experiment
+# metadata while omitting checkpoints, raw trainer state, compiler caches, and
+# unparsed CANN collection trees.  ``full`` remains the lossless transfer mode
+# used when another machine must resume or re-parse an experiment.
+ANALYSIS_RUN_FILES = {
+    "analysis.json",
+    "artifacts.json",
+    "capture_state.json",
+    "command_history.jsonl",
+    "complete.json",
+    "input_contract.json",
+    "invocation.json",
+    "manifest.json",
+    "metrics.jsonl",
+    "raw_metrics.jsonl",
+    "readme.md",
+    "report.md",
+    "run_state.json",
+    "runtime.log",
+    "training_contract.json",
+}
+ANALYSIS_RUN_DIRECTORIES = {
+    "ASCEND_PROFILER_OUTPUT",
+    "advisor",
+    "cluster",
+    "cluster_time_summary",
+    "compare",
+    "free_analysis",
+    "graph_visualization",
+    "memory_timeline",
+    "mindstudio_flamegraphs",
+    "mindstudio_profiler_output",
+    "reports",
+    "tensorboard",
+    "tool_commands",
+}
+
 
 def run_gh(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     """Run GitHub CLI without invoking a shell."""
@@ -157,8 +195,11 @@ def create_archive(
     archive_path: Path,
     *,
     include: tuple[str, ...] = (),
+    content: str = "full",
 ) -> list[Path]:
     """Archive standard outputs for an experiment and explicit dependencies."""
+    if content not in {"full", "analysis"}:
+        raise ValueError(f"unsupported archive content mode: {content!r}")
     names = tuple(dict.fromkeys((experiment, *include)))
     paths = list(
         dict.fromkeys(
@@ -171,8 +212,60 @@ def create_archive(
         for path in paths:
             relative_path = path.relative_to(repository_root)
             print(f"Adding {relative_path}", flush=True)
-            archive.add(path, arcname=relative_path.as_posix(), recursive=True)
+            archive.add(
+                path,
+                arcname=relative_path.as_posix(),
+                recursive=True,
+                filter=(
+                    None
+                    if content == "full"
+                    else _analysis_archive_filter
+                ),
+            )
     return paths
+
+
+def _analysis_archive_filter(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
+    """Keep portable analysis evidence and discard heavy source/intermediate data."""
+
+    path = PurePosixPath(member.name)
+    if not path.parts:
+        return None
+    root = path.parts[0]
+
+    # Fixtures contain token plans and often multi-GB checkpoints.  They are
+    # required for resuming/capturing, not for reading an existing result.
+    if root.endswith("_fixtures"):
+        return None
+
+    # Reports and compact artifacts are already curated by their experiment.
+    if root.endswith("_reports") or root.endswith("_artifacts"):
+        return member
+
+    # Preserve directory entries so tarfile can continue walking towards an
+    # allowed descendant.  Unselected files below them are filtered later.
+    if member.isdir():
+        return member
+
+    if root.endswith("_runs") or root in {
+        "graph_debug_runs",
+        "performance_dynamic",
+    }:
+        if path.name in ANALYSIS_RUN_FILES:
+            return member
+        if any(part in ANALYSIS_RUN_DIRECTORIES for part in path.parts):
+            return member
+        if any(part.startswith("communication_bottleneck") for part in path.parts):
+            return member
+        if "flamegraph" in path.name.lower() or path.suffix.lower() in {
+            ".svg",
+            ".png",
+        }:
+            return member
+        return None
+
+    # A directly named report file can be matched outside a *_reports root.
+    return member if path.suffix.lower() in {".html", ".json", ".md"} else None
 
 
 def sha256_file(path: Path) -> str:
@@ -203,6 +296,7 @@ def upload(args: argparse.Namespace) -> None:
             experiment,
             archive_path,
             include=include,
+            content=args.content,
         )
         checksum_path = write_checksum(archive_path)
         assets = [str(archive_path), str(checksum_path)]
@@ -232,7 +326,10 @@ def upload(args: argparse.Namespace) -> None:
             included = "\n".join(
                 f"- `{path.relative_to(repository_root).as_posix()}`" for path in paths
             )
-            notes = f"Experiment artifacts for `{experiment}`.\n\n{included}"
+            notes = (
+                f"Experiment artifacts for `{experiment}` "
+                f"(content: `{args.content}`).\n\n{included}"
+            )
             run_gh(
                 "release",
                 "create",
@@ -392,6 +489,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path.cwd(),
         help="torchtitan-test root (default: current directory)",
+    )
+    upload_parser.add_argument(
+        "--content",
+        choices=("full", "analysis"),
+        default="full",
+        help=(
+            "full preserves every matched output; analysis keeps reports, "
+            "compact artifacts, parsed profiler/graph visualizations, logs, "
+            "and metrics while excluding fixtures and raw intermediates"
+        ),
     )
     upload_parser.set_defaults(func=upload)
 

@@ -1,6 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
+import os
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,12 @@ from tests.glm5_2_graph.config import (
     validate_graph_training_args,
 )
 from tests.glm5_2_graph.precision_benchmark import CONFIG as GRAPH_CONFIG
+from tests.glm5_2_graph.visualization import (
+    GRAPH_DIAGNOSTICS_ENV,
+    RUN_DIRECTORY_ENV,
+    configure_graph_diagnostics,
+    inspect_graph_visualizations,
+)
 from tests.glm5_2_performance.analysis import _compiler_diagnostics
 from tests.glm5_2_precision.topology_suite import topology_config
 from tests.glm5_2_precision.workflow import (
@@ -39,6 +46,66 @@ def test_graph_feature_generates_only_compile_arguments() -> None:
         "--compile.components=model",
         "--compile.backend=inductor",
     )
+
+
+def test_graph_diagnostics_are_isolated_per_rank(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = tmp_path / "run"
+    monkeypatch.setenv(GRAPH_DIAGNOSTICS_ENV, "true")
+    monkeypatch.setenv(RUN_DIRECTORY_ENV, str(run))
+    monkeypatch.setenv("RANK", "3")
+
+    root = configure_graph_diagnostics()
+
+    assert root == run / "graph_visualization"
+    assert Path(os.environ["TORCH_TRACE"]) == (
+        root / "rank_3" / "torch_trace"
+    )
+    assert Path(os.environ["TORCH_COMPILE_DEBUG_DIR"]) == (
+        root / "rank_3" / "inductor"
+    )
+    assert os.environ["TORCH_COMPILE_DEBUG"] == "1"
+
+
+def test_graph_feature_enables_capture_without_changing_compile_arguments() -> None:
+    baseline = GraphFeatureConfig("inductor").feature(device_type="npu")
+    diagnostic = GraphFeatureConfig("inductor", diagnostics=True).feature(
+        device_type="npu"
+    )
+
+    assert diagnostic.arguments == baseline.arguments
+    assert diagnostic.environment[GRAPH_DIAGNOSTICS_ENV] == "true"
+    assert "graph_breaks" in diagnostic.environment["TORCH_LOGS"]
+
+
+def test_graph_visualization_inventory_covers_trace_fx_ir_and_code(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "run" / "graph_visualization"
+    trace = root / "rank_0" / "torch_trace" / "dedicated_log_torch_trace.log"
+    fx = (
+        root
+        / "rank_0"
+        / "inductor"
+        / "torch_compile_debug"
+        / "fx_graph_readable.py"
+    )
+    ir = fx.parent / "ir_pre_fusion.txt"
+    code = fx.parent / "output_code.py"
+    tlparse = root / "tlparse" / "rank-00000000" / "index.html"
+    for path in (trace, fx, ir, code, tlparse):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("data\n", encoding="utf-8")
+
+    inventory = inspect_graph_visualizations(tmp_path / "run")
+
+    assert inventory["ready"]
+    assert inventory["structured_traces"]
+    assert inventory["tlparse_reports"]
+    assert inventory["fx_graphs"]
+    assert inventory["inductor_ir"]
+    assert inventory["generated_code"]
 
 
 def test_graph_backends_are_npu_only() -> None:

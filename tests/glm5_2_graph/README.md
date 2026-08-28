@@ -14,6 +14,13 @@ The complete 15-topology debug history, downgrade boundary, three-repository
 fix ownership, runnable commands, and remaining backend issues are summarized
 in [NPU_GRAPH_DEBUG_REPORT.md](NPU_GRAPH_DEBUG_REPORT.md).
 
+The graph stack is not yet a zero-fallback final delivery. The current
+Inductor profile uses minimal `aten.sum` and compiled-all-reduce fallbacks;
+the current NPUGraph profile keeps Dynamo/AOT execution but disables native
+replay. Both profiles completed the historical 15-topology smoke matrix, but
+the refactored three-repository integration still requires server regression
+and the 5000-step precision/performance/checkpoint/stability acceptance suite.
+
 ## Documentation map
 
 This README is the primary user entry point. Read the documents below in this
@@ -22,6 +29,8 @@ order when reproducing or extending the graph work:
 | Layer | Document or implementation | Purpose |
 |---|---|---|
 | Experiment interface | This README | Commands, options, outputs, reports, and acceptance rules. |
+| Environment and external tools | [性能与图模式统一依赖清单](../glm5_2_common/PERFORMANCE_GRAPH_DEPENDENCIES_ZH.md) | Torch/TorchNPU/CANN/Triton-Ascend compatibility, Python readers, Ascend tools, GUI viewers, repositories, and installation checks. |
+| Visualization and report interpretation | [VISUALIZATION_GUIDE_ZH.md](VISUALIZATION_GUIDE_ZH.md) | Tool matrix, exact outputs, report columns, graph-break/recompile semantics, and compiler/runtime joint diagnosis. |
 | Current engineering status | [NPU_GRAPH_DEBUG_REPORT.md](NPU_GRAPH_DEBUG_REPORT.md) | Complete single/multi-card bring-up process, solved and unresolved issues, downgrade boundary, and three-repository ownership. |
 | Lower-layer handoff | [LOWER_LAYER_ISSUE_HANDOFF.md](LOWER_LAYER_ISSUE_HANDOFF.md) | Ticket-ready source locations, functions, confidence boundaries, patch directions, minimal bisects, and workaround-off acceptance criteria for PyTorch, torch_npu, op-plugin, CANN, and HCCL. |
 | Raw debug evidence | [graph debug README](../glm5_2_graph_debug/README.md), [report index](../glm5_2_graph_debug/experiments/reports/index.md), and [failure history](../glm5_2_graph_debug/experiments/reports/failures.md) | Immutable command history, topology evidence, failed attempts, and detailed root-cause records. |
@@ -46,45 +55,61 @@ Eager:
 export ASCEND_RT_VISIBLE_DEVICES=4
 unset CUDA_VISIBLE_DEVICES
 
-NGPU=1 LOG_RANK=0 MODULE=glm5 CONFIG=glm5_debugmodel ./run_train.sh
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor command -- \
+  env NGPU=1 LOG_RANK=0 MODULE=glm5 CONFIG=glm5_debugmodel ./run_train.sh
 ```
 
 Inductor:
 
 ```bash
-NGPU=1 LOG_RANK=0 MODULE=glm5 CONFIG=glm5_debugmodel ./run_train.sh \
-  --compile.enable \
-  --compile.components=model \
-  --compile.backend=inductor
+NGPU=1 LOG_RANK=0 MODULE=glm5 CONFIG=glm5_debugmodel \
+  tests/glm5_2_graph_debug/run_graph_mode.sh inductor train
 ```
 
 NPUGraph:
 
 ```bash
-NGPU=1 LOG_RANK=0 MODULE=glm5 CONFIG=glm5_debugmodel ./run_train.sh \
-  --compile.enable \
-  --compile.components=model \
-  --compile.backend=npugraphs
+NGPU=1 LOG_RANK=0 MODULE=glm5 CONFIG=glm5_debugmodel \
+  tests/glm5_2_graph_debug/run_graph_mode.sh npugraphs train
 ```
 
 `--training.disable_cuda_graphs` controls TorchTitan whole-step CUDA Graph and
 is independent from `--compile.enable`. Keep it disabled for the current NPU
 graph experiments, especially PP.
 
-For the validated CANN environment, persistent cache, and detailed compiler
-diagnostics, use:
+The validated graph environment is CANN 9.1.0 plus the dedicated graph Conda
+environment. Do not run the formal NPU graph commands from the container's
+default shell: that shell can contain CANN 9.0 paths before `torch_npu` is
+imported. The authoritative launcher is:
 
-- `tests/glm5_2_graph_debug/run_npu_inductor.sh`
-- `tests/glm5_2_graph_debug/RUN_NPU_INDUCTOR.md`
+- `tests/glm5_2_graph_debug/run_graph_mode.sh`
+- `tests/glm5_2_graph_debug/GRAPH_MODE_COMMON.md`
+- `tests/glm5_2_graph_debug/CANN_9_1_INSTALLATION.md`
+
+It starts every stage with `env -i`, sources the same CANN 9.1 installation,
+selects the same Conda/ATB/HCCL/cache policy before Python imports TorchNPU,
+and writes one launcher report plus runtime log. Within one eager-vs-graph
+experiment, `--data`, eager reference, graph candidate, and compare must all
+use the same launcher backend profile. The intended endpoint difference is the
+recorded compile argument; PID, rendezvous port, and output filename naturally
+differ between processes. New capture artifacts also record Python/Torch/
+TorchNPU/TorchTitan versions plus the CANN `version.info` digest; formal
+self-consistency compare rejects a recorded base-runtime mismatch. Legacy
+artifacts without this fingerprint remain readable but cannot provide that
+strong guarantee.
+
+Verify the resolved environment first:
+
+```bash
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor env
+```
 
 For ordinary run-through validation, prefer the shared smoke runner over
 manually spelling every topology argument:
 
 ```bash
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-python tests/glm5_2_smoke/train_smoke.py \
-  --device npu --topology all --graph inductor \
-  --compiler-diagnostics
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor smoke --topology all
 ```
 
 Use `--topology single`, one topology, or `--topologies` for a focused run.
@@ -108,24 +133,24 @@ Fast single-card probe:
 export ASCEND_RT_VISIBLE_DEVICES=4
 unset CUDA_VISIBLE_DEVICES
 
-python tests/glm5_2_graph/compile_probe.py \
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor compile-probe \
   --data --data-device npu --topology single \
   --objectives precision \
   --reference-graph eager --candidate-graph inductor
 
-python tests/glm5_2_graph/compile_probe.py \
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor compile-probe \
   --capture reference --topology single \
   --objectives precision \
   --reference-graph eager --candidate-graph inductor \
   --compiler-diagnostics
 
-python tests/glm5_2_graph/compile_probe.py \
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor compile-probe \
   --capture candidate --topology single \
   --objectives precision \
   --reference-graph eager --candidate-graph inductor \
   --compiler-diagnostics
 
-python tests/glm5_2_graph/compile_probe.py \
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor compile-probe \
   --compare --topology single \
   --objectives precision \
   --reference-graph eager --candidate-graph inductor \
@@ -152,16 +177,16 @@ topology:
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 unset CUDA_VISIBLE_DEVICES
 
-python tests/glm5_2_graph/precision_benchmark.py \
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor precision \
   --data --data-device npu --topology fsdp8 \
   --reference-graph eager --candidate-graph inductor
-python tests/glm5_2_graph/precision_benchmark.py \
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor precision \
   --capture reference --topology fsdp8 \
   --reference-graph eager --candidate-graph inductor
-python tests/glm5_2_graph/precision_benchmark.py \
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor precision \
   --capture candidate --topology fsdp8 \
   --reference-graph eager --candidate-graph inductor
-python tests/glm5_2_graph/precision_benchmark.py \
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor precision \
   --compare --topology fsdp8 --require-all \
   --reference-graph eager --candidate-graph inductor
 ```
@@ -174,16 +199,16 @@ single-card eager reference:
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 unset CUDA_VISIBLE_DEVICES
 
-python tests/glm5_2_graph/precision_benchmark.py \
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor precision \
   --data --data-device npu --topology all \
   --reference-graph eager --candidate-graph inductor
-python tests/glm5_2_graph/precision_benchmark.py \
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor precision \
   --capture reference --topology all \
   --reference-graph eager --candidate-graph inductor
-python tests/glm5_2_graph/precision_benchmark.py \
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor precision \
   --capture candidate --topology all \
   --reference-graph eager --candidate-graph inductor
-python tests/glm5_2_graph/precision_benchmark.py \
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor precision \
   --compare --topology all --require-all \
   --reference-graph eager --candidate-graph inductor
 ```
@@ -231,8 +256,8 @@ same options. Their entry-point defaults differ only where noted below.
 | `--reference-graph` | Reference execution: `eager`, `inductor`, or `npugraphs`. | `eager` |
 | `--candidate-graph` | Candidate execution: `eager`, `inductor`, or `npugraphs`. | `inductor` |
 | `--compile-loss` | Compile `loss` in addition to `model`. NPUGraph is currently model-only. | disabled |
-| `--compiler-diagnostics` | Record graph-break, recompile, and dynamic-shape diagnostics for compiled endpoints. | disabled |
-| `--profiler-preset` | `off`, `overview`, `comparison`, `standard`, `distributed`, `kernel`, or `runtime`. | `off` |
+| `--compiler-diagnostics` | Record graph-break/recompile diagnostics and capture per-rank `TORCH_TRACE` plus Inductor FX/IR/code for compiled endpoints. | disabled |
+| `--profiler-preset` | `off`, `overview`, `comparison`, `standard`, `distributed`, `kernel`, `operator`, `memory`, `flamegraph`, `runtime`, or `system`. Use the performance runner for the multi-capture `all` matrix. | `off` |
 | `--profile-skip-steps` | Steps before the scheduled Profiler window. | `10` |
 | `--profile-warmup-steps` | Profiler warmup steps. | `1` |
 | `--profile-active-steps` | Recorded Profiler steps. | `3` |
@@ -264,7 +289,43 @@ with reference/candidate graph mode, compiled components, diagnostics setting,
 and topology recorded in the experiment identity. The precision report shows
 loss and grad-norm curves plus formal error statistics; the performance report
 shows each endpoint's step time/throughput and candidate speedup, with Profiler
-details only when a preset is enabled.
+details only when a preset is enabled. With `--compiler-diagnostics`, the
+top-level combination report additionally links one per-rank interactive
+`tlparse` report, raw structured trace, readable FX graph, pre/post-fusion
+Inductor IR, and generated backend code.
+
+Install `tlparse` on the capture or compare host once:
+
+```bash
+python -m pip install tlparse
+```
+
+Or install the complete optional visualization set used by graph and
+performance reports:
+
+```bash
+python -m pip install -r \
+  tests/glm5_2_performance/requirements-visualization.txt
+```
+
+External Ascend/GUI tools are not Python requirements. Their sources,
+installation boundaries, verification commands, MindStudio flame graph,
+Perfetto, and offline handoff are documented in the
+[unified dependency guide](../glm5_2_common/PERFORMANCE_GRAPH_DEPENDENCIES_ZH.md).
+
+Capture with `--compiler-diagnostics`, then rerun the matching `--compare`
+command. Compare converts every available structured trace automatically. The
+interactive report exposes the stack trie, graph breaks, recompiles, captured
+FX graph, and generated code. Structured traces include model source code but
+not model weights, so review them before external sharing.
+
+`tlparse` is the PyTorch compiler troubleshooting entry point, not a generic
+model-diagram viewer. Netron, TensorBoard Graph, torchviz, torchview, and FX
+GraphDrawer are useful for static model/autograd/single-FX visualization, but
+they do not explain Dynamo guards, multiple compilation regions, graph breaks,
+or per-rank recompilation. MindStudio Insight and Perfetto remain the runtime
+Timeline viewers. The tools are complementary; see
+[VISUALIZATION_GUIDE_ZH.md](VISUALIZATION_GUIDE_ZH.md) for the full comparison.
 
 For the primary graph acceptance experiment, precision PASS/FAIL comes from
 NPU eager-single versus the selected NPU graph candidate. Performance numbers
@@ -277,9 +338,27 @@ precision acceptance.
 ```text
 precision_fixtures/<fixture-id>/
 combination_runs/<experiment-id>/<topology>/<role>-r<repeat>/runtime.log
+combination_runs/<experiment-id>/<topology>/<role>-r<repeat>/graph_visualization/rank_<rank>/torch_trace/
+combination_runs/<experiment-id>/<topology>/<role>-r<repeat>/graph_visualization/rank_<rank>/inductor/
+combination_runs/<experiment-id>/<topology>/<role>-r<repeat>/graph_visualization/tlparse/
 combination_artifacts/<experiment-id>/<topology>/<role>-r<repeat>/
 combination_reports/<experiment-id>/
 ```
 
-Compiler cache and `torch_compile_debug` output are not experiment reports.
-Place them outside the repository or under an ignored cache root.
+Within one endpoint run, compiler and runtime evidence remain separate:
+
+```text
+graph_visualization/rank_<rank>/torch_trace/   # structured Dynamo events
+graph_visualization/rank_<rank>/inductor/      # FX, IR and generated code
+graph_visualization/tlparse/                    # derived interactive HTML
+trainer_output/profiling/traces/                # optional Ascend runtime data
+trainer_output/tensorboard/                     # training scalar events
+```
+
+The top-level combination report indexes these per topology, role, repeat and
+rank; it does not flatten multiple compiler regions into one ambiguous graph.
+
+Compiler cache is not an experiment report. The bounded diagnostics output
+listed above is deliberately stored under the ignored run directory and linked
+from the report; unrelated ambient `torch_compile_debug` output should remain
+outside the repository.

@@ -10,6 +10,9 @@ import os
 
 
 def main() -> None:
+    from tests.glm5_2_graph.visualization import configure_graph_diagnostics
+
+    configure_graph_diagnostics()
     device_type = os.environ.get("TORCHTITAN_DEVICE", "gpu")
     if device_type == "npu":
         import torchtitanturbo  # noqa: F401

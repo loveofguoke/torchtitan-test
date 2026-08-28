@@ -26,20 +26,28 @@ class ProfilerPreset:
     profile_memory: bool = False
     with_stack: bool = False
     with_modules: bool = False
+    with_flops: bool = False
+    export_stacks: bool = False
+    export_memory_timeline: bool = False
     parse_mode: ParseMode = "sync"
+    export_types: tuple[str, ...] = ("text", "db")
     aic_metrics: str = "none"
     l2_cache: bool = False
     op_attr: bool = False
     data_simplification: bool = True
     record_op_args: bool = False
     gc_detect_threshold: float | None = None
+    msprof_tx: bool = False
+    mstx: bool = False
+    mstx_domain_include: tuple[str, ...] = ()
+    mstx_domain_exclude: tuple[str, ...] = ()
     host_system: tuple[str, ...] = ()
     system_io: bool = False
     system_interconnection: bool = False
 
     def environment(self) -> dict[str, str]:
         prefix = "TORCHTITAN_NPU_PROFILER_"
-        return {
+        environment = {
             prefix + "LEVEL": self.level,
             prefix + "RANKS": self.profile_ranks,
             prefix + "RECORD_SHAPES": str(self.record_shapes).lower(),
@@ -65,6 +73,27 @@ class ProfilerPreset:
                 self.system_interconnection
             ).lower(),
         }
+        if self.export_stacks:
+            environment[prefix + "EXPORT_STACKS"] = "true"
+        if self.export_memory_timeline:
+            environment[prefix + "EXPORT_MEMORY_TIMELINE"] = "true"
+        if self.with_flops:
+            environment[prefix + "WITH_FLOPS"] = "true"
+        if self.mstx:
+            environment[prefix + "MSTX"] = "true"
+        if self.msprof_tx:
+            environment[prefix + "MSPROF_TX"] = "true"
+        if self.mstx_domain_include:
+            environment[prefix + "MSTX_DOMAIN_INCLUDE"] = ",".join(
+                self.mstx_domain_include
+            )
+        if self.mstx_domain_exclude:
+            environment[prefix + "MSTX_DOMAIN_EXCLUDE"] = ",".join(
+                self.mstx_domain_exclude
+            )
+        if self.export_types != ("text", "db"):
+            environment[prefix + "EXPORT_TYPES"] = ",".join(self.export_types)
+        return environment
 
 
 def profiler_presets() -> dict[str, ProfilerPreset]:
@@ -95,6 +124,34 @@ def profiler_presets() -> dict[str, ProfilerPreset]:
             l2_cache=True,
             data_simplification=False,
         ),
+        "operator": ProfilerPreset(
+            "operator",
+            "level1",
+            record_shapes=True,
+            with_flops=True,
+            aic_metrics="arithmetic_utilization",
+            op_attr=True,
+            data_simplification=False,
+            record_op_args=True,
+        ),
+        "memory": ProfilerPreset(
+            "memory",
+            "level0",
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=True,
+            with_modules=True,
+            export_memory_timeline=True,
+            data_simplification=False,
+        ),
+        "flamegraph": ProfilerPreset(
+            "flamegraph",
+            "level0",
+            with_stack=True,
+            with_modules=True,
+            export_stacks=True,
+            data_simplification=False,
+        ),
         "runtime": ProfilerPreset(
             "runtime",
             "level2",
@@ -102,14 +159,44 @@ def profiler_presets() -> dict[str, ProfilerPreset]:
             profile_memory=True,
             with_stack=True,
             with_modules=True,
+            export_stacks=True,
             aic_metrics="arithmetic_utilization",
             l2_cache=True,
             op_attr=True,
             data_simplification=False,
             gc_detect_threshold=1.0,
             host_system=("cpu", "mem"),
+            export_memory_timeline=True,
+        ),
+        "system": ProfilerPreset(
+            "system",
+            "level2",
+            profile_ranks="all",
+            parse_mode="offline",
+            aic_metrics="pipe_utilization",
+            data_simplification=False,
+            gc_detect_threshold=1.0,
+            mstx=True,
+            host_system=("cpu", "mem", "disk", "network", "osrt", "numa"),
+            system_io=True,
+            system_interconnection=True,
         ),
     }
+
+
+def all_profiler_presets() -> tuple[str, ...]:
+    """Return the non-redundant full profiler acquisition suite."""
+
+    return (
+        "overview",
+        "distributed",
+        "kernel",
+        "operator",
+        "memory",
+        "flamegraph",
+        "runtime",
+        "system",
+    )
 
 
 def performance_topologies() -> dict[str, ParallelTopology]:

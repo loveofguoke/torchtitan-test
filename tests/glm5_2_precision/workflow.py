@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import shutil
 import subprocess
 import sys
@@ -392,7 +393,45 @@ def _source_metadata(root: Path) -> dict[str, Any]:
         )
         if git_root is not None:
             sources[package] = _git_metadata(git_root)
-    return {"packages": packages, "sources": sources}
+    runtime_environment = {
+        name: os.environ[name]
+        for name in (
+            "ASCEND_HOME_PATH",
+            "ASCEND_TOOLKIT_HOME",
+            "ASCEND_OPP_PATH",
+            "GRAPH_CANN_ROOT",
+            "GRAPH_CONDA_ENV",
+            "TORCHINDUCTOR_NPU_BACKEND",
+        )
+        if os.environ.get(name)
+    }
+    cann_version_files: list[dict[str, str]] = []
+    cann_roots = {
+        Path(value).resolve()
+        for name, value in runtime_environment.items()
+        if name in {"ASCEND_HOME_PATH", "ASCEND_TOOLKIT_HOME", "GRAPH_CANN_ROOT"}
+    }
+    for cann_root in sorted(cann_roots, key=str):
+        for relative_path in ("compiler/version.info", "version.info"):
+            version_path = cann_root / relative_path
+            if version_path.is_file():
+                cann_version_files.append(
+                    {
+                        "path": str(version_path),
+                        "sha256": sha256_file(version_path),
+                    }
+                )
+                break
+    return {
+        "packages": packages,
+        "sources": sources,
+        "runtime": {
+            "python_version": platform.python_version(),
+            "python_executable": sys.executable,
+            "environment": runtime_environment,
+            "cann_version_files": cann_version_files,
+        },
+    }
 
 
 def _completed_capture_can_be_finalized(
@@ -1232,6 +1271,7 @@ def capture_endpoint(
 
     environment = os.environ.copy()
     environment.update(endpoint.environment)
+    environment["GLM5_EXPERIMENT_RUN_DIRECTORY"] = str(run_directory.resolve())
     environment[endpoint.visible_devices_env] = endpoint.visible_devices
     environment["TORCHTITAN_DEVICE"] = endpoint.torchtitan_device
     environment["GLM5_PRECISION_METRICS_PATH"] = str(metrics_path)
