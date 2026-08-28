@@ -132,10 +132,17 @@ Each suite README lists every public parameter, its choices, default, output
 layout, and the distinction between PASS/FAIL evidence and diagnostic-only
 information.
 
-## Experiment artifact releases
+## Experiment output synchronization
 
-Large generated experiment directories are transferred with GitHub Releases
-instead of Git. Install and authenticate GitHub CLI first (`gh auth login`).
+Generated `*_reports/` directories are tracked by Git so HTML, JSON, Markdown,
+and other compact analysis results can be reviewed, compared, and synchronized
+with the code that produced them. Fixtures, metric artifacts, raw runs, profiler
+outputs, and other large generated data remain excluded from Git and are
+transferred with GitHub Releases.
+
+Install and authenticate GitHub CLI first (`gh auth login`) when transferring
+the large outputs. Reports remain accepted in release archives as a convenient
+self-contained experiment snapshot, even though Git is their primary sync path.
 The release tag, release title, and archive name are derived from the experiment
 name. Uploading collects matching directories and directly named report files
 under every standard parity, precision, performance, stability, checkpoint,
