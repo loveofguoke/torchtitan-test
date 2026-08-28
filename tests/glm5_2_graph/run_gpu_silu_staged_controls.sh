@@ -3,11 +3,11 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: run_gpu_silu_staged_controls.sh [step1|probe] [silu-product|silu-product-down|all|matrix]
+Usage: run_gpu_silu_staged_controls.sh [step1|probe] VARIANT
 
   step1  One training step with Block 0 forward/backward/gradient tracing.
   probe  Ten training steps plus the Step 1 trace.
-  matrix Run all three materialization variants for the selected length.
+  VARIANT is one named variant, matrix (FFN), or frontier-matrix.
 EOF
 }
 
@@ -19,8 +19,13 @@ length=$1
 selection=$2
 case "$length" in step1|probe) ;; *) usage >&2; exit 2 ;; esac
 case "$selection" in
-  silu-product|silu-product-down|all) variants=("$selection") ;;
+  silu-product|silu-product-down|all|ffn-input|attention-output|attention-residual|block-frontier)
+    variants=("$selection")
+    ;;
   matrix) variants=(silu-product silu-product-down all) ;;
+  frontier-matrix)
+    variants=(ffn-input attention-output attention-residual block-frontier)
+    ;;
   *) usage >&2; exit 2 ;;
 esac
 

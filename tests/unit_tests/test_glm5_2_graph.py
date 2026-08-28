@@ -447,11 +447,26 @@ def test_gpu_silu_control_compares_ordered_step1_gradients(tmp_path: Path) -> No
 
 
 def test_gpu_silu_staged_control_defines_progressive_boundaries() -> None:
-    assert MATERIALIZATION_POINTS == {"w1", "w3", "silu", "product", "down"}
+    assert MATERIALIZATION_POINTS == {
+        "attention_output",
+        "attention_residual",
+        "ffn_input",
+        "w1",
+        "w3",
+        "silu",
+        "product",
+        "down",
+    }
     assert GPU_SILU_VARIANT_POINTS == {
         "silu-product": "silu,product",
         "silu-product-down": "silu,product,down",
         "all": "w1,w3,silu,product,down",
+        "ffn-input": "ffn_input,silu,product",
+        "attention-output": "attention_output,ffn_input,silu,product",
+        "attention-residual": "attention_residual,ffn_input,silu,product",
+        "block-frontier": (
+            "attention_output,attention_residual,ffn_input,silu,product"
+        ),
     }
     assert GPU_SILU_STAGED_CONFIG.training.steps == 1
     expected = "silu,product"

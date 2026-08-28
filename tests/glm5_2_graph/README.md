@@ -229,6 +229,8 @@ Use `run_gpu_silu_symmetric_control.sh` when both sides must execute the same
 materialized program and Step 1 Block 0 parameter gradients are required.
 Use `run_gpu_silu_staged_controls.sh step1 matrix` to test progressively wider
 SwiGLU materialization boundaries before selecting a 10-step control.
+When those fail, use `attention bf16` and the staged runner's
+`frontier-matrix` to localize the attention/FFN-input boundary.
 
 The reference remains single-card even when the candidate is FSDP8, TP8, or
 another distributed topology. Run `--capture reference` with at least one

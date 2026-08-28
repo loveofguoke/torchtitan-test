@@ -206,3 +206,12 @@ The variants add boundaries in order: `silu-product`,
 `silu-product-down`, then `all` (`w1`, `w3`, SiLU, product, and down).
 After selecting the smallest variant that aligns Block output and gradients,
 run only that variant for 10 steps by replacing `step1` with `probe`.
+
+If all FFN-only variants fail, first run the one-step BF16 attention trace,
+then test the Block-frontier matrix (`ffn_norm` output, attention output, and
+attention residual):
+
+```bash
+GPU_DIAG_RUN_ID=h20-attention-bf16-v1 tests/glm5_2_graph/run_gpu_inductor_diagnostics.sh attention bf16
+GPU_DIAG_RUN_ID=h20-block-frontier-v1 tests/glm5_2_graph/run_gpu_silu_staged_controls.sh step1 frontier-matrix
+```

@@ -20,6 +20,12 @@ VARIANT_POINTS = {
     "silu-product": "silu,product",
     "silu-product-down": "silu,product,down",
     "all": "w1,w3,silu,product,down",
+    "ffn-input": "ffn_input,silu,product",
+    "attention-output": "attention_output,ffn_input,silu,product",
+    "attention-residual": "attention_residual,ffn_input,silu,product",
+    "block-frontier": (
+        "attention_output,attention_residual,ffn_input,silu,product"
+    ),
 }
 LENGTH_STEPS = {"step1": 1, "probe": 10}
 variant = os.environ.get("GLM5_GPU_SILU_STAGE_VARIANT", "silu-product")

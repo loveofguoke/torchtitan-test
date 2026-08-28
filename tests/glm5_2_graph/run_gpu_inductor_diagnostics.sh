@@ -11,7 +11,7 @@ Usage: run_gpu_inductor_diagnostics.sh [minimal|trace|internal|attention|all] [f
            Block 0 forward/backward/parameter-gradient fingerprints.
   internal Capture the ordered Block 0 internal forward stages for five steps
            and report the first eager/Inductor divergence at each step.
-  attention Run a one-step FP32 trace inside absorbed SparseMLA attention.
+  attention Run a one-step FP32/BF16 trace inside absorbed SparseMLA attention.
   all      Run minimal, Block trace, and internal trace (not attention).
 
 CUDA_VISIBLE_DEVICES defaults to 0. Set GPU_DIAG_RUN_ID to choose a stable
@@ -35,10 +35,6 @@ case "$precision" in
   all) precisions=(fp32 bf16) ;;
   *) usage >&2; exit 2 ;;
 esac
-if [[ "$action" == "attention" && "$precision" != "fp32" ]]; then
-  echo "attention localization requires precision=fp32" >&2
-  exit 2
-fi
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$repo_root"
@@ -209,14 +205,15 @@ run_internal_trace() {
 capture_attention_trace() {
   role=$1
   repeat=$2
-  trace_name=$3
-  cache_name=${4:-}
+  current_precision=$3
+  trace_name=$4
+  cache_name=${5:-}
   trace_path="$output_root/$trace_name.jsonl"
   command=(
     "$python_bin" tests/glm5_2_graph/gpu_attention_trace_probe.py
     --capture "$role"
     --repeat "$repeat"
-    --precision fp32
+    --precision "$current_precision"
     "${common_args[@]}"
     --force
   )
@@ -235,27 +232,34 @@ capture_attention_trace() {
 }
 
 run_attention_trace() {
-  echo "==> attention trace fp32 prepare fixture"
-  "$python_bin" tests/glm5_2_graph/gpu_attention_trace_probe.py \
-    --data --data-device cuda --precision fp32 "${common_args[@]}" --force
+  for current_precision in "${precisions[@]}"; do
+    echo "==> attention trace $current_precision prepare fixture"
+    "$python_bin" tests/glm5_2_graph/gpu_attention_trace_probe.py \
+      --data --data-device cuda --precision "$current_precision" \
+      "${common_args[@]}" --force
 
-  echo "==> attention trace fp32 eager repeats"
-  capture_attention_trace reference 1 fp32-attention-eager-r1
-  capture_attention_trace reference 2 fp32-attention-eager-r2
+    echo "==> attention trace $current_precision eager repeats"
+    capture_attention_trace reference 1 "$current_precision" \
+      "$current_precision-attention-eager-r1"
+    capture_attention_trace reference 2 "$current_precision" \
+      "$current_precision-attention-eager-r2"
 
-  echo "==> attention trace fp32 independent cold Inductor repeats"
-  capture_attention_trace candidate 1 fp32-attention-inductor-cold-r1 \
-    fp32-attention-inductor-cold-r1-cache
-  capture_attention_trace candidate 2 fp32-attention-inductor-cold-r2 \
-    fp32-attention-inductor-cold-r2-cache
+    echo "==> attention trace $current_precision independent cold Inductor repeats"
+    capture_attention_trace candidate 1 "$current_precision" \
+      "$current_precision-attention-inductor-cold-r1" \
+      "$current_precision-attention-inductor-cold-r1-cache"
+    capture_attention_trace candidate 2 "$current_precision" \
+      "$current_precision-attention-inductor-cold-r2" \
+      "$current_precision-attention-inductor-cold-r2-cache"
 
-  echo "==> attention trace fp32 compare ordered stages"
-  "$python_bin" tests/glm5_2_graph/compare_gpu_attention_traces.py \
-    --eager-r1 "$output_root/fp32-attention-eager-r1.jsonl" \
-    --eager-r2 "$output_root/fp32-attention-eager-r2.jsonl" \
-    --inductor-r1 "$output_root/fp32-attention-inductor-cold-r1.jsonl" \
-    --inductor-r2 "$output_root/fp32-attention-inductor-cold-r2.jsonl" \
-    --output "$output_root/fp32-attention-trace-comparison.json"
+    echo "==> attention trace $current_precision compare ordered stages"
+    "$python_bin" tests/glm5_2_graph/compare_gpu_attention_traces.py \
+      --eager-r1 "$output_root/$current_precision-attention-eager-r1.jsonl" \
+      --eager-r2 "$output_root/$current_precision-attention-eager-r2.jsonl" \
+      --inductor-r1 "$output_root/$current_precision-attention-inductor-cold-r1.jsonl" \
+      --inductor-r2 "$output_root/$current_precision-attention-inductor-cold-r2.jsonl" \
+      --output "$output_root/$current_precision-attention-trace-comparison.json"
+  done
 }
 
 case "$action" in
