@@ -260,3 +260,11 @@ QK matmul, ReLU, weighted reduction, and mask addition:
 ```bash
 GPU_DIAG_RUN_ID=h20-indexer-controls-v1 tests/glm5_2_graph/run_gpu_indexer_boundary_controls.sh
 ```
+
+After the downstream boundaries fail, run the upstream single-boundary matrix.
+Only if every single boundary fails, run the cumulative matrix:
+
+```bash
+GPU_DIAG_RUN_ID=h20-indexer-upstream-v1 tests/glm5_2_graph/run_gpu_indexer_boundary_controls.sh upstream
+GPU_DIAG_RUN_ID=h20-indexer-cumulative-v1 tests/glm5_2_graph/run_gpu_indexer_boundary_controls.sh cumulative
+```

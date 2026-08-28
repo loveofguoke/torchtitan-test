@@ -16,7 +16,45 @@ INDEXER_CONTROL_VARIANTS = (
     "relu",
     "weighted",
     "masked",
+    "q-proj",
+    "k-proj",
+    "k-norm",
+    "q-rope",
+    "k-rope",
+    "final-q",
+    "final-k",
+    "weights",
+    "cum-qk-proj",
+    "cum-k-norm",
+    "cum-rope",
+    "cum-final-qk",
+    "cum-weights",
 )
+
+_CUMULATIVE_POINTS = {
+    "cum-qk-proj": {"q-proj", "k-proj"},
+    "cum-k-norm": {"q-proj", "k-proj", "k-norm"},
+    "cum-rope": {"q-proj", "k-proj", "k-norm", "q-rope", "k-rope"},
+    "cum-final-qk": {
+        "q-proj",
+        "k-proj",
+        "k-norm",
+        "q-rope",
+        "k-rope",
+        "final-q",
+        "final-k",
+    },
+    "cum-weights": {
+        "q-proj",
+        "k-proj",
+        "k-norm",
+        "q-rope",
+        "k-rope",
+        "final-q",
+        "final-k",
+        "weights",
+    },
+}
 
 
 def install_gpu_indexer_boundary_control() -> None:
@@ -77,7 +115,8 @@ def install_gpu_indexer_boundary_control() -> None:
         return torch.ops.torchtitan_test.record_indexer_control(indices)
 
     def boundary(point: str, tensor: torch.Tensor) -> torch.Tensor:
-        if variant != point:
+        active_points = _CUMULATIVE_POINTS.get(variant, {variant})
+        if point not in active_points:
             return tensor
         return torch.ops.torchtitan_test.gpu_training_materialize(tensor)
 
@@ -116,8 +155,11 @@ def install_gpu_indexer_boundary_control() -> None:
                 attention_mask_TK: torch.Tensor | None,
             ) -> torch.Tensor:
                 T = hidden_states_TD.shape[0]
-                q_TNH = indexer.wq_b(q_resid_TR).view(
-                    T, indexer.n_heads, indexer.head_dim
+                q_TNH = boundary(
+                    "q-proj",
+                    indexer.wq_b(q_resid_TR).view(
+                        T, indexer.n_heads, indexer.head_dim
+                    ),
                 )
                 q_rot_TNR, q_pass_TNP = torch.split(
                     q_TNH,
@@ -127,7 +169,12 @@ def install_gpu_indexer_boundary_control() -> None:
                     ],
                     dim=-1,
                 )
-                k_T1H = indexer.k_norm(indexer.wk(hidden_states_TD)).unsqueeze(1)
+                k_projection_TH = boundary(
+                    "k-proj", indexer.wk(hidden_states_TD)
+                )
+                k_T1H = boundary(
+                    "k-norm", indexer.k_norm(k_projection_TH)
+                ).unsqueeze(1)
                 k_rot_T1R, k_pass_T1P = torch.split(
                     k_T1H,
                     [
@@ -139,11 +186,23 @@ def install_gpu_indexer_boundary_control() -> None:
                 q_rot_TNR, k_rot_T1R = indexer.rope(
                     q_rot_TNR, k_rot_T1R, positions_T
                 )
-                q_TNH = torch.cat((q_rot_TNR, q_pass_TNP), dim=-1)
-                k_TH = torch.cat((k_rot_T1R, k_pass_T1P), dim=-1).squeeze(1)
-                weights_TN = indexer.weights_proj(
-                    hidden_states_TD.to(indexer.weights_proj.weight.dtype)
-                ).float() * (indexer.n_heads**-0.5)
+                q_rot_TNR = boundary("q-rope", q_rot_TNR)
+                k_rot_T1R = boundary("k-rope", k_rot_T1R)
+                q_TNH = boundary(
+                    "final-q",
+                    torch.cat((q_rot_TNR, q_pass_TNP), dim=-1),
+                )
+                k_TH = boundary(
+                    "final-k",
+                    torch.cat((k_rot_T1R, k_pass_T1P), dim=-1).squeeze(1),
+                )
+                weights_TN = boundary(
+                    "weights",
+                    indexer.weights_proj(
+                        hidden_states_TD.to(indexer.weights_proj.weight.dtype)
+                    ).float()
+                    * (indexer.n_heads**-0.5),
+                )
                 qk_scores_NQK = boundary(
                     "qk",
                     torch.matmul(

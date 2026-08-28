@@ -585,6 +585,19 @@ def test_gpu_indexer_control_matrix_compares_effective_indices(
         "relu",
         "weighted",
         "masked",
+        "q-proj",
+        "k-proj",
+        "k-norm",
+        "q-rope",
+        "k-rope",
+        "final-q",
+        "final-k",
+        "weights",
+        "cum-qk-proj",
+        "cum-k-norm",
+        "cum-rope",
+        "cum-final-qk",
+        "cum-weights",
     )
 
     paths = {

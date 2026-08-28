@@ -1,6 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+usage() {
+  echo "Usage: run_gpu_indexer_boundary_controls.sh [downstream|upstream|cumulative|all]"
+}
+
+selection=${1:-upstream}
+case "$selection" in
+  downstream) controls=(original decomposed-none qk relu weighted masked) ;;
+  upstream) controls=(q-proj k-proj k-norm q-rope k-rope final-q final-k weights) ;;
+  cumulative) controls=(cum-qk-proj cum-k-norm cum-rope cum-final-qk cum-weights) ;;
+  all)
+    controls=(
+      original decomposed-none qk relu weighted masked
+      q-proj k-proj k-norm q-rope k-rope final-q final-k weights
+      cum-qk-proj cum-k-norm cum-rope cum-final-qk cum-weights
+    )
+    ;;
+  *) usage >&2; exit 2 ;;
+esac
+
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$repo_root"
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
@@ -9,7 +28,6 @@ python_bin=${PYTHON_BIN:-python}
 run_id=${GPU_DIAG_RUN_ID:-h20-indexer-controls-v1}
 base_output="$repo_root/graph_debug_runs/gpu-inductor/$run_id"
 entry=tests/glm5_2_graph/gpu_silu_staged_control.py
-controls=(original decomposed-none qk relu weighted masked)
 common_args=(
   --topology single
   --objectives precision

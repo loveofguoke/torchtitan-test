@@ -240,6 +240,8 @@ If attention is first, use `attention1 attention-residual` to compare incoming
 DSA top-k indices and the detailed absorbed-attention path in Layer 1.
 If detailed tracing removes the mismatch, use
 `run_gpu_indexer_boundary_controls.sh` for a single-boundary indexer matrix.
+Its `upstream` mode tests projection/norm/RoPE/Q/K/weights boundaries; use
+`cumulative` only when all upstream single boundaries fail.
 
 The reference remains single-card even when the candidate is FSDP8, TP8, or
 another distributed topology. Run `--capture reference` with at least one
