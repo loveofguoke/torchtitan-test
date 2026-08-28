@@ -6,7 +6,7 @@ usage() {
 Usage: run_gpu_silu_staged_controls.sh [step1|backward|probe] VARIANT
 
   step1  One training step with Block 0 forward/backward/gradient tracing.
-  backward  One step with ordered Block 0 intermediate-gradient tracing.
+  backward  One step with all-layer forward/backward boundary tracing.
   probe  Ten training steps plus the Step 1 trace.
   VARIANT is one named variant, matrix (FFN), or frontier-matrix.
 EOF
@@ -72,9 +72,8 @@ run_variant() {
     )
     if [[ "$length" == "backward" ]]; then
       trace_environment=(
-        GLM5_GPU_INTERNAL_TRACE_PATH="$trace_path"
-        GLM5_GPU_INTERNAL_TRACE_STEPS=1
-        GLM5_GPU_INTERNAL_TRACE_BACKWARD=1
+        GLM5_GPU_LAYER_BOUNDARY_TRACE_PATH="$trace_path"
+        GLM5_GPU_LAYER_BOUNDARY_TRACE_STEPS=1
       )
     else
       trace_environment=(
@@ -113,8 +112,8 @@ run_variant() {
   "$python_bin" "$entry" --compare --require-all "${common_args[@]}"
 
   if [[ "$length" == "backward" ]]; then
-    comparator=tests/glm5_2_graph/compare_gpu_internal_traces.py
-    comparison_label="ordered Block stages and intermediate gradients"
+    comparator=tests/glm5_2_graph/compare_gpu_layer_boundary_traces.py
+    comparison_label="ordered all-layer boundaries and gradients"
   else
     comparator=tests/glm5_2_graph/compare_gpu_silu_control_traces.py
     comparison_label="Step 1 Block/gradients"

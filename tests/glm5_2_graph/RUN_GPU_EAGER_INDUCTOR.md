@@ -224,7 +224,8 @@ GPU_DIAG_RUN_ID=h20-attention-residual-probe-v1 tests/glm5_2_graph/run_gpu_silu_
 GPU_DIAG_RUN_ID=h20-attention-residual-backward-v1 tests/glm5_2_graph/run_gpu_silu_staged_controls.sh backward attention-residual
 ```
 
-The backward comparison walks from `block_output` toward `block_input` and
-reports the first eager/Inductor intermediate-gradient mismatch. Both endpoints
-use the same materialized program; the experiment does not compare an altered
-candidate against an unaltered eager reference.
+The backward comparison records the real input/output boundary of every
+Transformer layer. Forward comparison walks from the first layer to the last;
+gradient comparison walks from the last layer back to the first. This avoids
+returning diagnostic-only intermediates from a compiled graph. Both endpoints
+use the same materialized program.

@@ -232,8 +232,8 @@ SwiGLU materialization boundaries before selecting a 10-step control.
 When those fail, use `attention bf16` and the staged runner's
 `frontier-matrix` to localize the attention/FFN-input boundary.
 Use `probe attention-residual` for the symmetric 10-step training control and
-`backward attention-residual` to find the first mismatching Block intermediate
-gradient in reverse execution order.
+`backward attention-residual` to find the first mismatching Transformer-layer
+boundary gradient in reverse model order.
 
 The reference remains single-card even when the candidate is FSDP8, TP8, or
 another distributed topology. Run `--capture reference` with at least one

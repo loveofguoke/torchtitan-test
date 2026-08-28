@@ -42,6 +42,13 @@ def main() -> None:
 
         install_gpu_silu_materialization()
 
+    if os.environ.get("GLM5_GPU_LAYER_BOUNDARY_TRACE_PATH"):
+        from tests.glm5_2_graph.gpu_layer_boundary_trace import (
+            install_gpu_layer_boundary_trace,
+        )
+
+        install_gpu_layer_boundary_trace()
+
     if os.environ.get("GLM5_GPU_ATTENTION_TRACE_PATH"):
         from tests.glm5_2_graph.gpu_attention_internal_trace import (
             install_gpu_attention_internal_trace,

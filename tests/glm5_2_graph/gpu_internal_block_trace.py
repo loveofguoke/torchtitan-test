@@ -50,7 +50,6 @@ def install_gpu_internal_block_trace() -> None:
         ).split(",")
         if value.strip()
     }
-    trace_backward = os.environ.get("GLM5_GPU_INTERNAL_TRACE_BACKWARD") == "1"
     materialization_points = {
         value.strip()
         for value in os.environ.get(
@@ -184,15 +183,6 @@ def install_gpu_internal_block_trace() -> None:
                     tensor = first_tensor(value)
                     if tensor is not None:
                         record(step=step, name=name, tensor=tensor)
-                        if trace_backward and tensor.requires_grad:
-                            tensor.register_hook(
-                                lambda gradient, *, current_name=name: record(
-                                    step=step,
-                                    name=current_name,
-                                    tensor=gradient,
-                                    kind="backward_grad",
-                                )
-                            )
             return model_output
 
         was_compiled = getattr(layer, "_compiled_call_impl", None) is not None
