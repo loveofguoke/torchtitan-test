@@ -11,10 +11,13 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from tests.glm5_2_graph.gpu_internal_block_trace import STAGE_NAMES
+from tests.glm5_2_graph.gpu_internal_block_trace import (
+    BACKWARD_STAGE_NAMES,
+    STAGE_NAMES,
+)
 
 
-TraceKey = tuple[int, str]
+TraceKey = tuple[int, str, str]
 
 
 def _read_trace(path: Path) -> dict[TraceKey, dict[str, Any]]:
@@ -24,7 +27,11 @@ def _read_trace(path: Path) -> dict[TraceKey, dict[str, Any]]:
             if not line.strip():
                 continue
             row = json.loads(line)
-            key = (int(row["step"]), str(row["name"]))
+            key = (
+                int(row["step"]),
+                str(row.get("kind", "forward")),
+                str(row["name"]),
+            )
             if key in records:
                 raise ValueError(f"duplicate trace key {key} in {path}:{line_number}")
             records[key] = row
@@ -39,44 +46,61 @@ def _compare_pair(
     right_name: str,
     right: dict[TraceKey, dict[str, Any]],
 ) -> dict[str, Any]:
-    steps = sorted({step for step, _ in left} | {step for step, _ in right})
+    steps = sorted({key[0] for key in left} | {key[0] for key in right})
+    kinds = ["forward"]
+    if any(key[1] == "backward_grad" for key in left | right):
+        kinds.append("backward_grad")
     rows = []
     first_divergence_by_step = []
     for step in steps:
-        first_divergence = None
-        for stage_index, stage in enumerate(STAGE_NAMES):
-            key = (step, stage)
-            left_row = left.get(key)
-            right_row = right.get(key)
-            if left_row is None or right_row is None:
-                row = {
+        for kind in kinds:
+            first_divergence = None
+            stage_names = (
+                STAGE_NAMES if kind == "forward" else BACKWARD_STAGE_NAMES
+            )
+            for stage_index, stage in enumerate(stage_names):
+                key = (step, kind, stage)
+                left_row = left.get(key)
+                right_row = right.get(key)
+                if left_row is None or right_row is None:
+                    row = {
+                        "step": step,
+                        "kind": kind,
+                        "stage": stage,
+                        "stage_index": stage_index,
+                        "present_left": left_row is not None,
+                        "present_right": right_row is not None,
+                        "exact": False,
+                    }
+                else:
+                    row = {
+                        "step": step,
+                        "kind": kind,
+                        "stage": stage,
+                        "stage_index": stage_index,
+                        "present_left": True,
+                        "present_right": True,
+                        "exact": left_row["sha256"] == right_row["sha256"],
+                        "mean_abs_delta": abs(
+                            left_row["mean"] - right_row["mean"]
+                        ),
+                        "max_abs_delta": abs(
+                            left_row["max_abs"] - right_row["max_abs"]
+                        ),
+                        "l2_abs_delta": abs(
+                            left_row["l2"] - right_row["l2"]
+                        ),
+                    }
+                rows.append(row)
+                if not row["exact"] and first_divergence is None:
+                    first_divergence = row
+            first_divergence_by_step.append(
+                {
                     "step": step,
-                    "stage": stage,
-                    "stage_index": stage_index,
-                    "present_left": left_row is not None,
-                    "present_right": right_row is not None,
-                    "exact": False,
+                    "kind": kind,
+                    "first_divergence": first_divergence,
                 }
-            else:
-                row = {
-                    "step": step,
-                    "stage": stage,
-                    "stage_index": stage_index,
-                    "present_left": True,
-                    "present_right": True,
-                    "exact": left_row["sha256"] == right_row["sha256"],
-                    "mean_abs_delta": abs(left_row["mean"] - right_row["mean"]),
-                    "max_abs_delta": abs(
-                        left_row["max_abs"] - right_row["max_abs"]
-                    ),
-                    "l2_abs_delta": abs(left_row["l2"] - right_row["l2"]),
-                }
-            rows.append(row)
-            if not row["exact"] and first_divergence is None:
-                first_divergence = row
-        first_divergence_by_step.append(
-            {"step": step, "first_divergence": first_divergence}
-        )
+            )
     return {
         "left": left_name,
         "right": right_name,
@@ -99,6 +123,7 @@ def compare_internal_traces(paths: dict[str, Path]) -> dict[str, Any]:
         "schema": "torchtitan.glm5_2.gpu_internal_trace_comparison",
         "paths": {name: str(path) for name, path in paths.items()},
         "stage_order": list(STAGE_NAMES),
+        "backward_stage_order": list(BACKWARD_STAGE_NAMES),
         "comparisons": [
             _compare_pair(left, traces[left], right, traces[right])
             for left, right in pairs
@@ -130,10 +155,13 @@ def main() -> None:
         for item in comparison["first_divergence_by_step"]:
             row = item["first_divergence"]
             if row is None:
-                print(f"  step={item['step']}: all stages exact")
+                print(
+                    f"  step={item['step']} {item['kind']}: all stages exact"
+                )
             else:
                 print(
-                    f"  step={item['step']}: first={row['stage']} "
+                    f"  step={item['step']} {item['kind']}: "
+                    f"first={row['stage']} "
                     f"mean_delta={row.get('mean_abs_delta', float('nan')):.9g} "
                     f"l2_delta={row.get('l2_abs_delta', float('nan')):.9g}"
                 )

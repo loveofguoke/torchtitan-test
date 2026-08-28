@@ -215,3 +215,16 @@ attention residual):
 GPU_DIAG_RUN_ID=h20-attention-bf16-v1 tests/glm5_2_graph/run_gpu_inductor_diagnostics.sh attention bf16
 GPU_DIAG_RUN_ID=h20-block-frontier-v1 tests/glm5_2_graph/run_gpu_silu_staged_controls.sh step1 frontier-matrix
 ```
+
+When `attention-residual` is the smallest variant that makes Block forward
+exact, run its symmetric real-training probe and its ordered backward trace:
+
+```bash
+GPU_DIAG_RUN_ID=h20-attention-residual-probe-v1 tests/glm5_2_graph/run_gpu_silu_staged_controls.sh probe attention-residual
+GPU_DIAG_RUN_ID=h20-attention-residual-backward-v1 tests/glm5_2_graph/run_gpu_silu_staged_controls.sh backward attention-residual
+```
+
+The backward comparison walks from `block_output` toward `block_input` and
+reports the first eager/Inductor intermediate-gradient mismatch. Both endpoints
+use the same materialized program; the experiment does not compare an altered
+candidate against an unaltered eager reference.

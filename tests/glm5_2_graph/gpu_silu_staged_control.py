@@ -27,7 +27,7 @@ VARIANT_POINTS = {
         "attention_output,attention_residual,ffn_input,silu,product"
     ),
 }
-LENGTH_STEPS = {"step1": 1, "probe": 10}
+LENGTH_STEPS = {"step1": 1, "backward": 1, "probe": 10}
 variant = os.environ.get("GLM5_GPU_SILU_STAGE_VARIANT", "silu-product")
 length = os.environ.get("GLM5_GPU_SILU_STAGE_LENGTH", "step1")
 if variant not in VARIANT_POINTS:

@@ -39,6 +39,7 @@ from tests.glm5_2_graph.gpu_attention_trace_probe import (
 )
 from tests.glm5_2_graph.gpu_block_trace_probe import TRACE_CONFIG as GPU_TRACE_CONFIG
 from tests.glm5_2_graph.gpu_internal_block_trace import (
+    BACKWARD_STAGE_NAMES,
     STAGE_NAMES,
     _split_primary_and_auxiliary,
 )
@@ -310,6 +311,58 @@ def test_gpu_internal_trace_preserves_shared_indexer_auxiliary_output() -> None:
     primary, auxiliary = _split_primary_and_auxiliary("hidden")
     assert primary == "hidden"
     assert auxiliary == ()
+
+
+def test_gpu_internal_trace_orders_backward_from_block_output(
+    tmp_path: Path,
+) -> None:
+    def write_trace(path: Path, *, divergent: bool) -> None:
+        rows = []
+        for kind, stages in (
+            ("forward", STAGE_NAMES),
+            ("backward_grad", BACKWARD_STAGE_NAMES),
+        ):
+            for index, stage in enumerate(stages):
+                changed = (
+                    divergent
+                    and kind == "backward_grad"
+                    and index >= 1
+                )
+                rows.append(
+                    {
+                        "step": 1,
+                        "name": stage,
+                        "kind": kind,
+                        "sha256": (
+                            f"{kind}-{stage}-"
+                            f"{'different' if changed else 'same'}"
+                        ),
+                        "mean": float(index) + (0.25 if changed else 0.0),
+                        "max_abs": float(index + 1),
+                        "l2": float(index + 2) + (0.5 if changed else 0.0),
+                    }
+                )
+        path.write_text(
+            "".join(json.dumps(row) + "\n" for row in rows),
+            encoding="utf-8",
+        )
+
+    paths = {
+        name: tmp_path / f"{name}.jsonl"
+        for name in ("eager-r1", "eager-r2", "inductor-r1", "inductor-r2")
+    }
+    write_trace(paths["eager-r1"], divergent=False)
+    write_trace(paths["eager-r2"], divergent=False)
+    write_trace(paths["inductor-r1"], divergent=True)
+    write_trace(paths["inductor-r2"], divergent=True)
+
+    result = compare_internal_traces(paths)
+    eager_inductor = result["comparisons"][2]
+    forward, backward = eager_inductor["first_divergence_by_step"]
+    assert forward["kind"] == "forward"
+    assert forward["first_divergence"] is None
+    assert backward["kind"] == "backward_grad"
+    assert backward["first_divergence"]["stage"] == "ffn_down_projection"
 
 
 def test_gpu_attention_trace_orders_absorbed_mla_stages(tmp_path: Path) -> None:

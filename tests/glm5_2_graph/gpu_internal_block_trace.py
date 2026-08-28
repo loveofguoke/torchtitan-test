@@ -24,6 +24,8 @@ STAGE_NAMES = (
     "block_output",
 )
 
+BACKWARD_STAGE_NAMES = tuple(reversed(STAGE_NAMES))
+
 
 def _split_primary_and_auxiliary(value):
     if isinstance(value, tuple):
@@ -48,6 +50,14 @@ def install_gpu_internal_block_trace() -> None:
         ).split(",")
         if value.strip()
     }
+    trace_backward = os.environ.get("GLM5_GPU_INTERNAL_TRACE_BACKWARD") == "1"
+    materialization_points = {
+        value.strip()
+        for value in os.environ.get(
+            "GLM5_GPU_DENSE_SILU_MATERIALIZATION_POINTS", ""
+        ).split(",")
+        if value.strip()
+    }
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
@@ -64,7 +74,9 @@ def install_gpu_internal_block_trace() -> None:
                     return tensor
         return None
 
-    def record(*, step: int, name: str, tensor: torch.Tensor) -> None:
+    def record(
+        *, step: int, name: str, tensor: torch.Tensor, kind: str = "forward"
+    ) -> None:
         local = tensor.to_local() if isinstance(tensor, DTensor) else tensor
         cpu = local.detach().contiguous().cpu()
         raw = cpu.view(torch.uint8).numpy().tobytes()
@@ -72,7 +84,7 @@ def install_gpu_internal_block_trace() -> None:
         payload = {
             "step": step,
             "name": name,
-            "kind": "forward",
+            "kind": kind,
             "shape": list(cpu.shape),
             "dtype": str(cpu.dtype),
             "sha256": hashlib.sha256(raw).hexdigest(),
@@ -96,6 +108,11 @@ def install_gpu_internal_block_trace() -> None:
         if layer.moe_enabled:
             raise RuntimeError("GPU internal trace requires dense Block 0")
 
+        def apply_boundary(point: str, tensor: torch.Tensor) -> torch.Tensor:
+            if point not in materialization_points:
+                return tensor
+            return torch.ops.torchtitan_test.gpu_training_materialize(tensor)
+
         def diagnostic_forward(
             x_TD: torch.Tensor,
             attention_masks: torch.Tensor,
@@ -114,14 +131,30 @@ def install_gpu_internal_block_trace() -> None:
             attention_output_TD, auxiliary_outputs = (
                 _split_primary_and_auxiliary(attention_result)
             )
+            attention_output_TD = apply_boundary(
+                "attention_output", attention_output_TD
+            )
             attention_residual_TD = x_TD + attention_output_TD
+            attention_residual_TD = apply_boundary(
+                "attention_residual", attention_residual_TD
+            )
             ffn_norm_TD = layer.ffn_norm(attention_residual_TD)
+            ffn_norm_TD = apply_boundary("ffn_input", ffn_norm_TD)
             feed_forward = layer.feed_forward
             ffn_gate_linear_TF = feed_forward.w1(ffn_norm_TD)
-            ffn_gate_silu_TF = F.silu(ffn_gate_linear_TF)
+            ffn_gate_linear_TF = apply_boundary("w1", ffn_gate_linear_TF)
+            ffn_gate_silu_TF = apply_boundary(
+                "silu", F.silu(ffn_gate_linear_TF)
+            )
             ffn_up_linear_TF = feed_forward.w3(ffn_norm_TD)
-            ffn_gated_product_TF = ffn_gate_silu_TF * ffn_up_linear_TF
+            ffn_up_linear_TF = apply_boundary("w3", ffn_up_linear_TF)
+            ffn_gated_product_TF = apply_boundary(
+                "product", ffn_gate_silu_TF * ffn_up_linear_TF
+            )
             ffn_down_projection_TD = feed_forward.w2(ffn_gated_product_TF)
+            ffn_down_projection_TD = apply_boundary(
+                "down", ffn_down_projection_TD
+            )
             block_output_TD = attention_residual_TD + ffn_down_projection_TD
             model_output = (
                 (block_output_TD, *auxiliary_outputs)
@@ -151,6 +184,15 @@ def install_gpu_internal_block_trace() -> None:
                     tensor = first_tensor(value)
                     if tensor is not None:
                         record(step=step, name=name, tensor=tensor)
+                        if trace_backward and tensor.requires_grad:
+                            tensor.register_hook(
+                                lambda gradient, *, current_name=name: record(
+                                    step=step,
+                                    name=current_name,
+                                    tensor=gradient,
+                                    kind="backward_grad",
+                                )
+                            )
             return model_output
 
         was_compiled = getattr(layer, "_compiled_call_impl", None) is not None
@@ -177,6 +219,7 @@ def install_gpu_internal_block_trace() -> None:
 
 __all__ = [
     "STAGE_NAMES",
+    "BACKWARD_STAGE_NAMES",
     "_split_primary_and_auxiliary",
     "install_gpu_internal_block_trace",
 ]

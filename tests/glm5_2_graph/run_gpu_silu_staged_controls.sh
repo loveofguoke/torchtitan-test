@@ -3,9 +3,10 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: run_gpu_silu_staged_controls.sh [step1|probe] VARIANT
+Usage: run_gpu_silu_staged_controls.sh [step1|backward|probe] VARIANT
 
   step1  One training step with Block 0 forward/backward/gradient tracing.
+  backward  One step with ordered Block 0 intermediate-gradient tracing.
   probe  Ten training steps plus the Step 1 trace.
   VARIANT is one named variant, matrix (FFN), or frontier-matrix.
 EOF
@@ -17,7 +18,7 @@ if [[ $# -ne 2 ]]; then
 fi
 length=$1
 selection=$2
-case "$length" in step1|probe) ;; *) usage >&2; exit 2 ;; esac
+case "$length" in step1|backward|probe) ;; *) usage >&2; exit 2 ;; esac
 case "$selection" in
   silu-product|silu-product-down|all|ffn-input|attention-output|attention-residual|block-frontier)
     variants=("$selection")
@@ -69,20 +70,32 @@ run_variant() {
       "$python_bin" "$entry" --capture "$role" --repeat "$repeat"
       "${common_args[@]}" --force
     )
+    if [[ "$length" == "backward" ]]; then
+      trace_environment=(
+        GLM5_GPU_INTERNAL_TRACE_PATH="$trace_path"
+        GLM5_GPU_INTERNAL_TRACE_STEPS=1
+        GLM5_GPU_INTERNAL_TRACE_BACKWARD=1
+      )
+    else
+      trace_environment=(
+        GLM5_GPU_BLOCK_TRACE_PATH="$trace_path"
+        GLM5_GPU_BLOCK_TRACE_STEPS=1
+      )
+    fi
+    capture_environment=(
+      GLM5_GPU_SILU_STAGE_VARIANT="$variant"
+      GLM5_GPU_SILU_STAGE_LENGTH="$length"
+    )
     if [[ -n "$cache_name" ]]; then
       cache_root="$output_root/$cache_name"
-      GLM5_GPU_SILU_STAGE_VARIANT="$variant" \
-      GLM5_GPU_SILU_STAGE_LENGTH="$length" \
-      GLM5_GPU_BLOCK_TRACE_PATH="$trace_path" \
-      GLM5_GPU_BLOCK_TRACE_STEPS=1 \
-      TORCHINDUCTOR_CACHE_DIR="$cache_root/inductor" \
-      TRITON_CACHE_DIR="$cache_root/triton" \
+      capture_environment+=(
+        TORCHINDUCTOR_CACHE_DIR="$cache_root/inductor"
+        TRITON_CACHE_DIR="$cache_root/triton"
+      )
+      env "${capture_environment[@]}" "${trace_environment[@]}" \
       "${command[@]}"
     else
-      GLM5_GPU_SILU_STAGE_VARIANT="$variant" \
-      GLM5_GPU_SILU_STAGE_LENGTH="$length" \
-      GLM5_GPU_BLOCK_TRACE_PATH="$trace_path" \
-      GLM5_GPU_BLOCK_TRACE_STEPS=1 \
+      env "${capture_environment[@]}" "${trace_environment[@]}" \
       "${command[@]}"
     fi
   }
@@ -99,8 +112,15 @@ run_variant() {
   GLM5_GPU_SILU_STAGE_LENGTH="$length" \
   "$python_bin" "$entry" --compare --require-all "${common_args[@]}"
 
-  echo "==> $length $variant: compare Step 1 Block/gradients"
-  "$python_bin" tests/glm5_2_graph/compare_gpu_silu_control_traces.py \
+  if [[ "$length" == "backward" ]]; then
+    comparator=tests/glm5_2_graph/compare_gpu_internal_traces.py
+    comparison_label="ordered Block stages and intermediate gradients"
+  else
+    comparator=tests/glm5_2_graph/compare_gpu_silu_control_traces.py
+    comparison_label="Step 1 Block/gradients"
+  fi
+  echo "==> $length $variant: compare $comparison_label"
+  "$python_bin" "$comparator" \
     --eager-r1 "$output_root/eager-r1.jsonl" \
     --eager-r2 "$output_root/eager-r2.jsonl" \
     --inductor-r1 "$output_root/inductor-r1.jsonl" \
