@@ -17,9 +17,14 @@ in [NPU_GRAPH_DEBUG_REPORT.md](NPU_GRAPH_DEBUG_REPORT.md).
 The graph stack is not yet a zero-fallback final delivery. The current
 Inductor profile uses minimal `aten.sum` and compiled-all-reduce fallbacks;
 the current NPUGraph profile keeps Dynamo/AOT execution but disables native
-replay. Both profiles completed the historical 15-topology smoke matrix, but
-the refactored three-repository integration still requires server regression
-and the 5000-step precision/performance/checkpoint/stability acceptance suite.
+replay. The reviewed three-repository stack completed the historical
+15-topology smoke matrix. On the 2026-08-28 heads, the new deterministic
+pointwise-autotune compatibility completed independent cold-cache and smoke
+single-card checks, but the complete 5000-step candidate matrix and strict
+compare are still unfinished. The completed 30-step eager/Inductor performance
+matrix is diagnostic because the node had NPU alarms and external load. See the
+[combination experiment archive](../glm5_2_combination/experiments/index.md)
+for the exact commands, source identities, results, and acceptance boundaries.
 
 ## Documentation map
 
@@ -33,6 +38,7 @@ order when reproducing or extending the graph work:
 | Visualization and report interpretation | [VISUALIZATION_GUIDE_ZH.md](VISUALIZATION_GUIDE_ZH.md) | Tool matrix, exact outputs, report columns, graph-break/recompile semantics, and compiler/runtime joint diagnosis. |
 | Current engineering status | [NPU_GRAPH_DEBUG_REPORT.md](NPU_GRAPH_DEBUG_REPORT.md) | Complete single/multi-card bring-up process, solved and unresolved issues, downgrade boundary, and three-repository ownership. |
 | Lower-layer handoff | [LOWER_LAYER_ISSUE_HANDOFF.md](LOWER_LAYER_ISSUE_HANDOFF.md) | Ticket-ready source locations, functions, confidence boundaries, patch directions, minimal bisects, and workaround-off acceptance criteria for PyTorch, torch_npu, op-plugin, CANN, and HCCL. |
+| Combination experiment evidence | [experiment archive](../glm5_2_combination/experiments/index.md) | 15-topology smoke evidence, incomplete 5000-step precision state, 60-run eager/Inductor diagnostic performance matrix, and command ledger. |
 | Raw debug evidence | [graph debug README](../glm5_2_graph_debug/README.md), [report index](../glm5_2_graph_debug/experiments/reports/index.md), and [failure history](../glm5_2_graph_debug/experiments/reports/failures.md) | Immutable command history, topology evidence, failed attempts, and detailed root-cause records. |
 | Ascend implementation | [TorchTitanTurbo graph-mode document](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/torchtitanturbo/tools/GRAPH_MODE.md) and [patch inventory](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/PATCHES.md) | Opt-in NPU compatibility patches, activation variables, patched objects, and limitations. |
 | Device-neutral framework | `torchtitan/distributed/compile.py` in the source-installed TorchTitan checkout | Native `torch.compile` component selection and backend invocation. It contains no NPU workaround. |
@@ -261,15 +267,18 @@ same options. Their entry-point defaults differ only where noted below.
 | `--profile-skip-steps` | Steps before the scheduled Profiler window. | `10` |
 | `--profile-warmup-steps` | Profiler warmup steps. | `1` |
 | `--profile-active-steps` | Recorded Profiler steps. | `3` |
+| `--performance-skip-steps` | Startup/compile steps excluded from profiler-off performance summaries. | `10` |
+| `--steps` | Identified performance-only exploration override; values below 10 are rejected. | maintained entry configuration (`5000`) |
+| `--performance-nondeterministic` | Reproduce a performance-only nondeterministic diagnostic; forbidden for precision or mixed objectives. | disabled |
 | `--data-device` | Fixture-generation backend override. The generic choices are `cuda` and `npu`; current NPU graph entry points use `npu`. | inferred from the NPU visibility variable |
 | `--force` | Replace an existing valid fixture/capture instead of reusing it. | disabled |
+| `--require-all` | Make compare fail unless every selected topology and repeat is present. | disabled |
 
 Graph precision captures use the shared precision lifecycle: each capture has a
 unique attempt ID and PID state, and `--force` removes and verifies the selected
 run/artifact/input-contract/report generation plus exact-name failed archives.
 An eager/graph capture whose previous orchestrator is still alive is never
 overwritten.
-| `--require-all` | Make compare fail unless every selected topology and repeat is present. | disabled |
 
 The fixed training profile is 5000 steps, local batch 8, global batch 64,
 sequence length 128, seed 61, and two repeats. `compile_probe.py` overrides

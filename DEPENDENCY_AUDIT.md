@@ -33,6 +33,24 @@ artifact checksums. Git cleanliness is diagnostic, not a pass/fail condition.
 | parity trace/report schema | paired and offline parity, artifact reader/writer, HTML regression tests |
 | output directory nesting | rerun reset, report links, docs, release discovery and restore |
 
+## Current GLM graph/parity boundary
+
+The current compatibility baseline is TorchTitan `59899ade`, Turbo
+`a5306484`, and this repository `01f2f3e1`, plus the reviewed working-tree
+changes recorded by the combination submission-readiness report.
+
+- Deterministic pointwise autotune compatibility is Turbo-owned and activated
+  by the graph common launcher. The lower-layer torch_npu root fix and exact
+  symbol are tracked as G020 in
+  `tests/glm5_2_graph/LOWER_LAYER_ISSUE_HANDOFF.md`.
+- The stronger Ascend GLM Router contract (BF16 input, one FP32 gate call, FP32
+  scores) is Turbo-owned after TorchTitan `ad17686a` removed the common
+  `Linear(compute_dtype=...)` extension. CPU parity tests must not pretend to
+  validate that NPU-specific dtype contract.
+- An NPU parity endpoint must be explicit (`GLM5_PARITY_DEVICE=npu`) so Turbo
+  patches are loaded before model construction. Auto device selection must not
+  reuse an NPU merely because an earlier test imported torch_npu.
+
 ## Experiment lifecycle contract
 
 - `--force` starts a new selected generation and removes every selected old

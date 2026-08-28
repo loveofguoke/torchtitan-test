@@ -2,6 +2,7 @@
 # All rights reserved.
 
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,8 @@ from tests.glm5_2_combination.combination_benchmark import (
 from tests.glm5_2_combination.workflow import (
     CombinationSelection,
     _apply_selection,
+    _legacy_combination_storage_name,
+    _performance_median,
 )
 from tests.glm5_2_common.execution import TrainingFeature, compose_execution
 from tests.glm5_2_common.topology import select_topologies, standard_topologies
@@ -198,6 +201,161 @@ def test_npu_performance_does_not_require_profiler_collection() -> None:
 
     assert "--profiler.enable_profiling" not in configured.reference.extra_args
     assert "--profiler.enable_profiling" not in configured.candidate.extra_args
+
+
+def test_combination_performance_uses_post_startup_median() -> None:
+    analysis = {
+        "metrics": {
+            "summary": {"time_metrics/end_to_end(s)": {"median": 9.0}}
+        },
+        "profile_phases": {
+            "comparison": {"baseline_median_step_seconds": 1.25}
+        },
+    }
+
+    assert _performance_median(analysis) == 1.25
+
+
+def test_combination_performance_median_supports_legacy_analysis() -> None:
+    analysis = {
+        "metrics": {
+            "summary": {"time_metrics/end_to_end(s)": {"median": 2.5}}
+        }
+    }
+
+    assert _performance_median(analysis) == 2.5
+
+
+def test_combination_performance_skip_is_part_of_storage_identity() -> None:
+    topologies = standard_topologies()
+    raw = topology_config(
+        COMBINATION_CONFIG,
+        topologies["single"],
+        precision="bf16",
+    )
+    first = _apply_selection(
+        raw,
+        CombinationSelection(
+            objectives=frozenset(("performance",)),
+            reference_graph=GraphFeatureConfig("eager"),
+            candidate_graph=GraphFeatureConfig("inductor"),
+            profiler=None,
+            performance_skip_steps=5,
+        ),
+    )
+    second = _apply_selection(
+        raw,
+        CombinationSelection(
+            objectives=frozenset(("performance",)),
+            reference_graph=GraphFeatureConfig("eager"),
+            candidate_graph=GraphFeatureConfig("inductor"),
+            profiler=None,
+            performance_skip_steps=10,
+        ),
+    )
+
+    assert first.storage_name != second.storage_name
+    assert "-skip5-" in first.storage_name
+    assert "-skip10-" in second.storage_name
+
+
+def test_legacy_combination_identity_ignores_new_skip_option() -> None:
+    raw = topology_config(
+        COMBINATION_CONFIG,
+        standard_topologies()["single"],
+        precision="bf16",
+    )
+    skip_five = CombinationSelection(
+        objectives=frozenset(("performance",)),
+        reference_graph=GraphFeatureConfig("eager"),
+        candidate_graph=GraphFeatureConfig("inductor"),
+        profiler=None,
+        performance_skip_steps=5,
+    )
+    skip_ten = replace(skip_five, performance_skip_steps=10)
+
+    assert _legacy_combination_storage_name(
+        raw, skip_five
+    ) == _legacy_combination_storage_name(raw, skip_ten)
+
+
+def test_combination_determinism_is_part_of_storage_identity() -> None:
+    topologies = standard_topologies()
+    selection = CombinationSelection(
+        objectives=frozenset(("performance",)),
+        reference_graph=GraphFeatureConfig("eager"),
+        candidate_graph=GraphFeatureConfig("inductor"),
+        profiler=None,
+    )
+    deterministic = _apply_selection(
+        topology_config(
+            COMBINATION_CONFIG,
+            topologies["single"],
+            precision="bf16",
+        ),
+        selection,
+    )
+    nondeterministic = _apply_selection(
+        topology_config(
+            replace(
+                COMBINATION_CONFIG,
+                training=replace(
+                    COMBINATION_CONFIG.training,
+                    deterministic=False,
+                ),
+            ),
+            topologies["single"],
+            precision="bf16",
+        ),
+        selection,
+    )
+
+    assert deterministic.storage_name != nondeterministic.storage_name
+    assert "-nondet-" not in deterministic.storage_name
+    assert "-nondet-" in nondeterministic.storage_name
+
+
+def test_precision_default_keeps_previous_readable_storage_identity() -> None:
+    raw = topology_config(
+        COMBINATION_CONFIG,
+        standard_topologies()["single"],
+        precision="bf16",
+    )
+    selection = CombinationSelection(
+        objectives=frozenset(("precision",)),
+        reference_graph=GraphFeatureConfig("eager"),
+        candidate_graph=GraphFeatureConfig("inductor"),
+        profiler=None,
+    )
+
+    configured = _apply_selection(raw, selection)
+
+    assert "-precision-no-prof-" in configured.storage_name
+    assert "-skip" not in configured.storage_name
+    assert "-nondet" not in configured.storage_name
+    assert any("-skip10-det-" in name for name in configured.legacy_storage_names)
+
+
+def test_performance_adopts_previous_readable_storage_identity() -> None:
+    raw = topology_config(
+        COMBINATION_CONFIG,
+        standard_topologies()["single"],
+        precision="bf16",
+    )
+    selection = CombinationSelection(
+        objectives=frozenset(("performance",)),
+        reference_graph=GraphFeatureConfig("eager"),
+        candidate_graph=GraphFeatureConfig("inductor"),
+        profiler=None,
+    )
+
+    configured = _apply_selection(raw, selection)
+
+    assert "-performance-no-prof-skip10-" in configured.storage_name
+    assert any(
+        "-performance-no-prof-" in name and "-skip" not in name
+        for name in configured.legacy_storage_names
+    )
 
 
 def test_execution_plan_rejects_cross_feature_option_conflicts() -> None:

@@ -137,8 +137,9 @@ python "$TORCHTITAN_MSINSIGHT_FLAMEGRAPH" --help
 
 GUI 不通过 `pip` 安装。推荐在用于阅读报告的 Windows 本机安装：
 
-1. 从[官方安装指南和下载入口](https://www.hiascend.com/document/detail/zh/mindstudio/2600/GUI_baseddevelopmenttool/MindStudioInsight/docs/zh/user_guide/mindstudio_insight_install_guide.md)
-   下载与本机系统对应的 `MindStudio-Insight_<version>_win.exe` 和校验文件；
+1. 本项目服务器使用 CANN 9.1.0，因此选择与之配套的 **MindStudio Insight 26.1.0**，
+   不使用 26.0.0；从 [MindStudio 26.1.0 官方文档与下载入口](https://www.hiascend.com/document/detail/zh/mindstudio/2610/index/index.html)
+   下载 `MindStudio-Insight_26.1.0_win.exe` 和校验文件；
 2. 校验下载文件后运行安装程序；
 3. 把服务器上的完整 `*_ascend_pt`/cluster 目录同步到本机；
 4. 在 MindStudio Insight 中选择 profile 根目录导入。
@@ -146,7 +147,7 @@ GUI 不通过 `pip` 安装。推荐在用于阅读报告的 Windows 本机安装
 Linux GUI 软件包下载完成后的基本命令是：
 
 ```bash
-unzip MindStudio-Insight_<version>_linux-x86_64.zip \
+unzip MindStudio-Insight_26.1.0_linux-x86_64.zip \
   -d "$GLM5_TOOL_ROOT/MindStudio-Insight"
 "$GLM5_TOOL_ROOT/MindStudio-Insight/MindStudio-Insight"
 ```

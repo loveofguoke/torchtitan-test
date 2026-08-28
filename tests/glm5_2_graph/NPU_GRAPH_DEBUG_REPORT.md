@@ -12,14 +12,23 @@ nightly 和 triton-ascend 3.2.1。统一 smoke contract 为 10 steps、global ba
 - NPUGraphs：15/15 个拓扑完成 10/10 steps，但默认
   `TORCHTITAN_NPUGRAPH_SKIP_ALL=1`。Dynamo/AOT 图仍执行，NPUGraph replay 被显式
   禁用，因此只能称为 AOT 兼容降级通过，不能称为原生 NPUGraph 通过。
-- 以上 15/15 结果来自兼容逻辑仍位于 test launcher 时的服务器实验。相同逻辑现已
-  迁入 TorchTitanTurbo 的 opt-in 模块；三仓职责重构后的源码安装复验尚未完成，不能
-  把“已实现”误写成“新版本已验证”。
-- 本轮是跑通性 smoke，不替代 eager-vs-graph 的 5000-step precision、performance、
-  checkpoint 或 stability 验收。
+- 15/15 结果来自 TorchTitan `33270583`、Turbo `7343c9be` 加当时工作区兼容修复、
+  test `77f4e2eb` 的服务器实验。兼容实现现已归入 Turbo；当前 TorchTitan
+  `59899ade` 相对该基线只改了 GLM MFU 估算，未改模型计算。2026-08-28 又在当前三仓
+  heads 上完成了 deterministic cold-cache single 和正式 smoke single 定向复验；尚未
+  在当前 heads 上重跑完整 15 拓扑矩阵，因此历史矩阵与当前定向验证必须分开表述。
+- 正式 5000-step eager reference 的两个 repeat 已完成；旧 candidate 在 deterministic
+  pointwise autotune 前失败。Turbo 的 G020 兼容已通过两个 10-step 定向验证，但其余
+  candidate 和 `--compare --require-all` 尚未执行，因此当前图模式精度状态仍是
+  `BLOCKED/PENDING RESUME`，不是 PASS。
+- profiler-off 的 eager/Inductor 性能矩阵已完成 15 拓扑、两种模式、两个 repeat，共
+  60/60 次 30-step 运行。它排除 steps 1-10 后比较 steady-state，但运行节点存在 NPU
+  Alarm 和外部任务争用，所以只作为诊断证据，不能替代健康空闲节点上的正式性能验收。
 
-完整原始调试证据保留在 `tests/glm5_2_graph_debug/`；本文给出面向后续研发的统一
-结论、命令、修复归属和剩余问题。
+完整原始调试证据保留在 `tests/glm5_2_graph_debug/`；整理后的 smoke、精度、性能、
+失败历史与命令账本统一从
+[`tests/glm5_2_combination/experiments/index.md`](../glm5_2_combination/experiments/index.md)
+进入。本文给出面向后续研发的统一结论、命令、修复归属和剩余问题。
 
 ## 2. 从单卡到全部拓扑的跑通过程
 
@@ -110,18 +119,18 @@ tests/glm5_2_graph_debug/run_graph_mode.sh inductor precision \
 
 | 仓库 | 入口 | 职责 |
 |---|---|---|
-| `torchtitan-test` | [图模式使用入口](README.md)、[底层提单交接](LOWER_LAYER_ISSUE_HANDOFF.md)、[原始调试入口](../glm5_2_graph_debug/README.md)、[报告索引](../glm5_2_graph_debug/experiments/reports/index.md)、[失败历史](../glm5_2_graph_debug/experiments/reports/failures.md) | 组织 eager/graph、single/all 拓扑实验，保存日志和报告，记录完整调试证据并给出验收结论。 |
+| `torchtitan-test` | [图模式使用入口](README.md)、[组合实验档案](../glm5_2_combination/experiments/index.md)、[底层提单交接](LOWER_LAYER_ISSUE_HANDOFF.md)、[原始调试入口](../glm5_2_graph_debug/README.md)、[报告索引](../glm5_2_graph_debug/experiments/reports/index.md)、[失败历史](../glm5_2_graph_debug/experiments/reports/failures.md) | 组织 eager/graph、single/all 拓扑实验，保存日志和报告，记录完整调试证据并给出验收结论。 |
 | `TorchTitanTurbo` | [图模式 patch 说明](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/torchtitanturbo/tools/GRAPH_MODE.md)、[patch 清单](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/PATCHES.md)、`torchtitanturbo/tools/graph_compat.py` | 实现默认关闭的 Ascend 专用兼容 patch；说明触发变量、patch 对象和后端限制。 |
 | `torchtitan` | `torchtitan/distributed/compile.py` | 提供设备无关的 compile 配置和调用流程；不承载 CANN、HCCL、torch_npu 或 NPUGraph workaround。 |
 
-问题级原始证据使用 `G001` 至 `G019` 编号保留在失败历史中；下表是面向当前代码和
+问题级原始证据使用 `G001` 至 `G020` 编号保留在失败历史中；下表是面向当前代码和
 验收状态的汇总。后续修复一个问题时，应同时更新原始问题条目、本文状态以及对应仓库
 的实现说明。
 
 状态含义：
 
 - `已验证`：对应实现已在服务器目标环境和相关拓扑复验；
-- `已实现，待复验`：代码和隔离测试已完成，但三仓当前版本尚未完成服务器回归；
+- `已实现，待复验`：代码和隔离测试已完成，但三仓当前版本尚未完成对应全拓扑服务器回归；
 - `降级通过，未根治`：训练可通过，但依赖 fallback、skip 或受限配置；
 - `未根治`：后端根因仍存在，应用仓库没有可接受的最终修复。
 
@@ -140,9 +149,12 @@ tests/glm5_2_graph_debug/run_graph_mode.sh inductor precision \
 | EP 空 expert grouped-mm | 空组补零行、全空 bypass、显式 backward | Turbo；已实现，待三仓版本复验 |
 | 动态 pointwise grid=0 | 两类 NPU Triton autotuner launch 前 no-op | Turbo；已实现，待三仓版本复验 |
 | grouped-mm padding offsets 变为 INT64 | `cumsum` 显式保持 INT32 | Turbo；已实现，待三仓版本复验 |
+| optional NPUGraph capture mode 为空字符串 | 把空值解释为 unset，非法非空值仍拒绝 | Turbo；已验证 |
+| grouped-mm backward fake/real stride 不一致 | 在 `zeros_like(B_t)` 上原位 `index_add_`，保留转置 stride | Turbo；已验证，历史 Inductor 15/15 已使用该修复 |
+| deterministic pointwise autotune 未声明 vetted | 只对 `HeuristicType.POINTWISE` 传 vetted，reduction 继续禁止 | Turbo；G020 定向验证通过，完整精度矩阵待续跑 |
 | grouped-mm 无法 capture | AOT 兼容降级，replay skip | 后端限制；降级通过，未根治 |
 | TP `DeviceMesh` runtime input 被拒绝 | AOT 兼容降级，replay skip | graph tree 限制；降级通过，未根治 |
-| NPUGraph 降级模式下异步 queue 超时 | 兼容 profile 使用 queue 0，原生 capture 调试才使用 1 | test/Turbo；策略已验证，当前三仓集成待复验 |
+| NPUGraph 降级模式下异步 queue 超时 | 兼容 profile 使用 queue 0，原生 capture 调试才使用 1 | test/Turbo；历史全拓扑策略已验证，当前 heads 全拓扑待复验 |
 | checkpoint 残留耗尽 streams | token-scoped 进程组外 worker 清理 | test checkpoint；已验证 |
 | shell 脚本误交给 Python 编译检查 | shell 使用 `bash -n`，Python 文件使用 `py_compile` | test；已纠正，不属于后端问题 |
 
@@ -175,6 +187,9 @@ PY
    compile 与 diff whitespace 检查。
 7. 服务器同步后应先执行 env、single、一个 TP、一个 PP、一个 EP、最复杂组合，再
    执行 all；每次保留 runtime log、manifest 和 invocation report。
+8. smoke 后使用 `tests/glm5_2_combination/run_graph_precision_5000.sh` 续跑或重跑
+   deterministic candidate，并以 `compare --require-all` 作为唯一精度验收；不得用
+   `--performance-nondeterministic` 绕过精度约束。
 
 推荐复验顺序：
 
@@ -204,6 +219,12 @@ tests/glm5_2_graph_debug/run_graph_mode.sh npugraphs smoke
   语义，之后关闭 fallback 重跑 precision，不能仅以 smoke 成功验收。
 - 性能：当前 queue 0、compile thread 1 和 fallback 以稳定调试为目标，不能直接作为
   最优性能配置。
-- 完整交付：仍需执行 5000-step eager-vs-Inductor 精度、profiler-off 性能重复、
-  profiler-active 定位、checkpoint 与小时级 stability；NPUGraph 原生 replay 修复后
-  同样重跑。
+- 组合报告角色：数值 reference 固定为 single；同拓扑 eager-vs-graph 性能矩阵目前通过
+  两次 candidate capture 加离线汇总器配对。普通 combination HTML 的 single-reference/
+  distributed-candidate 时间比不能称为图加速。若要一次 capture/compare 同时得到正式
+  精度和同拓扑性能，需要后续把两端点 schema 扩展为 precision reference、performance
+  baseline、candidate 三个明确角色。
+- 完整交付：5000-step eager reference 已完成，但 Inductor candidate 与严格 compare
+  仍需续跑；现有 profiler-off 30-step 性能矩阵需在健康空闲节点复验，之后再执行
+  profiler-active 定位、checkpoint 与小时级 stability。NPUGraph native replay 修复后
+  同样重跑完整验收。

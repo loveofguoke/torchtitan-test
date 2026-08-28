@@ -66,6 +66,9 @@ changes. One reference capture is reused by every selected candidate topology.
 
 Performance metrics do not require Profiler. `--profiler-preset off` is the
 default and is appropriate for undisturbed step-time and throughput comparison.
+Profiler-off reports exclude the first 10 steps by default. Use
+`--performance-skip-steps` to change that boundary; the value is part of the
+experiment identity, so results with different warmup windows cannot collide.
 Select a preset explicitly when operator or communication diagnosis is needed:
 
 ```text
@@ -245,19 +248,72 @@ tests/glm5_2_graph_debug/run_graph_mode.sh inductor combination \
 | `--profile-skip-steps` | Steps skipped before scheduled profiling. | `10` |
 | `--profile-warmup-steps` | Profiler warmup steps. | `1` |
 | `--profile-active-steps` | Profiler active collection steps. | `3` |
+| `--performance-skip-steps` | Startup/compile steps excluded from profiler-off summaries. | `10` |
+| `--steps` | Identified exploration override for training length; minimum 10. | maintained config (`5000`) |
+| `--performance-nondeterministic` | Permit performance-only Inductor autotuning with deterministic algorithms disabled. | disabled |
 | `--data-device` | Generic fixture backend override (`cuda` or `npu`). The current NPU/NPU combined config uses `npu`. | inferred from the NPU visibility variable |
 | `--force` | Replace valid existing fixture/capture output. | disabled |
+| `--require-all` | Require all selected topology/repeat artifacts during compare. | disabled |
 
 Combination captures inherit the same audited lifecycle as precision and graph:
 attempt/generation/PID state is recorded, live runs cannot be overwritten, and
 forced execution prints and verifies deletion of every selected capture output
 and exact-name failed archive before any topology starts.
-| `--require-all` | Require all selected topology/repeat artifacts during compare. | disabled |
 
 The built-in combined profile uses 5000 steps, local batch 8, global batch 64,
 sequence length 128, seed 61, BF16 mixed precision, and two repeats. These
 values are defined in `combination_benchmark.py`; changing them defines a new
 maintained experiment rather than a one-off CLI override.
+
+For a bounded performance-only exploration, `--steps N` creates a separate
+fixture and experiment identity without changing the maintained 5000-step
+default. At least 10 steps are required, and the override is rejected for
+precision or mixed objectives. The common graph launcher enables Turbo's
+pointwise-only vetted-autotune compatibility, so deterministic Inductor is the
+current default for both performance and precision. The optional
+`--performance-nondeterministic` flag is retained only for diagnostic baselines
+and reproducing the 2026-08-26 performance matrix. It is rejected when the
+precision objective is present and is recorded as `nondet` in the storage name.
+Eager and graph endpoints in an A/B comparison must use the same setting.
+
+```bash
+COMMON_ARGS="--objectives performance --profiler-preset off --steps 30 --performance-skip-steps 10"
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor combination \
+  --capture candidate --topology fsdp8 \
+  --reference-graph eager --candidate-graph eager $COMMON_ARGS
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor combination \
+  --capture candidate --topology fsdp8 \
+  --reference-graph eager --candidate-graph inductor $COMMON_ARGS
+```
+
+Running graph candidates through the common launcher is required: it loads the
+paired Turbo compatibility profile, clean CANN environment, and isolated
+compiler cache. Direct Python invocation is appropriate only for CPU-side
+listing/report operations that do not import an NPU graph backend.
+
+The self-consistency reference remains single-card by design because it is the
+numerical baseline. It is not a same-topology performance baseline. Therefore
+an eager-vs-graph speedup matrix captures each selected topology twice through
+the candidate role, once with `candidate-graph=eager` and once with the graph
+backend, as in the commands above. Pair the two experiment roots with the
+tracked offline summarizer:
+
+```bash
+python tests/glm5_2_combination/experiments/tools/summarize_performance.py \
+  --eager-root combination_runs/<eager-experiment-id> \
+  --inductor-root combination_runs/<inductor-experiment-id> \
+  --artifact-root combination_artifacts \
+  --output-root tests/glm5_2_combination/experiments
+```
+
+The normal combined HTML's reference/candidate time ratio can compare a
+single-card numerical reference with a distributed candidate; do not call that
+ratio graph acceleration. The curated 2026-08-26 matrix follows the stricter
+same-topology pairing and is indexed from `experiments/index.md`. A future
+three-endpoint workflow may unify single-card precision reference,
+topology-matched eager performance baseline, and graph candidate in one CLI,
+but the current two-endpoint capture schema does not silently pretend those
+roles are the same.
 
 All capture and compare invocations for one experiment must repeat the same
 precision, objectives, graph modes, compiled components, compiler diagnostics,
@@ -310,7 +366,24 @@ and endpoint performance reports. Raw profiler/compiler output stays in
 `combination_runs`; portable metrics stay in `combination_artifacts`.
 
 `combination_runs` contains runtime logs, raw metrics, trainer output, and large
-Profiler data and is ignored by Git. Artifacts and reports are the portable
-deliverables. When endpoints are on different servers, synchronize the fixture
+Profiler data and is ignored by Git. Artifacts are compact transfer inputs but
+remain ignored; lightweight `combination_reports` are tracked by Git under the
+repository-wide output policy. When endpoints are on different servers, synchronize the fixture
 before capture and synchronize required artifacts plus Profiler-containing run
 directories before CPU-side comparison.
+
+## Maintained graph-precision entry point
+
+For the maintained 5000-step eager/graph precision matrix, use the wrapper below
+instead of repeating the four workflow stages manually:
+
+```bash
+bash tests/glm5_2_combination/run_graph_precision_5000.sh inductor all
+```
+
+It runs data preparation, eager reference capture, every selected Inductor
+candidate topology, and strict comparison in order. Set `TOPOLOGY` or `REPEAT`
+only for a focused retry; omitting both preserves the maintained all-topology,
+two-repeat contract. The complete command ledger, run status, smoke evidence,
+failure history, and acceptance report are indexed from
+[`experiments/index.md`](experiments/index.md).
