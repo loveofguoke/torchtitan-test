@@ -70,6 +70,9 @@ def install_gpu_shared_attention_layer_trace() -> None:
         cpu = local.detach().contiguous().cpu()
         raw = cpu.view(torch.uint8).numpy().tobytes()
         fp32 = cpu.float()
+        statistics = fp32
+        if name == "indexer_topk_margin":
+            statistics = fp32[torch.isfinite(fp32)]
         payload = {
             "step": selected_step,
             "name": name,
@@ -77,17 +80,17 @@ def install_gpu_shared_attention_layer_trace() -> None:
             "shape": list(cpu.shape),
             "dtype": str(cpu.dtype),
             "sha256": hashlib.sha256(raw).hexdigest(),
-            "mean": float(fp32.mean().item()),
-            "min": float(fp32.min().item()),
-            "max": float(fp32.max().item()),
-            "max_abs": float(fp32.abs().max().item()),
-            "l2": float(torch.linalg.vector_norm(fp32).item()),
+            "mean": float(statistics.mean().item()),
+            "min": float(statistics.min().item()),
+            "max": float(statistics.max().item()),
+            "max_abs": float(statistics.abs().max().item()),
+            "l2": float(torch.linalg.vector_norm(statistics).item()),
         }
         if not cpu.is_floating_point() or name in {
             "indexer_topk_boundary_values",
             "indexer_topk_margin",
         }:
-            payload["values"] = fp32.reshape(-1).tolist()
+            payload["values"] = statistics.reshape(-1).tolist()
         with lock, path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, sort_keys=True) + "\n")
 
@@ -239,9 +242,17 @@ def install_gpu_shared_attention_layer_trace() -> None:
                     ).values
                 )
                 if boundary_k > topk:
-                    indexer_topk_margin_Q = (
+                    raw_topk_margin_Q = (
                         indexer_topk_boundary_values_QB[..., topk - 1]
                         - indexer_topk_boundary_values_QB[..., topk]
+                    )
+                    valid_query_Q = (
+                        attention_masks[0] == 0
+                    ).sum(dim=-1) > topk
+                    indexer_topk_margin_Q = torch.where(
+                        valid_query_Q,
+                        raw_topk_margin_Q,
+                        torch.full_like(raw_topk_margin_Q, float("nan")),
                     )
                 else:
                     indexer_topk_margin_Q = torch.zeros(

@@ -251,3 +251,12 @@ This trace expands the Layer 1 indexer through Q/K projections, indexer RoPE,
 FP32 score matmuls, ReLU, weighted and masked scores, top-k values, indices,
 and the selected/unselected boundary margin. Integer index records include an
 elementwise mismatch count.
+
+When returning every indexer intermediate makes the mismatch disappear, run
+the controlled real-interface matrix. It compares the original indexer, an
+equivalent decomposition without a boundary, and one boundary after each of
+QK matmul, ReLU, weighted reduction, and mask addition:
+
+```bash
+GPU_DIAG_RUN_ID=h20-indexer-controls-v1 tests/glm5_2_graph/run_gpu_indexer_boundary_controls.sh
+```

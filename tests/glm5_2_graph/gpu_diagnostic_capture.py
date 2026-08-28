@@ -42,6 +42,13 @@ def main() -> None:
 
         install_gpu_silu_materialization()
 
+    if os.environ.get("GLM5_GPU_INDEXER_CONTROL_TRACE_PATH"):
+        from tests.glm5_2_graph.gpu_indexer_boundary_control import (
+            install_gpu_indexer_boundary_control,
+        )
+
+        install_gpu_indexer_boundary_control()
+
     if os.environ.get("GLM5_GPU_LAYER_BOUNDARY_TRACE_PATH"):
         from tests.glm5_2_graph.gpu_layer_boundary_trace import (
             install_gpu_layer_boundary_trace,

@@ -238,6 +238,8 @@ If Layer 1 is the first forward mismatch, use `moe attention-residual` to split
 its attention, router, routed experts, shared expert, and merge boundaries.
 If attention is first, use `attention1 attention-residual` to compare incoming
 DSA top-k indices and the detailed absorbed-attention path in Layer 1.
+If detailed tracing removes the mismatch, use
+`run_gpu_indexer_boundary_controls.sh` for a single-boundary indexer matrix.
 
 The reference remains single-card even when the candidate is FSDP8, TP8, or
 another distributed topology. Run `--capture reference` with at least one

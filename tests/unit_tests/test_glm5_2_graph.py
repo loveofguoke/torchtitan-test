@@ -20,6 +20,9 @@ from tests.glm5_2_graph.compare_gpu_attention_traces import (
     compare_attention_traces,
 )
 from tests.glm5_2_graph.compare_gpu_internal_traces import compare_internal_traces
+from tests.glm5_2_graph.compare_gpu_indexer_control_traces import (
+    compare_indexer_control_traces,
+)
 from tests.glm5_2_graph.compare_gpu_layer_boundary_traces import (
     compare_layer_boundary_traces,
 )
@@ -54,6 +57,9 @@ from tests.glm5_2_graph.gpu_internal_block_trace import (
 )
 from tests.glm5_2_graph.gpu_internal_trace_probe import (
     INTERNAL_TRACE_CONFIG as GPU_INTERNAL_TRACE_CONFIG,
+)
+from tests.glm5_2_graph.gpu_indexer_boundary_control import (
+    INDEXER_CONTROL_VARIANTS,
 )
 from tests.glm5_2_graph.gpu_moe_layer_trace import (
     MOE_STAGE_NAMES,
@@ -567,6 +573,44 @@ def test_gpu_shared_attention_trace_checks_incoming_and_effective_topk(
     assert first["stage"] == "q_norm"
     first_indexer = result["comparisons"][2]["first_indexer_divergence"]
     assert first_indexer["stage"] == "indexer_q_projection"
+
+
+def test_gpu_indexer_control_matrix_compares_effective_indices(
+    tmp_path: Path,
+) -> None:
+    assert INDEXER_CONTROL_VARIANTS == (
+        "original",
+        "decomposed-none",
+        "qk",
+        "relu",
+        "weighted",
+        "masked",
+    )
+
+    paths = {
+        name: tmp_path / f"{name}.jsonl"
+        for name in ("eager-r1", "eager-r2", "inductor-r1", "inductor-r2")
+    }
+    for name, path in paths.items():
+        changed = name.startswith("inductor")
+        values = [0.0, 1.0, 3.0 if changed else 2.0]
+        path.write_text(
+            json.dumps(
+                {
+                    "variant": "weighted",
+                    "sha256": "changed" if changed else "same",
+                    "values": values,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    result = compare_indexer_control_traces(paths)
+    assert result["variant"] == "weighted"
+    assert result["comparisons"][0]["exact"]
+    assert result["comparisons"][1]["exact"]
+    assert result["comparisons"][2]["value_mismatch_count"] == 1
 
 
 def test_gpu_silu_materialization_is_candidate_only_and_has_two_lengths() -> None:
