@@ -54,11 +54,14 @@ class CombinationSelection:
     reference_graph: GraphFeatureConfig
     candidate_graph: GraphFeatureConfig
     profiler: ProfilerFeatureConfig | None
+    performance_skip_steps: int = 10
 
     def __post_init__(self) -> None:
         unknown = self.objectives - {"precision", "performance"}
         if unknown or not self.objectives:
             raise ValueError(f"invalid combination objectives: {sorted(unknown)}")
+        if self.performance_skip_steps < 0:
+            raise ValueError("performance skip steps must be non-negative")
 
 
 def _combination_storage_base(
@@ -82,11 +85,13 @@ def _combination_storage_base(
     checkpoint = (
         "random" if config.training.checkpoint_kind == "random_seed" else "converged"
     )
+    determinism = "det" if config.training.deterministic else "nondet"
     return (
         f"{experiment}-{precision}-{checkpoint}-s{config.training.steps}-"
         f"b{config.training.global_batch_size}-seq{config.training.sequence_length}-"
         f"seed{config.training.seed}-{selection.reference_graph.mode}-"
-        f"{selection.candidate_graph.mode}-{objective}-{profiler}"
+        f"{selection.candidate_graph.mode}-{objective}-{profiler}-"
+        f"skip{selection.performance_skip_steps}-{determinism}"
     )
 
 
@@ -176,6 +181,15 @@ def _metric_median(analysis: dict, fragment: str) -> float | None:
     return None
 
 
+def _performance_median(analysis: dict) -> float | None:
+    phase_median = analysis.get("profile_phases", {}).get("comparison", {}).get(
+        "baseline_median_step_seconds"
+    )
+    if phase_median is not None:
+        return float(phase_median)
+    return _metric_median(analysis, "end_to_end")
+
+
 def _relative_link(path: Path, root: Path) -> str:
     return html.escape(path.relative_to(root).as_posix())
 
@@ -215,28 +229,41 @@ def _performance_report(
     )
     render_mindstudio_flamegraphs(profiler_directory)
     render_flamegraphs(profiler_directory)
-    analysis = build_analysis(run_directory, metrics_path=metrics_path)
     profiler = selection.profiler
     run_name = f"{role}-{endpoint.device_type}-{endpoint.topology.slug}-r{repeat}"
+    analysis_config = {
+        "steps": config.training.steps,
+        "local_batch_size": config.training.local_batch_size,
+        "global_batch_size": config.training.global_batch_size,
+        "sequence_length": config.training.sequence_length,
+        "topology": endpoint.topology.name,
+        "profiler_enabled": profiler is not None,
+        "skip_steps": (
+            profiler.skip_steps
+            if profiler is not None
+            else selection.performance_skip_steps
+        ),
+        "warmup_steps": profiler.warmup_steps if profiler is not None else 0,
+        "active_steps": profiler.active_steps if profiler is not None else 0,
+        "extra_args": list(endpoint.extra_args),
+        "environment": endpoint.environment,
+    }
+    profiler_environment = (
+        profiler.preset.environment() if profiler is not None else {}
+    )
+    analysis = build_analysis(
+        run_directory,
+        metrics_path=metrics_path,
+        config=analysis_config,
+        profiler_environment=profiler_environment,
+    )
     manifest = {
         "run_name": run_name,
         "device": endpoint.device_type,
         "topology": endpoint.topology.name,
         "preset": profiler.preset.name if profiler is not None else "off",
-        "config": {
-            "steps": config.training.steps,
-            "local_batch_size": config.training.local_batch_size,
-            "global_batch_size": config.training.global_batch_size,
-            "sequence_length": config.training.sequence_length,
-            "skip_steps": profiler.skip_steps if profiler is not None else 0,
-            "warmup_steps": profiler.warmup_steps if profiler is not None else 0,
-            "active_steps": profiler.active_steps if profiler is not None else 0,
-            "extra_args": list(endpoint.extra_args),
-            "environment": endpoint.environment,
-        },
-        "profiler_environment": (
-            profiler.preset.environment() if profiler is not None else {}
-        ),
+        "config": analysis_config,
+        "profiler_environment": profiler_environment,
         "preflight": {},
     }
     output = (
@@ -248,7 +275,7 @@ def _performance_report(
         / f"{run_name}-performance.html"
     )
     render_html_report(manifest=manifest, analysis=analysis, output_path=output)
-    return output, _metric_median(analysis, "end_to_end")
+    return output, _performance_median(analysis)
 
 
 def _write_combination_report(
@@ -472,6 +499,25 @@ def run_combination_cli(
     parser.add_argument("--profile-skip-steps", type=int, default=10)
     parser.add_argument("--profile-warmup-steps", type=int, default=1)
     parser.add_argument("--profile-active-steps", type=int, default=3)
+    parser.add_argument(
+        "--performance-skip-steps",
+        type=int,
+        default=10,
+        help="exclude startup/compile steps from profiler-off performance summaries",
+    )
+    parser.add_argument(
+        "--steps",
+        type=int,
+        help="override the maintained training length for an identified exploration",
+    )
+    parser.add_argument(
+        "--performance-nondeterministic",
+        action="store_true",
+        help=(
+            "disable deterministic algorithms for performance-only Inductor "
+            "autotuning; forbidden when precision is selected"
+        ),
+    )
     parser.add_argument("--data-device", choices=("cuda", "npu"))
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--require-all", action="store_true")
@@ -493,6 +539,12 @@ def run_combination_cli(
     objectives = frozenset(
         value.strip() for value in args.objectives.split(",") if value.strip()
     )
+    if args.performance_nondeterministic:
+        if objectives != {"performance"}:
+            raise ValueError(
+                "--performance-nondeterministic requires performance-only objectives"
+            )
+        base = replace(base, training=replace(base.training, deterministic=False))
     components = ("model", "loss") if args.compile_loss else ("model",)
     profiler = (
         ProfilerFeatureConfig(
@@ -513,7 +565,22 @@ def run_combination_cli(
             args.candidate_graph, components, args.compiler_diagnostics
         ),
         profiler=profiler,
+        performance_skip_steps=args.performance_skip_steps,
     )
+    if args.steps is not None:
+        if objectives != {"performance"}:
+            raise ValueError("--steps requires performance-only objectives")
+        if args.steps < 10:
+            raise ValueError("performance experiments require at least 10 steps")
+        base = replace(base, training=replace(base.training, steps=args.steps))
+    if (
+        "performance" in objectives
+        and profiler is None
+        and args.performance_skip_steps >= base.training.steps
+    ):
+        raise ValueError(
+            "performance skip steps must leave at least one measured step"
+        )
     if profiler is not None and base.training.steps < (
         profiler.skip_steps + profiler.warmup_steps + profiler.active_steps
     ):

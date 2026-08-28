@@ -530,7 +530,8 @@ needs a separately defined shared-storage and launcher contract first.
   capture contains `manifest.json`, normalized `metrics.jsonl`,
   `training_contract.json`, and a compact validated input-contract summary;
 - `precision_reports/`: a self-contained HTML report and machine-readable JSON
-  summary; it is generated locally and ignored by Git.
+  summary; lightweight report outputs are tracked by Git under the repository-wide
+  output policy.
 
 Directory names omit the model name and redundant endpoint labels. For example:
 `migration-cuda-npu-single-bf16-random-s5000-b64-seq128-seed61/candidate-r1`.

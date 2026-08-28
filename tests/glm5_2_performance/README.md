@@ -261,7 +261,9 @@ performance_reports/suites/<experiment>-<device>-all-presets-suite.html
 The second form indexes the full `topology x preset` matrix. There is no shared
 raw directory whose files mix different acquisition policies.
 
-All generated performance roots are ignored by Git. For local analysis, the
+Heavy `performance_runs`, compact `performance_artifacts`, and dynamic scratch
+outputs are ignored by Git; lightweight `performance_reports` are tracked for
+review under the repository-wide output policy. For release transfer, the
 following command includes HTML reports, compact artifacts, flame graphs,
 memory timelines, TensorBoard, parsed Ascend outputs, advisor/cluster/compare
 results, and graph visualization while excluding raw collection trees:

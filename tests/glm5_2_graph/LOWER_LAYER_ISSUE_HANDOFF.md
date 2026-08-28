@@ -44,6 +44,7 @@ triton-ascend 3.2.1。Python 包基准目录为：
 | G016 | NPUGraph replay 全局 skip | torch_npu graph-tree runtime input contract，或 PyTorch AOT/DTensor 输入封装 | 已定位到抛错点 | `TORCHTITAN_NPUGRAPH_SKIP_ALL` |
 | G013/G015 | 空组 padding、全空 bypass、INT32 offsets | op-plugin grouped-mm empty contract；CANN `aclnnGroupedMatmulV4/V5` | 已定位到调用边界 | `TORCHTITAN_SAFE_EMPTY_GROUPED_MM` |
 | G014 | runtime launch 前检查 `*numel==0` | torch_npu Inductor autotuner/grid policy | 已定位 | `TORCHTITAN_SAFE_ZERO_NUMEL_TRITON` |
+| G020 | 仅将 pointwise Triton benchmark 标记为 vetted | torch_npu `NPUCachingAutotuner._bench_with_launch_args` 与 PyTorch deterministic benchmarking contract | 已定位 | `TORCHTITAN_VETTED_POINTWISE_AUTOTUNE` |
 | G008 | 运行时注册 `aten.complex` strategy | PyTorch DTensor pointwise operator registration | 已定位 | `TORCHTITAN_REGISTER_COMPLEX_DTENSOR_STRATEGY` |
 | G009 | PP metadata 使用 `use_batch=False` | PyTorch PipelineStage object P2P ↔ ProcessGroupHCCL batched P2P | 高置信候选 | `TORCHTITAN_PIPELINE_META_USE_BATCH=0` |
 
@@ -283,7 +284,65 @@ mask；否则 runtime 直接跳过仅适用于确认无输出副作用的非 red
 空输入 reduction、dynamic shape 0↔非0 多次切换，以及 EP 真实零 token step。通过后关闭
 `TORCHTITAN_SAFE_ZERO_NUMEL_TRITON`。
 
-## 10. G008：`aten.complex` 缺 DTensor strategy
+## 10. G020：确定性 pointwise autotune 未声明 vetted
+
+### 10.1 已确认调用链
+
+正式 5000-step eager/Inductor 精度任务开启 PyTorch deterministic algorithms。eager
+reference 的两个 repeat 均完成 5000 steps；single Inductor candidate 在首次 pointwise
+Triton autotune 时失败。直接证据：
+
+```text
+graph_debug_runs/precision-5000-20260826/
+  launcher-combination-inductor-20260826-211631-1096193/reports/report.md
+combination_runs/self-npu-bf16-random-s5000-b64-seq128-seed61-eager-inductor-
+  precision-no-prof-skip10-det-447d3961/single/single-r1/runtime.log
+```
+
+已安装环境的调用链为：
+
+- `torch_npu/_inductor/runtime/triton_heuristics.py::NPUCachingAutotuner.bench`
+  （约 1454 行）进入 `::_bench_with_launch_args`；
+- `::_bench_with_launch_args`（约 1461-1477 行）调用
+  `benchmarker.benchmark_gpu(kernel_call, rep=1, device_type="npu")`，没有传
+  `is_vetted_benchmarking=True`；
+- PyTorch `torch/_inductor/runtime/benchmarking.py::benchmark_gpu`（约 536 行）因此调用
+  `may_ban_benchmarking()`，在 deterministic mode 抛错；
+- 同一 torch_npu 文件的 `_should_skip_autotune_for_determinism` 已区分 pointwise 与
+  reduction：pointwise config 只改变性能，不改变计算顺序，而 reduction/persistent
+  reduction 可能改变数值顺序。
+
+PyTorch 自己的 Triton autotuner 在其已审查的 pointwise benchmark 调用处会传
+`is_vetted_benchmarking=True`。因此该问题不是 CANN 9.1 安装错误，也不是关闭
+deterministic 就能满足的正式精度问题，而是 torch_npu 调用 PyTorch benchmarking API
+时缺少相同的安全分类。
+
+### 10.2 当前兼容与真正根治
+
+Turbo 的 opt-in `_install_vetted_pointwise_autotune()` 只在
+`HeuristicType.POINTWISE` 时传 `is_vetted_benchmarking=True`；reduction 仍传 false，继续
+受 PyTorch deterministic guard 保护。安装 patch 前还校验私有函数签名，避免 torch_npu
+升级后静默套用旧实现。common 通过
+`GRAPH_VETTED_POINTWISE_AUTOTUNE=1` 启用。
+
+真正修复应提交到：
+
+```text
+torch_npu/_inductor/runtime/triton_heuristics.py
+  NPUCachingAutotuner._bench_with_launch_args
+  NPUCachingAutotuner._should_skip_autotune_for_determinism
+```
+
+建议 torch_npu 复用 `_should_skip_autotune_for_determinism` 的分类结果，或将明确的
+pointwise heuristic 传给 `benchmark_gpu(..., is_vetted_benchmarking=True)`；不能把所有
+autotune 一律声明 vetted。底层测试至少覆盖 pointwise 允许、reduction 禁止，以及启用
+deterministic 后重复运行得到相同输出。
+
+验收必须用冷 cache、关闭 `TORCHTITAN_VETTED_POINTWISE_AUTOTUNE`，先完成 deterministic
+single candidate，再恢复 15 topology、两个 repeat 的 5000-step `--compare
+--require-all`。`--performance-nondeterministic` 只适用于性能探索，不能作为精度验收绕过。
+
+## 11. G008：`aten.complex` 缺 DTensor strategy
 
 已安装 PyTorch 的注册位置是：
 
@@ -300,9 +359,9 @@ mask；否则 runtime 直接跳过仅适用于确认无输出副作用的非 red
 Shard、broadcast、uneven shard 与 complex dtype 输出。验收是在不运行 Turbo 注册 patch
 时 TP8 compile 成功，且 PyTorch DTensor 单测覆盖该 op。
 
-## 11. G009：PipelineStage batched metadata P2P
+## 12. G009：PipelineStage batched metadata P2P
 
-### 11.1 调用边界
+### 12.1 调用边界
 
 PP8 初始化出现 `Tried to allocate more than 1EB`，随后 `EOFError`，说明 serialized
 object size/header 已损坏，并非正常模型 HBM OOM：
@@ -317,7 +376,7 @@ object size/header 已损坏，并非正常模型 HBM OOM：
 P2P 不变。它证明非 batched 路径可用，但还不能仅凭此认定 bug 一定在
 ProcessGroupHCCL；也可能是 PyTorch batched object 协议与该 backend capability 不匹配。
 
-### 11.2 分界与根治
+### 12.2 分界与根治
 
 - 用 2 rank 只发送一个含 shape/dtype 的 object，分别比较 `use_batch=False/True`；
 - 分别记录长度 tensor、payload bytes、src/dst global rank、group-local rank 和 P2P op
@@ -330,7 +389,7 @@ ProcessGroupHCCL；也可能是 PyTorch batched object 协议与该 backend capa
 验收为 `TORCHTITAN_PIPELINE_META_USE_BATCH=1` 的 PP8 多轮冷启动，无 1EB/EOF，metadata
 一致且训练 activation/gradient 路径无回归。
 
-## 12. G004-G006/G010/G012/G017：运行环境和调试 profile 问题
+## 13. G004-G006/G010/G012/G017：运行环境和调试 profile 问题
 
 这些问题必须记录，但目前没有证据支持把它们全部作为 torch_npu/CANN 代码缺陷提单：
 
@@ -348,7 +407,7 @@ ProcessGroupHCCL；也可能是 PyTorch batched object 协议与该 backend capa
 这类配置的验收重点是“默认值不覆盖显式用户选择、报告能打印最终有效值、并发运行互不
 污染”。它们不应被偷偷硬编码进 device-neutral TorchTitan。
 
-## 13. 提单模板
+## 14. 提单模板
 
 每个底层问题单独提单，不把 reduction、collective、NPUGraph、grouped-mm 混成一个单。
 建议固定包含：
@@ -374,7 +433,7 @@ ProcessGroupHCCL；也可能是 PyTorch batched object 协议与该 backend capa
 附件。涉及数值问题时同时保存 eager 与 compiled tensor 摘要、首个不一致 index 和误差，
 不能只附最终 loss。
 
-## 14. 根治完成定义
+## 15. 根治完成定义
 
 某问题只有同时满足以下条件，才可从“降级通过/待复验”改成“根治”：
 
