@@ -15,6 +15,18 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from tests.glm5_2_common.cli import (
+    RunAttempt,
+    archive_previous_output,
+    assert_run_not_active,
+    reset_output_generation,
+)
+from tests.glm5_2_parity.contracts import (
+    GLM5_PARITY_CAPTURE_SUITE,
+    GLM5_PARITY_FIXTURE_SUITE,
+    GLM5_PARITY_SUITE_VERSION,
+)
+
 
 TEST_TARGET = (
     "tests/unit_tests/test_glm5_parity.py::"
@@ -68,7 +80,6 @@ class CommonParityConfig:
     component_execution: str = "independent"
     hf_routed_expert_compute: str = "model"
     titan_routed_expert_compute: str = "model"
-    allow_dirty: bool = False
     model: ParityModelConfig = field(default_factory=ParityModelConfig)
     report_root: str = "parity_reports"
     log_root: str = "parity_reports/logs"
@@ -134,6 +145,110 @@ def _path(root: Path, configured_root: str, *parts: str) -> Path:
     return base.joinpath(*parts)
 
 
+def _file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _completed_artifact_manifest(path: Path) -> dict[str, Any] | None:
+    """Read a complete parity artifact without importing the tensor runtime."""
+
+    manifest_path = path / "manifest.json"
+    complete_path = path / "complete.json"
+    if not manifest_path.is_file() or not complete_path.is_file():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        complete = json.loads(complete_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return None
+    if complete.get("manifest_sha256") != _file_digest(manifest_path):
+        return None
+    return manifest
+
+
+def _artifact_matches_scenario(
+    path: Path,
+    *,
+    suite: str,
+    scenario_config_digest: str,
+    fixture_digest: str | None = None,
+) -> bool:
+    manifest = _completed_artifact_manifest(path)
+    if manifest is None or manifest.get("status") != "success":
+        return False
+    if manifest.get("suite") != suite:
+        return False
+    if manifest.get("suite_version") != GLM5_PARITY_SUITE_VERSION:
+        return False
+    configuration = manifest.get("configuration", {})
+    if configuration.get("scenario_config_digest") != scenario_config_digest:
+        return False
+    return (
+        fixture_digest is None
+        or manifest.get("fixture_digest") == fixture_digest
+    )
+
+
+def _fixture_digest(path: Path) -> str | None:
+    manifest = _completed_artifact_manifest(path)
+    if manifest is None:
+        return None
+    value = manifest.get("fixture_digest")
+    return value if isinstance(value, str) and value else None
+
+
+def _state_name(stage: str) -> str:
+    return f"{stage}_state.json"
+
+
+def _run_parity_stage(
+    *,
+    root: Path,
+    environment: dict[str, str],
+    log_path: Path,
+    stage: str,
+    scenario_id: str,
+    scenario_config_digest: str,
+    expected_output: Path,
+) -> None:
+    state_name = _state_name(stage)
+    attempt = RunAttempt.start(
+        log_path.parent,
+        kind="parity",
+        context={
+            "stage": stage,
+            "scenario_id": scenario_id,
+            "scenario_config_digest": scenario_config_digest,
+            "output": str(expected_output),
+        },
+        state_name=state_name,
+    )
+    try:
+        _run_test(root=root, environment=environment, log_path=log_path)
+    except BaseException as error:
+        attempt.update("failed", error=repr(error))
+        raise
+    if not expected_output.exists():
+        error = RuntimeError(
+            f"parity stage {stage!r} did not create {expected_output}"
+        )
+        attempt.update("failed", error=repr(error))
+        raise error
+    attempt.update("completed")
+
+
+def _assert_parity_states_not_active(log_directory: Path) -> None:
+    for stage in ("data", "actual_capture", "expected_capture", "compare", "run"):
+        assert_run_not_active(
+            log_directory,
+            state_name=_state_name(stage),
+        )
+
+
 def _common_environment(
     config: CommonParityConfig,
     scenario_id: str,
@@ -169,7 +284,6 @@ def _common_environment(
             "GLM5_PARITY_TITAN_ROUTED_EXPERT_COMPUTE": (
                 config.titan_routed_expert_compute
             ),
-            "GLM5_PARITY_ALLOW_DIRTY": "1" if config.allow_dirty else "0",
         }
     )
     environment.update(config.model.environment())
@@ -299,6 +413,14 @@ def run_offline_cli(
         dest="stage",
         const="print_config",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "start a new generation for the selected stage; forcing data "
+            "removes every dependent capture and report"
+        ),
+    )
     arguments = parser.parse_args()
 
     root = _repo_root()
@@ -344,22 +466,146 @@ def run_offline_cli(
         _print_configuration(config, scenario_id, paths)
         return
 
+    scenario_config_digest = _config_digest(config, scenario_id)
+    log_directory = log.parent
+    if arguments.force:
+        _assert_parity_states_not_active(log_directory)
+        if arguments.stage == "data":
+            reset_output_generation(
+                (
+                    fixture.parent,
+                    actual_artifact.parent,
+                    report.parent,
+                    log_directory,
+                ),
+                label="parity scenario",
+            )
+        else:
+            selected_outputs: list[Path] = [
+                log,
+                log_directory / _state_name(arguments.stage),
+            ]
+            if arguments.stage == "actual_capture":
+                selected_outputs.extend((actual_artifact, report))
+            elif arguments.stage == "expected_capture":
+                selected_outputs.extend((expected_artifact, report))
+            else:
+                selected_outputs.append(report)
+            reset_output_generation(
+                selected_outputs,
+                label=f"parity {arguments.stage}",
+            )
+
     environment = _common_environment(config, scenario_id)
     environment["GLM5_PARITY_FIXTURE"] = str(fixture)
     environment["GLM5_PARITY_RUN_ID"] = f"{scenario_id}-{arguments.stage}"
     if arguments.stage == "data":
+        if fixture.exists() and not arguments.force:
+            if _artifact_matches_scenario(
+                fixture,
+                suite=GLM5_PARITY_FIXTURE_SUITE,
+                scenario_config_digest=scenario_config_digest,
+            ):
+                print(f"Skip completed parity fixture: {fixture}")
+                return
+            fixture_manifest = _completed_artifact_manifest(fixture)
+            if (
+                fixture_manifest is not None
+                and fixture_manifest.get("status") == "success"
+            ):
+                raise FileExistsError(
+                    "parity fixture belongs to a different configuration or "
+                    f"suite version; pass --force to replace it: {fixture}"
+                )
+            dependent_outputs = [
+                path
+                for path in (actual_artifact, expected_artifact, report)
+                if path.exists()
+            ]
+            if dependent_outputs:
+                raise RuntimeError(
+                    "incomplete fixture has dependent outputs; pass --force "
+                    "to reset the complete parity generation: "
+                    + ", ".join(str(path) for path in dependent_outputs)
+                )
+            archived = archive_previous_output(fixture)
+            print(f"Retry incomplete parity fixture; archived: {archived}")
         environment["GLM5_PARITY_MODE"] = "prepare"
     elif arguments.stage == "actual_capture":
-        if not fixture.is_dir():
+        fixture_value = _fixture_digest(fixture)
+        if not fixture.is_dir() or fixture_value is None:
             raise FileNotFoundError(f"fixture not found: {fixture}")
+        if not _artifact_matches_scenario(
+            fixture,
+            suite=GLM5_PARITY_FIXTURE_SUITE,
+            scenario_config_digest=scenario_config_digest,
+        ):
+            raise RuntimeError(
+                "fixture configuration or suite version does not match this "
+                f"scenario: {fixture}"
+            )
+        if actual_artifact.exists() and not arguments.force:
+            if _artifact_matches_scenario(
+                actual_artifact,
+                suite=GLM5_PARITY_CAPTURE_SUITE,
+                scenario_config_digest=scenario_config_digest,
+                fixture_digest=fixture_value,
+            ):
+                print(f"Skip completed parity capture: {actual_artifact}")
+                return
+            actual_manifest = _completed_artifact_manifest(actual_artifact)
+            if (
+                actual_manifest is not None
+                and actual_manifest.get("status") == "success"
+            ):
+                raise FileExistsError(
+                    "actual capture belongs to a different fixture, "
+                    "configuration, or suite version; pass --force to replace "
+                    f"it: {actual_artifact}"
+                )
+            archived = archive_previous_output(actual_artifact)
+            print(f"Retry incomplete actual capture; archived: {archived}")
+            archive_previous_output(report)
         _configure_capture_environment(
             environment,
             config.actual,
             actual_artifact,
         )
     elif arguments.stage == "expected_capture":
-        if not fixture.is_dir():
+        fixture_value = _fixture_digest(fixture)
+        if not fixture.is_dir() or fixture_value is None:
             raise FileNotFoundError(f"fixture not found: {fixture}")
+        if not _artifact_matches_scenario(
+            fixture,
+            suite=GLM5_PARITY_FIXTURE_SUITE,
+            scenario_config_digest=scenario_config_digest,
+        ):
+            raise RuntimeError(
+                "fixture configuration or suite version does not match this "
+                f"scenario: {fixture}"
+            )
+        if expected_artifact.exists() and not arguments.force:
+            if _artifact_matches_scenario(
+                expected_artifact,
+                suite=GLM5_PARITY_CAPTURE_SUITE,
+                scenario_config_digest=scenario_config_digest,
+                fixture_digest=fixture_value,
+            ):
+                print(f"Skip completed parity capture: {expected_artifact}")
+                return
+            expected_manifest = _completed_artifact_manifest(expected_artifact)
+            if (
+                expected_manifest is not None
+                and expected_manifest.get("status") == "success"
+            ):
+                raise FileExistsError(
+                    "expected capture belongs to a different fixture, "
+                    "configuration, or suite version; pass --force to replace "
+                    f"it: {expected_artifact}"
+                )
+            archived = archive_previous_output(expected_artifact)
+            print(f"Retry incomplete expected capture; archived: {archived}")
+            archive_previous_output(report)
         _configure_capture_environment(
             environment,
             config.expected,
@@ -385,7 +631,21 @@ def run_offline_cli(
             }
         )
     _print_configuration(config, scenario_id, paths)
-    _run_test(root=root, environment=environment, log_path=log)
+    expected_output = {
+        "data": fixture,
+        "actual_capture": actual_artifact,
+        "expected_capture": expected_artifact,
+        "compare": report,
+    }[arguments.stage]
+    _run_parity_stage(
+        root=root,
+        environment=environment,
+        log_path=log,
+        stage=arguments.stage,
+        scenario_id=scenario_id,
+        scenario_config_digest=scenario_config_digest,
+        expected_output=expected_output,
+    )
 
 
 def run_paired_cli(
@@ -402,6 +662,11 @@ def run_paired_cli(
         action="store_const",
         dest="stage",
         const="print_config",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="remove the previous paired report and log before rerunning",
     )
     arguments = parser.parse_args()
 
@@ -424,6 +689,14 @@ def run_paired_cli(
         _print_configuration(config, scenario_id, paths)
         return
 
+    scenario_config_digest = _config_digest(config, scenario_id)
+    if arguments.force:
+        assert_run_not_active(log.parent, state_name=_state_name("run"))
+        reset_output_generation(
+            (report, log, log.parent / _state_name("run")),
+            label="paired parity",
+        )
+
     report.parent.mkdir(parents=True, exist_ok=True)
     environment = _common_environment(config, scenario_id)
     environment.update(
@@ -442,4 +715,12 @@ def run_paired_cli(
         environment["ASCEND_RT_VISIBLE_DEVICES"] = config.visible_device
         environment["CUDA_VISIBLE_DEVICES"] = ""
     _print_configuration(config, scenario_id, paths)
-    _run_test(root=root, environment=environment, log_path=log)
+    _run_parity_stage(
+        root=root,
+        environment=environment,
+        log_path=log,
+        stage="run",
+        scenario_id=scenario_id,
+        scenario_config_digest=scenario_config_digest,
+        expected_output=report,
+    )

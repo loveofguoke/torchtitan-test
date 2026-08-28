@@ -43,7 +43,6 @@ CONFIG = OfflineParityConfig(
     components="all",
     component_execution="independent",
     titan_routed_expert_compute="model",
-    allow_dirty=False,
     model=ParityModelConfig(
         # Match TorchTitan's glm5_debugmodel; previous parity values are kept
         # beside each setting so the larger profile can be restored easily.

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import shutil
 import subprocess
 import sys
@@ -43,6 +44,13 @@ EXPERIMENT_ROOTS = (
     "smoke_runs",
     "train_runs",
 )
+EXPERIMENT_BOUNDARY_FILES = {
+    "capture_state.json",
+    "complete.json",
+    "fixture.json",
+    "manifest.json",
+    "run_state.json",
+}
 
 
 def run_gh(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -103,16 +111,38 @@ def find_experiment_paths(repository_root: Path, experiment: str) -> list[Path]:
     paths: list[Path] = []
     for root in EXPERIMENT_ROOTS:
         experiment_root = repository_root / root
-        exact = experiment_root / experiment
-        if exact.exists():
-            paths.append(exact)
-        if experiment_root.is_dir():
-            paths.extend(
-                path
-                for path in experiment_root.iterdir()
-                if path.is_file() and path.stem == experiment
-            )
+        if not experiment_root.is_dir():
+            continue
+        # Performance and graph outputs are scoped by card count, topology,
+        # backend, or action before the experiment name. Walk standard roots
+        # recursively, but stop below a matched experiment directory so raw
+        # profiler traces are never traversed just to rediscover descendants.
+        for directory, child_names, file_names in os.walk(experiment_root):
+            current = Path(directory)
+            if current.name == experiment:
+                paths.append(current)
+                child_names.clear()
+                continue
+            for file_name in file_names:
+                candidate = current / file_name
+                if candidate.stem == experiment:
+                    paths.append(candidate)
+            # A manifest/state-bearing directory is one experiment output.
+            # Experiment outputs never contain another experiment, while raw
+            # profiler trees can contain millions of descendants.
+            if EXPERIMENT_BOUNDARY_FILES.intersection(file_names):
+                child_names.clear()
     paths = list(dict.fromkeys(paths))
+    # A matched directory already includes every descendant. Avoid adding a
+    # same-named report or file below it to the archive a second time.
+    paths = [
+        path
+        for path in paths
+        if not any(
+            parent != path and parent.is_dir() and path.is_relative_to(parent)
+            for parent in paths
+        )
+    ]
     if not paths:
         roots = ", ".join(EXPERIMENT_ROOTS)
         raise FileNotFoundError(

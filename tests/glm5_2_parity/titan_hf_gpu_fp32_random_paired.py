@@ -30,7 +30,6 @@ CONFIG = PairedParityConfig(
     component_execution="independent",
     hf_routed_expert_compute="model",
     titan_routed_expert_compute="fp32",
-    allow_dirty=False,
     model=ParityModelConfig(
         vocab_size=154880,
         dim=2048,

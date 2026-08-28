@@ -42,7 +42,6 @@ CONFIG = OfflineParityConfig(
     components="all",
     component_execution="independent",
     titan_routed_expert_compute="fp32",
-    allow_dirty=False,
     model=ParityModelConfig(
         vocab_size=154880,
         dim=2048,

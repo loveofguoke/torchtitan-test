@@ -29,6 +29,7 @@ Offline scenario files expose one required stage at a time:
 | endpoint alias | Scenario-generated alias such as `--npu-capture`, `--gpu-capture`, `--titan-gpu-capture`, or `--hf-gpu-capture`; equivalent to its actual/expected stage. | scenario-dependent |
 | `--compare` | Compare the two complete artifacts on CPU and render the HTML report. | no stage; one stage is required |
 | `--print-config` | Print the effective scenario, digests, and resolved fixture/artifact/report paths without running pytest. | no stage; one stage is required |
+| `--force` | Start a new generation for the selected stage. With `--data`, remove the fixture and every dependent capture/report/log first; with capture or compare, remove only that stage and stale report output. | disabled |
 
 Paired scenarios expose `--run` and `--print-config`; `--run` constructs both
 endpoints in one process and immediately reports. There are intentionally no
@@ -38,9 +39,14 @@ block so its filename and configuration digest identify one reproducible
 experiment. The current scenario values are therefore the defaults and the
 only values for that file.
 
-Offline stages have no `--force` option: fixtures and completed artifacts are
-immutable. Choose a new scenario filename/configuration or deliberately remove
-the exact failed/obsolete output before rerunning it.
+Parity follows the same generation-safe rerun contract as the formal suites.
+Use `--force` once to start a new selected generation. If that command is
+interrupted, rerun the same stage without `--force`: a complete fixture or
+capture is skipped, while an incomplete/failed output is archived and retried.
+Forcing `--data` removes both captures and the report before regenerating the
+fixture, so old and new generations cannot be mixed. Captures additionally
+validate the exact fixture digest, test plan, scenario configuration, and suite
+version. Source commits and dirty-worktree metadata remain diagnostic only.
 
 Artifacts contain a versioned JSON manifest, exact fixture tensors, module
 activation and gradient traces, discrete routing selections, logits, loss,
@@ -206,12 +212,17 @@ scenario configuration and exact fixture contents remain identical.
 
 ## Framework self-check
 
-`tests/unit_tests/test_glm5_2_parity_artifacts.py` is not part of capture or
-compare execution. It is a fast CPU regression suite for the artifact protocol:
+The reusable harness lives in `tests/glm5_2_parity/suite.py`; the historical
+`tests/unit_tests/test_glm5_parity.py` module is now only the stable pytest
+discovery and compatibility entry. The CPU regressions are not part of capture
+or compare execution. They cover the artifact protocol and lifecycle:
 dtype-preserving round trips, checksums, incomplete or failed runs, configuration
 and fixture mismatch rejection, offline tensor comparison, the report contents
-links, and the default model-size budget. Run it after changing the framework:
+links, default model-size budget, forced generation reset, completed-stage skip,
+and failed-stage retry. Run them after changing the framework:
 
 ```bash
-python -m pytest tests/unit_tests/test_glm5_2_parity_artifacts.py -q
+python -m pytest \
+  tests/unit_tests/test_glm5_2_parity_artifacts.py \
+  tests/unit_tests/test_glm5_2_parity_workflow.py -q
 ```

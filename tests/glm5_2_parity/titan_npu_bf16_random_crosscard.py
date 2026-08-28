@@ -45,7 +45,6 @@ CONFIG = OfflineParityConfig(
     titan_routed_expert_compute="model",
     # Exploratory captures must record the exact dirty source state instead of
     # requiring experiment-runner fixes to be committed first.
-    allow_dirty=True,
     model=ParityModelConfig(
         vocab_size=2048,
         dim=256,

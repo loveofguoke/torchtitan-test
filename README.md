@@ -1,5 +1,9 @@
 # torchtitan-test
 
+Repository ownership, cross-repository dependencies, and the mandatory
+post-change regression matrix are defined in
+[`DEPENDENCY_AUDIT.md`](DEPENDENCY_AUDIT.md).
+
 This repository keeps execution and parity testing outside the two runtime
 packages:
 
@@ -13,23 +17,36 @@ Install the repositories from source into the same environment. A GPU-only
 environment needs TorchTitan and the test requirements:
 
 ```bash
-pip install -e ../torchtitan --no-deps
-pip install -r requirements-test.txt
+python -m pip install -e ../torchtitan
+python -m pip install -r requirements-test.txt
+python -m pip check
 ```
 
 An NPU environment also needs the matching TorchTitanTurbo checkout and its
 NPU runtime dependencies:
 
 ```bash
-pip install -e ../torchtitan --no-deps
-pip install -e ../TorchTitanTurbo --no-deps
-pip install -r requirements-test.txt
+python -m pip install -e ../torchtitan
+python -m pip install -e ../TorchTitanTurbo --no-deps
+python -m pip install -r requirements-test.txt
+python -m pip check
 ```
+
+The NPU PyTorch, torch_npu, CANN, and Triton-Ascend builds must already be a
+vendor-compatible set. Installing TorchTitan with dependencies supplies its
+Python-only runtime requirements (`grain`, `spmd_types`, checkpointing, data,
+tokenizer, and metrics packages); Turbo remains `--no-deps` so pip cannot
+replace the preinstalled NPU runtime.
 
 ## Training
 
 `run_train.sh` selects NPU when `ASCEND_RT_VISIBLE_DEVICES` is set and otherwise
-selects GPU. The existing commands therefore remain unchanged.
+selects GPU. The existing commands therefore remain unchanged. Every launch
+writes `train_runs/<run-name>/runtime.log` unless `TORCHTITAN_RUN_LOG` is set.
+The log is replaced for each launch and records the resolved backend, module,
+config, process count, visibility/allocator settings, working directory, and
+the original invocation plus the complete final `torchrun` or
+communication-mode command.
 
 GPU:
 
@@ -146,7 +163,9 @@ self-contained experiment snapshot, even though Git is their primary sync path.
 The release tag, release title, and archive name are derived from the experiment
 name. Uploading collects matching directories and directly named report files
 under every standard parity, precision, performance, stability, checkpoint,
-combination/graph, smoke, and direct-training output root:
+combination/graph, smoke, and direct-training output root. Discovery is
+recursive below each root, so card-count and topology scopes do not require a
+different release command:
 
 ```bash
 python release_artifacts.py upload \

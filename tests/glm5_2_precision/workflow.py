@@ -17,7 +17,12 @@ import sys
 import uuid
 from typing import Any, Literal, Sequence
 
-from tests.glm5_2_common.cli import archive_previous_output, reset_output_generation
+from tests.glm5_2_common.cli import (
+    archive_previous_output,
+    assert_run_not_active,
+    process_is_running,
+    reset_output_generation,
+)
 from tests.glm5_2_common.naming import config_name, slug
 from tests.glm5_2_common.topology import (
     ParallelTopology,
@@ -404,6 +409,21 @@ def _completed_capture_can_be_finalized(
         return len(read_captured_metrics(metrics_path)) == expected_steps
     except (KeyError, OSError, TypeError, ValueError, PrecisionArtifactError):
         return False
+
+
+def _recorded_capture_attempt_id(capture_state_path: Path) -> str:
+    """Return the training attempt that produced an existing capture."""
+
+    if not capture_state_path.is_file():
+        return "legacy-unrecorded"
+    try:
+        state = json.loads(capture_state_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return "legacy-unrecorded"
+    attempt_id = state.get("capture_attempt_id")
+    if not isinstance(attempt_id, str) or not attempt_id:
+        return "legacy-unrecorded"
+    return attempt_id
 
 
 def _write_json(path: Path, value: Any) -> None:
@@ -1081,7 +1101,7 @@ def _assert_fixture_generation_not_running(
         if (
             state.get("status") == "running"
             and state_generation == generation_id
-            and _process_is_running(pid)
+            and process_is_running(pid)
         ):
             raise RuntimeError(
                 "fixture generation is still used by a live experiment: "
@@ -1150,7 +1170,10 @@ def capture_endpoint(
     )
     finalize_existing = False
     if run_directory.exists():
-        _assert_capture_not_running(run_directory)
+        assert_run_not_active(
+            run_directory,
+            state_name="capture_state.json",
+        )
         run_generation_matches = fixture_generation is None
         if fixture_generation is not None and run_generation_path.is_file():
             try:
@@ -1237,7 +1260,11 @@ def capture_endpoint(
         f"repeat={repeat}/{endpoint.repeats}, device={endpoint.device_type}, "
         f"world_size={endpoint.topology.world_size}"
     )
-    capture_attempt_id = uuid.uuid4().hex
+    capture_attempt_id = (
+        _recorded_capture_attempt_id(capture_state_path)
+        if finalize_existing
+        else uuid.uuid4().hex
+    )
     if not finalize_existing:
         print(
             f"Starting capture: {capture_label}\nRuntime log: {runtime_log}",
@@ -1361,43 +1388,6 @@ def capture_endpoint(
     return artifact_path
 
 
-def _process_is_running(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
-
-
-def _assert_capture_not_running(run_directory: Path) -> None:
-    """Refuse to replace output while its recorded orchestrator is alive."""
-
-    state_path = run_directory / "capture_state.json"
-    if not state_path.is_file():
-        return
-    try:
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-        pid = int(state.get("pid", -1))
-    except (OSError, TypeError, ValueError):
-        return
-    if (
-        state.get("status") == "running"
-        and pid != os.getpid()
-        and _process_is_running(pid)
-    ):
-        raise RuntimeError(
-            f"capture is still running with orchestrator PID {pid}: "
-            f"{run_directory}; stop that process before retrying or forcing "
-            "the capture"
-        )
-
-
 def reset_capture_outputs(
     root: Path,
     config: FormalExperimentConfig,
@@ -1429,7 +1419,10 @@ def reset_capture_outputs(
             )
         )
     for run_directory in run_directories:
-        _assert_capture_not_running(run_directory)
+        assert_run_not_active(
+            run_directory,
+            state_name="capture_state.json",
+        )
     reset_output_generation(selected_paths, label="precision capture")
 
 

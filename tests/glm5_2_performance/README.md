@@ -139,9 +139,9 @@ both CUDA and NPU visibility variables exist in one environment.
 Generated paths are short and explicit:
 
 ```text
-performance_runs/glm5-probe-npu-single-overview/       # raw heavy data
-performance_artifacts/glm5-probe-npu-single-overview/  # manifest + summary
-performance_reports/glm5-probe-npu-single-overview.html
+performance_runs/1-card/single/<experiment>/       # raw heavy data
+performance_artifacts/1-card/single/<experiment>/  # manifest + summary
+performance_reports/1-card/single/<experiment>.html
 ```
 
 All generated performance roots are ignored by Git. Transfer portable

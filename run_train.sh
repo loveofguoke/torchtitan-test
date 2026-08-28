@@ -7,6 +7,8 @@
 
 set -euo pipefail
 
+INVOCATION_CWD=$PWD
+ORIGINAL_ARGS=("$@")
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 cd "$SCRIPT_DIR"
 
@@ -25,7 +27,7 @@ if [[ -z "$RUN_LOG" ]]; then
 fi
 mkdir -p "$(dirname -- "$RUN_LOG")"
 RUN_LOG=$(cd -- "$(dirname -- "$RUN_LOG")" && pwd)/$(basename -- "$RUN_LOG")
-exec > >(tee -a "$RUN_LOG") 2>&1
+exec > >(tee "$RUN_LOG") 2>&1
 
 run_exit_log() {
     status=$?
@@ -59,17 +61,35 @@ esac
 
 echo "TorchTitan backend: $DEVICE"
 echo "Runtime log: $RUN_LOG"
-printf 'Training command:'
-printf ' %q' "$0" "$@"
+echo "Invocation directory: $INVOCATION_CWD"
+echo "Repository directory: $SCRIPT_DIR"
+echo "Module: $MODULE"
+echo "Config: $CONFIG"
+echo "Processes: $NGPU"
+echo "Log rank: $LOG_RANK"
+echo "CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-<unset>}"
+echo "ASCEND_RT_VISIBLE_DEVICES: ${ASCEND_RT_VISIBLE_DEVICES:-<unset>}"
+echo "PYTORCH_ALLOC_CONF: ${PYTORCH_ALLOC_CONF:-<unset>}"
+echo "PYTORCH_NPU_ALLOC_CONF: ${PYTORCH_NPU_ALLOC_CONF:-<unset>}"
+printf 'Original invocation: %q' "$0"
+printf ' %q' "${ORIGINAL_ARGS[@]}"
 printf '\n'
 if [[ -n "$COMM_MODE" ]]; then
-    NGPU="$NGPU" LOCAL_RANK=0 python3 "${TRAIN_ENTRY[@]}" \
+    COMMAND=(python3 "${TRAIN_ENTRY[@]}" \
         --module "$MODULE" --config "$CONFIG" "$@" \
-        --comm.mode="$COMM_MODE" --training.steps 1
+        --comm.mode="$COMM_MODE" --training.steps 1)
+    COMMAND_ENV=(NGPU="$NGPU" LOCAL_RANK=0)
 else
-    TORCHFT_LIGHTHOUSE="$TORCHFT_LIGHTHOUSE" \
-        torchrun --nproc_per_node="$NGPU" \
+    COMMAND=(torchrun --nproc_per_node="$NGPU" \
         --rdzv_backend c10d --rdzv_endpoint="localhost:0" \
         --local-ranks-filter "$LOG_RANK" --role rank --tee 3 \
-        "${TRAIN_ENTRY[@]}" --module "$MODULE" --config "$CONFIG" "$@"
+        "${TRAIN_ENTRY[@]}" --module "$MODULE" --config "$CONFIG" "$@")
+    COMMAND_ENV=(TORCHFT_LIGHTHOUSE="$TORCHFT_LIGHTHOUSE")
 fi
+printf 'Resolved environment:'
+printf ' %q' "${COMMAND_ENV[@]}"
+printf '\n'
+printf 'Resolved command:'
+printf ' %q' "${COMMAND[@]}"
+printf '\n'
+env "${COMMAND_ENV[@]}" "${COMMAND[@]}"
