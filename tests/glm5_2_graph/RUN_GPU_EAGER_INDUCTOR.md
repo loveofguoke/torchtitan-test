@@ -194,3 +194,15 @@ all Step 1 Block 0 forward/backward and trainable parameter-gradient matches:
 ```bash
 GPU_DIAG_RUN_ID=h20-silu-control-v1 tests/glm5_2_graph/run_gpu_silu_symmetric_control.sh
 ```
+
+If SiLU-only materialization reduces but does not eliminate the Block output
+difference, run the progressive one-step matrix before any longer experiment:
+
+```bash
+GPU_DIAG_RUN_ID=h20-silu-staged-v1 tests/glm5_2_graph/run_gpu_silu_staged_controls.sh step1 matrix
+```
+
+The variants add boundaries in order: `silu-product`,
+`silu-product-down`, then `all` (`w1`, `w3`, SiLU, product, and down).
+After selecting the smallest variant that aligns Block output and gradients,
+run only that variant for 10 steps by replacing `step1` with `probe`.

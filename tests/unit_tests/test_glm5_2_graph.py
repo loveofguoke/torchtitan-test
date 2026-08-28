@@ -52,6 +52,11 @@ from tests.glm5_2_graph.gpu_silu_materialization_benchmark import (
 from tests.glm5_2_graph.gpu_silu_materialization_probe import (
     PROBE_CONFIG as GPU_SILU_MATERIALIZATION_PROBE_CONFIG,
 )
+from tests.glm5_2_graph.gpu_silu_materialization import MATERIALIZATION_POINTS
+from tests.glm5_2_graph.gpu_silu_staged_control import (
+    STAGED_CONFIG as GPU_SILU_STAGED_CONFIG,
+    VARIANT_POINTS as GPU_SILU_VARIANT_POINTS,
+)
 from tests.glm5_2_graph.gpu_silu_symmetric_probe import (
     SYMMETRIC_CONFIG as GPU_SILU_SYMMETRIC_CONFIG,
 )
@@ -439,6 +444,23 @@ def test_gpu_silu_control_compares_ordered_step1_gradients(tmp_path: Path) -> No
     assert rows[2]["exact"]
     assert rows[3]["name"] == "parameter.feed_forward.w2.weight"
     assert not rows[3]["exact"]
+
+
+def test_gpu_silu_staged_control_defines_progressive_boundaries() -> None:
+    assert MATERIALIZATION_POINTS == {"w1", "w3", "silu", "product", "down"}
+    assert GPU_SILU_VARIANT_POINTS == {
+        "silu-product": "silu,product",
+        "silu-product-down": "silu,product,down",
+        "all": "w1,w3,silu,product,down",
+    }
+    assert GPU_SILU_STAGED_CONFIG.training.steps == 1
+    expected = "silu,product"
+    assert GPU_SILU_STAGED_CONFIG.reference.environment[
+        "GLM5_GPU_DENSE_SILU_MATERIALIZATION_POINTS"
+    ] == expected
+    assert GPU_SILU_STAGED_CONFIG.candidate.environment[
+        "GLM5_GPU_DENSE_SILU_MATERIALIZATION_POINTS"
+    ] == expected
 
 
 def test_gpu_minimal_comparison_reports_cold_compile_reproducibility(

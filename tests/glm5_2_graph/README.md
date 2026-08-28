@@ -227,6 +227,8 @@ tests/glm5_2_graph/run_gpu_silu_materialization.sh benchmark
 
 Use `run_gpu_silu_symmetric_control.sh` when both sides must execute the same
 materialized program and Step 1 Block 0 parameter gradients are required.
+Use `run_gpu_silu_staged_controls.sh step1 matrix` to test progressively wider
+SwiGLU materialization boundaries before selecting a 10-step control.
 
 The reference remains single-card even when the candidate is FSDP8, TP8, or
 another distributed topology. Run `--capture reference` with at least one
