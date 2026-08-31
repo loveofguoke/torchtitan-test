@@ -69,4 +69,5 @@ combination_reports/<experiment>/
 建议阅读顺序：先看 [总结](reports/summary.md)，再看
 [smoke 验证](reports/smoke-graph-validation.md)、[5000-step 精度](reports/precision-5000.md)、
 [eager/Inductor 性能矩阵](reports/performance/summary.md)、
+[图编译与性能面试问答](../../glm5_2_graph/inductor-compilation-interview-qa-zh.md)、
 [失败历史](reports/failures.md) 和 [命令账本](history/commands.md)。

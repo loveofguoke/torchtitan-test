@@ -1,0 +1,87 @@
+{
+  "average_seconds_per_completed_step": 1.8509243046504997,
+  "batch_schedule": {
+    "gradient_accumulation_steps": 8,
+    "pipeline_microbatches": 8
+  },
+  "command": [
+    "/root/miniconda3/envs/torchtitan-0803/bin/torchrun",
+    "--nproc_per_node=1",
+    "--rdzv_backend=c10d",
+    "--rdzv_endpoint=localhost:0",
+    "--local-ranks-filter=0",
+    "--role=rank",
+    "--tee=3",
+    "-m",
+    "tests.glm5_2_stability.capture_metrics",
+    "--module",
+    "glm5",
+    "--config",
+    "glm5_debugmodel",
+    "--dump_folder=/workspace/y50064852_yyb/torchtitan-test/stability_runs/stability-npu-single-bf16-s20000-b64-seq128-seed61/trainer_output",
+    "--training.steps=20000",
+    "--training.local_batch_size=8",
+    "--training.global_batch_size=64",
+    "--training.seq_len=128",
+    "--training.dtype=float32",
+    "--training.mixed_precision_param=bfloat16",
+    "--training.mixed_precision_reduce=float32",
+    "--debug.seed=61",
+    "--debug.deterministic",
+    "--debug.no-enable-structured-logging",
+    "--metrics.log_freq=1",
+    "--metrics.enable_tensorboard",
+    "--metrics.disable_color_printing",
+    "--metrics.save_tb_folder=tensorboard",
+    "--parallelism.data_parallel_replicate_degree=1",
+    "--parallelism.data_parallel_shard_degree=1",
+    "--parallelism.tensor_parallel_degree=1",
+    "--parallelism.pipeline_parallel_degree=1",
+    "--parallelism.expert_parallel_degree=1"
+  ],
+  "completed_metric_steps": 20000,
+  "device": "npu",
+  "elapsed_hours": 10.282912803613888,
+  "ended_at_utc": "2026-08-20T12:39:32.930576+00:00",
+  "last_step": 20000,
+  "metric_ranges": {
+    "global_max_loss": {
+      "final": 2.09130859375,
+      "maximum": 8.250778198242188,
+      "minimum": 1.599034070968628
+    },
+    "grad_norm": {
+      "final": 0.48719826340675354,
+      "maximum": 2.6362318992614746,
+      "minimum": 0.1808713972568512
+    },
+    "loss": {
+      "final": 2.09130859375,
+      "maximum": 8.250778198242188,
+      "minimum": 1.599034070968628
+    }
+  },
+  "minimum_hours": 1.0,
+  "process_return_code": 0,
+  "raw_metrics": "/workspace/y50064852_yyb/torchtitan-test/stability_runs/stability-npu-single-bf16-s20000-b64-seq128-seed61/raw_metrics.jsonl",
+  "requested_steps": 20000,
+  "run_name": "stability-npu-single-bf16-s20000-b64-seq128-seed61",
+  "runtime_log": "/workspace/y50064852_yyb/torchtitan-test/stability_runs/stability-npu-single-bf16-s20000-b64-seq128-seed61/runtime.log",
+  "stalled": false,
+  "started_at_utc": "2026-08-20T02:22:34.444439+00:00",
+  "status": "PASS",
+  "steps_contiguous": true,
+  "topology": {
+    "data_parallel_replicate_degree": 1,
+    "data_parallel_shard_degree": 1,
+    "expert_parallel_degree": 1,
+    "extra_args": [],
+    "name": "single",
+    "pipeline_parallel_degree": 1,
+    "pipeline_parallel_microbatch_size": 1,
+    "pipeline_parallel_schedule": "1F1B",
+    "tensor_parallel_degree": 1,
+    "world_size": 1
+  },
+  "visible_devices": "1"
+}

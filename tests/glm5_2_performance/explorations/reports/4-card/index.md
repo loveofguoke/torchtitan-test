@@ -2,13 +2,13 @@
 
 | topology | runs | best profiler-off tok/s/job | experiment | analysis |
 | --- | ---: | ---: | --- | --- |
-| cp4 | 1 | 5,069.75 | [experiment](cp4/experiment.md) | - |
-| ddp4 | 2 | 21,009.35 | [experiment](ddp4/experiment.md) | - |
-| ep4 | 1 | 17,167.77 | [experiment](ep4/experiment.md) | - |
-| fsdp2-tp2 | 1 | 3,716.87 | [experiment](fsdp2-tp2/experiment.md) | - |
-| fsdp4 | 4 | 20,390.85 | [experiment](fsdp4/experiment.md) | - |
-| pp4 | 1 | 2,579.88 | [experiment](pp4/experiment.md) | - |
-| tp4 | 1 | 1,891.92 | [experiment](tp4/experiment.md) | - |
+| cp4 | 2 | 5,069.75 | [experiment](cp4/experiment.md) | - |
+| ddp4 | 3 | 21,009.35 | [experiment](ddp4/experiment.md) | - |
+| ep4 | 2 | 17,167.77 | [experiment](ep4/experiment.md) | - |
+| fsdp2-tp2 | 2 | 3,716.87 | [experiment](fsdp2-tp2/experiment.md) | - |
+| fsdp4 | 5 | 20,390.85 | [experiment](fsdp4/experiment.md) | - |
+| pp4 | 2 | 2,579.88 | [experiment](pp4/experiment.md) | - |
+| tp4 | 2 | 1,891.92 | [experiment](tp4/experiment.md) | - |
 
 ## comparison
 

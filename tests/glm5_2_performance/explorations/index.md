@@ -5,6 +5,9 @@ run name. Start from [reports/index.md](reports/index.md) for conclusions, or
 from a topology's `experiment.md` for exact run order, commands, results, and
 links.
 
+The complete 27-topology × 8-preset acquisition started on 2026-08-31 is
+tracked in [history/all-preset-commands.md](history/all-preset-commands.md).
+
 ## Directory contract
 
 ```text
@@ -80,4 +83,3 @@ machine-readable source of truth; the Markdown is regenerated from it.
 - Separate collective payload/physical transit from exposed communication wait.
 - Runs including the currently unhealthy NPU0 are diagnostic, not acceptance
   evidence, until the hardware warning is cleared.
-

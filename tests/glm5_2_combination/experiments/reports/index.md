@@ -6,6 +6,7 @@
 | [submission-readiness-20260828.md](submission-readiness-20260828.md) | 当前三仓提交前审计、修复必要性与定向验证 |
 | [smoke-graph-validation.md](smoke-graph-validation.md) | Inductor/NPUGraphs 15 拓扑实际运行记录 |
 | [precision-5000.md](precision-5000.md) | maintained 5000-step eager/graph 精度矩阵与 acceptance |
+| [../../../glm5_2_graph/inductor-compilation-interview-qa-zh.md](../../../glm5_2_graph/inductor-compilation-interview-qa-zh.md) | 基于实际 FX/IR/code 的整图编译分析、动态图/算子兼容与面试问答 |
 | [performance/summary.md](performance/summary.md) | 15 拓扑 eager/Inductor steady-state 性能矩阵 |
 | [performance/comparison.html](performance/comparison.html) | 可视化性能对比表 |
 | [performance/data.json](performance/data.json) | 60 次运行及 15 拓扑汇总的机器可读数据 |

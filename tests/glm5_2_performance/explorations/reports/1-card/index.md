@@ -2,7 +2,7 @@
 
 | topology | runs | best profiler-off tok/s/job | experiment | analysis |
 | --- | ---: | ---: | --- | --- |
-| single | 6 | - | [experiment](single/experiment.md) | - |
+| single | 8 | - | [experiment](single/experiment.md) | - |
 
 ## comparison
 

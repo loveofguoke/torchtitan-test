@@ -177,7 +177,8 @@ graph_env_init() {
             case "$variable_name" in
                 GLM5_*|MASTER_ADDR|MASTER_PORT|NNODES|NODE_RANK|MODULE|CONFIG|NGPU|LOG_RANK|\
                 HTTP_PROXY|HTTPS_PROXY|NO_PROXY|http_proxy|https_proxy|no_proxy|\
-                TORCH_LOGS|TORCHDYNAMO_VERBOSE)
+                TORCH_LOGS|TORCHDYNAMO_VERBOSE|\
+                TORCHTITAN_MSPROF_ANALYZE|TORCHTITAN_MSPROF_ANALYZE_WORKERS)
                     passthrough_env+=("$variable_name=${!variable_name}")
                     ;;
             esac
