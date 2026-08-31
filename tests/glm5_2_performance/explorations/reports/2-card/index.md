@@ -2,7 +2,12 @@
 
 | topology | runs | best profiler-off tok/s/job | experiment | analysis |
 | --- | ---: | ---: | --- | --- |
-| ddp2 | 11 | 11,234.19 | [experiment](ddp2/experiment.md) | - |
+| cp2 | 1 | - | [experiment](cp2/experiment.md) | - |
+| ddp2 | 14 | 11,234.19 | [experiment](ddp2/experiment.md) | - |
+| ep2 | 1 | - | [experiment](ep2/experiment.md) | - |
+| fsdp2 | 1 | - | [experiment](fsdp2/experiment.md) | - |
+| pp2 | 1 | - | [experiment](pp2/experiment.md) | - |
+| tp2 | 1 | - | [experiment](tp2/experiment.md) | - |
 
 ## comparison
 

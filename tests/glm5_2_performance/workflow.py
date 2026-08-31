@@ -883,6 +883,25 @@ def _msprof_analyze_workers() -> int:
     return workers
 
 
+def _safe_distributed_parse_preset(
+    preset: ProfilerPreset,
+    *,
+    device: str,
+    world_size: int,
+) -> ProfilerPreset:
+    """Keep synchronous CANN parsing out of a live distributed job.
+
+    A sync parse pauses only the profiled rank. Other ranks can enter the next
+    collective and hit TorchTitan's training process-group timeout while CANN
+    is still exporting a large trace. Offline parsing preserves the same raw
+    capture and analysis while moving the pause after every rank has exited.
+    """
+
+    if device == "npu" and world_size > 1 and preset.parse_mode == "sync":
+        return replace(preset, parse_mode="offline")
+    return preset
+
+
 def run_cluster_analysis(run_directory: Path) -> dict[str, Any]:
     """Run the official cluster, time, bottleneck, and idle recipes."""
 
@@ -1467,10 +1486,18 @@ def run_profiler_cli(
         )
         for preset_name, preset in selected_presets:
             for topology_name in selected:
+                topology = topologies[topology_name]
+                effective_preset = _safe_distributed_parse_preset(
+                    preset,
+                    device=device,
+                    world_size=topology.world_size,
+                )
                 topology_config = replace(
                     effective, topology=topology_name, preset=preset_name
                 )
-                run_name = _run_name(topology_config, device, preset)
+                run_name = _run_name(
+                    topology_config, device, effective_preset
+                )
                 run_parent = _scoped_parent(
                     root, topology_config.run_root, topology_config.topology
                 )
@@ -1498,10 +1525,24 @@ def run_profiler_cli(
     reports: list[tuple[str, str, Path]] = []
     for preset_name, preset in selected_presets:
         for topology_name in selected:
+            topology = topologies[topology_name]
+            effective_preset = _safe_distributed_parse_preset(
+                preset,
+                device=device,
+                world_size=topology.world_size,
+            )
+            if effective_preset is not preset:
+                print(
+                    "Using offline parse for distributed NPU capture: "
+                    f"topology={topology_name}, preset={preset_name}; "
+                    "synchronous parsing can stall one rank past the "
+                    "training process-group timeout.",
+                    flush=True,
+                )
             topology_config = replace(
                 effective, topology=topology_name, preset=preset_name
             )
-            run_name = _run_name(topology_config, device, preset)
+            run_name = _run_name(topology_config, device, effective_preset)
             action = (
                 "probe" if args.probe else "capture" if args.capture else "analyze"
             )
@@ -1524,13 +1565,13 @@ def run_profiler_cli(
                     root,
                     topology_config,
                     device=device,
-                    preset=preset,
+                    preset=effective_preset,
                     force=False,
                 )
             if args.analyze or args.probe:
                 cluster_requested = "cluster" in analysis_tools
                 profiled_rank_count = _profiled_rank_count(
-                    preset, topologies[topology_name].world_size
+                    effective_preset, topology.world_size
                 )
                 cluster_enabled = (
                     cluster_requested and profiled_rank_count > 1
@@ -1546,16 +1587,16 @@ def run_profiler_cli(
                     root,
                     topology_config,
                     device=device,
-                    preset=preset,
+                    preset=effective_preset,
                     parse_offline=(
                         (
                             "offline" in analysis_tools
-                            and preset.parse_mode == "offline"
+                            and effective_preset.parse_mode == "offline"
                         )
                         or (
                             args.probe
                             and device == "npu"
-                            and preset.parse_mode == "offline"
+                            and effective_preset.parse_mode == "offline"
                         )
                     ),
                     parse_workers=args.parse_workers,

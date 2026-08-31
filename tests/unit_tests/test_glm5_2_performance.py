@@ -29,6 +29,7 @@ from tests.glm5_2_performance.workflow import (
     _msprof_analyze_workers,
     _profiled_rank_count,
     _run_name,
+    _safe_distributed_parse_preset,
     _write_suite_report,
 )
 from tests.glm5_2_performance.visualization import (
@@ -61,6 +62,33 @@ class TestPerformanceConfig(unittest.TestCase):
         self.assertNotIn("-overview-sync-", sync_name)
         self.assertIn("-overview-offline-", offline_name)
         self.assertNotEqual(sync_name, offline_name)
+
+    def test_distributed_npu_sync_parse_moves_offline(self):
+        sync = profiler_presets()["overview"]
+
+        distributed = _safe_distributed_parse_preset(
+            sync,
+            device="npu",
+            world_size=8,
+        )
+
+        self.assertEqual(distributed.parse_mode, "offline")
+        self.assertIs(
+            _safe_distributed_parse_preset(
+                sync,
+                device="npu",
+                world_size=1,
+            ),
+            sync,
+        )
+        self.assertIs(
+            _safe_distributed_parse_preset(
+                sync,
+                device="cuda",
+                world_size=8,
+            ),
+            sync,
+        )
 
     def test_run_name_exposes_nondefault_reduction_precision(self):
         config = PerformanceConfig(

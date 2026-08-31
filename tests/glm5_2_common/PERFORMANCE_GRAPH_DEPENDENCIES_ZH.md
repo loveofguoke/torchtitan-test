@@ -416,6 +416,18 @@ export TORCHTITAN_MSPROF_ANALYZE_WORKERS=1
 worker 只影响离线分析并发，不改变训练；多 rank 大 DB 先从 `1` 开始，避免分析
 进程把内存/磁盘打满。
 
+统一图模式 launcher 使用 `env -i` 建立可复现的最小环境，因此这两个覆盖变量必须由
+`graph_env_common.sh` 显式透传。不能只在交互 shell 中用 `env`/`command -v` 判断；应检查
+实际 launcher 子进程：
+
+```bash
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor command -- \
+  /usr/bin/env | grep '^TORCHTITAN_MSPROF_ANALYZE'
+```
+
+如果外层变量存在而上述命令没有输出，问题属于 launcher 环境契约，不应误判为
+`msprof-analyze` 未安装。
+
 ### 4.4 MindStudio Insight：官方交互可视化
 
 - 来源：[Ascend/msinsight](https://gitcode.com/Ascend/msinsight)

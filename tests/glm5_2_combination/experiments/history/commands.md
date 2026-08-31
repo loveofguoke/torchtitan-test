@@ -116,6 +116,41 @@ tests/glm5_2_combination/run_graph_precision_5000.sh inductor candidate
 tests/glm5_2_combination/run_graph_precision_5000.sh inductor compare
 ```
 
+### 2026-08-31 恢复记录
+
+恢复前先确认已有 eager r1/r2 均为完整 5000-step artifact，并检查 8 卡 owner：
+
+```bash
+ps -eo pid,ppid,stat,etime,pcpu,pmem,args
+npu-smi info
+```
+
+当时 PID 2459052 正在运行另一套正式 self-consistency 5000-step 矩阵，不是残余进程，
+因此没有 kill。其后已有合法 `all_preset_0831` 队列取得资源顺序，并在 profiler matrix
+结束后调用同一套 precision candidate/compare。为防该队列中断导致精度任务遗失，本任务
+建立独立 tmux server/socket 的断点接力；它等待上游 pane PID 退出后再执行：
+
+```bash
+tmux -L graphprecision0831 new-session -d \
+  -s graph_precision_5000_0831 \
+  /workspace/y50064852_yyb/.cache/torchtitan-test/graph_mode/\
+precision-5000-20260831/queue_after_all_preset.sh
+```
+
+队列脚本属于仓库外 `.cache` 中间文件，不进入 Git。它不删除 artifact，不重新生成 eager
+reference；candidate 会按完整 experiment identity 自动复用上游已完成项。过程日志：
+
+```text
+graph_debug_runs/precision-5000-20260831/queue.log
+```
+
+观察命令：
+
+```bash
+tmux -L graphprecision0831 list-sessions
+tail -n 100 graph_debug_runs/precision-5000-20260831/queue.log
+```
+
 ## 4. NPUGraphs 精度边界
 
 ```bash

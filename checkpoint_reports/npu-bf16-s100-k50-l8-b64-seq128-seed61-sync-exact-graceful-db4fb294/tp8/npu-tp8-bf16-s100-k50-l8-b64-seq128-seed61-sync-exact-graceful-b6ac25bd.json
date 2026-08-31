@@ -1,0 +1,841 @@
+{
+  "baseline_contract_ranks": [
+    "rank-0.jsonl",
+    "rank-1.jsonl",
+    "rank-2.jsonl",
+    "rank-3.jsonl",
+    "rank-4.jsonl",
+    "rank-5.jsonl",
+    "rank-6.jsonl",
+    "rank-7.jsonl"
+  ],
+  "completed_restart": {
+    "cleanup": {
+      "group_remaining": false,
+      "kill_sent": false,
+      "reaped_children": 0,
+      "term_sent": false
+    },
+    "launcher_signal": null,
+    "loaded_steps": {
+      "0": 100,
+      "1": 100,
+      "2": 100,
+      "3": 100,
+      "4": 100,
+      "5": 100,
+      "6": 100,
+      "7": 100
+    },
+    "passed": true,
+    "return_code": 0
+  },
+  "configuration": {
+    "async_mode": "disabled",
+    "batch_schedule": {
+      "gradient_accumulation_steps": 8,
+      "pipeline_microbatches": 8
+    },
+    "comparison": "exact",
+    "device": "npu",
+    "failure_modes": [
+      "graceful"
+    ],
+    "failure_rank": 1,
+    "failure_timeout": 1800,
+    "grad_relative_limit": 0.05,
+    "loss_atol": 0.01,
+    "loss_rtol": 0.01,
+    "restart_delay": 2.0,
+    "state_atol": 0.01,
+    "state_rtol": 0.01,
+    "topology": {
+      "context_parallel_degree": 1,
+      "data_parallel_replicate_degree": 1,
+      "data_parallel_shard_degree": 1,
+      "expert_parallel_degree": 1,
+      "extra_args": [],
+      "name": "tp8",
+      "pipeline_parallel_degree": 1,
+      "pipeline_parallel_microbatch_size": 1,
+      "pipeline_parallel_schedule": "1F1B",
+      "tensor_parallel_degree": 8,
+      "world_size": 8
+    },
+    "training": {
+      "checkpoint_kind": "random_seed",
+      "config": "glm5_debugmodel",
+      "converged_checkpoint": null,
+      "data_paths": [
+        "tests/assets/c4_test",
+        "tests/assets/tokenizer"
+      ],
+      "deterministic": true,
+      "deterministic_warn_only": false,
+      "exploratory_steps": [],
+      "extra_args": [],
+      "global_batch_size": 64,
+      "local_batch_size": 8,
+      "mixed_precision_param": "bfloat16",
+      "mixed_precision_reduce": "float32",
+      "module": "glm5",
+      "seed": 61,
+      "sequence_length": 128,
+      "steps": 100,
+      "training_dtype": "float32"
+    },
+    "visible_devices": "0,1,2,3,4,5,6,7"
+  },
+  "interrupt_step": 51,
+  "passed": true,
+  "run_name": "npu-tp8-bf16-s100-k50-l8-b64-seq128-seed61-sync-exact-graceful-b6ac25bd",
+  "scenarios": {
+    "graceful": {
+      "boundary_memory": {
+        "mismatch_examples": [],
+        "missing_loaded_ranks": [],
+        "missing_saved_ranks": [],
+        "passed": true,
+        "ranks": {
+          "0": {
+            "passed": true,
+            "scopes": {
+              "dataloader": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2,
+                "loaded_sha256": "6e84ff038d1623d4dad8e3ec867eab31d17fbef7facd7d85ffa60e1991293fcc",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2,
+                "saved_sha256": "6e84ff038d1623d4dad8e3ec867eab31d17fbef7facd7d85ffa60e1991293fcc",
+                "unexpected_after_load": []
+              },
+              "lr_scheduler": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 1,
+                "loaded_sha256": "1664d237bb660346405d15b4651d6133b36e95d5e034909c491cc4754b6cf861",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 1,
+                "saved_sha256": "1664d237bb660346405d15b4651d6133b36e95d5e034909c491cc4754b6cf861",
+                "unexpected_after_load": []
+              },
+              "model": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 174,
+                "loaded_sha256": "50582c5c8bd04a05d079e2dd0c3883a3f00ccc50e6e1f408679bf87da0ab980a",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 174,
+                "saved_sha256": "50582c5c8bd04a05d079e2dd0c3883a3f00ccc50e6e1f408679bf87da0ab980a",
+                "unexpected_after_load": []
+              },
+              "optimizer": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2032,
+                "loaded_sha256": "4a6c01db4949aa5e3b6a64bdcf0af3678d50149de3be7fa7e68efb942718974e",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2032,
+                "saved_sha256": "4a6c01db4949aa5e3b6a64bdcf0af3678d50149de3be7fa7e68efb942718974e",
+                "unexpected_after_load": []
+              },
+              "train_state": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2,
+                "loaded_sha256": "23292d119b278be46c5a6cc57ad22c80c1f9cbcb547cd03db06f4fef6cf05141",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2,
+                "saved_sha256": "23292d119b278be46c5a6cc57ad22c80c1f9cbcb547cd03db06f4fef6cf05141",
+                "unexpected_after_load": []
+              }
+            }
+          },
+          "1": {
+            "passed": true,
+            "scopes": {
+              "dataloader": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2,
+                "loaded_sha256": "6e84ff038d1623d4dad8e3ec867eab31d17fbef7facd7d85ffa60e1991293fcc",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2,
+                "saved_sha256": "6e84ff038d1623d4dad8e3ec867eab31d17fbef7facd7d85ffa60e1991293fcc",
+                "unexpected_after_load": []
+              },
+              "lr_scheduler": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 1,
+                "loaded_sha256": "1664d237bb660346405d15b4651d6133b36e95d5e034909c491cc4754b6cf861",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 1,
+                "saved_sha256": "1664d237bb660346405d15b4651d6133b36e95d5e034909c491cc4754b6cf861",
+                "unexpected_after_load": []
+              },
+              "model": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 174,
+                "loaded_sha256": "f30e05387b65f53640c8fa6cf7737deabd0bf132d02abed21bf5a7fad7fa363c",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 174,
+                "saved_sha256": "f30e05387b65f53640c8fa6cf7737deabd0bf132d02abed21bf5a7fad7fa363c",
+                "unexpected_after_load": []
+              },
+              "optimizer": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2032,
+                "loaded_sha256": "bbd0c4a04d2f96cc6161640cfb3a7ea37ed6c7725a76348c4ce5df019f5843b8",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2032,
+                "saved_sha256": "bbd0c4a04d2f96cc6161640cfb3a7ea37ed6c7725a76348c4ce5df019f5843b8",
+                "unexpected_after_load": []
+              },
+              "train_state": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2,
+                "loaded_sha256": "23292d119b278be46c5a6cc57ad22c80c1f9cbcb547cd03db06f4fef6cf05141",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2,
+                "saved_sha256": "23292d119b278be46c5a6cc57ad22c80c1f9cbcb547cd03db06f4fef6cf05141",
+                "unexpected_after_load": []
+              }
+            }
+          },
+          "2": {
+            "passed": true,
+            "scopes": {
+              "dataloader": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2,
+                "loaded_sha256": "6e84ff038d1623d4dad8e3ec867eab31d17fbef7facd7d85ffa60e1991293fcc",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2,
+                "saved_sha256": "6e84ff038d1623d4dad8e3ec867eab31d17fbef7facd7d85ffa60e1991293fcc",
+                "unexpected_after_load": []
+              },
+              "lr_scheduler": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 1,
+                "loaded_sha256": "1664d237bb660346405d15b4651d6133b36e95d5e034909c491cc4754b6cf861",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 1,
+                "saved_sha256": "1664d237bb660346405d15b4651d6133b36e95d5e034909c491cc4754b6cf861",
+                "unexpected_after_load": []
+              },
+              "model": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 174,
+                "loaded_sha256": "71a164a70deec9625396bb7bebfb6bc4b764ec91db92e7a12efd05881dd7f46a",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 174,
+                "saved_sha256": "71a164a70deec9625396bb7bebfb6bc4b764ec91db92e7a12efd05881dd7f46a",
+                "unexpected_after_load": []
+              },
+              "optimizer": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2032,
+                "loaded_sha256": "c5d219f9e4addcd806fc65e8ec84ebf4cfde21e711772ea92fb8f07896acadc1",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2032,
+                "saved_sha256": "c5d219f9e4addcd806fc65e8ec84ebf4cfde21e711772ea92fb8f07896acadc1",
+                "unexpected_after_load": []
+              },
+              "train_state": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2,
+                "loaded_sha256": "23292d119b278be46c5a6cc57ad22c80c1f9cbcb547cd03db06f4fef6cf05141",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2,
+                "saved_sha256": "23292d119b278be46c5a6cc57ad22c80c1f9cbcb547cd03db06f4fef6cf05141",
+                "unexpected_after_load": []
+              }
+            }
+          },
+          "3": {
+            "passed": true,
+            "scopes": {
+              "dataloader": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2,
+                "loaded_sha256": "6e84ff038d1623d4dad8e3ec867eab31d17fbef7facd7d85ffa60e1991293fcc",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2,
+                "saved_sha256": "6e84ff038d1623d4dad8e3ec867eab31d17fbef7facd7d85ffa60e1991293fcc",
+                "unexpected_after_load": []
+              },
+              "lr_scheduler": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 1,
+                "loaded_sha256": "1664d237bb660346405d15b4651d6133b36e95d5e034909c491cc4754b6cf861",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 1,
+                "saved_sha256": "1664d237bb660346405d15b4651d6133b36e95d5e034909c491cc4754b6cf861",
+                "unexpected_after_load": []
+              },
+              "model": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 174,
+                "loaded_sha256": "2f6621fe59b60d2ba75b52f0c5ce1edd44c5b3f3a94c6e5c8571a234f3daa4bd",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 174,
+                "saved_sha256": "2f6621fe59b60d2ba75b52f0c5ce1edd44c5b3f3a94c6e5c8571a234f3daa4bd",
+                "unexpected_after_load": []
+              },
+              "optimizer": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2032,
+                "loaded_sha256": "26667e4a6aa90c299d8c8a0759e79a6db124ab6799dd2503cdb9b5d4e3f869d6",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2032,
+                "saved_sha256": "26667e4a6aa90c299d8c8a0759e79a6db124ab6799dd2503cdb9b5d4e3f869d6",
+                "unexpected_after_load": []
+              },
+              "train_state": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2,
+                "loaded_sha256": "23292d119b278be46c5a6cc57ad22c80c1f9cbcb547cd03db06f4fef6cf05141",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2,
+                "saved_sha256": "23292d119b278be46c5a6cc57ad22c80c1f9cbcb547cd03db06f4fef6cf05141",
+                "unexpected_after_load": []
+              }
+            }
+          },
+          "4": {
+            "passed": true,
+            "scopes": {
+              "dataloader": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2,
+                "loaded_sha256": "6e84ff038d1623d4dad8e3ec867eab31d17fbef7facd7d85ffa60e1991293fcc",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2,
+                "saved_sha256": "6e84ff038d1623d4dad8e3ec867eab31d17fbef7facd7d85ffa60e1991293fcc",
+                "unexpected_after_load": []
+              },
+              "lr_scheduler": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 1,
+                "loaded_sha256": "1664d237bb660346405d15b4651d6133b36e95d5e034909c491cc4754b6cf861",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 1,
+                "saved_sha256": "1664d237bb660346405d15b4651d6133b36e95d5e034909c491cc4754b6cf861",
+                "unexpected_after_load": []
+              },
+              "model": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 174,
+                "loaded_sha256": "3ed50c59ba47a82b9f57f8a2586397ddf4871f411c64e67e7c9fd9dc926fde21",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 174,
+                "saved_sha256": "3ed50c59ba47a82b9f57f8a2586397ddf4871f411c64e67e7c9fd9dc926fde21",
+                "unexpected_after_load": []
+              },
+              "optimizer": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2032,
+                "loaded_sha256": "51451edb2172b703dca1b7d2a1b3eaacaecbbb1ded3ebdfebae0556148878786",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2032,
+                "saved_sha256": "51451edb2172b703dca1b7d2a1b3eaacaecbbb1ded3ebdfebae0556148878786",
+                "unexpected_after_load": []
+              },
+              "train_state": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2,
+                "loaded_sha256": "23292d119b278be46c5a6cc57ad22c80c1f9cbcb547cd03db06f4fef6cf05141",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2,
+                "saved_sha256": "23292d119b278be46c5a6cc57ad22c80c1f9cbcb547cd03db06f4fef6cf05141",
+                "unexpected_after_load": []
+              }
+            }
+          },
+          "5": {
+            "passed": true,
+            "scopes": {
+              "dataloader": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2,
+                "loaded_sha256": "6e84ff038d1623d4dad8e3ec867eab31d17fbef7facd7d85ffa60e1991293fcc",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2,
+                "saved_sha256": "6e84ff038d1623d4dad8e3ec867eab31d17fbef7facd7d85ffa60e1991293fcc",
+                "unexpected_after_load": []
+              },
+              "lr_scheduler": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 1,
+                "loaded_sha256": "1664d237bb660346405d15b4651d6133b36e95d5e034909c491cc4754b6cf861",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 1,
+                "saved_sha256": "1664d237bb660346405d15b4651d6133b36e95d5e034909c491cc4754b6cf861",
+                "unexpected_after_load": []
+              },
+              "model": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 174,
+                "loaded_sha256": "de984c83f779f07c96debf923553db5a02df4c5740e33dccd13510ab277ac47f",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 174,
+                "saved_sha256": "de984c83f779f07c96debf923553db5a02df4c5740e33dccd13510ab277ac47f",
+                "unexpected_after_load": []
+              },
+              "optimizer": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2032,
+                "loaded_sha256": "be4a9949c5cd73949ca4b7f8b1aa00a347ada6bae7c45560134dc018249eb210",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2032,
+                "saved_sha256": "be4a9949c5cd73949ca4b7f8b1aa00a347ada6bae7c45560134dc018249eb210",
+                "unexpected_after_load": []
+              },
+              "train_state": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2,
+                "loaded_sha256": "23292d119b278be46c5a6cc57ad22c80c1f9cbcb547cd03db06f4fef6cf05141",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2,
+                "saved_sha256": "23292d119b278be46c5a6cc57ad22c80c1f9cbcb547cd03db06f4fef6cf05141",
+                "unexpected_after_load": []
+              }
+            }
+          },
+          "6": {
+            "passed": true,
+            "scopes": {
+              "dataloader": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2,
+                "loaded_sha256": "6e84ff038d1623d4dad8e3ec867eab31d17fbef7facd7d85ffa60e1991293fcc",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2,
+                "saved_sha256": "6e84ff038d1623d4dad8e3ec867eab31d17fbef7facd7d85ffa60e1991293fcc",
+                "unexpected_after_load": []
+              },
+              "lr_scheduler": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 1,
+                "loaded_sha256": "1664d237bb660346405d15b4651d6133b36e95d5e034909c491cc4754b6cf861",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 1,
+                "saved_sha256": "1664d237bb660346405d15b4651d6133b36e95d5e034909c491cc4754b6cf861",
+                "unexpected_after_load": []
+              },
+              "model": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 174,
+                "loaded_sha256": "308a6ccd00b1715ac1dd6650fd8038bc742197b847589d45d32434bb10f83868",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 174,
+                "saved_sha256": "308a6ccd00b1715ac1dd6650fd8038bc742197b847589d45d32434bb10f83868",
+                "unexpected_after_load": []
+              },
+              "optimizer": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2032,
+                "loaded_sha256": "738dac87f1aecfc779b933a7a168527e15928b85d6afa81af7c6596dcc79316d",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2032,
+                "saved_sha256": "738dac87f1aecfc779b933a7a168527e15928b85d6afa81af7c6596dcc79316d",
+                "unexpected_after_load": []
+              },
+              "train_state": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2,
+                "loaded_sha256": "23292d119b278be46c5a6cc57ad22c80c1f9cbcb547cd03db06f4fef6cf05141",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2,
+                "saved_sha256": "23292d119b278be46c5a6cc57ad22c80c1f9cbcb547cd03db06f4fef6cf05141",
+                "unexpected_after_load": []
+              }
+            }
+          },
+          "7": {
+            "passed": true,
+            "scopes": {
+              "dataloader": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2,
+                "loaded_sha256": "6e84ff038d1623d4dad8e3ec867eab31d17fbef7facd7d85ffa60e1991293fcc",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2,
+                "saved_sha256": "6e84ff038d1623d4dad8e3ec867eab31d17fbef7facd7d85ffa60e1991293fcc",
+                "unexpected_after_load": []
+              },
+              "lr_scheduler": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 1,
+                "loaded_sha256": "1664d237bb660346405d15b4651d6133b36e95d5e034909c491cc4754b6cf861",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 1,
+                "saved_sha256": "1664d237bb660346405d15b4651d6133b36e95d5e034909c491cc4754b6cf861",
+                "unexpected_after_load": []
+              },
+              "model": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 174,
+                "loaded_sha256": "875d09bef2309f6347a0620472a520c929393046deb81e3e656bb3616023f876",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 174,
+                "saved_sha256": "875d09bef2309f6347a0620472a520c929393046deb81e3e656bb3616023f876",
+                "unexpected_after_load": []
+              },
+              "optimizer": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2032,
+                "loaded_sha256": "acd0d5e4cbe2523e7b9b561703aba568f35098ddd5220c019cdf00830fde6588",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2032,
+                "saved_sha256": "acd0d5e4cbe2523e7b9b561703aba568f35098ddd5220c019cdf00830fde6588",
+                "unexpected_after_load": []
+              },
+              "train_state": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2,
+                "loaded_sha256": "23292d119b278be46c5a6cc57ad22c80c1f9cbcb547cd03db06f4fef6cf05141",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2,
+                "saved_sha256": "23292d119b278be46c5a6cc57ad22c80c1f9cbcb547cd03db06f4fef6cf05141",
+                "unexpected_after_load": []
+              }
+            }
+          }
+        },
+        "step": 50
+      },
+      "checkpoint_summary": {
+        "leaf_counts": {
+          "dataloader": 2,
+          "lr_scheduler": 1,
+          "model": 174,
+          "optimizer": 2032,
+          "train_state": 2
+        },
+        "missing_required_scopes": [],
+        "path": "/workspace/y50064852_yyb/torchtitan-test/checkpoint_runs/npu-bf16-s100-k50-l8-b64-seq128-seed61-sync-exact-graceful-db4fb294/tp8/graceful/trainer_output/checkpoint/step-50",
+        "present_scopes": [
+          "dataloader",
+          "lr_scheduler",
+          "model",
+          "optimizer",
+          "train_state"
+        ],
+        "tensor_counts": {
+          "model": 174,
+          "optimizer": 381
+        }
+      },
+      "checks": {
+        "Every rank loaded the last complete checkpoint": true,
+        "Final logical distributed checkpoint matches": true,
+        "Higher incomplete checkpoint was ignored": true,
+        "Last complete checkpoint contains all training state": true,
+        "Loaded in-memory state matches the pre-restart state": true,
+        "Loss and grad norm meet the selected standard": true,
+        "Optimizer state schema is complete on every rank": true,
+        "Replayed fixed-token input sequence is exact": true,
+        "Requested interruption was observed": true,
+        "Saved recovery-boundary checkpoint matches baseline": true
+      },
+      "failure_location": {
+        "description": "No checkpoint or resumed-training divergence was observed.",
+        "stage": "exact"
+      },
+      "fault_step": 50,
+      "final_state": {
+        "absolute_tolerance": 0.01,
+        "mismatch_examples": [],
+        "missing_from_candidate": [],
+        "missing_from_reference": [],
+        "missing_required_scopes": [],
+        "mode": "exact",
+        "passed": true,
+        "relative_tolerance": 0.01,
+        "scopes": {
+          "dataloader": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          },
+          "lr_scheduler": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          },
+          "model": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 17068856,
+            "tensor_leaves": 174,
+            "tolerance_tensor_mismatches": 0
+          },
+          "optimizer": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 33332863,
+            "tensor_leaves": 381,
+            "tolerance_tensor_mismatches": 0
+          },
+          "train_state": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          }
+        }
+      },
+      "incomplete_checkpoint_ignored": true,
+      "input_contract_exact": true,
+      "interruption": {
+        "cleanup": {
+          "group_remaining": false,
+          "kill_sent": false,
+          "reaped_children": 0,
+          "term_sent": false
+        },
+        "description": "normal controlled exit immediately after a completed save",
+        "launcher_signal": null,
+        "return_code": 0
+      },
+      "loaded_steps": {
+        "0": 50,
+        "1": 50,
+        "2": 50,
+        "3": 50,
+        "4": 50,
+        "5": 50,
+        "6": 50,
+        "7": 50
+      },
+      "metrics": {
+        "grad_norm": {
+          "after_restart": {
+            "bitwise_equal": true,
+            "count": 50,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0
+          },
+          "bitwise_equal": true,
+          "count": 100,
+          "first_bitwise_mismatch": null,
+          "first_bitwise_mismatch_step": null,
+          "max_absolute": 0.0,
+          "mean_absolute": 0.0,
+          "mean_absolute_relative": 0.0,
+          "mean_relative": 0.0,
+          "normal": 0.0,
+          "through_checkpoint": {
+            "bitwise_equal": true,
+            "count": 50,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0
+          }
+        },
+        "loss": {
+          "after_restart": {
+            "bitwise_equal": true,
+            "count": 50,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0
+          },
+          "bitwise_equal": true,
+          "count": 100,
+          "first_bitwise_mismatch": null,
+          "first_bitwise_mismatch_step": null,
+          "max_absolute": 0.0,
+          "mean_absolute": 0.0,
+          "mean_absolute_relative": 0.0,
+          "mean_relative": 0.0,
+          "normal": 0.0,
+          "through_checkpoint": {
+            "bitwise_equal": true,
+            "count": 50,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0
+          }
+        },
+        "mode": "exact",
+        "passed": true
+      },
+      "optimizer_state_gaps": {
+        "0": [],
+        "1": [],
+        "2": [],
+        "3": [],
+        "4": [],
+        "5": [],
+        "6": [],
+        "7": []
+      },
+      "partial_checkpoint_before_resume": false,
+      "passed": true,
+      "split_state": {
+        "absolute_tolerance": 0.01,
+        "mismatch_examples": [],
+        "missing_from_candidate": [],
+        "missing_from_reference": [],
+        "missing_required_scopes": [],
+        "mode": "exact",
+        "passed": true,
+        "relative_tolerance": 0.01,
+        "scopes": {
+          "dataloader": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          },
+          "lr_scheduler": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          },
+          "model": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 17068856,
+            "tensor_leaves": 174,
+            "tolerance_tensor_mismatches": 0
+          },
+          "optimizer": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 33332863,
+            "tensor_leaves": 381,
+            "tolerance_tensor_mismatches": 0
+          },
+          "train_state": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          }
+        }
+      }
+    }
+  },
+  "schema": "torchtitan.glm5_2.checkpoint_fault_recovery",
+  "schema_version": 2,
+  "split_step": 50,
+  "total_steps": 100
+}

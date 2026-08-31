@@ -1,0 +1,1633 @@
+{
+  "baseline_contract_ranks": [
+    "rank-0.jsonl"
+  ],
+  "completed_restart": {
+    "cleanup": {
+      "group_remaining": false,
+      "kill_sent": false,
+      "reaped_children": 0,
+      "term_sent": false
+    },
+    "launcher_signal": null,
+    "loaded_steps": {
+      "0": 100
+    },
+    "passed": true,
+    "return_code": 0
+  },
+  "configuration": {
+    "async_mode": "disabled",
+    "batch_schedule": {
+      "gradient_accumulation_steps": 8,
+      "pipeline_microbatches": 8
+    },
+    "comparison": "exact",
+    "device": "npu",
+    "failure_modes": [
+      "graceful",
+      "sigint",
+      "sigterm",
+      "sigkill",
+      "incomplete"
+    ],
+    "failure_rank": 0,
+    "failure_timeout": 1800,
+    "grad_relative_limit": 0.05,
+    "loss_atol": 0.01,
+    "loss_rtol": 0.01,
+    "restart_delay": 2.0,
+    "state_atol": 0.01,
+    "state_rtol": 0.01,
+    "topology": {
+      "context_parallel_degree": 1,
+      "data_parallel_replicate_degree": 1,
+      "data_parallel_shard_degree": 1,
+      "expert_parallel_degree": 1,
+      "extra_args": [],
+      "name": "single",
+      "pipeline_parallel_degree": 1,
+      "pipeline_parallel_microbatch_size": 1,
+      "pipeline_parallel_schedule": "1F1B",
+      "tensor_parallel_degree": 1,
+      "world_size": 1
+    },
+    "training": {
+      "checkpoint_kind": "random_seed",
+      "config": "glm5_debugmodel",
+      "converged_checkpoint": null,
+      "data_paths": [
+        "tests/assets/c4_test",
+        "tests/assets/tokenizer"
+      ],
+      "deterministic": true,
+      "deterministic_warn_only": false,
+      "exploratory_steps": [],
+      "extra_args": [],
+      "global_batch_size": 64,
+      "local_batch_size": 8,
+      "mixed_precision_param": "bfloat16",
+      "mixed_precision_reduce": "float32",
+      "module": "glm5",
+      "seed": 61,
+      "sequence_length": 128,
+      "steps": 100,
+      "training_dtype": "float32"
+    },
+    "visible_devices": "0,1,2,3,4,5,6,7"
+  },
+  "interrupt_step": 51,
+  "passed": true,
+  "run_name": "npu-single-bf16-s100-k50-l8-b64-seq128-seed61-sync-exact-all-faults-ef794057",
+  "scenarios": {
+    "graceful": {
+      "boundary_memory": {
+        "mismatch_examples": [],
+        "missing_loaded_ranks": [],
+        "missing_saved_ranks": [],
+        "passed": true,
+        "ranks": {
+          "0": {
+            "passed": true,
+            "scopes": {
+              "dataloader": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2,
+                "loaded_sha256": "6e84ff038d1623d4dad8e3ec867eab31d17fbef7facd7d85ffa60e1991293fcc",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2,
+                "saved_sha256": "6e84ff038d1623d4dad8e3ec867eab31d17fbef7facd7d85ffa60e1991293fcc",
+                "unexpected_after_load": []
+              },
+              "lr_scheduler": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 1,
+                "loaded_sha256": "1664d237bb660346405d15b4651d6133b36e95d5e034909c491cc4754b6cf861",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 1,
+                "saved_sha256": "1664d237bb660346405d15b4651d6133b36e95d5e034909c491cc4754b6cf861",
+                "unexpected_after_load": []
+              },
+              "model": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 174,
+                "loaded_sha256": "ae6b07c0a23e38d0a0dd547e749572c8e9d620bbc54bf674c79ec7a9fe13076b",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 174,
+                "saved_sha256": "ae6b07c0a23e38d0a0dd547e749572c8e9d620bbc54bf674c79ec7a9fe13076b",
+                "unexpected_after_load": []
+              },
+              "optimizer": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2032,
+                "loaded_sha256": "0939948746038f851c7d46c6402a8bbf211a325faa74dcf56489ea6944a52bea",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2032,
+                "saved_sha256": "0939948746038f851c7d46c6402a8bbf211a325faa74dcf56489ea6944a52bea",
+                "unexpected_after_load": []
+              },
+              "train_state": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2,
+                "loaded_sha256": "23292d119b278be46c5a6cc57ad22c80c1f9cbcb547cd03db06f4fef6cf05141",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2,
+                "saved_sha256": "23292d119b278be46c5a6cc57ad22c80c1f9cbcb547cd03db06f4fef6cf05141",
+                "unexpected_after_load": []
+              }
+            }
+          }
+        },
+        "step": 50
+      },
+      "checkpoint_summary": {
+        "leaf_counts": {
+          "dataloader": 2,
+          "lr_scheduler": 1,
+          "model": 174,
+          "optimizer": 2032,
+          "train_state": 2
+        },
+        "missing_required_scopes": [],
+        "path": "/workspace/y50064852_yyb/torchtitan-test/checkpoint_runs/npu-bf16-s100-k50-l8-b64-seq128-seed61-sync-exact-all-faults-569c4f59/single/graceful/trainer_output/checkpoint/step-50",
+        "present_scopes": [
+          "dataloader",
+          "lr_scheduler",
+          "model",
+          "optimizer",
+          "train_state"
+        ],
+        "tensor_counts": {
+          "model": 174,
+          "optimizer": 381
+        }
+      },
+      "checks": {
+        "Every rank loaded the last complete checkpoint": true,
+        "Final logical distributed checkpoint matches": true,
+        "Higher incomplete checkpoint was ignored": true,
+        "Last complete checkpoint contains all training state": true,
+        "Loaded in-memory state matches the pre-restart state": true,
+        "Loss and grad norm meet the selected standard": true,
+        "Optimizer state schema is complete on every rank": true,
+        "Replayed fixed-token input sequence is exact": true,
+        "Requested interruption was observed": true,
+        "Saved recovery-boundary checkpoint matches baseline": true
+      },
+      "failure_location": {
+        "description": "No checkpoint or resumed-training divergence was observed.",
+        "stage": "exact"
+      },
+      "fault_step": 50,
+      "final_state": {
+        "absolute_tolerance": 0.01,
+        "mismatch_examples": [],
+        "missing_from_candidate": [],
+        "missing_from_reference": [],
+        "missing_required_scopes": [],
+        "mode": "exact",
+        "passed": true,
+        "relative_tolerance": 0.01,
+        "scopes": {
+          "dataloader": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          },
+          "lr_scheduler": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          },
+          "model": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 17068856,
+            "tensor_leaves": 174,
+            "tolerance_tensor_mismatches": 0
+          },
+          "optimizer": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 33332863,
+            "tensor_leaves": 381,
+            "tolerance_tensor_mismatches": 0
+          },
+          "train_state": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          }
+        }
+      },
+      "incomplete_checkpoint_ignored": true,
+      "input_contract_exact": true,
+      "interruption": {
+        "cleanup": {
+          "group_remaining": false,
+          "kill_sent": false,
+          "reaped_children": 0,
+          "term_sent": false
+        },
+        "description": "normal controlled exit immediately after a completed save",
+        "launcher_signal": null,
+        "return_code": 0
+      },
+      "loaded_steps": {
+        "0": 50
+      },
+      "metrics": {
+        "grad_norm": {
+          "after_restart": {
+            "bitwise_equal": true,
+            "count": 50,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0
+          },
+          "bitwise_equal": true,
+          "count": 100,
+          "first_bitwise_mismatch": null,
+          "first_bitwise_mismatch_step": null,
+          "max_absolute": 0.0,
+          "mean_absolute": 0.0,
+          "mean_absolute_relative": 0.0,
+          "mean_relative": 0.0,
+          "normal": 0.0,
+          "through_checkpoint": {
+            "bitwise_equal": true,
+            "count": 50,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0
+          }
+        },
+        "loss": {
+          "after_restart": {
+            "bitwise_equal": true,
+            "count": 50,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0
+          },
+          "bitwise_equal": true,
+          "count": 100,
+          "first_bitwise_mismatch": null,
+          "first_bitwise_mismatch_step": null,
+          "max_absolute": 0.0,
+          "mean_absolute": 0.0,
+          "mean_absolute_relative": 0.0,
+          "mean_relative": 0.0,
+          "normal": 0.0,
+          "through_checkpoint": {
+            "bitwise_equal": true,
+            "count": 50,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0
+          }
+        },
+        "mode": "exact",
+        "passed": true
+      },
+      "optimizer_state_gaps": {
+        "0": []
+      },
+      "partial_checkpoint_before_resume": false,
+      "passed": true,
+      "split_state": {
+        "absolute_tolerance": 0.01,
+        "mismatch_examples": [],
+        "missing_from_candidate": [],
+        "missing_from_reference": [],
+        "missing_required_scopes": [],
+        "mode": "exact",
+        "passed": true,
+        "relative_tolerance": 0.01,
+        "scopes": {
+          "dataloader": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          },
+          "lr_scheduler": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          },
+          "model": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 17068856,
+            "tensor_leaves": 174,
+            "tolerance_tensor_mismatches": 0
+          },
+          "optimizer": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 33332863,
+            "tensor_leaves": 381,
+            "tolerance_tensor_mismatches": 0
+          },
+          "train_state": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          }
+        }
+      }
+    },
+    "incomplete": {
+      "boundary_memory": {
+        "mismatch_examples": [],
+        "missing_loaded_ranks": [],
+        "missing_saved_ranks": [],
+        "passed": true,
+        "ranks": {
+          "0": {
+            "passed": true,
+            "scopes": {
+              "dataloader": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2,
+                "loaded_sha256": "6e84ff038d1623d4dad8e3ec867eab31d17fbef7facd7d85ffa60e1991293fcc",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2,
+                "saved_sha256": "6e84ff038d1623d4dad8e3ec867eab31d17fbef7facd7d85ffa60e1991293fcc",
+                "unexpected_after_load": []
+              },
+              "lr_scheduler": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 1,
+                "loaded_sha256": "1664d237bb660346405d15b4651d6133b36e95d5e034909c491cc4754b6cf861",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 1,
+                "saved_sha256": "1664d237bb660346405d15b4651d6133b36e95d5e034909c491cc4754b6cf861",
+                "unexpected_after_load": []
+              },
+              "model": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 174,
+                "loaded_sha256": "ae6b07c0a23e38d0a0dd547e749572c8e9d620bbc54bf674c79ec7a9fe13076b",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 174,
+                "saved_sha256": "ae6b07c0a23e38d0a0dd547e749572c8e9d620bbc54bf674c79ec7a9fe13076b",
+                "unexpected_after_load": []
+              },
+              "optimizer": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2032,
+                "loaded_sha256": "0939948746038f851c7d46c6402a8bbf211a325faa74dcf56489ea6944a52bea",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2032,
+                "saved_sha256": "0939948746038f851c7d46c6402a8bbf211a325faa74dcf56489ea6944a52bea",
+                "unexpected_after_load": []
+              },
+              "train_state": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2,
+                "loaded_sha256": "23292d119b278be46c5a6cc57ad22c80c1f9cbcb547cd03db06f4fef6cf05141",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2,
+                "saved_sha256": "23292d119b278be46c5a6cc57ad22c80c1f9cbcb547cd03db06f4fef6cf05141",
+                "unexpected_after_load": []
+              }
+            }
+          }
+        },
+        "step": 50
+      },
+      "checkpoint_summary": {
+        "leaf_counts": {
+          "dataloader": 2,
+          "lr_scheduler": 1,
+          "model": 174,
+          "optimizer": 2032,
+          "train_state": 2
+        },
+        "missing_required_scopes": [],
+        "path": "/workspace/y50064852_yyb/torchtitan-test/checkpoint_runs/npu-bf16-s100-k50-l8-b64-seq128-seed61-sync-exact-all-faults-569c4f59/single/incomplete/trainer_output/checkpoint/step-50",
+        "present_scopes": [
+          "dataloader",
+          "lr_scheduler",
+          "model",
+          "optimizer",
+          "train_state"
+        ],
+        "tensor_counts": {
+          "model": 174,
+          "optimizer": 381
+        }
+      },
+      "checks": {
+        "Every rank loaded the last complete checkpoint": true,
+        "Final logical distributed checkpoint matches": true,
+        "Higher incomplete checkpoint was ignored": true,
+        "Last complete checkpoint contains all training state": true,
+        "Loaded in-memory state matches the pre-restart state": true,
+        "Loss and grad norm meet the selected standard": true,
+        "Optimizer state schema is complete on every rank": true,
+        "Replayed fixed-token input sequence is exact": true,
+        "Requested interruption was observed": true,
+        "Saved recovery-boundary checkpoint matches baseline": true
+      },
+      "failure_location": {
+        "description": "No checkpoint or resumed-training divergence was observed.",
+        "stage": "exact"
+      },
+      "fault_step": 51,
+      "final_state": {
+        "absolute_tolerance": 0.01,
+        "mismatch_examples": [],
+        "missing_from_candidate": [],
+        "missing_from_reference": [],
+        "missing_required_scopes": [],
+        "mode": "exact",
+        "passed": true,
+        "relative_tolerance": 0.01,
+        "scopes": {
+          "dataloader": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          },
+          "lr_scheduler": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          },
+          "model": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 17068856,
+            "tensor_leaves": 174,
+            "tolerance_tensor_mismatches": 0
+          },
+          "optimizer": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 33332863,
+            "tensor_leaves": 381,
+            "tolerance_tensor_mismatches": 0
+          },
+          "train_state": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          }
+        }
+      },
+      "incomplete_checkpoint_ignored": true,
+      "input_contract_exact": true,
+      "interruption": {
+        "cleanup": {
+          "group_remaining": false,
+          "kill_sent": false,
+          "reaped_children": 0,
+          "term_sent": false
+        },
+        "description": "SIGKILL after a higher step directory appears without DCP metadata",
+        "launcher_signal": "SIGKILL",
+        "return_code": -9
+      },
+      "loaded_steps": {
+        "0": 50
+      },
+      "metrics": {
+        "grad_norm": {
+          "after_restart": {
+            "bitwise_equal": true,
+            "count": 50,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0
+          },
+          "bitwise_equal": true,
+          "count": 100,
+          "first_bitwise_mismatch": null,
+          "first_bitwise_mismatch_step": null,
+          "max_absolute": 0.0,
+          "mean_absolute": 0.0,
+          "mean_absolute_relative": 0.0,
+          "mean_relative": 0.0,
+          "normal": 0.0,
+          "through_checkpoint": {
+            "bitwise_equal": true,
+            "count": 50,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0
+          }
+        },
+        "loss": {
+          "after_restart": {
+            "bitwise_equal": true,
+            "count": 50,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0
+          },
+          "bitwise_equal": true,
+          "count": 100,
+          "first_bitwise_mismatch": null,
+          "first_bitwise_mismatch_step": null,
+          "max_absolute": 0.0,
+          "mean_absolute": 0.0,
+          "mean_absolute_relative": 0.0,
+          "mean_relative": 0.0,
+          "normal": 0.0,
+          "through_checkpoint": {
+            "bitwise_equal": true,
+            "count": 50,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0
+          }
+        },
+        "mode": "exact",
+        "passed": true
+      },
+      "optimizer_state_gaps": {
+        "0": []
+      },
+      "partial_checkpoint_before_resume": true,
+      "passed": true,
+      "split_state": {
+        "absolute_tolerance": 0.01,
+        "mismatch_examples": [],
+        "missing_from_candidate": [],
+        "missing_from_reference": [],
+        "missing_required_scopes": [],
+        "mode": "exact",
+        "passed": true,
+        "relative_tolerance": 0.01,
+        "scopes": {
+          "dataloader": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          },
+          "lr_scheduler": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          },
+          "model": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 17068856,
+            "tensor_leaves": 174,
+            "tolerance_tensor_mismatches": 0
+          },
+          "optimizer": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 33332863,
+            "tensor_leaves": 381,
+            "tolerance_tensor_mismatches": 0
+          },
+          "train_state": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          }
+        }
+      }
+    },
+    "sigint": {
+      "boundary_memory": {
+        "mismatch_examples": [],
+        "missing_loaded_ranks": [],
+        "missing_saved_ranks": [],
+        "passed": true,
+        "ranks": {
+          "0": {
+            "passed": true,
+            "scopes": {
+              "dataloader": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2,
+                "loaded_sha256": "6e84ff038d1623d4dad8e3ec867eab31d17fbef7facd7d85ffa60e1991293fcc",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2,
+                "saved_sha256": "6e84ff038d1623d4dad8e3ec867eab31d17fbef7facd7d85ffa60e1991293fcc",
+                "unexpected_after_load": []
+              },
+              "lr_scheduler": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 1,
+                "loaded_sha256": "1664d237bb660346405d15b4651d6133b36e95d5e034909c491cc4754b6cf861",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 1,
+                "saved_sha256": "1664d237bb660346405d15b4651d6133b36e95d5e034909c491cc4754b6cf861",
+                "unexpected_after_load": []
+              },
+              "model": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 174,
+                "loaded_sha256": "ae6b07c0a23e38d0a0dd547e749572c8e9d620bbc54bf674c79ec7a9fe13076b",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 174,
+                "saved_sha256": "ae6b07c0a23e38d0a0dd547e749572c8e9d620bbc54bf674c79ec7a9fe13076b",
+                "unexpected_after_load": []
+              },
+              "optimizer": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2032,
+                "loaded_sha256": "0939948746038f851c7d46c6402a8bbf211a325faa74dcf56489ea6944a52bea",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2032,
+                "saved_sha256": "0939948746038f851c7d46c6402a8bbf211a325faa74dcf56489ea6944a52bea",
+                "unexpected_after_load": []
+              },
+              "train_state": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2,
+                "loaded_sha256": "23292d119b278be46c5a6cc57ad22c80c1f9cbcb547cd03db06f4fef6cf05141",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2,
+                "saved_sha256": "23292d119b278be46c5a6cc57ad22c80c1f9cbcb547cd03db06f4fef6cf05141",
+                "unexpected_after_load": []
+              }
+            }
+          }
+        },
+        "step": 50
+      },
+      "checkpoint_summary": {
+        "leaf_counts": {
+          "dataloader": 2,
+          "lr_scheduler": 1,
+          "model": 174,
+          "optimizer": 2032,
+          "train_state": 2
+        },
+        "missing_required_scopes": [],
+        "path": "/workspace/y50064852_yyb/torchtitan-test/checkpoint_runs/npu-bf16-s100-k50-l8-b64-seq128-seed61-sync-exact-all-faults-569c4f59/single/sigint/trainer_output/checkpoint/step-50",
+        "present_scopes": [
+          "dataloader",
+          "lr_scheduler",
+          "model",
+          "optimizer",
+          "train_state"
+        ],
+        "tensor_counts": {
+          "model": 174,
+          "optimizer": 381
+        }
+      },
+      "checks": {
+        "Every rank loaded the last complete checkpoint": true,
+        "Final logical distributed checkpoint matches": true,
+        "Higher incomplete checkpoint was ignored": true,
+        "Last complete checkpoint contains all training state": true,
+        "Loaded in-memory state matches the pre-restart state": true,
+        "Loss and grad norm meet the selected standard": true,
+        "Optimizer state schema is complete on every rank": true,
+        "Replayed fixed-token input sequence is exact": true,
+        "Requested interruption was observed": true,
+        "Saved recovery-boundary checkpoint matches baseline": true
+      },
+      "failure_location": {
+        "description": "No checkpoint or resumed-training divergence was observed.",
+        "stage": "exact"
+      },
+      "fault_step": 51,
+      "final_state": {
+        "absolute_tolerance": 0.01,
+        "mismatch_examples": [],
+        "missing_from_candidate": [],
+        "missing_from_reference": [],
+        "missing_required_scopes": [],
+        "mode": "exact",
+        "passed": true,
+        "relative_tolerance": 0.01,
+        "scopes": {
+          "dataloader": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          },
+          "lr_scheduler": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          },
+          "model": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 17068856,
+            "tensor_leaves": 174,
+            "tolerance_tensor_mismatches": 0
+          },
+          "optimizer": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 33332863,
+            "tensor_leaves": 381,
+            "tolerance_tensor_mismatches": 0
+          },
+          "train_state": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          }
+        }
+      },
+      "incomplete_checkpoint_ignored": true,
+      "input_contract_exact": true,
+      "interruption": {
+        "cleanup": {
+          "group_remaining": false,
+          "kill_sent": false,
+          "reaped_children": 0,
+          "term_sent": false
+        },
+        "description": "Ctrl+C equivalent sent to the torchrun process group",
+        "launcher_signal": "SIGINT",
+        "return_code": 1
+      },
+      "loaded_steps": {
+        "0": 50
+      },
+      "metrics": {
+        "grad_norm": {
+          "after_restart": {
+            "bitwise_equal": true,
+            "count": 50,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0
+          },
+          "bitwise_equal": true,
+          "count": 100,
+          "first_bitwise_mismatch": null,
+          "first_bitwise_mismatch_step": null,
+          "max_absolute": 0.0,
+          "mean_absolute": 0.0,
+          "mean_absolute_relative": 0.0,
+          "mean_relative": 0.0,
+          "normal": 0.0,
+          "through_checkpoint": {
+            "bitwise_equal": true,
+            "count": 50,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0
+          }
+        },
+        "loss": {
+          "after_restart": {
+            "bitwise_equal": true,
+            "count": 50,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0
+          },
+          "bitwise_equal": true,
+          "count": 100,
+          "first_bitwise_mismatch": null,
+          "first_bitwise_mismatch_step": null,
+          "max_absolute": 0.0,
+          "mean_absolute": 0.0,
+          "mean_absolute_relative": 0.0,
+          "mean_relative": 0.0,
+          "normal": 0.0,
+          "through_checkpoint": {
+            "bitwise_equal": true,
+            "count": 50,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0
+          }
+        },
+        "mode": "exact",
+        "passed": true
+      },
+      "optimizer_state_gaps": {
+        "0": []
+      },
+      "partial_checkpoint_before_resume": false,
+      "passed": true,
+      "split_state": {
+        "absolute_tolerance": 0.01,
+        "mismatch_examples": [],
+        "missing_from_candidate": [],
+        "missing_from_reference": [],
+        "missing_required_scopes": [],
+        "mode": "exact",
+        "passed": true,
+        "relative_tolerance": 0.01,
+        "scopes": {
+          "dataloader": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          },
+          "lr_scheduler": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          },
+          "model": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 17068856,
+            "tensor_leaves": 174,
+            "tolerance_tensor_mismatches": 0
+          },
+          "optimizer": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 33332863,
+            "tensor_leaves": 381,
+            "tolerance_tensor_mismatches": 0
+          },
+          "train_state": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          }
+        }
+      }
+    },
+    "sigkill": {
+      "boundary_memory": {
+        "mismatch_examples": [],
+        "missing_loaded_ranks": [],
+        "missing_saved_ranks": [],
+        "passed": true,
+        "ranks": {
+          "0": {
+            "passed": true,
+            "scopes": {
+              "dataloader": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2,
+                "loaded_sha256": "6e84ff038d1623d4dad8e3ec867eab31d17fbef7facd7d85ffa60e1991293fcc",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2,
+                "saved_sha256": "6e84ff038d1623d4dad8e3ec867eab31d17fbef7facd7d85ffa60e1991293fcc",
+                "unexpected_after_load": []
+              },
+              "lr_scheduler": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 1,
+                "loaded_sha256": "1664d237bb660346405d15b4651d6133b36e95d5e034909c491cc4754b6cf861",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 1,
+                "saved_sha256": "1664d237bb660346405d15b4651d6133b36e95d5e034909c491cc4754b6cf861",
+                "unexpected_after_load": []
+              },
+              "model": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 174,
+                "loaded_sha256": "ae6b07c0a23e38d0a0dd547e749572c8e9d620bbc54bf674c79ec7a9fe13076b",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 174,
+                "saved_sha256": "ae6b07c0a23e38d0a0dd547e749572c8e9d620bbc54bf674c79ec7a9fe13076b",
+                "unexpected_after_load": []
+              },
+              "optimizer": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2032,
+                "loaded_sha256": "0939948746038f851c7d46c6402a8bbf211a325faa74dcf56489ea6944a52bea",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2032,
+                "saved_sha256": "0939948746038f851c7d46c6402a8bbf211a325faa74dcf56489ea6944a52bea",
+                "unexpected_after_load": []
+              },
+              "train_state": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2,
+                "loaded_sha256": "23292d119b278be46c5a6cc57ad22c80c1f9cbcb547cd03db06f4fef6cf05141",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2,
+                "saved_sha256": "23292d119b278be46c5a6cc57ad22c80c1f9cbcb547cd03db06f4fef6cf05141",
+                "unexpected_after_load": []
+              }
+            }
+          }
+        },
+        "step": 50
+      },
+      "checkpoint_summary": {
+        "leaf_counts": {
+          "dataloader": 2,
+          "lr_scheduler": 1,
+          "model": 174,
+          "optimizer": 2032,
+          "train_state": 2
+        },
+        "missing_required_scopes": [],
+        "path": "/workspace/y50064852_yyb/torchtitan-test/checkpoint_runs/npu-bf16-s100-k50-l8-b64-seq128-seed61-sync-exact-all-faults-569c4f59/single/sigkill/trainer_output/checkpoint/step-50",
+        "present_scopes": [
+          "dataloader",
+          "lr_scheduler",
+          "model",
+          "optimizer",
+          "train_state"
+        ],
+        "tensor_counts": {
+          "model": 174,
+          "optimizer": 381
+        }
+      },
+      "checks": {
+        "Every rank loaded the last complete checkpoint": true,
+        "Final logical distributed checkpoint matches": true,
+        "Higher incomplete checkpoint was ignored": true,
+        "Last complete checkpoint contains all training state": true,
+        "Loaded in-memory state matches the pre-restart state": true,
+        "Loss and grad norm meet the selected standard": true,
+        "Optimizer state schema is complete on every rank": true,
+        "Replayed fixed-token input sequence is exact": true,
+        "Requested interruption was observed": true,
+        "Saved recovery-boundary checkpoint matches baseline": true
+      },
+      "failure_location": {
+        "description": "No checkpoint or resumed-training divergence was observed.",
+        "stage": "exact"
+      },
+      "fault_step": 51,
+      "final_state": {
+        "absolute_tolerance": 0.01,
+        "mismatch_examples": [],
+        "missing_from_candidate": [],
+        "missing_from_reference": [],
+        "missing_required_scopes": [],
+        "mode": "exact",
+        "passed": true,
+        "relative_tolerance": 0.01,
+        "scopes": {
+          "dataloader": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          },
+          "lr_scheduler": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          },
+          "model": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 17068856,
+            "tensor_leaves": 174,
+            "tolerance_tensor_mismatches": 0
+          },
+          "optimizer": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 33332863,
+            "tensor_leaves": 381,
+            "tolerance_tensor_mismatches": 0
+          },
+          "train_state": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          }
+        }
+      },
+      "incomplete_checkpoint_ignored": true,
+      "input_contract_exact": true,
+      "interruption": {
+        "cleanup": {
+          "group_remaining": false,
+          "kill_sent": false,
+          "reaped_children": 0,
+          "term_sent": false
+        },
+        "description": "SIGKILL sent to the torchrun process group",
+        "launcher_signal": "SIGKILL",
+        "return_code": -9
+      },
+      "loaded_steps": {
+        "0": 50
+      },
+      "metrics": {
+        "grad_norm": {
+          "after_restart": {
+            "bitwise_equal": true,
+            "count": 50,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0
+          },
+          "bitwise_equal": true,
+          "count": 100,
+          "first_bitwise_mismatch": null,
+          "first_bitwise_mismatch_step": null,
+          "max_absolute": 0.0,
+          "mean_absolute": 0.0,
+          "mean_absolute_relative": 0.0,
+          "mean_relative": 0.0,
+          "normal": 0.0,
+          "through_checkpoint": {
+            "bitwise_equal": true,
+            "count": 50,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0
+          }
+        },
+        "loss": {
+          "after_restart": {
+            "bitwise_equal": true,
+            "count": 50,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0
+          },
+          "bitwise_equal": true,
+          "count": 100,
+          "first_bitwise_mismatch": null,
+          "first_bitwise_mismatch_step": null,
+          "max_absolute": 0.0,
+          "mean_absolute": 0.0,
+          "mean_absolute_relative": 0.0,
+          "mean_relative": 0.0,
+          "normal": 0.0,
+          "through_checkpoint": {
+            "bitwise_equal": true,
+            "count": 50,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0
+          }
+        },
+        "mode": "exact",
+        "passed": true
+      },
+      "optimizer_state_gaps": {
+        "0": []
+      },
+      "partial_checkpoint_before_resume": false,
+      "passed": true,
+      "split_state": {
+        "absolute_tolerance": 0.01,
+        "mismatch_examples": [],
+        "missing_from_candidate": [],
+        "missing_from_reference": [],
+        "missing_required_scopes": [],
+        "mode": "exact",
+        "passed": true,
+        "relative_tolerance": 0.01,
+        "scopes": {
+          "dataloader": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          },
+          "lr_scheduler": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          },
+          "model": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 17068856,
+            "tensor_leaves": 174,
+            "tolerance_tensor_mismatches": 0
+          },
+          "optimizer": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 33332863,
+            "tensor_leaves": 381,
+            "tolerance_tensor_mismatches": 0
+          },
+          "train_state": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          }
+        }
+      }
+    },
+    "sigterm": {
+      "boundary_memory": {
+        "mismatch_examples": [],
+        "missing_loaded_ranks": [],
+        "missing_saved_ranks": [],
+        "passed": true,
+        "ranks": {
+          "0": {
+            "passed": true,
+            "scopes": {
+              "dataloader": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2,
+                "loaded_sha256": "6e84ff038d1623d4dad8e3ec867eab31d17fbef7facd7d85ffa60e1991293fcc",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2,
+                "saved_sha256": "6e84ff038d1623d4dad8e3ec867eab31d17fbef7facd7d85ffa60e1991293fcc",
+                "unexpected_after_load": []
+              },
+              "lr_scheduler": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 1,
+                "loaded_sha256": "1664d237bb660346405d15b4651d6133b36e95d5e034909c491cc4754b6cf861",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 1,
+                "saved_sha256": "1664d237bb660346405d15b4651d6133b36e95d5e034909c491cc4754b6cf861",
+                "unexpected_after_load": []
+              },
+              "model": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 174,
+                "loaded_sha256": "ae6b07c0a23e38d0a0dd547e749572c8e9d620bbc54bf674c79ec7a9fe13076b",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 174,
+                "saved_sha256": "ae6b07c0a23e38d0a0dd547e749572c8e9d620bbc54bf674c79ec7a9fe13076b",
+                "unexpected_after_load": []
+              },
+              "optimizer": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2032,
+                "loaded_sha256": "0939948746038f851c7d46c6402a8bbf211a325faa74dcf56489ea6944a52bea",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2032,
+                "saved_sha256": "0939948746038f851c7d46c6402a8bbf211a325faa74dcf56489ea6944a52bea",
+                "unexpected_after_load": []
+              },
+              "train_state": {
+                "changed_leaf_count": 0,
+                "changed_leaves": [],
+                "loaded_leaf_count": 2,
+                "loaded_sha256": "23292d119b278be46c5a6cc57ad22c80c1f9cbcb547cd03db06f4fef6cf05141",
+                "missing_after_load": [],
+                "passed": true,
+                "saved_leaf_count": 2,
+                "saved_sha256": "23292d119b278be46c5a6cc57ad22c80c1f9cbcb547cd03db06f4fef6cf05141",
+                "unexpected_after_load": []
+              }
+            }
+          }
+        },
+        "step": 50
+      },
+      "checkpoint_summary": {
+        "leaf_counts": {
+          "dataloader": 2,
+          "lr_scheduler": 1,
+          "model": 174,
+          "optimizer": 2032,
+          "train_state": 2
+        },
+        "missing_required_scopes": [],
+        "path": "/workspace/y50064852_yyb/torchtitan-test/checkpoint_runs/npu-bf16-s100-k50-l8-b64-seq128-seed61-sync-exact-all-faults-569c4f59/single/sigterm/trainer_output/checkpoint/step-50",
+        "present_scopes": [
+          "dataloader",
+          "lr_scheduler",
+          "model",
+          "optimizer",
+          "train_state"
+        ],
+        "tensor_counts": {
+          "model": 174,
+          "optimizer": 381
+        }
+      },
+      "checks": {
+        "Every rank loaded the last complete checkpoint": true,
+        "Final logical distributed checkpoint matches": true,
+        "Higher incomplete checkpoint was ignored": true,
+        "Last complete checkpoint contains all training state": true,
+        "Loaded in-memory state matches the pre-restart state": true,
+        "Loss and grad norm meet the selected standard": true,
+        "Optimizer state schema is complete on every rank": true,
+        "Replayed fixed-token input sequence is exact": true,
+        "Requested interruption was observed": true,
+        "Saved recovery-boundary checkpoint matches baseline": true
+      },
+      "failure_location": {
+        "description": "No checkpoint or resumed-training divergence was observed.",
+        "stage": "exact"
+      },
+      "fault_step": 51,
+      "final_state": {
+        "absolute_tolerance": 0.01,
+        "mismatch_examples": [],
+        "missing_from_candidate": [],
+        "missing_from_reference": [],
+        "missing_required_scopes": [],
+        "mode": "exact",
+        "passed": true,
+        "relative_tolerance": 0.01,
+        "scopes": {
+          "dataloader": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          },
+          "lr_scheduler": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          },
+          "model": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 17068856,
+            "tensor_leaves": 174,
+            "tolerance_tensor_mismatches": 0
+          },
+          "optimizer": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 33332863,
+            "tensor_leaves": 381,
+            "tolerance_tensor_mismatches": 0
+          },
+          "train_state": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          }
+        }
+      },
+      "incomplete_checkpoint_ignored": true,
+      "input_contract_exact": true,
+      "interruption": {
+        "cleanup": {
+          "group_remaining": false,
+          "kill_sent": false,
+          "reaped_children": 0,
+          "term_sent": false
+        },
+        "description": "SIGTERM sent to the torchrun process group",
+        "launcher_signal": "SIGTERM",
+        "return_code": 1
+      },
+      "loaded_steps": {
+        "0": 50
+      },
+      "metrics": {
+        "grad_norm": {
+          "after_restart": {
+            "bitwise_equal": true,
+            "count": 50,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0
+          },
+          "bitwise_equal": true,
+          "count": 100,
+          "first_bitwise_mismatch": null,
+          "first_bitwise_mismatch_step": null,
+          "max_absolute": 0.0,
+          "mean_absolute": 0.0,
+          "mean_absolute_relative": 0.0,
+          "mean_relative": 0.0,
+          "normal": 0.0,
+          "through_checkpoint": {
+            "bitwise_equal": true,
+            "count": 50,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0
+          }
+        },
+        "loss": {
+          "after_restart": {
+            "bitwise_equal": true,
+            "count": 50,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0
+          },
+          "bitwise_equal": true,
+          "count": 100,
+          "first_bitwise_mismatch": null,
+          "first_bitwise_mismatch_step": null,
+          "max_absolute": 0.0,
+          "mean_absolute": 0.0,
+          "mean_absolute_relative": 0.0,
+          "mean_relative": 0.0,
+          "normal": 0.0,
+          "through_checkpoint": {
+            "bitwise_equal": true,
+            "count": 50,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0
+          }
+        },
+        "mode": "exact",
+        "passed": true
+      },
+      "optimizer_state_gaps": {
+        "0": []
+      },
+      "partial_checkpoint_before_resume": false,
+      "passed": true,
+      "split_state": {
+        "absolute_tolerance": 0.01,
+        "mismatch_examples": [],
+        "missing_from_candidate": [],
+        "missing_from_reference": [],
+        "missing_required_scopes": [],
+        "mode": "exact",
+        "passed": true,
+        "relative_tolerance": 0.01,
+        "scopes": {
+          "dataloader": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          },
+          "lr_scheduler": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          },
+          "model": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 17068856,
+            "tensor_leaves": 174,
+            "tolerance_tensor_mismatches": 0
+          },
+          "optimizer": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 33332863,
+            "tensor_leaves": 381,
+            "tolerance_tensor_mismatches": 0
+          },
+          "train_state": {
+            "exact_tensor_mismatches": 0,
+            "max_absolute": 0.0,
+            "mean_absolute": 0.0,
+            "mean_absolute_relative": 0.0,
+            "non_tensor_mismatches": 0,
+            "tensor_elements": 0,
+            "tensor_leaves": 0,
+            "tolerance_tensor_mismatches": 0
+          }
+        }
+      }
+    }
+  },
+  "schema": "torchtitan.glm5_2.checkpoint_fault_recovery",
+  "schema_version": 2,
+  "split_step": 50,
+  "total_steps": 100
+}

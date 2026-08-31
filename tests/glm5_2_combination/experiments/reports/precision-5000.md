@@ -24,7 +24,46 @@
 tests/glm5_2_combination/run_graph_precision_5000.sh inductor all
 ```
 
-## 本轮执行状态
+## 2026-08-31 恢复执行
+
+状态：`QUEUED`。G020 确定性 pointwise autotune 修复完成定向验证后，本轮从已有正式
+fixture 和两个完整 eager reference 断点恢复，只重跑 Inductor candidate 和最终 compare：
+
+```bash
+tests/glm5_2_combination/run_graph_precision_5000.sh inductor candidate
+tests/glm5_2_combination/run_graph_precision_5000.sh inductor compare
+```
+
+执行基线：
+
+| 仓库 | branch | revision |
+|---|---|---|
+| TorchTitan | `feat/glm5-model-distributed` | `59899ade9dab` |
+| TorchTitanTurbo | `graph-review-0828` | `a6132c17547d` |
+| torchtitan-test | `graph-review-0828` | `43d74960b7b9` 加本轮未提交文档 |
+
+8 张 NPU 在恢复时正由同一 test 仓的正式 self-consistency 5000-step 任务占用。该进程仍在
+正常推进，不属于残余进程，因此没有中止。另一个合法的 `all_preset_0831` 队列已经取得后续
+资源顺序：它先执行 profiler matrix，末尾也调用本报告的 candidate/compare。当前任务不抢占
+它，而是在独立 tmux server/socket `graphprecision0831` 的会话
+`graph_precision_5000_0831` 中等待该队列退出，冷却 120 秒后再次执行可断点恢复的
+candidate/compare。上游已经生成的合法 artifact 会被跳过；若上游被中止，则从缺失项继续。
+独立接力队列和它实际补跑的 wrapper 输出统一记录在：
+
+```text
+graph_debug_runs/precision-5000-20260831/queue.log
+```
+
+若上游正常执行到 precision stage，它的 launcher 报告位于
+`graph_debug_runs/all-preset-20260831/graph-launchers/`；两条路径共享同一个
+`combination_artifacts` experiment identity，最终结论仍只由 artifact 和
+`compare --require-all` 决定。
+
+完整 candidate 是 15 个 topology × 2 repeats × 5000 steps；不同并行布局不能完整共享单卡
+编译 cache，预期持续数天。队列启动、每个 topology 的 artifact 和最终 compare 会继续写入
+本报告；`compare --require-all` 完成前状态不得改为 PASS。
+
+## 2026-08-26 历史执行状态
 
 状态：`BLOCKED`（2026-08-28 核查）。2026-08-26 的持久任务已经结束，不再有
 `graph_precision_5000_20260826` tmux 会话。实际完成情况是：

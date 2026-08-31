@@ -93,8 +93,12 @@ sequence length 32.
 | `--local-batch-size` | Per-DP-rank local batch. | `8` |
 | `--global-batch-size` | Global samples per optimizer step. | `64` |
 | `--sequence-length` | Tokens per sample. | `128` |
+| `--replicate` | Add an explicit repeat index to the complete run identity, preserving prior captures without changing training. | unset |
+| `--training-dtype` | Override the TorchTitan training dtype for an identified experiment. | `float32` |
+| `--mixed-precision-param` | Override parameter mixed precision. | `bfloat16` |
+| `--mixed-precision-reduce` | Override collective reduction precision. | `float32` |
 | `--run-root` | Raw capture root. Put this on node-local storage for large profiles. | `performance_runs` |
-| `--parse-mode` | `sync`, `async`, or `offline`; overrides the preset parse mode. | preset-specific (`distributed` uses `offline`, others `sync`) |
+| `--parse-mode` | `sync`, `async`, or `offline`; overrides the preset parse mode. Multi-rank NPU sync capture is safely parsed offline after training. | preset-specific (`distributed` uses `offline`, others `sync`) |
 | `--offline` | Compatibility alias for `--parse-mode offline`. | disabled |
 | `--offline-parse` | Run the official offline parser during analysis. | disabled |
 | `--parse-workers` | Process limit passed to offline parsing. | torch_npu parser default |
@@ -361,7 +365,14 @@ The framework follows the official Ascend PyTorch Profiler modes:
   outputs may finish after the training process.
 - `offline`: collect raw data during training and parse it afterwards. This is
   the default for the all-rank `distributed` preset and the recommended formal
-  cluster workflow.
+cluster workflow.
+
+For NPU `world_size > 1`, the workflow changes an effective `sync` preset to
+`offline`. Sync parsing pauses only the profiled rank; other ranks may enter a
+collective and exceed TorchTitan's training process-group timeout while CANN
+exports a large trace. The capture fields are unchanged, the effective mode is
+encoded in the run identity, and parsing occurs after every training rank has
+exited. Single-rank runs retain the preset's original mode.
 
 Select a mode explicitly with `--parse-mode`. `--offline` remains a short
 compatibility alias for `--parse-mode offline`.
