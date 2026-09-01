@@ -7,7 +7,7 @@
 | world size | 2 |
 | dp replicate / shard | 2 / 1 |
 | tp / cp / pp / ep | 1 / 1 / 1 / 1 |
-| recorded runs | 14 |
+| recorded runs | 21 |
 
 ## run results
 
@@ -27,6 +27,13 @@
 | [npu-ddp2-bf16-s30-l8-b64-seq128-seed61-overview-r31-fe910bf5](../../../runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-overview-r31-fe910bf5/readme.md) | completed | profiler-active | overview | 1,472.68 ms | 2,781.33 | 5,562.66 | - GiB |
 | [npu-ddp2-bf16-s30-l8-b64-seq128-seed61-overview-r31-offline-63813547](../../../runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-overview-r31-offline-63813547/readme.md) | completed | profiler-active | overview | 1,513.76 ms | 2,705.85 | 5,411.71 | - GiB |
 | [npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-r31-af31bb05](../../../runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-r31-af31bb05/readme.md) | completed | profiler-active | distributed | 1,447.67 ms | 2,829.37 | 5,658.74 | - GiB |
+| [npu-ddp2-bf16-s30-l8-b64-seq128-seed61-kernel-r31-offline-54d81a50](../../../runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-kernel-r31-offline-54d81a50/readme.md) | completed | profiler-active | kernel | 1,450.71 ms | 2,823.45 | 5,646.91 | - GiB |
+| [npu-ddp2-bf16-s30-l8-b64-seq128-seed61-operator-r32-offline-6d2a868d](../../../runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-operator-r32-offline-6d2a868d/readme.md) | completed | profiler-active | operator | 1,452.47 ms | 2,820.02 | 5,640.03 | - GiB |
+| [npu-ddp2-bf16-s30-l8-b64-seq128-seed61-memory-r31-offline-008d9cfe](../../../runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-memory-r31-offline-008d9cfe/readme.md) | failed | profiler-active | - | - ms | - | - | - GiB |
+| [npu-ddp2-bf16-s30-l8-b64-seq128-seed61-memory-r31-offline-3beeaf9e](../../../runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-memory-r31-offline-3beeaf9e/readme.md) | completed | profiler-active | memory | 1,452.75 ms | 2,819.48 | 5,638.95 | - GiB |
+| [npu-ddp2-bf16-s30-l8-b64-seq128-seed61-flamegraph-r31-873a9cd8](../../../runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-flamegraph-r31-873a9cd8/readme.md) | completed | profiler-active | flamegraph | 1,465.12 ms | 2,795.68 | 5,591.35 | - GiB |
+| [npu-ddp2-bf16-s30-l8-b64-seq128-seed61-runtime-r31-offline-a67e316b](../../../runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-runtime-r31-offline-a67e316b/readme.md) | completed | profiler-active | runtime | 1,450.55 ms | 2,823.76 | 5,647.53 | - GiB |
+| [npu-ddp2-bf16-s30-l8-b64-seq128-seed61-system-r31-ba0323c6](../../../runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-system-r31-ba0323c6/readme.md) | completed | profiler-active | system | 1,459.23 ms | 2,806.97 | 5,613.94 | - GiB |
 
 ## experiment sequence
 
@@ -172,6 +179,10 @@
 /root/miniconda3/envs/torchtitan-0803-graph-adapt/bin/python tests/glm5_2_performance/profiler_benchmark.py --probe --device npu --topology all --preset all --visible-devices 0,1,2,3,4,5,6,7 --replicate 31 --analysis-tools all
 ```
 
+```bash
+/root/miniconda3/envs/torchtitan-0803-graph-adapt/bin/python tests/glm5_2_performance/profiler_benchmark.py --probe --device npu --topology all --preset all --visible-devices 0,1,2,3,4,5,6,7 --replicate 31 --analysis-tools all
+```
+
 ### 14. npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-r31-af31bb05
 
 - Status: `completed`
@@ -181,6 +192,106 @@
 
 ```bash
 /root/miniconda3/envs/torchtitan-0803-graph-adapt/bin/python tests/glm5_2_performance/profiler_benchmark.py --probe --device npu --topology all --preset all --visible-devices 0,1,2,3,4,5,6,7 --replicate 31 --analysis-tools all
+```
+
+### 15. npu-ddp2-bf16-s30-l8-b64-seq128-seed61-kernel-r31-offline-54d81a50
+
+- Status: `completed`
+- Started: `2026-08-31T19:48:59.308736+08:00`
+- Full process and outputs: [run readme](../../../runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-kernel-r31-offline-54d81a50/readme.md)
+- HTML report: `/workspace/y50064852_yyb/torchtitan-test/performance_reports/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-kernel-r31-offline-54d81a50.html`
+
+```bash
+/root/miniconda3/envs/torchtitan-0803-graph-adapt/bin/python tests/glm5_2_performance/profiler_benchmark.py --probe --device npu --topology all --preset kernel --visible-devices 0,1,2,3,4,5,6,7 --replicate 31 --analysis-tools all
+```
+
+### 16. npu-ddp2-bf16-s30-l8-b64-seq128-seed61-operator-r32-offline-6d2a868d
+
+- Status: `completed`
+- Started: `2026-08-31T23:00:40.619532+08:00`
+- Full process and outputs: [run readme](../../../runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-operator-r32-offline-6d2a868d/readme.md)
+- HTML report: `/workspace/y50064852_yyb/torchtitan-test/performance_reports/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-operator-r32-offline-6d2a868d.html`
+
+```bash
+/root/miniconda3/envs/torchtitan-0803-graph-adapt/bin/python tests/glm5_2_performance/profiler_benchmark.py --probe --device npu --topology ddp2 --preset operator --visible-devices 0,1,2,3,4,5,6,7 --replicate 32 --analysis-tools all
+```
+
+```bash
+/root/miniconda3/envs/torchtitan-0803-graph-adapt/bin/python tests/glm5_2_performance/profiler_benchmark.py --analyze --device npu --topology ddp2 --preset operator --visible-devices 0,1,2,3,4,5,6,7 --replicate 32 --analysis-tools all --parse-workers 8
+```
+
+### 17. npu-ddp2-bf16-s30-l8-b64-seq128-seed61-memory-r31-offline-008d9cfe
+
+- Status: `failed`
+- Started: `2026-09-01T00:38:31.086193+08:00`
+- Full process and outputs: [run readme](../../../runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-memory-r31-offline-008d9cfe/readme.md)
+
+```bash
+/root/miniconda3/envs/torchtitan-0803-graph-adapt/bin/python tests/glm5_2_performance/profiler_benchmark.py --capture --device npu --topology ddp2 --preset memory --visible-devices 0,1,2,3,4,5,6,7 --replicate 31 --analysis-tools none
+```
+
+### 18. npu-ddp2-bf16-s30-l8-b64-seq128-seed61-memory-r31-offline-3beeaf9e
+
+- Status: `completed`
+- Started: `2026-09-01T09:04:35.302744+08:00`
+- Full process and outputs: [run readme](../../../runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-memory-r31-offline-3beeaf9e/readme.md)
+- HTML report: `/workspace/y50064852_yyb/torchtitan-test/performance_reports/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-memory-r31-offline-3beeaf9e.html`
+
+```bash
+/root/miniconda3/envs/torchtitan-0803-graph-adapt/bin/python tests/glm5_2_performance/profiler_benchmark.py --capture --device npu --topology ddp2 --preset memory --visible-devices 0,1,2,3,4,5,6,7 --replicate 31 --analysis-tools none
+```
+
+```bash
+/root/miniconda3/envs/torchtitan-0803-graph-adapt/bin/python tests/glm5_2_performance/profiler_benchmark.py --analyze --device npu --topology ddp2 --preset memory --visible-devices 0,1,2,3,4,5,6,7 --replicate 31 --analysis-tools all --parse-workers 8
+```
+
+### 19. npu-ddp2-bf16-s30-l8-b64-seq128-seed61-flamegraph-r31-873a9cd8
+
+- Status: `completed`
+- Started: `2026-09-01T10:16:42.549749+08:00`
+- Full process and outputs: [run readme](../../../runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-flamegraph-r31-873a9cd8/readme.md)
+- HTML report: `/workspace/y50064852_yyb/torchtitan-test/performance_reports/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-flamegraph-r31-873a9cd8.html`
+
+```bash
+/root/miniconda3/envs/torchtitan-0803-graph-adapt/bin/python tests/glm5_2_performance/profiler_benchmark.py --capture --device npu --topology ddp2 --preset flamegraph --visible-devices 0,1,2,3,4,5,6,7 --replicate 31 --analysis-tools none
+```
+
+```bash
+/root/miniconda3/envs/torchtitan-0803-graph-adapt/bin/python tests/glm5_2_performance/profiler_benchmark.py --capture --device npu --topology ddp2 --preset flamegraph --visible-devices 0,1,2,3,4,5,6,7 --replicate 31 --analysis-tools none
+```
+
+```bash
+/root/miniconda3/envs/torchtitan-0803-graph-adapt/bin/python tests/glm5_2_performance/profiler_benchmark.py --analyze --device npu --topology ddp2 --preset flamegraph --visible-devices 0,1,2,3,4,5,6,7 --replicate 31 --analysis-tools all --parse-workers 8
+```
+
+### 20. npu-ddp2-bf16-s30-l8-b64-seq128-seed61-runtime-r31-offline-a67e316b
+
+- Status: `completed`
+- Started: `2026-09-01T11:39:28.848917+08:00`
+- Full process and outputs: [run readme](../../../runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-runtime-r31-offline-a67e316b/readme.md)
+- HTML report: `/workspace/y50064852_yyb/torchtitan-test/performance_reports/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-runtime-r31-offline-a67e316b.html`
+
+```bash
+/root/miniconda3/envs/torchtitan-0803-graph-adapt/bin/python tests/glm5_2_performance/profiler_benchmark.py --capture --device npu --topology ddp2 --preset runtime --visible-devices 0,1,2,3,4,5,6,7 --replicate 31 --analysis-tools none
+```
+
+```bash
+/root/miniconda3/envs/torchtitan-0803-graph-adapt/bin/python tests/glm5_2_performance/profiler_benchmark.py --analyze --device npu --topology ddp2 --preset runtime --visible-devices 0,1,2,3,4,5,6,7 --replicate 31 --analysis-tools all --parse-workers 8
+```
+
+### 21. npu-ddp2-bf16-s30-l8-b64-seq128-seed61-system-r31-ba0323c6
+
+- Status: `completed`
+- Started: `2026-09-01T13:08:20.869817+08:00`
+- Full process and outputs: [run readme](../../../runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-system-r31-ba0323c6/readme.md)
+- HTML report: `/workspace/y50064852_yyb/torchtitan-test/performance_reports/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-system-r31-ba0323c6.html`
+
+```bash
+/root/miniconda3/envs/torchtitan-0803-graph-adapt/bin/python tests/glm5_2_performance/profiler_benchmark.py --capture --device npu --topology ddp2 --preset system --visible-devices 0,1,2,3,4,5,6,7 --replicate 31 --analysis-tools none
+```
+
+```bash
+/root/miniconda3/envs/torchtitan-0803-graph-adapt/bin/python tests/glm5_2_performance/profiler_benchmark.py --analyze --device npu --topology ddp2 --preset system --visible-devices 0,1,2,3,4,5,6,7 --replicate 31 --analysis-tools all --parse-workers 8
 ```
 
 ## current summary

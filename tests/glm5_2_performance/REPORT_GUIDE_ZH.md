@@ -148,16 +148,22 @@ preset 是一次有明确成本和问题范围的采集策略，不是模型精�
 | `standard` | AI Core 管线是否健康 | Level1、PipeUtilization、rank 0 | 单 rank 不代表分布式全部 rank |
 | `distributed` | 哪个 rank/collective 暴露 | 全 rank、通信、互联、离线解析 | 多卡数据大，优先 `repeat=1` 导入 Insight |
 | `kernel` | 热点 kernel 是算力还是缓存问题 | shape、ArithmeticUtilization、L2 | counter 本身会增加开销 |
-| `operator` | 哪个 op/参数值得融合或改 layout | shapes、op attr/args、FLOPs 字段 | 元数据大，注意敏感信息 |
-| `memory` | 峰值由哪类 tensor/事件产生 | memory、stack/module、timeline export | 开销和产物都大 |
-| `flamegraph` | Host/框架累计调用路径在哪 | CPU/NPU folded stack、Ascend DB | 火焰图无时间先后 |
-| `runtime` | 需要跨模块/stack/内存深挖 | Level2、stack、module、memory、shape | 高开销，只用于短窗口 |
-| `system` | CPU/NUMA/网络/磁盘是否拖慢 | Host system、I/O、interconnect、MSTX | 全 rank 最重，问题明确后再开 |
+| `operator` | 哪个 op/参数值得融合或改 layout | shapes、op attr、FLOPs 字段 | 元数据大；当前栈默认关闭会触发 SIGSEGV 的 `record_op_args` |
+| `memory` | 峰值由哪类 tensor/事件产生 | memory event、shape | 当前栈中 memory 与 stack/module 组合会 SIGSEGV |
+| `flamegraph` | Host/框架累计调用路径在哪 | Level0 Ascend DB/call-path proxy，离线解析 | 当前栈的 Python stack/module collector 会 SIGSEGV |
+| `runtime` | 需要 Level2 深挖 | Level2、shape、L2、op attr、GC、Host CPU/内存 | memory/stack 由隔离 preset 提供 |
+| `system` | CPU/内存/互联是否拖慢 | 全 rank Host CPU/MEM、interconnect、GC | 扩展 Host/I/O/MSTX 依赖容器缺失的官方脚本 |
 | `all` | 一次编排得到完整证据套件 | 依次执行上述非冗余策略 | 多次独立训练，不是一锅全开 |
 
 为什么 `all` 必须分目录、分 capture：AI Core counter 一次通常只能选一个指标族；
 stack、memory、system 和全 rank 同开会极大扰动训练，甚至让数据无法解析。独立 capture
 才能知道每份数据的语义和开销。
+
+`record_op_args` 仍可通过显式 `--record-op-args` 打开，但不是 `all` 套件的默认能力。
+在 torch_npu 2.7.1/CANN 9.1 上，单卡复现实验在 profiler active window 的 step 12
+触发原生 SIGSEGV；仅关闭该开关而保留 Level1、shape、op attr、FLOPs 后，30/30 steps、
+CANN 解析、advisor 和 HTML 报告全部通过。因此默认 preset 选择可复现的安全组合，失败
+run 和单变量复验 run 均保留在对应实验子目录。
 
 ## 4. 顶部状态和指标卡逐项解释
 

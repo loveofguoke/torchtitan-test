@@ -216,3 +216,64 @@ tests/glm5_2_graph_debug/run_graph_mode.sh inductor command -- \
 run 为 `npu-tp8-bf16-s30-l8-b64-seq128-seed61-overview-r31-offline-7d88d2fc`：
 30/30 steps 完成，ProcessGroup 正常销毁；CANN 离线解析耗时 3 分 11 秒，确实超过原训练
 timeout；advisor、综合 HTML 和探索归档全部成功。新增策略单测后相关测试为 49 passed。
+
+## 11. operator 原生崩溃、单变量隔离与恢复
+
+2026-08-31 22:39 CST，首个 `operator` capture
+`npu-single-bf16-s30-l8-b64-seq128-seed61-operator-r31-52aa78a7` 在 step 12、即 profiler
+active window 开始后触发原生 SIGSEGV。训练已稳定完成前 12 步，且尚未进入 CANN 解析；
+因此问题边界是采集器激活，不是模型训练、显存、HCCL 或 msprof-analyze。
+
+失败现场原样保留后，执行单变量隔离：
+
+```bash
+tests/glm5_2_graph_debug/run_graph_mode.sh inductor command -- \
+  /root/miniconda3/envs/torchtitan-0803-graph-adapt/bin/python \
+  tests/glm5_2_performance/profiler_benchmark.py \
+  --probe --device npu --topology single --preset operator \
+  --visible-devices 0,1,2,3,4,5,6,7 --replicate 32 \
+  --no-record-op-args --analysis-tools all
+```
+
+隔离 run
+`npu-single-bf16-s30-l8-b64-seq128-seed61-operator-r32-sync-67e6a143` 保留原 preset 的
+Level1、`record_shapes`、`with_flops`、ArithmeticUtilization、`op_attr` 和原始数据，只关闭
+`record_op_args`。结果为 30/30 steps、CANN 同步解析（3 分 18 秒）、advisor、HTML 和归档
+全部通过，故该实验把崩溃项收敛到 `record_op_args`。默认 `operator` preset 已改为安全组合；
+CLI 仍保留显式 `--record-op-args`，供其他版本栈或专门的兼容性复验使用。
+
+## 12. memory/stack 原生崩溃与职责拆分
+
+原始 `memory` preset 在 single、ddp2、ddp8、fsdp8 上均于 step 17（active window
+结束、`on_trace_ready` 进入）触发 SIGSEGV。单变量实验结果如下：
+
+| replicate | 保留能力 | 结果 |
+|---:|---|---|
+| r31 | memory + shape + stack + modules + timeline | SIGSEGV |
+| r32 | memory + shape + stack + modules | SIGSEGV |
+| r33 | memory + shape | 30/30 PASSED；官方提示 52 条 incomplete memory records |
+| r34 | memory + shape + stack | SIGSEGV |
+| r35 | memory + shape + modules + timeline | SIGSEGV |
+
+因此当前 torch_npu 2.7.1/CANN 9.1 的稳定边界是 `profile_memory + record_shapes`；
+问题不是 topology，也不是 timeline 导出函数单独造成，而是 memory collector 与 stack/module
+元数据组合在 native stop/callback 路径上不兼容。默认 suite 据此拆分职责：`memory` 只负责
+内存事件，`flamegraph` 单独负责 stack/module 并离线解析，`runtime` 不再重复二者，而保留
+Level2、shape、L2、op attr、GC 和 Host CPU/内存。失败 run 全部保留，官方 memory timeline
+在本版本栈明确标记为 unavailable，不能把 allocator 数值或普通曲线冒充为 timeline。
+
+后续 `flamegraph` 进一步证明，即使 `profile_memory=false`，`with_stack` 单独开启仍在
+step 17 SIGSEGV；只保留 `with_modules` 也在同一位置 SIGSEGV。因此当前栈不能安全采集
+Python folded stack 或 module hierarchy。安全的 `flamegraph` capture 只保留 Level0 CANN
+DB/call-path proxy 并离线解析；报告必须把 Python flame graph 标为 unavailable，不能把普通
+operator timeline 或按名称聚合的柱状图伪装成火焰图。
+
+## 13. system 扩展采集器的环境边界
+
+原始 `system/single` 在 step 17 后输出
+`sudo: /usr/bin/msprof_data_collection.sh: command not found`，随后 profiler stop 持续无进展。
+该脚本是扩展 Host system/I/O/MSTX 采集路径的官方环境依赖，当前容器未安装；继续等待或在
+27 个 topology 上重复均不能产生有效数据。安全 system preset 采用已单独验证的能力并集：
+runtime 已通过的 Host CPU/MEM/GC，加 distributed 已通过的 all-rank interconnection；关闭
+disk/network/osrt/numa、system I/O 和 MSTX。报告把缺失能力标为 environment-unavailable，
+并保留挂起 run 的 runtime log，不能把 pre/post `npu-smi` 快照冒充为这些系统时间序列。

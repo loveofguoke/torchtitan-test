@@ -145,41 +145,38 @@ def profiler_presets() -> dict[str, ProfilerPreset]:
             aic_metrics="arithmetic_utilization",
             op_attr=True,
             data_simplification=False,
-            record_op_args=True,
+            # record_op_args remains available as an explicit CLI override,
+            # but is not safe as a suite default on torch_npu 2.7.1/CANN 9.1:
+            # it reproducibly segfaults in the first active profiler window.
+            record_op_args=False,
         ),
         "memory": ProfilerPreset(
             "memory",
             "level0",
             record_shapes=True,
             profile_memory=True,
-            with_stack=True,
-            with_modules=True,
-            export_memory_timeline=True,
             data_simplification=False,
         ),
         "flamegraph": ProfilerPreset(
             "flamegraph",
             "level0",
-            with_stack=True,
-            with_modules=True,
-            export_stacks=True,
+            # torch_npu 2.7.1/CANN 9.1 segfaults at the active-window stop
+            # callback with either with_stack or with_modules. Preserve the
+            # Level0 CANN DB/call-path proxy and report Python stacks as an
+            # unavailable capability for this environment.
+            parse_mode="offline",
             data_simplification=False,
         ),
         "runtime": ProfilerPreset(
             "runtime",
             "level2",
             record_shapes=True,
-            profile_memory=True,
-            with_stack=True,
-            with_modules=True,
-            export_stacks=True,
             aic_metrics="arithmetic_utilization",
             l2_cache=True,
             op_attr=True,
             data_simplification=False,
             gc_detect_threshold=1.0,
             host_system=("cpu", "mem"),
-            export_memory_timeline=True,
         ),
         "system": ProfilerPreset(
             "system",
@@ -189,9 +186,12 @@ def profiler_presets() -> dict[str, ProfilerPreset]:
             aic_metrics="pipe_utilization",
             data_simplification=False,
             gc_detect_threshold=1.0,
-            mstx=True,
-            host_system=("cpu", "mem", "disk", "network", "osrt", "numa"),
-            system_io=True,
+            # The extended host collectors, sys_io, and MSTX call
+            # /usr/bin/msprof_data_collection.sh, which is absent from the
+            # current container and leaves profiler stop blocked. CPU/MEM and
+            # interconnection are independently verified by runtime and
+            # distributed captures.
+            host_system=("cpu", "mem"),
             system_interconnection=True,
         ),
     }

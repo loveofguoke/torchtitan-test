@@ -50,15 +50,26 @@ The workflow is deliberately top-down:
 4. `distributed`: Level1 on every rank with pipe-utilization and interconnect
    data; raw data is parsed offline by default.
 5. `kernel`: Level1 shapes, arithmetic utilization, and L2 information.
-6. `operator`: shapes, operator attributes/arguments, and raw FLOPs capture.
-7. `memory`: official categorized memory timeline in HTML/JSON/raw JSON.
-8. `flamegraph`: Level0 CPU/NPU call stacks and Ascend profiler DB; analysis
-   renders the official MindStudio Host HTML when its script is configured and
-   portable CPU/NPU SVGs when Brendan Gregg's `flamegraph.pl` is available.
-9. `runtime`: Level2 stack, module hierarchy, memory, operator attributes,
-   host CPU/memory, and shapes.
-10. `system`: Level2 Host CPU/memory/disk/network/OS runtime/NUMA, I/O,
-    interconnection, GC, and MSTX collection on all ranks.
+6. `operator`: shapes, operator attributes, and raw FLOPs capture. Operator
+   argument statistics remain available through explicit `--record-op-args`,
+   but are excluded from the default suite because torch_npu 2.7.1/CANN 9.1
+   reproducibly segfaults when that experimental collector becomes active.
+7. `memory`: framework memory events and shapes. The current torch_npu
+   2.7.1/CANN 9.1 stack reproducibly segfaults when memory collection is
+   combined with stack/module metadata, so timeline export is recorded as an
+   unsupported capability instead of being enabled in the default suite.
+8. `flamegraph`: Level0 Ascend DB/call-path proxy parsed offline. Python stack
+   and module metadata are reported as unavailable on this environment because
+   either collector reproducibly segfaults at the active-window stop callback;
+   no ordinary operator timeline is mislabeled as a folded-stack flame graph.
+9. `runtime`: Level2 shapes, L2, operator attributes, GC, and host CPU/memory.
+   Memory and stack evidence come from their isolated presets so this capture
+   does not repeat the incompatible collector combination.
+10. `system`: Level2 Host CPU/memory, interconnection, and GC collection on all
+    ranks. Disk/network/OS runtime/NUMA, system I/O, and MSTX require
+    `/usr/bin/msprof_data_collection.sh`, which is absent from this container;
+    those capabilities are reported unavailable instead of leaving profiler
+    stop blocked.
 
 `all` is a meta-preset. It runs the non-redundant policies above as independent
 captures and creates one suite index; it never enables every high-overhead
