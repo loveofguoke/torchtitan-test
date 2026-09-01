@@ -1,7 +1,15 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Configurable numerical standards for formal training comparisons."""
+"""Configurable numerical standards for formal training comparisons.
+
+Metric computation is independent from pass/fail policy. Migration compares
+equivalent GPU/NPU executions with tolerance-based loss and grad-norm criteria;
+self-consistency can additionally request exact repeat checks but uses the same
+formal tolerance when BF16 distributed order makes bitwise identity unrealistic.
+Warmup removal, outlier policy, quantiles, and customer reference limits remain
+data/configuration rather than being hidden inside report rendering.
+"""
 
 from __future__ import annotations
 
@@ -51,7 +59,14 @@ def compute_error_metrics(
     *,
     quantiles: Sequence[float] = DEFAULT_QUANTILES,
 ) -> ErrorMetrics:
-    """Compute errors with the reference series as every relative denominator."""
+    """Compute signed/absolute and relative errors against the reference.
+
+    For aligned values ``x_i`` (reference) and ``y_i`` (candidate), errors are
+    ``e_i = x_i - y_i``. ``normal`` is mean signed error, ``absolute`` is mean
+    ``|e_i|``, and relative variants divide each observation by ``x_i`` before
+    averaging. Zero reference values are rejected because their relative error
+    is undefined rather than silently hidden behind an epsilon.
+    """
 
     if len(reference) != len(candidate):
         raise ValueError(

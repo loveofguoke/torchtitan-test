@@ -1,7 +1,13 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Small, portable artifacts for offline formal precision comparison."""
+"""Small, portable artifacts for offline formal precision comparison.
+
+Large trainer outputs stay in ``precision_runs``. Artifacts copy only metrics,
+runtime log, input contract, source metadata, and hashes required by CPU compare.
+The manifest is written through a temporary directory and moved last, so its
+presence is the commit marker for one complete capture.
+"""
 
 from __future__ import annotations
 

@@ -1,7 +1,14 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Portable token plans and runtime input-contract validation."""
+"""Portable token plans and runtime input-contract validation.
+
+A token plan is indexed by ``(optimizer_step, global_slot)`` rather than rank.
+At runtime each topology maps its DP-local microbatches back to those global
+slots. Per-sample, per-step, and whole-series digests prove that single-device,
+DDP/FSDP, TP/CP/PP, and EP jobs consumed the same logical training sequence even
+though rank-local batching differs.
+"""
 
 from __future__ import annotations
 

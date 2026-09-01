@@ -2,7 +2,19 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Validate TorchTitan checkpoint save, load, and process-restart resume."""
+"""Validate TorchTitan checkpoint save, load, and process-restart resume.
+
+The benchmark does not implement recovery logic. It launches TorchTitan's real
+checkpoint manager, injects process/rank failures around a committed boundary,
+restarts with the same command, and audits what TorchTitan selected and restored.
+A continuous reference run is compared with every split run for metric series,
+input-token replay, logical distributed checkpoint state, optimizer schema, and
+post-boundary model/optimizer/dataloader/scheduler/train-state fingerprints.
+
+The controller also owns process hygiene: torchrun starts worker descendants
+and elastic agents, so Linux process groups, subreaper behavior, and a unique
+environment token are combined to terminate and reap every process from one run.
+"""
 
 from __future__ import annotations
 
@@ -280,7 +292,13 @@ def _cleanup_process_group(
     reap_children: bool,
     process_token: str,
 ) -> dict[str, Any]:
-    """Stop one run's process group and workers that escaped that group."""
+    """Stop one run's process group and workers that escaped that group.
+
+    First request graceful SIGTERM for the process group, then escalate to
+    SIGKILL after a bounded wait. Elastic launchers may reparent or respawn a
+    worker outside the original group, so the unique process token provides a
+    second ownership check before the function returns.
+    """
 
     if os.name != "posix":
         if process.poll() is None:
@@ -808,6 +826,7 @@ def _boundary_memory_comparison(
 
 
 def _selected_failure_modes(requested: list[str], *, world_size: int) -> list[str]:
+    """Expand ``all`` while excluding meaningless single-rank fault modes."""
     if not requested:
         return ["graceful"]
     if "all" in requested:
@@ -862,6 +881,12 @@ def _metrics_comparison(
     grad_relative_limit: float,
     restored_step: int | None = None,
 ) -> dict[str, Any]:
+    """Compare continuous and resumed loss/grad series across the boundary.
+
+    The report separates steps through the restored checkpoint from steps
+    recomputed after restart. This reveals whether divergence existed in the
+    saved state or first appeared during resumed execution.
+    """
     reference = _metric_series(reference_path)
     candidate = _metric_series(candidate_path)
     if reference[LOSS_KEY].keys() != candidate[LOSS_KEY].keys():

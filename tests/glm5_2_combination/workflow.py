@@ -1,7 +1,19 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Central orchestration for orthogonal precision, graph, and profiler features."""
+"""Central orchestration for orthogonal precision, graph, and profiler features.
+
+Combination experiments do not make one subsystem inject hidden options into
+another. They compose the same graph/profiler/precision feature objects used by
+standalone experiments at one checked execution boundary. This supports eager
+vs eager, eager vs graph, and graph vs graph precision; performance can be
+enabled independently or in the same runs when the desired collection policy
+is explicit.
+
+The combined report links the authoritative precision report, profiler report,
+TensorBoard/stack/memory outputs, and compiler diagnostics rather than
+reimplementing their analysis logic.
+"""
 
 from __future__ import annotations
 

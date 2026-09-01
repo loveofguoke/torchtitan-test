@@ -1,7 +1,15 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Scenario-driven entry points for GLM-5.2 parity workflows."""
+"""Scenario-driven entry points for exploratory GLM-5.2 parity workflows.
+
+Unlike formal multi-step precision, parity captures selected forward/backward
+intermediates, parameters, gradients, router/indexer decisions, and traces for
+root-cause exploration. Paired mode executes both endpoints in one process;
+offline mode prepares shared data, captures each endpoint independently, then
+compares portable artifacts on CPU. Generation-safe force/resume rules mirror
+the formal framework so stale tensor shards cannot enter a new report.
+"""
 
 from __future__ import annotations
 

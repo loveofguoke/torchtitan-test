@@ -1,7 +1,13 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Stable, compact names for reproducible experiment outputs."""
+"""Stable, compact names for reproducible experiment outputs.
+
+Human-readable prefixes expose the important scenario dimensions. The digest
+is computed from the complete capture identity, so two directories with the
+same prefix cannot silently mix different topology, data, precision, graph, or
+profiler settings. Report-only presentation options must stay out of identity.
+"""
 
 from __future__ import annotations
 
@@ -69,4 +75,3 @@ def config_name(
     if available < 1:
         raise ValueError("max_length is too small for the config digest")
     return f"{normalized[:available].rstrip('-')}{suffix}"
-

@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Run TorchTitan while recording numeric training performance metrics."""
+"""Run TorchTitan while recording numeric training performance metrics.
+
+The worker records unrounded step time, throughput, memory, and related scalar
+metrics while TorchTitan remains responsible for their distributed reduction.
+Optional rank filtering and reduction-dtype overrides are process-local
+experiment controls; they do not modify the source-installed framework.
+"""
 
 from __future__ import annotations
 

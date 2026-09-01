@@ -1,7 +1,14 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Resumable topology-suite lifecycle for checkpoint validation."""
+"""Resumable topology-suite lifecycle for checkpoint validation.
+
+``--topology all`` owns one suite root with one member per topology. Force
+resets the complete selected generation before the first member; non-force
+execution skips only members whose report and completion contract validate, so
+a suite interrupted at member N safely resumes from N without mixing old and
+new evidence.
+"""
 
 from __future__ import annotations
 

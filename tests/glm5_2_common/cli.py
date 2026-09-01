@@ -1,7 +1,14 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Small CLI helpers shared by independent experiment entry points."""
+"""Lifecycle and CLI helpers shared by independent experiment families.
+
+The central invariant is generation safety. ``--force`` removes the complete
+selected generation before any new worker starts. A non-force retry reuses only
+outputs whose completion marker and experiment identity are valid; incomplete
+directories are archived or retried by the owning workflow. ``RunAttempt``
+adds an atomic state file so another launcher never deletes a live run.
+"""
 
 from __future__ import annotations
 
@@ -84,7 +91,13 @@ def assert_run_not_active(
 
 @dataclass
 class RunAttempt:
-    """Auditable lifecycle marker shared by long-running experiments."""
+    """Auditable lifecycle marker shared by long-running experiments.
+
+    ``attempt_id`` identifies one orchestrator invocation, not an experiment
+    configuration. The configuration hash names storage; the attempt id tells
+    whether metrics/logs in that storage came from the same training process.
+    State is atomically replaced so readers never observe partial JSON.
+    """
 
     directory: Path
     kind: str
@@ -152,7 +165,13 @@ def reset_output_generation(
     label: str = "experiment",
     include_archives: bool = True,
 ) -> None:
-    """Remove and verify every selected output before a new generation."""
+    """Remove and verify every selected output before a new generation.
+
+    Callers pass all coupled roots -- run data, compact artifacts, contracts,
+    and reports -- rather than deleting one directory ad hoc. Previous/failed
+    archives are included by default so a forced run cannot later adopt stale
+    evidence. Live orchestrator state is checked before the first deletion.
+    """
 
     selected_paths = list(dict.fromkeys(paths))
     expanded_paths = list(selected_paths)

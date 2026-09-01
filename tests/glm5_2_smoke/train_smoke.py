@@ -2,7 +2,13 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Run short GPU or NPU training jobs across shared topology definitions."""
+"""Run short GPU or NPU training jobs across shared topology definitions.
+
+Smoke answers one narrow question: can the current three source checkouts build
+the model and complete a few optimizer steps for this device/topology/graph
+mode? It records the exact command, dependency check, contract, and full log.
+It is not a precision, convergence, performance, or stability claim.
+"""
 
 from __future__ import annotations
 

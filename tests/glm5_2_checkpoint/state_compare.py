@@ -1,7 +1,13 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Inspect and compare TorchTitan distributed checkpoints on CPU."""
+"""Inspect and compare TorchTitan distributed checkpoints on CPU.
+
+PyTorch DCP reconstructs sharded files into a logical state dictionary before
+comparison. Leaves are grouped into model, optimizer, dataloader, scheduler,
+and train-state scopes. This tests semantic checkpoint content rather than file
+names or byte equality, which differ legitimately across distributed layouts.
+"""
 
 from __future__ import annotations
 

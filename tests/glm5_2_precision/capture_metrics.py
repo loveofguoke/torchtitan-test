@@ -2,7 +2,13 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Run TorchTitan while preserving full-precision training metrics as JSONL."""
+"""Run TorchTitan while preserving full-precision training metrics as JSONL.
+
+This worker-local hook wraps MetricsProcessor logging, writes numeric values
+before terminal formatting truncates them, and then delegates to the original
+logger. Only the configured metrics rank writes the append-only file; training
+semantics and metric reduction stay in TorchTitan.
+"""
 
 from __future__ import annotations
 

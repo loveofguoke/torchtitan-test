@@ -1,7 +1,14 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Graph-mode execution features shared by graph-aware experiments."""
+"""Graph-mode execution features shared by graph-aware experiments.
+
+Graph mode is modeled as an orthogonal training feature. ``eager`` contributes
+no compile arguments; ``inductor`` and ``npugraphs`` contribute explicit
+backend/component policy plus optional diagnostics. The CUDA interface is kept
+at the type/CLI boundary but raises until a validated GPU policy is defined,
+preventing accidental claims from an unimplemented backend.
+"""
 
 from __future__ import annotations
 
@@ -35,7 +42,7 @@ def validate_graph_training_args(
 
 @dataclass(frozen=True)
 class GraphFeatureConfig:
-    """Translate one graph policy into TorchTitan training arguments."""
+    """Translate one graph policy into conflict-checkable args/environment."""
 
     mode: GraphMode = "eager"
     components: tuple[str, ...] = ("model",)

@@ -2,7 +2,13 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Run TorchTitan with fixed inputs and an optional checkpoint stop step."""
+"""Run TorchTitan with fixed inputs and an optional checkpoint stop step.
+
+The controlled/graceful split does not exit at an arbitrary optimizer step. It
+keeps Trainer alive until TorchTitan has committed the requested checkpoint,
+then returns through the normal training loop. Signal and rank-failure modes are
+injected separately by the parent benchmark.
+"""
 
 from __future__ import annotations
 

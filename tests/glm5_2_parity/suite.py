@@ -20,6 +20,12 @@ The reference model is optional. Paired execution uses the accelerator selected
 by PyTorch, while offline artifacts allow endpoints on different backends and
 servers. The native router precision tests remain CPU-safe. Reports use
 canonical paths, compact numeric summaries, and explicit discrete selections.
+
+Read the file by concern rather than top to bottom: endpoint/model construction
+first, capture hooks second, numerical/discrete comparison third, and HTML
+rendering last. A failing checkpoint marks the first observed location whose
+own comparison exceeds policy; it does not prove that module caused the error.
+Trend and execution-order metadata exist to inspect upstream accumulation.
 """
 
 from __future__ import annotations

@@ -1,4 +1,12 @@
-"""Discover and render portable performance visualization artifacts."""
+"""Discover and render portable performance visualization artifacts.
+
+Official tools remain the source of truth: TensorBoard for scalar curves,
+MindStudio Insight/Perfetto-compatible traces for interactive timelines, and
+torch_npu stack/memory exports for folded stacks and allocation history. This
+module discovers those outputs, renders portable SVG/HTML where possible, and
+records commands for richer GUI inspection without copying raw multi-GB traces
+into reports.
+"""
 
 from __future__ import annotations
 

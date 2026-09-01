@@ -1,4 +1,11 @@
-"""Configuration primitives for GLM-5.2 performance experiments."""
+"""Configuration primitives for GLM-5.2 performance experiments.
+
+A preset is a collection policy, not a pass/fail standard. ``overview`` keeps
+cross-topology cost bounded; deeper presets independently enable communication,
+kernel, memory, stack, or host/system evidence. ``all`` expands to separate
+captures because many Ascend collectors change profiler level or raw-event
+retention and cannot be reconstructed from one lightweight trace.
+"""
 
 from __future__ import annotations
 
@@ -17,7 +24,13 @@ ParseMode = Literal["sync", "async", "offline"]
 
 @dataclass(frozen=True)
 class ProfilerPreset:
-    """Top-down Ascend collection detail for a bounded step window."""
+    """Top-down Ascend collection detail for a bounded step window.
+
+    Rank selection is part of storage cost: an 8-rank distributed preset emits
+    eight framework/CANN/device streams. Shape, stack, memory, L2, and system
+    collectors further enlarge raw data, so suites should use deep presets on
+    representative topologies rather than assuming they are free report views.
+    """
 
     name: str
     level: Literal["level_none", "level0", "level1", "level2"]

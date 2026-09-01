@@ -1,7 +1,22 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Offline, distributed workflow for formal GLM 5.2 precision experiments."""
+"""Offline, distributed workflow for formal GLM 5.2 precision experiments.
+
+The workflow deliberately separates four stages:
+
+1. ``prepare_fixture`` materializes one global token plan and one seed or
+   converged checkpoint.
+2. ``capture_endpoint`` trains one endpoint/repeat and records per-step loss,
+   grad norm, and the exact runtime input contract.
+3. ``PrecisionArtifactWriter`` publishes a small checksummed artifact after the
+   training process has completed.
+4. CPU-only comparison loads two artifact sets and applies ``standards.py``.
+
+``generation_id`` binds every capture to the fixture that produced it, while
+``capture_attempt_id`` binds published metrics to one worker invocation. These
+ids prevent force/resume from combining old data with a new experiment.
+"""
 
 from __future__ import annotations
 
@@ -440,7 +455,13 @@ def _completed_capture_can_be_finalized(
     *,
     expected_steps: int,
 ) -> bool:
-    """Return whether a finished run only needs artifact publication."""
+    """Return whether a finished run only needs artifact publication.
+
+    A launcher can die after training writes all metrics/contracts but before
+    the compact artifact is committed. Re-finalizing that run is safe only
+    when the full expected step series and contract summary are present; the
+    original capture attempt id is retained instead of inventing a new one.
+    """
 
     if not (input_contract_directory / "summary.json").is_file():
         return False
@@ -944,6 +965,7 @@ def prepare_fixture(
     endpoint: TrainingEndpoint,
     force: bool,
 ) -> Path:
+    """Create or validate the shared data/initialization experiment fixture."""
     fixture_directory = _fixture_directory(root, config)
     if fixture_directory.exists():
         if not force and _stored_training_matches(fixture_directory, config):
@@ -982,6 +1004,9 @@ def prepare_fixture(
             )
     fixture_directory.mkdir(parents=True)
 
+    # A fixture contains two independent reproducibility anchors: the token
+    # stream fixes every optimizer-step input, and the checkpoint fixes all
+    # model/optimizer initialization. Both are checksummed in fixture.json.
     data_digests = {
         path: _directory_digest(root / path) for path in config.training.data_paths
     }
@@ -1157,7 +1182,16 @@ def capture_endpoint(
     repeat: int,
     force: bool,
 ) -> Path | None:
+    """Capture one role/repeat without mixing fixture or attempt generations.
+
+    Only the PP metrics rank publishes the compact artifact. Other ranks still
+    participate in training and input-contract capture. Completed compatible
+    artifacts are resumable; incomplete same-generation runs may be finalized
+    or retried, while stale-generation data is archived/reset.
+    """
     endpoint = config.reference if role == "reference" else config.candidate
+    # Non-zero-bubble PP emits loss on the last physical pipeline stage. Map
+    # that global rank to its node so only the owning node expects metrics.
     metrics_rank = (
         0
         if endpoint.topology.pipeline_parallel_degree == 1

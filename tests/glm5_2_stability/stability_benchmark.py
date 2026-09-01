@@ -2,7 +2,14 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Reusable single-node GLM 5.2 training stability benchmark."""
+"""Reusable single-node GLM 5.2 long-running stability benchmark.
+
+Stability means more than process exit code: the benchmark tracks completed
+steps, finite loss/grad norm, elapsed time, throughput, device-memory snapshots,
+and terminal failure evidence for one or all topologies. It is intentionally
+separate from precision comparison and can run eager or graph mode through the
+same shared feature contract.
+"""
 
 from __future__ import annotations
 

@@ -2,7 +2,14 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Run one training job with synchronized data and optional profiling."""
+"""Run one training job with synchronized data and optional profiling.
+
+Installation order mirrors feature ownership: configure compiler diagnostics,
+load device-specific Turbo/rank filtering, install formal metric capture and
+fixed-token data, then enter the unmodified TorchTitan train entry point. This
+makes the same worker simultaneously observable by precision, graph, and
+performance tooling without one feature secretly configuring another.
+"""
 
 from __future__ import annotations
 

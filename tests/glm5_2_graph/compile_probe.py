@@ -2,7 +2,13 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Fast NPU eager-versus-graph probe using the combination executor."""
+"""Fast NPU eager-versus-graph probe using the combination executor.
+
+The probe shrinks steps, batch, and sequence only to validate compile plumbing,
+graph diagnostics, and eager/graph numerical comparison quickly. It is a smoke
+gate before the full topology/precision/performance experiments, not evidence of
+steady-state graph speedup.
+"""
 
 from dataclasses import replace
 from pathlib import Path

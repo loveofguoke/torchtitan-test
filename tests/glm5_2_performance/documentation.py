@@ -1,4 +1,10 @@
-"""Human-readable documentation for performance exploration evidence."""
+"""Human-readable documentation for performance exploration evidence.
+
+Every run receives a local README that records identity, exact command,
+profiler state, artifact links, metric scope, and known limitations. These files
+make archived experiment bundles understandable without relying on terminal
+history or the machine that originally produced them.
+"""
 
 from __future__ import annotations
 

@@ -1,4 +1,14 @@
-"""Run, post-process, and report independent profiler experiments."""
+"""Run, post-process, and report independent profiler experiments.
+
+The pipeline is intentionally staged:
+
+``capture -> optional offline parse -> msprof-analyze advisor/cluster/compare
+-> portable analysis.json -> flamegraph/memory/graph links -> HTML report``.
+
+Training output, raw profiler data, compact artifacts, and reports live in
+separate roots. Profiler-active traces diagnose causes; repeated profiler-off
+runs are the authoritative step-time and throughput baseline.
+"""
 
 from __future__ import annotations
 
@@ -542,6 +552,7 @@ def _run_process(
     log_path: Path,
     log_context: dict[str, Any] | None = None,
 ) -> None:
+    """Execute one stage while teeing terminal output into its runtime log."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("w", encoding="utf-8") as log:
         for key, value in (log_context or {}).items():
@@ -569,6 +580,7 @@ def _run_process(
 
 
 def _recover_partial_run(run_directory: Path) -> Path:
+    """Archive incomplete raw output so a retry starts from an empty path."""
     assert_run_not_active(run_directory)
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     destination = run_directory.with_name(f"{run_directory.name}.failed-{timestamp}")
@@ -590,6 +602,12 @@ def capture(
     preset: ProfilerPreset,
     force: bool,
 ) -> tuple[Path, Path]:
+    """Run one topology/preset capture and publish its compact manifest.
+
+    The run directory owns large trainer/profiler output. The artifact directory
+    owns the small identity and metrics needed for indexing. A completed matching
+    manifest is reusable; partial raw output is archived before relaunch.
+    """
     if (
         config.profiler_enabled
         and device == "npu"
@@ -786,6 +804,12 @@ def offline_parse(
     *,
     max_process_number: int | None = None,
 ) -> list[str]:
+    """Parse retained Ascend raw roots after the training process has ended.
+
+    This moves expensive CANN conversion off the training critical path and can
+    use multiple CPU workers. It cannot reconstruct events that collection did
+    not enable.
+    """
     if max_process_number is not None and max_process_number < 1:
         raise ValueError("offline parse workers must be positive")
     profiler_directory = _find_profiler_directory(run_directory)
@@ -1048,6 +1072,11 @@ def analyze(
     cluster: bool,
     compare_baseline: Path | None,
 ) -> Path:
+    """Attach official analyses and build a portable report for one capture.
+
+    Analysis may parse, advise, compare, and render existing evidence; it never
+    reruns training or changes the profiler-off performance baseline.
+    """
     run_name = _run_name(config, device, preset)
     run_parent = _scoped_parent(root, config.run_root, config.topology)
     artifact_parent = _scoped_parent(root, config.artifact_root, config.topology)

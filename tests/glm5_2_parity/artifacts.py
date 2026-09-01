@@ -6,6 +6,11 @@
 The artifact format intentionally stores only JSON metadata and safetensors
 tensor shards.  Comparing artifacts therefore never imports the model that
 produced them and never executes pickled Python objects.
+
+Each observation key maps to one tensor plus semantic metadata (component,
+layer, forward/backward role, dtype, and shape). Large captures are split into
+bounded safetensors shards. The manifest stores exact hashes for every shard and
+attachment, making directory synchronization detectable before comparison.
 """
 
 from __future__ import annotations

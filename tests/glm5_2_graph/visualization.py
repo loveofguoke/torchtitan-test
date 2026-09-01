@@ -1,4 +1,11 @@
-"""Capture and summarize official torch.compile visualization artifacts."""
+"""Capture and summarize official ``torch.compile`` diagnostics.
+
+Each rank writes Dynamo ``TORCH_TRACE`` events and Inductor debug output inside
+its run directory. ``tlparse`` turns the trace into an interactive report with
+graph breaks, guards, recompiles, generated FX graphs, and source frames. These
+are compiler diagnostics, distinct from NPU execution timelines collected by
+the performance profiler.
+"""
 
 from __future__ import annotations
 

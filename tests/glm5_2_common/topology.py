@@ -1,7 +1,15 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Canonical TorchTitan topology definitions shared by every experiment."""
+"""Canonical TorchTitan topology definitions shared by every experiment.
+
+Every smoke, precision, performance, graph, checkpoint, and stability suite
+uses these objects. This prevents nominally identical ``tp8`` experiments from
+drifting in PP schedule or DP/EP degrees. Dense ranks satisfy
+``dp_replicate * dp_shard * cp * tp * pp == world_size``. EP reinterprets the
+``dp_shard * cp * tp`` sparse region and therefore must divide that width; it
+does not multiply world size again.
+"""
 
 from __future__ import annotations
 
@@ -19,7 +27,7 @@ def _slug(value: str) -> str:
 
 @dataclass(frozen=True)
 class ParallelTopology:
-    """One authoritative set of TorchTitan parallel degrees."""
+    """One authoritative set of TorchTitan mesh degrees and PP policy."""
 
     name: str
     world_size: int

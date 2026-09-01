@@ -1,7 +1,14 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""TorchTitan dataloader backed by a topology-independent fixed token plan."""
+"""TorchTitan dataloader backed by a topology-independent fixed token plan.
+
+For each optimizer step the plan stores ``global_batch_size`` sequences. A DP
+rank owns a deterministic slice of global slots; gradient accumulation divides
+that slice into the number of dataloader batches consumed by one optimizer
+step. TP/CP/PP ranks sharing the same DP coordinate intentionally read the same
+slot, because they partition model/sequence work rather than data samples.
+"""
 
 from __future__ import annotations
 
@@ -35,7 +42,12 @@ CONTEXT_PARALLEL_DEGREE_ENV = "GLM5_PRECISION_CONTEXT_PARALLEL_DEGREE"
 
 
 class FixedTokenDataLoader(BaseDataLoader):
-    """Map fixed optimizer-step sample slots onto the current DP topology."""
+    """Map fixed optimizer-step sample slots onto the current DP topology.
+
+    The iterator also writes rank-local contract records. Offline validation
+    reconstructs the global slot set and rejects duplicates, omissions, wrong
+    order, or sample-digest mismatches before comparing numerical metrics.
+    """
 
     @dataclass(kw_only=True, slots=True)
     class Config(BaseDataLoader.Config):

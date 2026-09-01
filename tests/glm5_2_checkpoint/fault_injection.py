@@ -1,7 +1,14 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Checkpoint fault injection installed only inside benchmark workers."""
+"""Checkpoint fault injection installed only inside benchmark workers.
+
+The parent benchmark chooses a mode and boundary through environment variables.
+Workers wrap TorchTitan save/load only to record evidence and trigger a failure;
+checkpoint discovery, completeness checks, fallback, and restoration remain the
+framework's production code. Rank-local event files avoid requiring collective
+logging after one rank has already failed.
+"""
 
 from __future__ import annotations
 

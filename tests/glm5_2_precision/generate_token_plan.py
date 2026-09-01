@@ -2,7 +2,14 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Materialize TorchTitan's unsharded text stream as a fixed token plan."""
+"""Materialize TorchTitan's unsharded text stream as a fixed token plan.
+
+Generation runs the configured tokenizer, dataset, packing, and next-token
+label construction once at DP world size 1. It then reshapes each flattened
+Trainer batch into stable ``[global_batch, sequence]`` samples and records
+inputs, shifted labels, positions, and hierarchical digests. Endpoints consume
+these tensors directly; they do not independently tokenize random text.
+"""
 
 from __future__ import annotations
 

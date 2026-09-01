@@ -1,7 +1,14 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Orthogonal training features and conflict-checked command composition."""
+"""Orthogonal training features and conflict-checked command composition.
+
+Topology, graph mode, profiler collection, precision capture, checkpointing,
+and other features contribute arguments/environment independently. They meet
+only at ``ExecutionPlan``. Rejecting duplicate CLI keys and conflicting
+environment values here prevents one experiment from silently overriding
+another when features are combined.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +20,7 @@ from .topology import ParallelTopology
 
 @dataclass(frozen=True)
 class TrainingFeature:
-    """One independent contribution to a TorchTitan execution."""
+    """One independently testable contribution to a TorchTitan execution."""
 
     name: str
     arguments: tuple[str, ...] = ()

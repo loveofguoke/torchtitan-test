@@ -1,4 +1,12 @@
-"""Portable analysis and HTML rendering for profiler experiments."""
+"""Portable analysis and HTML rendering for profiler experiments.
+
+This module normalizes heterogeneous TorchTitan, torch_npu, CANN, TensorBoard,
+and msprof-analyze outputs into JSON plus self-contained HTML. It distinguishes
+wall-clock step metrics from overlapping profiler event sums: operator,
+communication, and memory events are diagnostics and are not forced into a
+misleading 100 percent composition when their intervals overlap across streams
+or ranks.
+"""
 
 from __future__ import annotations
 

@@ -1,7 +1,15 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Topology-suite orchestration for formal precision experiments."""
+"""Topology-suite orchestration for formal precision experiments.
+
+One suite prepares a single shared fixture and captures the single-device
+reference once. Each selected candidate topology then reuses those exact token
+and initialization inputs. ``--force`` resets every selected member before the
+first capture; without force, completed compatible members are skipped and only
+missing/incomplete members run. Compare discovers all completed members and
+writes both per-topology reports and one suite index.
+"""
 
 from __future__ import annotations
 

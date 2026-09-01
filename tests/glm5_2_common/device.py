@@ -1,7 +1,13 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Accelerator selection shared by all experiment entry points."""
+"""Accelerator selection shared by all experiment entry points.
+
+Device type and visible-device list are separate contracts. Auto detection
+accepts exactly one exported visibility variable, then falls back to backend
+availability. Workflows use the result both to set CUDA/NPU visibility and to
+choose the GPU/NPU TorchTitan launcher without hard-coding endpoint roles.
+"""
 
 from __future__ import annotations
 

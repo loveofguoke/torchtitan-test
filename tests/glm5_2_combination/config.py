@@ -1,7 +1,13 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Independent feature configurations for combined training experiments."""
+"""Independent feature configurations for combined training experiments.
+
+These objects translate one feature into ``TrainingFeature`` without knowing
+which other features are selected. ``ExecutionPlan`` is the only place allowed
+to merge them and rejects duplicate TorchTitan options or conflicting runtime
+environment, preserving standalone and combined behavior equivalence.
+"""
 
 from __future__ import annotations
 

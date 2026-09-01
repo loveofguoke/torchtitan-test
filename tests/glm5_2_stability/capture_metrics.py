@@ -2,7 +2,12 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Run TorchTitan and capture finite training metrics for stability tests."""
+"""Run TorchTitan and capture finite training metrics for stability tests.
+
+The hook records wall time and unrounded numeric metrics on the logging rank.
+Non-finite values are omitted from numeric conversion and later treated as
+stability failures by the benchmark report rather than crashing the logger.
+"""
 
 from __future__ import annotations
 
