@@ -71,6 +71,22 @@ def assert_run_not_active(
     )
     for candidate in state_names:
         state_path = path / candidate
+        lock_path = state_path.with_suffix(state_path.suffix + ".lock")
+        if lock_path.is_file():
+            try:
+                lock = json.loads(lock_path.read_text(encoding="utf-8"))
+                lock_pid = int(lock.get("pid", -1))
+            except (OSError, TypeError, ValueError) as error:
+                raise RuntimeError(
+                    f"run lock is unreadable and cannot be replaced safely: "
+                    f"{lock_path}"
+                ) from error
+            if process_is_running(lock_pid):
+                raise RuntimeError(
+                    f"run is still active with orchestrator PID {lock_pid}: "
+                    f"{path}; stop that process before retrying or forcing "
+                    "the experiment"
+                )
         if not state_path.is_file():
             continue
         try:
@@ -80,7 +96,6 @@ def assert_run_not_active(
             continue
         if (
             state.get("status") == "running"
-            and pid != os.getpid()
             and process_is_running(pid)
         ):
             raise RuntimeError(
@@ -106,6 +121,73 @@ class RunAttempt:
     pid: int = field(default_factory=os.getpid)
     state_name: str = "run_state.json"
 
+    @property
+    def lock_path(self) -> Path:
+        return self.state_path.with_suffix(self.state_path.suffix + ".lock")
+
+    def _acquire_lock(self) -> None:
+        self.directory.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(
+            {
+                "schema": "torchtitan.glm5_2.run_lock",
+                "schema_version": 1,
+                "attempt_id": self.attempt_id,
+                "pid": self.pid,
+            },
+            sort_keys=True,
+        ).encode("utf-8") + b"\n"
+        temporary = self.lock_path.with_name(
+            f".{self.lock_path.name}.{self.attempt_id}.tmp"
+        )
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        try:
+            os.write(descriptor, payload)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        try:
+            try:
+                # The hard-link create is atomic and publishes only the
+                # already complete owner payload. It avoids a crash window
+                # where another launcher sees a zero-byte lock.
+                os.link(temporary, self.lock_path)
+            except FileExistsError:
+                assert_run_not_active(
+                    self.directory,
+                    state_name=self.state_name,
+                )
+                raise RuntimeError(
+                    "a stale run lock remains after an interrupted launcher; "
+                    "archive or force-reset the incomplete generation before "
+                    f"retrying: {self.lock_path}"
+                ) from None
+            return
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+
+    def _release_lock(self) -> None:
+        try:
+            lock = json.loads(self.lock_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (OSError, TypeError, ValueError) as error:
+            raise RuntimeError(
+                f"run lock is unreadable and cannot be released safely: "
+                f"{self.lock_path}"
+            ) from error
+        if lock.get("attempt_id") != self.attempt_id:
+            raise RuntimeError(
+                f"run lock belongs to another attempt: {self.lock_path}"
+            )
+        self.lock_path.unlink()
+
     @classmethod
     def start(
         cls,
@@ -115,14 +197,18 @@ class RunAttempt:
         context: dict[str, Any] | None = None,
         state_name: str = "run_state.json",
     ) -> "RunAttempt":
-        assert_run_not_active(directory, state_name=state_name)
         attempt = cls(
             directory=directory,
             kind=kind,
             context=dict(context or {}),
             state_name=state_name,
         )
-        attempt.update("running")
+        attempt._acquire_lock()
+        try:
+            attempt.update("running")
+        except BaseException:
+            attempt._release_lock()
+            raise
         return attempt
 
     @property
@@ -156,6 +242,8 @@ class RunAttempt:
             encoding="utf-8",
         )
         temporary.replace(self.state_path)
+        if status != "running":
+            self._release_lock()
 
 
 def reset_output_generation(

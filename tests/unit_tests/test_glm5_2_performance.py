@@ -555,6 +555,28 @@ class TestPerformanceAnalysis(unittest.TestCase):
                 deliverables["ascend_profiles"][0]["parsed_database"]
             )
 
+    def test_msprof_deliverables_are_classified_as_insight_inputs(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            profiler = Path(temporary_directory)
+            profile = profiler / "PROF_000001_20260901000000"
+            output = profile / "mindstudio_profiler_output"
+            output.mkdir(parents=True)
+            (profile / "msprof_20260901000000.db").write_bytes(b"sqlite")
+            (output / "op_summary_20260901000000.csv").write_text(
+                "name,duration\n", encoding="utf-8"
+            )
+
+            deliverables = inspect_profiler_deliverables(profiler)
+
+        self.assertTrue(deliverables["insight_ready"])
+        self.assertEqual(
+            deliverables["ascend_profiles"][0]["layout"], "msprof"
+        )
+        self.assertTrue(deliverables["ascend_profiles"][0]["raw_ready"])
+        self.assertTrue(
+            deliverables["ascend_profiles"][0]["parsed_database"]
+        )
+
     def test_profiler_off_uses_post_warmup_steps_as_authoritative_steady_state(self):
         records = [
             {

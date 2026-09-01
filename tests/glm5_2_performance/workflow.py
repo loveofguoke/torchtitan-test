@@ -16,6 +16,8 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime
+import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -37,6 +39,11 @@ from tests.glm5_2_common.naming import config_name, slug
 from tests.glm5_2_common.topology import select_topologies, training_command_args
 
 from .analysis import build_analysis, render_html_report
+from .collectors import (
+    PerformanceCollector,
+    require_training_collector,
+    resolve_msprof_executable,
+)
 from .config import (
     PerformanceConfig,
     ProfilerPreset,
@@ -45,7 +52,13 @@ from .config import (
     profiler_presets,
 )
 from .documentation import card_scope, write_run_readme
-from .visualization import render_flamegraphs, render_mindstudio_flamegraphs
+from .visualization import (
+    find_flamegraph_script,
+    find_mindstudio_flamegraph_script,
+    mindstudio_insight_handoff,
+    render_flamegraphs,
+    render_mindstudio_flamegraphs,
+)
 
 
 def _slug(value: str) -> str:
@@ -88,6 +101,231 @@ def _source_metadata(root: Path) -> dict[str, str | None]:
     except (ImportError, OSError):
         metadata["torchtitan_root"] = None
     return metadata
+
+
+def _file_content_identity(path: Path) -> dict[str, Any]:
+    """Return a portable identity for one executable or adapter file."""
+
+    resolved = path.resolve()
+    status = resolved.stat()
+    return {
+        "name": resolved.name,
+        "size": status.st_size,
+        "sha256": hashlib.sha256(resolved.read_bytes()).hexdigest(),
+    }
+
+
+def _package_file_identity(
+    package: str,
+    relative_path: str,
+) -> dict[str, Any]:
+    """Hash one source-installed package file without importing the package."""
+
+    try:
+        spec = importlib.util.find_spec(package)
+    except (ImportError, ModuleNotFoundError, ValueError) as error:
+        return {"available": False, "error": repr(error)}
+    if spec is None:
+        return {"available": False, "error": f"package not found: {package}"}
+    if spec.submodule_search_locations:
+        locations = list(spec.submodule_search_locations)
+        root = Path(locations[0]).resolve() if locations else None
+    elif spec.origin and spec.origin not in {"built-in", "frozen"}:
+        root = Path(spec.origin).resolve().parent
+    else:
+        root = None
+    if root is None:
+        return {"available": False, "error": f"package root unavailable: {package}"}
+    source = root / Path(relative_path)
+    if not source.is_file():
+        return {
+            "available": False,
+            "relative_path": relative_path,
+            "error": f"package file not found: {source}",
+        }
+    return {
+        "available": True,
+        "package": package,
+        "relative_path": relative_path,
+        "file": _file_content_identity(source),
+    }
+
+
+def _torch_npu_profiler_adapter_identity() -> dict[str, Any]:
+    """Identify every repository-owned layer in the NPU profiler adapter."""
+
+    return {
+        "torchtitan": _package_file_identity(
+            "torchtitan", "tools/profiler.py"
+        ),
+        "torchtitanturbo": _package_file_identity(
+            "torchtitanturbo", "tools/profiler.py"
+        ),
+        "capture_metrics": _file_content_identity(
+            Path(__file__).with_name("capture_metrics.py")
+        ),
+    }
+
+
+def _collector_toolchain_metadata(
+    config: PerformanceConfig,
+) -> dict[str, Any] | None:
+    """Bind active official collection to its framework and adapter identity."""
+
+    if not config.profiler_enabled:
+        return None
+    if config.collector == PerformanceCollector.MSPROF.value:
+        scope = "performance-capture"
+        tool = "capture"
+    elif config.collector == PerformanceCollector.TORCH_NPU_PROFILER.value:
+        scope = "performance-torch-npu-capture"
+        tool = "torch-npu-capture"
+    else:
+        return None
+    metadata = _performance_stage_metadata(scope)
+    doctor = metadata.get("doctor", {})
+    if not doctor.get("ok", False):
+        raise RuntimeError(
+            "MindStudio performance doctor failed: "
+            f"{doctor.get('required_failures', [])}"
+        )
+    identity = _performance_toolchain_identity(metadata, tool=tool)
+    if tool == "torch-npu-capture":
+        identity["adapters"] = _torch_npu_profiler_adapter_identity()
+    return identity
+
+
+def _analysis_toolchain_metadata() -> dict[str, Any]:
+    """Return the analyzer-only identity used by derived official outputs."""
+
+    metadata = _performance_stage_metadata("performance-analysis")
+    doctor = metadata.get("doctor", {})
+    if not doctor.get("ok", False):
+        raise RuntimeError(
+            "MindStudio performance analysis doctor failed: "
+            f"{doctor.get('required_failures', [])}"
+        )
+    return _performance_toolchain_identity(metadata, tool="analysis")
+
+
+def _performance_stage_metadata(scope: str) -> dict[str, Any]:
+    """Collect one performance stage without validating unrelated tools."""
+
+    from tests.glm5_2_mindstudio import toolchain
+
+    report = toolchain.doctor_report(scope=scope)
+    lock_bytes = toolchain.LOCK_PATH.read_bytes()
+    lock = toolchain.load_toolchain_lock()
+    tool_name = {
+        "performance-capture": "msprof",
+        "performance-torch-npu-capture": None,
+        "performance-analysis": "msprof-analyze",
+    }[scope]
+    stage_lock = {
+        "profile_name": lock.get("profile_name"),
+        "compatibility": (
+            lock.get("compatibility")
+            if scope
+            in {"performance-capture", "performance-torch-npu-capture"}
+            else None
+        ),
+        "tool": (
+            lock.get("tools", {}).get(tool_name)
+            if tool_name is not None
+            else None
+        ),
+    }
+    checks = report.get("checks", {})
+    framework = checks.get("framework", {})
+    source_checkouts = checks.get("source_checkouts", {})
+    sources = source_checkouts.get("tools", {})
+    return {
+        "schema_version": 1,
+        "profile_name": report.get("profile_name"),
+        "scope": report.get("scope"),
+        "lock": {
+            "sha256": _json_identity(stage_lock),
+            "full_sha256": hashlib.sha256(lock_bytes).hexdigest(),
+        },
+        "compatibility": lock.get("compatibility"),
+        "versions": {
+            "torch": framework.get("torch", {}).get("version"),
+            "torch_npu": framework.get("torch_npu", {}).get("version"),
+            "msprof": checks.get("msprof", {}).get("reported_version"),
+            "msprof-analyze": checks.get("msprof-analyze", {})
+            .get("import", {})
+            .get("version"),
+        },
+        "sources": sources if isinstance(sources, dict) else {},
+        "doctor": report,
+    }
+
+
+def _performance_toolchain_identity(
+    metadata: dict[str, Any],
+    *,
+    tool: str,
+) -> dict[str, Any]:
+    """Select only inputs that can change one performance pipeline stage.
+
+    Capture and offline analysis can run on different hosts.  The capture
+    cache therefore records torch/torch_npu/CANN/msprof only, while derived
+    advisor output records msprof-analyze only.  In particular, installing or
+    upgrading msprof-analyze must never invalidate a raw capture.
+    """
+
+    if tool not in {"capture", "torch-npu-capture", "analysis"}:
+        raise ValueError(f"unsupported performance toolchain stage: {tool}")
+    versions = metadata.get("versions", {})
+    sources = metadata.get("sources", {})
+    doctor = metadata.get("doctor", {})
+    checks = doctor.get("checks", {}) if isinstance(doctor, dict) else {}
+    lock = metadata.get("lock", {})
+    if tool == "capture":
+        version_names = ("torch", "torch_npu", "msprof")
+        check_names = ("framework", "cann", "msprof")
+        source_names = ("msprof",)
+        scope = "performance-capture"
+    elif tool == "torch-npu-capture":
+        version_names = ("torch", "torch_npu")
+        check_names = ("framework", "cann")
+        source_names = ()
+        scope = "performance-torch-npu-capture"
+    else:
+        version_names = ("msprof-analyze",)
+        check_names = ("msprof-analyze",)
+        source_names = ("msprof-analyze",)
+        scope = "performance-analysis"
+    return {
+        "schema_version": metadata.get("schema_version"),
+        "profile_name": metadata.get("profile_name"),
+        "scope": scope,
+        "lock_sha256": lock.get("sha256") if isinstance(lock, dict) else None,
+        "compatibility": (
+            metadata.get("compatibility")
+            if tool in {"capture", "torch-npu-capture"}
+            else None
+        ),
+        "versions": {
+            name: versions.get(name)
+            for name in version_names
+            if isinstance(versions, dict)
+        },
+        "sources": {
+            name: sources.get(name)
+            for name in source_names
+            if isinstance(sources, dict)
+        },
+        "doctor": {
+            "scope": doctor.get("scope") if isinstance(doctor, dict) else scope,
+            "runtime": doctor.get("runtime") if isinstance(doctor, dict) else None,
+            "checks": {
+                name: checks.get(name)
+                for name in check_names
+                if isinstance(checks, dict)
+            },
+        },
+    }
 
 
 def _resolve_device(requested: str) -> str:
@@ -190,10 +428,15 @@ def _run_name(
         (config.training_dtype, config.mixed_precision_param),
         f"{config.training_dtype}-{config.mixed_precision_param}",
     )
+    preset_label = (
+        "basic-msprof"
+        if config.collector == PerformanceCollector.MSPROF.value
+        else config.preset
+    )
     base = (
         f"{device}-{config.topology}-{precision}-s{config.steps}-"
         f"l{config.local_batch_size}-b{config.global_batch_size}-"
-        f"seq{config.sequence_length}-seed{config.seed}-{config.preset}"
+        f"seq{config.sequence_length}-seed{config.seed}-{preset_label}"
     )
     if config.mixed_precision_reduce != "float32":
         reduce_precision = {
@@ -210,6 +453,11 @@ def _run_name(
     identity = config.as_dict()
     for key in ("name", "device", "run_root", "artifact_root", "report_root"):
         identity.pop(key, None)
+    if config.collector == PerformanceCollector.TORCH_NPU_PROFILER.value:
+        # Preserve names from before collector selection became explicit.
+        identity.pop("collector", None)
+    if not config.collector_args:
+        identity.pop("collector_args", None)
     identity["resolved_device"] = device
     if preset_overridden:
         identity["profiler_environment"] = effective_preset.environment()
@@ -267,7 +515,10 @@ def _adopt_legacy_performance_output(
 
 def _write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(value, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _scoped_parent(root: Path, configured_root: str, topology: str) -> Path:
@@ -358,7 +609,12 @@ def _sync_exploration_bundle(
 
     directory = _exploration_directory(root, topology, run_name)
     directory.mkdir(parents=True, exist_ok=True)
-    for name in ("manifest.json", "analysis.json", "metrics.jsonl"):
+    for name in (
+        "manifest.json",
+        "analysis.json",
+        "metrics.jsonl",
+        "mindstudio_insight_handoff.json",
+    ):
         source = artifact_directory / name
         if source.is_file():
             shutil.copy2(source, directory / name)
@@ -453,6 +709,7 @@ def _training_command(
     preset: ProfilerPreset,
     run_directory: Path,
 ) -> list[str]:
+    collector = require_training_collector(config.collector)
     topology = performance_topologies()[config.topology]
     visible = _visible_devices(device)
     if visible is not None and len(visible) < topology.world_size:
@@ -499,6 +756,7 @@ def _training_command(
             f"--profiler.profiler_active={config.active_steps}",
         ]
         if config.profiler_enabled
+        and collector is PerformanceCollector.TORCH_NPU_PROFILER
         else []
     )
     command = [
@@ -541,6 +799,26 @@ def _training_command(
     ]
     if config.deterministic:
         command.append("--debug.deterministic")
+    if config.profiler_enabled and collector is PerformanceCollector.MSPROF:
+        executable = resolve_msprof_executable()
+        output_directory = (
+            run_directory / "trainer_output" / "profiling" / "msprof"
+        )
+        default_type = (
+            []
+            if any(
+                argument == "--type" or argument.startswith("--type=")
+                for argument in config.collector_args
+            )
+            else ["--type=text"]
+        )
+        command = [
+            executable,
+            f"--output={output_directory}",
+            *default_type,
+            *config.collector_args,
+            *command,
+        ]
     return command
 
 
@@ -608,6 +886,8 @@ def capture(
     owns the small identity and metrics needed for indexing. A completed matching
     manifest is reusable; partial raw output is archived before relaunch.
     """
+    collector = require_training_collector(config.collector)
+    collector_toolchain = _collector_toolchain_metadata(config)
     if (
         config.profiler_enabled
         and device == "npu"
@@ -638,12 +918,18 @@ def capture(
     complete_manifest = artifact_directory / "manifest.json"
 
     run_manifest = run_directory / "manifest.json"
-    profiler_environment = preset.environment() if config.profiler_enabled else {}
+    profiler_environment = (
+        preset.environment()
+        if config.profiler_enabled
+        and collector is PerformanceCollector.TORCH_NPU_PROFILER
+        else {}
+    )
     if complete_manifest.is_file() and run_manifest.is_file() and not force:
         existing = json.loads(complete_manifest.read_text(encoding="utf-8"))
         if (
             not _config_is_compatible(existing.get("config", {}), config)
             or existing.get("profiler_environment") != profiler_environment
+            or existing.get("collector_toolchain") != collector_toolchain
         ):
             raise FileExistsError(
                 f"completed capture uses different settings: {artifact_directory}; "
@@ -708,7 +994,8 @@ def capture(
     )
     capture_kind = "profiler" if config.profiler_enabled else "performance"
     print(
-        f"Starting {capture_kind} capture: device={device}, topology={config.topology}, "
+        f"Starting {capture_kind} capture: device={device}, "
+        f"topology={config.topology}, "
         f"preset={config.preset}, output={run_directory}"
     )
     print(f"Runtime log: {runtime_log}")
@@ -766,10 +1053,12 @@ def capture(
         "visible_devices": _visible_devices(device),
         "topology": config.topology,
         "preset": config.preset,
+        "collector": config.collector,
         "config": config.as_dict(),
         "profiler_environment": profiler_environment,
         "command": command,
         "source": _source_metadata(root),
+        "collector_toolchain": collector_toolchain,
         "preflight": preflight,
         "run_directory": str(run_directory),
         "attempt_id": attempt.attempt_id,
@@ -793,6 +1082,7 @@ def capture(
 
 def _find_profiler_directory(run_directory: Path) -> Path:
     candidates = (
+        run_directory / "trainer_output" / "profiling" / "msprof",
         run_directory / "trainer_output" / "profiling" / "traces",
         run_directory / "trainer_output" / "profiling",
     )
@@ -837,7 +1127,11 @@ def offline_parse(
     return [str(path) for path in raw_directories]
 
 
-def run_advisor(run_directory: Path) -> dict[str, Any]:
+def run_advisor(
+    run_directory: Path,
+    *,
+    analysis_toolchain: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     profiler_directory = _find_profiler_directory(run_directory)
     output_directory = run_directory / "advisor"
     command = [
@@ -850,7 +1144,10 @@ def run_advisor(run_directory: Path) -> dict[str, Any]:
         str(output_directory),
     ]
     return _run_msprof_analyze(
-        run_directory, name="advisor", command=command
+        run_directory,
+        name="advisor",
+        command=command,
+        analysis_toolchain=analysis_toolchain,
     )
 
 
@@ -859,6 +1156,7 @@ def _run_msprof_analyze(
     *,
     name: str,
     command: list[str],
+    analysis_toolchain: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     print(f"Running msprof-analyze {name}: {' '.join(command)}")
     result = subprocess.run(command, text=True, capture_output=True, check=False)
@@ -867,6 +1165,7 @@ def _run_msprof_analyze(
         "return_code": result.returncode,
         "stdout": result.stdout,
         "stderr": result.stderr,
+        "analysis_toolchain": analysis_toolchain,
     }
     _write_json(run_directory / f"{name}.json", status)
     if result.returncode:
@@ -926,8 +1225,22 @@ def _safe_distributed_parse_preset(
     return preset
 
 
-def run_cluster_analysis(run_directory: Path) -> dict[str, Any]:
-    """Run the official cluster, time, bottleneck, and idle recipes."""
+def run_cluster_analysis(
+    run_directory: Path,
+    *,
+    extended: bool = True,
+    mode: str = "all",
+    agent_output: bool = False,
+    bypass_input_safety_checks: bool = False,
+    analysis_toolchain: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run the official cluster entry and optional legacy drill-down recipes."""
+
+    if mode not in {"all", "communication_time", "communication_matrix"}:
+        raise ValueError(
+            "cluster mode must be all, communication_time, or "
+            "communication_matrix"
+        )
 
     profiler_directory = _find_profiler_directory(run_directory)
     output_directory = run_directory / "cluster"
@@ -935,15 +1248,30 @@ def run_cluster_analysis(run_directory: Path) -> dict[str, Any]:
         _msprof_analyze_executable(),
         "cluster",
         "-m",
-        "all",
+        mode,
         "-d",
         str(profiler_directory),
         "-o",
         str(output_directory),
     ]
-    results = {"cluster": _run_msprof_analyze(
-        run_directory, name="cluster", command=command
-    )}
+    if agent_output:
+        command.append("--agent")
+    if bypass_input_safety_checks:
+        command.append("--force")
+    results = {
+        "cluster": _run_msprof_analyze(
+            run_directory,
+            name="cluster",
+            command=command,
+            analysis_toolchain=analysis_toolchain,
+        )
+    }
+    if not extended:
+        # The MindStudio standard path intentionally stops at the documented
+        # 26.x ``cluster -m all`` contract. The extra recipes below predate
+        # that contract and remain available only to the legacy performance
+        # workflow whose server images have already validated them.
+        return results
     executable = _msprof_analyze_executable()
     recipes = {
         "cluster_time_summary": [
@@ -998,13 +1326,19 @@ def run_cluster_analysis(run_directory: Path) -> dict[str, Any]:
         ]
     for name, recipe in recipes.items():
         results[name] = _run_msprof_analyze(
-            run_directory, name=name, command=recipe
+            run_directory,
+            name=name,
+            command=recipe,
+            analysis_toolchain=analysis_toolchain,
         )
     workers = _msprof_analyze_workers()
     if workers == 1:
         for name, recipe in communication_recipes.items():
             results[name] = _run_msprof_analyze(
-                run_directory, name=name, command=recipe
+                run_directory,
+                name=name,
+                command=recipe,
+                analysis_toolchain=analysis_toolchain,
             )
     else:
         print(
@@ -1018,6 +1352,7 @@ def run_cluster_analysis(run_directory: Path) -> dict[str, Any]:
                     run_directory,
                     name=name,
                     command=recipe,
+                    analysis_toolchain=analysis_toolchain,
                 )
                 for name, recipe in communication_recipes.items()
             }
@@ -1039,6 +1374,9 @@ def _comparison_input(run_directory: Path) -> Path:
 def run_performance_compare(
     run_directory: Path,
     baseline: Path,
+    *,
+    standard_cli: bool = False,
+    analysis_toolchain: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compare one profile against an NPU or GPU baseline profile."""
 
@@ -1052,12 +1390,314 @@ def run_performance_compare(
         str(_comparison_input(run_directory)),
         "-bp",
         str(baseline.resolve()),
-        "-o",
+        "--output_path" if standard_cli else "-o",
         str(output_directory),
     ]
     return _run_msprof_analyze(
-        run_directory, name="compare", command=command
+        run_directory,
+        name="compare",
+        command=command,
+        analysis_toolchain=analysis_toolchain,
     )
+
+
+def _json_identity(value: Any) -> str:
+    payload = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _path_tree_identity(path: Path) -> dict[str, Any]:
+    """Fingerprint a file or directory without hashing multi-gigabyte traces.
+
+    Official profiler baselines are usually directory trees containing large
+    databases. The recursive relative path, size, and nanosecond mtime tuple
+    detects an in-place rewrite while keeping compare startup bounded.
+    """
+
+    resolved = path.resolve()
+    if resolved.is_file():
+        status = resolved.stat()
+        entries = [
+            {
+                "path": ".",
+                "size": status.st_size,
+                "mtime_ns": status.st_mtime_ns,
+            }
+        ]
+        kind = "file"
+    elif resolved.is_dir():
+        entries = []
+        for candidate in sorted(
+            (item for item in resolved.rglob("*") if item.is_file()),
+            key=lambda item: item.relative_to(resolved).as_posix(),
+        ):
+            status = candidate.stat()
+            entries.append(
+                {
+                    "path": candidate.relative_to(resolved).as_posix(),
+                    "size": status.st_size,
+                    "mtime_ns": status.st_mtime_ns,
+                }
+            )
+        kind = "directory"
+    else:
+        raise FileNotFoundError(f"analysis input does not exist: {resolved}")
+    return {
+        "kind": kind,
+        "file_count": len(entries),
+        "total_bytes": sum(entry["size"] for entry in entries),
+        "tree_stat_sha256": _json_identity(entries),
+    }
+
+
+def _optional_visualizer_identity(path: str | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    return _file_content_identity(Path(path))
+
+
+def _visualization_toolchain_identity() -> dict[str, Any]:
+    """Bind derived visualizations to the scripts that render them."""
+
+    return {
+        "mindstudio_insight_flamegraph": _optional_visualizer_identity(
+            find_mindstudio_flamegraph_script()
+        ),
+        "brendangregg_flamegraph": _optional_visualizer_identity(
+            find_flamegraph_script()
+        ),
+    }
+
+
+def _capture_analysis_identity(manifest: dict[str, Any]) -> str:
+    """Identify captured evidence without binding analysis to local paths."""
+
+    source = manifest.get("source", {})
+    portable_source = {
+        key: value
+        for key, value in source.items()
+        if not key.endswith("_root")
+    } if isinstance(source, dict) else source
+    return _json_identity(
+        {
+            "format_version": manifest.get("format_version"),
+            "run_name": manifest.get("run_name"),
+            "attempt_id": manifest.get("attempt_id"),
+            "device": manifest.get("device"),
+            "topology": manifest.get("topology"),
+            "preset": manifest.get("preset"),
+            "collector": manifest.get("collector"),
+            "config": manifest.get("config"),
+            "profiler_environment": manifest.get("profiler_environment"),
+            "source": portable_source,
+            "collector_toolchain": manifest.get("collector_toolchain"),
+        }
+    )
+
+
+def _analysis_request(
+    *,
+    manifest: dict[str, Any],
+    parse_offline: bool,
+    parse_workers: int | None,
+    advisor: bool,
+    cluster: bool,
+    cluster_mode: str = "all",
+    cluster_agent_output: bool = False,
+    cluster_bypass_input_safety_checks: bool = False,
+    compare_baseline: Path | None = None,
+    analysis_toolchain: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    baseline: dict[str, Any] | None = None
+    if compare_baseline is not None:
+        resolved = compare_baseline.resolve()
+        baseline = {
+            "path": str(resolved),
+            **_path_tree_identity(resolved),
+        }
+    request = {
+        "capture_identity": _capture_analysis_identity(manifest),
+        "operations": {
+            "offline_parse": parse_offline,
+            "parse_workers": parse_workers if parse_offline else None,
+            "advisor": advisor,
+            "cluster": cluster,
+            "cluster_mode": cluster_mode if cluster else None,
+            "cluster_agent_output": (
+                cluster_agent_output if cluster else False
+            ),
+            "cluster_bypass_input_safety_checks": (
+                cluster_bypass_input_safety_checks if cluster else False
+            ),
+            "compare_baseline": baseline,
+        },
+        "analysis_toolchain": analysis_toolchain,
+        "visualization_toolchain": _visualization_toolchain_identity(),
+    }
+    request["identity"] = _json_identity(request)
+    return request
+
+
+def _analysis_output_paths(
+    *,
+    run_directory: Path,
+    artifact_directory: Path,
+    report_path: Path,
+    exploration_directory: Path,
+) -> list[Path]:
+    """List derived analysis output while intentionally excluding raw data."""
+
+    paths = [
+        artifact_directory / "analysis.json",
+        artifact_directory / "mindstudio_insight_handoff.json",
+        artifact_directory / "analysis_state.json",
+        artifact_directory / "analysis_state.json.lock",
+        report_path,
+        exploration_directory / "analysis.json",
+        exploration_directory / "mindstudio_insight_handoff.json",
+        exploration_directory / "artifacts.json",
+        run_directory / "advisor",
+        run_directory / "advisor.json",
+        run_directory / "cluster",
+        run_directory / "cluster.json",
+        run_directory / "cluster_time_summary",
+        run_directory / "cluster_time_summary.json",
+        run_directory / "free_analysis",
+        run_directory / "free_analysis.json",
+        run_directory / "compare",
+        run_directory / "compare.json",
+    ]
+    paths.extend(run_directory.glob("communication_bottleneck_rank_*"))
+    command_directory = exploration_directory / "tool_commands"
+    for name in (
+        "advisor.json",
+        "cluster.json",
+        "cluster_time_summary.json",
+        "free_analysis.json",
+        "compare.json",
+    ):
+        paths.append(command_directory / name)
+    paths.extend(command_directory.glob("communication_bottleneck_rank_*.json"))
+    profiler_directory = _find_profiler_directory(run_directory)
+    paths.append(profiler_directory / "mindstudio_flamegraphs")
+    if profiler_directory.is_dir():
+        paths.extend(profiler_directory.rglob("*_flamegraph.svg"))
+    return list(dict.fromkeys(paths))
+
+
+def _analysis_outputs_exist(
+    *,
+    run_directory: Path,
+    artifact_directory: Path,
+    report_path: Path,
+) -> bool:
+    """Return whether provenance-sensitive derived output already exists."""
+
+    candidates = [
+        artifact_directory / "analysis.json",
+        artifact_directory / "mindstudio_insight_handoff.json",
+        report_path,
+        run_directory / "advisor",
+        run_directory / "advisor.json",
+        run_directory / "cluster",
+        run_directory / "cluster.json",
+        run_directory / "cluster_time_summary",
+        run_directory / "cluster_time_summary.json",
+        run_directory / "free_analysis",
+        run_directory / "free_analysis.json",
+        run_directory / "compare",
+        run_directory / "compare.json",
+    ]
+    candidates.extend(run_directory.glob("communication_bottleneck_rank_*"))
+    profiler_directory = _find_profiler_directory(run_directory)
+    candidates.append(profiler_directory / "mindstudio_flamegraphs")
+    if profiler_directory.is_dir():
+        candidates.extend(profiler_directory.rglob("*_flamegraph.svg"))
+    return any(path.exists() for path in candidates)
+
+
+def _analysis_outputs_complete(
+    run_directory: Path,
+    request: dict[str, Any],
+) -> bool:
+    operations = request.get("operations", {})
+    required = []
+    if operations.get("advisor"):
+        required.extend(
+            (run_directory / "advisor", run_directory / "advisor.json")
+        )
+    if operations.get("cluster"):
+        required.extend(
+            (run_directory / "cluster", run_directory / "cluster.json")
+        )
+    if operations.get("compare_baseline") is not None:
+        required.extend(
+            (run_directory / "compare", run_directory / "compare.json")
+        )
+    return all(path.exists() for path in required)
+
+
+def _reset_analysis_outputs(
+    *,
+    run_directory: Path,
+    artifact_directory: Path,
+    report_path: Path,
+    exploration_directory: Path,
+) -> None:
+    """Reset one selected analysis generation without touching its capture."""
+
+    assert_run_not_active(
+        artifact_directory,
+        state_name="analysis_state.json",
+    )
+    reset_output_generation(
+        _analysis_output_paths(
+            run_directory=run_directory,
+            artifact_directory=artifact_directory,
+            report_path=report_path,
+            exploration_directory=exploration_directory,
+        ),
+        label="performance analysis",
+        include_archives=False,
+    )
+
+
+def _validate_analysis_capabilities(
+    config: PerformanceConfig,
+    *,
+    advisor: bool,
+    cluster: bool,
+    compare_baseline: Path | None,
+    run_directory: Path | None = None,
+) -> None:
+    """Enforce the input formats supported by msprof-analyze 26.1."""
+
+    if config.collector != PerformanceCollector.MSPROF.value:
+        return
+    unsupported = []
+    if advisor:
+        unsupported.append("advisor")
+    if compare_baseline is not None:
+        unsupported.append("compare")
+    if unsupported:
+        raise ValueError(
+            "msprof-analyze 26.1 "
+            + "/".join(unsupported)
+            + " requires an Ascend PyTorch Profiler *_ascend_pt capture; "
+            "the msprof collector supports cluster analysis and MindStudio "
+            "Insight only"
+        )
+    if cluster and run_directory is not None:
+        profiler_directory = _find_profiler_directory(run_directory)
+        if not any(profiler_directory.rglob("*.db")):
+            raise ValueError(
+                "msprof-analyze cluster requires a database produced by the "
+                "msprof capture, but no *.db file was found"
+            )
 
 
 def analyze(
@@ -1071,12 +1711,22 @@ def analyze(
     advisor: bool,
     cluster: bool,
     compare_baseline: Path | None,
+    cluster_mode: str = "all",
+    cluster_agent_output: bool = False,
+    cluster_bypass_input_safety_checks: bool = False,
+    force: bool = False,
 ) -> Path:
     """Attach official analyses and build a portable report for one capture.
 
     Analysis may parse, advise, compare, and render existing evidence; it never
     reruns training or changes the profiler-off performance baseline.
     """
+    _validate_analysis_capabilities(
+        config,
+        advisor=advisor,
+        cluster=cluster,
+        compare_baseline=compare_baseline,
+    )
     run_name = _run_name(config, device, preset)
     run_parent = _scoped_parent(root, config.run_root, config.topology)
     artifact_parent = _scoped_parent(root, config.artifact_root, config.topology)
@@ -1101,7 +1751,11 @@ def analyze(
             config=config,
             device=device,
             profiler_environment=(
-                preset.environment() if config.profiler_enabled else {}
+                preset.environment()
+                if config.profiler_enabled
+                and config.collector
+                == PerformanceCollector.TORCH_NPU_PROFILER.value
+                else {}
             ),
         )
         if match is None:
@@ -1111,40 +1765,186 @@ def analyze(
         run_directory = run_parent / run_name
         manifest_path = artifact_directory / "manifest.json"
         print(f"Using compatible capture manifest: {manifest_path}")
-    if parse_offline and config.profiler_enabled:
-        offline_parse(run_directory, max_process_number=parse_workers)
-    if advisor:
-        run_advisor(run_directory)
-    if cluster:
-        run_cluster_analysis(run_directory)
-    if compare_baseline is not None:
-        run_performance_compare(run_directory, compare_baseline)
-    profiler_directory = _find_profiler_directory(run_directory)
-    render_mindstudio_flamegraphs(profiler_directory)
-    render_flamegraphs(profiler_directory)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    analysis = build_analysis(
-        run_directory,
-        config=manifest.get("config"),
-        profiler_environment=manifest.get("profiler_environment"),
-    )
-    _write_json(artifact_directory / "analysis.json", analysis)
     report_path = (
         _scoped_parent(root, config.report_root, config.topology)
         / f"{run_name}.html"
     )
-    render_html_report(
-        manifest=manifest,
-        analysis=analysis,
-        output_path=report_path,
+    exploration_directory = _exploration_directory(
+        root, config.topology, run_name
     )
-    _sync_exploration_bundle(
-        root,
-        topology=config.topology,
-        run_name=run_name,
+    _validate_analysis_capabilities(
+        config,
+        advisor=advisor,
+        cluster=cluster,
+        compare_baseline=compare_baseline,
+        run_directory=run_directory,
+    )
+    if (
+        parse_offline
+        and config.profiler_enabled
+        and config.collector == PerformanceCollector.MSPROF.value
+    ):
+        raise ValueError(
+            "torch_npu offline parsing cannot process an msprof collector run"
+        )
+    requires_official_analyzer = (
+        advisor or cluster or compare_baseline is not None
+    )
+    analysis_toolchain = (
+        _analysis_toolchain_metadata() if requires_official_analyzer else None
+    )
+    request = _analysis_request(
+        manifest=manifest,
+        parse_offline=parse_offline,
+        parse_workers=parse_workers,
+        advisor=advisor,
+        cluster=cluster,
+        cluster_mode=cluster_mode,
+        cluster_agent_output=cluster_agent_output,
+        cluster_bypass_input_safety_checks=(
+            cluster_bypass_input_safety_checks
+        ),
+        compare_baseline=compare_baseline,
+        analysis_toolchain=analysis_toolchain,
+    )
+    analysis_state_path = artifact_directory / "analysis_state.json"
+    if force:
+        _reset_analysis_outputs(
+            run_directory=run_directory,
+            artifact_directory=artifact_directory,
+            report_path=report_path,
+            exploration_directory=exploration_directory,
+        )
+    elif analysis_state_path.is_file():
+        try:
+            prior_state = json.loads(
+                analysis_state_path.read_text(encoding="utf-8")
+            )
+        except (OSError, TypeError, ValueError) as error:
+            raise RuntimeError(
+                "performance analysis state is unreadable; pass --force to "
+                f"replace derived outputs: {analysis_state_path}"
+            ) from error
+        assert_run_not_active(
+            artifact_directory,
+            state_name="analysis_state.json",
+        )
+        if (
+            prior_state.get("status") == "completed"
+            and prior_state.get("context", {}).get("identity")
+            == request["identity"]
+            and (artifact_directory / "analysis.json").is_file()
+            and report_path.is_file()
+            and _analysis_outputs_complete(run_directory, request)
+        ):
+            print(f"Skip completed performance analysis: {report_path}")
+            return report_path
+        if (
+            prior_state.get("status") == "completed"
+            and prior_state.get("context", {}).get("identity")
+            != request["identity"]
+        ):
+            raise FileExistsError(
+                "completed performance analysis uses a different capture, "
+                "operation set, baseline, or analyzer; pass --force to "
+                f"replace derived outputs only: {artifact_directory}"
+            )
+        _reset_analysis_outputs(
+            run_directory=run_directory,
+            artifact_directory=artifact_directory,
+            report_path=report_path,
+            exploration_directory=exploration_directory,
+        )
+    elif _analysis_outputs_exist(
         run_directory=run_directory,
         artifact_directory=artifact_directory,
         report_path=report_path,
+    ):
+        raise FileExistsError(
+            "legacy performance analysis output has no analyzer provenance; "
+            "pass --force to replace derived outputs without deleting the "
+            f"raw capture: {artifact_directory}"
+        )
+
+    attempt = RunAttempt.start(
+        artifact_directory,
+        kind="performance-analysis",
+        context=request,
+        state_name="analysis_state.json",
+    )
+    try:
+        if parse_offline and config.profiler_enabled:
+            offline_parse(run_directory, max_process_number=parse_workers)
+        if advisor:
+            run_advisor(
+                run_directory,
+                analysis_toolchain=analysis_toolchain,
+            )
+        if cluster:
+            run_cluster_analysis(
+                run_directory,
+                extended=(
+                    config.collector
+                    != PerformanceCollector.MSPROF.value
+                ),
+                mode=cluster_mode,
+                agent_output=cluster_agent_output,
+                bypass_input_safety_checks=(
+                    cluster_bypass_input_safety_checks
+                ),
+                analysis_toolchain=analysis_toolchain,
+            )
+        if compare_baseline is not None:
+            run_performance_compare(
+                run_directory,
+                compare_baseline,
+                standard_cli=True,
+                analysis_toolchain=analysis_toolchain,
+            )
+        profiler_directory = _find_profiler_directory(run_directory)
+        render_mindstudio_flamegraphs(profiler_directory)
+        render_flamegraphs(profiler_directory)
+        analysis = build_analysis(
+            run_directory,
+            config=manifest.get("config"),
+            profiler_environment=manifest.get("profiler_environment"),
+        )
+        analysis["analysis_toolchain"] = analysis_toolchain
+        analysis["analysis_operation"] = request
+        handoff_path = artifact_directory / "mindstudio_insight_handoff.json"
+        handoff = mindstudio_insight_handoff(
+            profiler_directory,
+            analysis_root=run_directory,
+            portable_base=root,
+        )
+        _write_json(handoff_path, handoff)
+        analysis["mindstudio_insight_handoff"] = {
+            "path": str(handoff_path),
+            "import_targets": handoff["import_targets"],
+            "portable_import_targets": handoff["portable_import_targets"],
+        }
+        _write_json(artifact_directory / "analysis.json", analysis)
+        render_html_report(
+            manifest=manifest,
+            analysis=analysis,
+            output_path=report_path,
+        )
+        _sync_exploration_bundle(
+            root,
+            topology=config.topology,
+            run_name=run_name,
+            run_directory=run_directory,
+            artifact_directory=artifact_directory,
+            report_path=report_path,
+        )
+    except BaseException as error:
+        attempt.update("failed", error=repr(error))
+        raise
+    attempt.update(
+        "completed",
+        report=str(report_path),
+        analysis=str(artifact_directory / "analysis.json"),
     )
     print(f"Performance report: {report_path}")
     return report_path
@@ -1251,6 +2051,24 @@ def run_profiler_cli(
     parser.add_argument("--warmup-steps", type=int)
     parser.add_argument("--active-steps", type=int)
     parser.add_argument(
+        "--collector",
+        choices=tuple(collector.value for collector in PerformanceCollector),
+        help=(
+            "collection entry; msprof and torch_npu_profiler are executable "
+            "for training, while other registered MindStudio collectors "
+            "raise an audited not-implemented error"
+        ),
+    )
+    parser.add_argument(
+        "--collector-arg",
+        action="append",
+        default=[],
+        help=(
+            "append one version-specific msprof option before the training "
+            "application; use --collector-arg=--option=value"
+        ),
+    )
+    parser.add_argument(
         "--profiler-off",
         action="store_true",
         help="disable collection for authoritative steady-state throughput",
@@ -1284,12 +2102,36 @@ def run_profiler_cli(
     parser.add_argument("--advisor", action="store_true")
     parser.add_argument("--cluster", action="store_true")
     parser.add_argument(
+        "--cluster-mode",
+        choices=("all", "communication_time", "communication_matrix"),
+        default="all",
+        help=(
+            "official msprof-analyze cluster mode; all produces both "
+            "communication time and communication matrix evidence"
+        ),
+    )
+    parser.add_argument(
+        "--cluster-agent-output",
+        action="store_true",
+        help="request the official cluster JSON summary on stdout",
+    )
+    parser.add_argument(
+        "--cluster-bypass-input-safety-checks",
+        action="store_true",
+        help=(
+            "pass msprof-analyze cluster --force to bypass its ownership, "
+            "permission, and large-file checks; unrelated to experiment "
+            "lifecycle --force"
+        ),
+    )
+    parser.add_argument(
         "--analysis-tools",
         choices=("none", "offline", "advisor", "cluster", "all"),
         default="none",
         help=(
-            "offline analysis policy; all enables offline parsing where "
-            "needed, advisor, and multi-rank cluster analysis"
+            "collector-aware offline analysis policy; msprof all selects "
+            "cluster, while torch_npu_profiler all selects offline parsing, "
+            "advisor, and multi-rank cluster analysis"
         ),
     )
     parser.add_argument(
@@ -1387,6 +2229,8 @@ def run_profiler_cli(
         "warmup_steps": args.warmup_steps,
         "active_steps": args.active_steps,
         "profiler_enabled": False if args.profiler_off else None,
+        "collector": args.collector,
+        "collector_args": tuple(args.collector_arg) if args.collector_arg else None,
         "local_batch_size": args.local_batch_size,
         "global_batch_size": args.global_batch_size,
         "sequence_length": args.sequence_length,
@@ -1401,6 +2245,10 @@ def run_profiler_cli(
         **{key: value for key, value in overrides.items() if value is not None},
         extra_args=config.extra_args + tuple(args.extra_train_arg),
     )
+    if effective.profiler_enabled:
+        # Reject registered-but-unverified collectors before ``--force`` can
+        # clear any prior generation.
+        require_training_collector(effective.collector)
     root = _repository_root(script_path)
     device = _resolve_device(effective.device)
     if device != "npu":
@@ -1418,6 +2266,22 @@ def run_profiler_cli(
         os.environ[variable] = args.visible_devices
     if requested_preset == "all" and args.profiler_off:
         parser.error("--preset all cannot be combined with --profiler-off")
+    if (
+        effective.collector == PerformanceCollector.MSPROF.value
+        and requested_preset == "all"
+    ):
+        parser.error(
+            "--collector msprof performs one full-job CANN/NPU capture; "
+            "--preset all is specific to scheduled torch_npu_profiler captures"
+        )
+    if (
+        effective.collector == PerformanceCollector.MSPROF.value
+        and requested_preset != "overview"
+    ):
+        parser.error(
+            "msprof uses the independent basic collection policy; keep "
+            "--preset overview or select --collector torch_npu_profiler"
+        )
     if requested_preset == "all" and (args.offline or args.parse_mode):
         parser.error(
             "--preset all keeps each preset's audited parse mode; select one "
@@ -1459,6 +2323,15 @@ def run_profiler_cli(
     advanced_overrides = {
         key: value for key, value in advanced_overrides.items() if value is not None
     }
+    if (
+        effective.collector == PerformanceCollector.MSPROF.value
+        and advanced_overrides
+    ):
+        parser.error(
+            "advanced --profiler-* overrides belong to torch_npu_profiler; "
+            "use the basic msprof launch or select "
+            "--collector torch_npu_profiler"
+        )
     if requested_preset == "all" and advanced_overrides:
         parser.error(
             "advanced profiler overrides apply to one preset; select a single "
@@ -1484,7 +2357,10 @@ def run_profiler_cli(
 
     analysis_tools = set()
     if args.analysis_tools == "all":
-        analysis_tools.update(("offline", "advisor", "cluster"))
+        if effective.collector == PerformanceCollector.MSPROF.value:
+            analysis_tools.add("cluster")
+        else:
+            analysis_tools.update(("offline", "advisor", "cluster"))
     elif args.analysis_tools != "none":
         analysis_tools.add(args.analysis_tools)
     if args.offline_parse:
@@ -1493,6 +2369,33 @@ def run_profiler_cli(
         analysis_tools.add("advisor")
     if args.cluster:
         analysis_tools.add("cluster")
+    if (
+        args.cluster_mode != "all"
+        or args.cluster_agent_output
+        or args.cluster_bypass_input_safety_checks
+    ) and "cluster" not in analysis_tools:
+        parser.error(
+            "cluster-specific options require --cluster or an "
+            "--analysis-tools policy that includes cluster"
+        )
+    if (
+        effective.collector == PerformanceCollector.MSPROF.value
+        and "offline" in analysis_tools
+    ):
+        parser.error(
+            "offline parsing through torch_npu.profiler.analyse is not "
+            "applicable to an msprof launch; use cluster or MindStudio "
+            "Insight on the msprof output"
+        )
+    try:
+        _validate_analysis_capabilities(
+            effective,
+            advisor="advisor" in analysis_tools,
+            cluster="cluster" in analysis_tools,
+            compare_baseline=args.compare_baseline,
+        )
+    except ValueError as error:
+        parser.error(str(error))
 
     selected = select_topologies(
         available=suite_topologies,
@@ -1500,6 +2403,22 @@ def run_profiler_cli(
         topologies=args.topologies,
         default=(effective.topology,),
     )
+    if args.compare_baseline is not None and len(selected) != 1:
+        parser.error(
+            "--compare-baseline requires exactly one topology; run compare "
+            "separately for each topology with its matching baseline"
+        )
+    if (
+        args.force
+        and (args.analyze or args.probe)
+        and (
+            "advisor" in analysis_tools
+            or "cluster" in analysis_tools
+            or args.compare_baseline is not None
+        )
+    ):
+        # Validate the offline host before deleting any prior derived report.
+        _analysis_toolchain_metadata()
     if args.force and (args.capture or args.probe):
         # Clear every selected member before launching the first capture. A
         # mid-suite failure can then be resumed without mixing generations.
@@ -1516,10 +2435,14 @@ def run_profiler_cli(
         for preset_name, preset in selected_presets:
             for topology_name in selected:
                 topology = topologies[topology_name]
-                effective_preset = _safe_distributed_parse_preset(
-                    preset,
-                    device=device,
-                    world_size=topology.world_size,
+                effective_preset = (
+                    preset
+                    if effective.collector == PerformanceCollector.MSPROF.value
+                    else _safe_distributed_parse_preset(
+                        preset,
+                        device=device,
+                        world_size=topology.world_size,
+                    )
                 )
                 topology_config = replace(
                     effective, topology=topology_name, preset=preset_name
@@ -1551,14 +2474,31 @@ def run_profiler_cli(
             active_run_directories=selected_runs,
             label="performance suite",
         )
+    elif args.force and args.analyze:
+        reset_output_generation(
+            (
+                _suite_report_path(
+                    root,
+                    effective,
+                    device,
+                    multiple_presets=len(selected_presets) > 1,
+                ),
+            ),
+            label="performance analysis suite index",
+            include_archives=False,
+        )
     reports: list[tuple[str, str, Path]] = []
     for preset_name, preset in selected_presets:
         for topology_name in selected:
             topology = topologies[topology_name]
-            effective_preset = _safe_distributed_parse_preset(
-                preset,
-                device=device,
-                world_size=topology.world_size,
+            effective_preset = (
+                preset
+                if effective.collector == PerformanceCollector.MSPROF.value
+                else _safe_distributed_parse_preset(
+                    preset,
+                    device=device,
+                    world_size=topology.world_size,
+                )
             )
             if effective_preset is not preset:
                 print(
@@ -1599,8 +2539,12 @@ def run_profiler_cli(
                 )
             if args.analyze or args.probe:
                 cluster_requested = "cluster" in analysis_tools
-                profiled_rank_count = _profiled_rank_count(
-                    effective_preset, topology.world_size
+                profiled_rank_count = (
+                    topology.world_size
+                    if effective.collector == PerformanceCollector.MSPROF.value
+                    else _profiled_rank_count(
+                        effective_preset, topology.world_size
+                    )
                 )
                 cluster_enabled = (
                     cluster_requested and profiled_rank_count > 1
@@ -1632,6 +2576,12 @@ def run_profiler_cli(
                     advisor="advisor" in analysis_tools,
                     cluster=cluster_enabled,
                     compare_baseline=args.compare_baseline,
+                    cluster_mode=args.cluster_mode,
+                    cluster_agent_output=args.cluster_agent_output,
+                    cluster_bypass_input_safety_checks=(
+                        args.cluster_bypass_input_safety_checks
+                    ),
+                    force=args.force and args.analyze,
                 )
                 if args.analyze:
                     _record_exploration_command(

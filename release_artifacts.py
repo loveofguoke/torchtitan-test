@@ -28,6 +28,10 @@ EXPERIMENT_ROOTS = (
     "performance_artifacts",
     "performance_reports",
     "performance_dynamic",
+    "mindstudio_fixtures",
+    "mindstudio_runs",
+    "mindstudio_artifacts",
+    "mindstudio_reports",
     "stability_fixtures",
     "stability_artifacts",
     "stability_runs",
@@ -103,12 +107,11 @@ def run_gh(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
 
 
 def run_wget(url: str, output_path: Path) -> None:
-    """Download a public release asset with certificate checks disabled."""
+    """Download a public release asset with TLS certificate verification."""
     if shutil.which("wget") is None:
         raise RuntimeError("'wget' was not found")
     command = [
         "wget",
-        "--no-check-certificate",
         "--output-document",
         str(output_path),
         url,
@@ -238,7 +241,33 @@ def _analysis_archive_filter(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
     if root.endswith("_fixtures"):
         return None
 
-    # Reports and compact artifacts are already curated by their experiment.
+    # MindStudio capture artifacts can contain full tensor dumps. Keep their
+    # structured statistics and manifests in analysis archives, but reserve
+    # tensor payloads and configuration packs for lossless full archives.
+    if root == "mindstudio_artifacts":
+        if member.isdir():
+            return member
+        if "dump_tensor_data" in path.parts or path.suffix.lower() in {
+            ".bin",
+            ".npy",
+            ".npz",
+            ".pt",
+            ".pth",
+            ".zip",
+        }:
+            return None
+        if path.name.endswith(".vis.db"):
+            return member
+        return member if path.suffix.lower() in {
+            ".csv",
+            ".html",
+            ".json",
+            ".log",
+            ".md",
+            ".xlsx",
+        } else None
+
+    # Reports and other compact artifacts are already curated by their experiment.
     if root.endswith("_reports") or root.endswith("_artifacts"):
         return member
 
@@ -254,6 +283,19 @@ def _analysis_archive_filter(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
         if path.name in ANALYSIS_RUN_FILES:
             return member
         if any(part in ANALYSIS_RUN_DIRECTORIES for part in path.parts):
+            return member
+        # msProf can place its parsed SQLite database directly below PROF_*,
+        # beside rather than inside mindstudio_profiler_output. Retain only
+        # the reviewed database products here; raw device payloads remain
+        # exclusive to the lossless ``full`` archive mode.
+        if (
+            any(part.startswith("PROF_") for part in path.parts)
+            and path.suffix.lower() == ".db"
+            and (
+                path.name.startswith("msprof_")
+                or path.name == "communication_analyzer.db"
+            )
+        ):
             return member
         if any(part.startswith("communication_bottleneck") for part in path.parts):
             return member

@@ -77,3 +77,44 @@ def test_run_attempt_records_lifecycle_and_guards_force_reset(
         active_run_directories=(run,),
     )
     assert not run.exists()
+
+
+def test_run_attempt_lock_is_exclusive_even_inside_one_process(
+    tmp_path: Path,
+) -> None:
+    run = tmp_path / "run"
+    first = RunAttempt.start(run, kind="first")
+
+    with pytest.raises(RuntimeError, match="run is still active"):
+        RunAttempt.start(run, kind="second")
+
+    first.update("completed")
+    second = RunAttempt.start(run, kind="second")
+    second.update("completed")
+
+
+def test_force_reset_recovers_a_dead_owner_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.glm5_2_common import cli
+
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "run_state.json.lock").write_text(
+        json.dumps({"attempt_id": "dead", "pid": 12345}) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "process_is_running", lambda pid: False)
+
+    with pytest.raises(RuntimeError, match="stale run lock"):
+        RunAttempt.start(run, kind="replacement")
+
+    reset_output_generation(
+        (run,),
+        active_run_directories=(run,),
+    )
+    attempt = RunAttempt.start(run, kind="replacement")
+    attempt.update("completed")
+
+    assert not (run / "run_state.json.lock").exists()

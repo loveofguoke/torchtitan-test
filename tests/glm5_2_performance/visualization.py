@@ -24,6 +24,167 @@ def _relative_paths(paths: list[Path], root: Path) -> list[str]:
     return [path.relative_to(root).as_posix() for path in sorted(paths)]
 
 
+def _matching_relative_files(
+    root: Path, patterns: tuple[str, ...]
+) -> list[str]:
+    if not root.is_dir():
+        return []
+    files = {
+        path.relative_to(root).as_posix()
+        for pattern in patterns
+        for path in root.rglob(pattern)
+        if path.is_file()
+    }
+    return sorted(files)
+
+
+def mindstudio_insight_handoff(
+    profile_root: Path,
+    *,
+    analysis_root: Path | None = None,
+    portable_base: Path | None = None,
+) -> dict[str, Any]:
+    """Describe portable import roots and issue-driven Insight views."""
+
+    profile = profile_root.resolve()
+    analysis = analysis_root.resolve() if analysis_root is not None else None
+    import_targets = [str(profile)]
+    if analysis is not None and analysis.is_dir():
+        import_targets.extend(
+            str(path)
+            for path in sorted(
+                path
+                for path in analysis.rglob("cluster_analysis_output")
+                if path.is_dir()
+            )
+        )
+    portable = portable_base.resolve() if portable_base is not None else None
+    portable_import_targets = []
+    for index, target in enumerate(import_targets):
+        target_path = Path(target)
+        relative_path = None
+        if portable is not None:
+            try:
+                relative_path = target_path.relative_to(portable).as_posix()
+            except ValueError:
+                relative_path = None
+        portable_import_targets.append(
+            {
+                "kind": "profile" if index == 0 else "cluster",
+                "server_path": str(target_path),
+                "relative_path": relative_path,
+            }
+        )
+    profile_inventory = {
+        "databases": _matching_relative_files(profile, ("*.db",)),
+        "timelines": _matching_relative_files(
+            profile, ("trace_view.json", "msprof_*.json", "*.json.gz")
+        ),
+        "tables": _matching_relative_files(profile, ("*.csv", "*.xlsx")),
+        "reports": _matching_relative_files(profile, ("*.html",)),
+    }
+    all_evidence = [
+        *profile_inventory["databases"],
+        *profile_inventory["timelines"],
+        *profile_inventory["tables"],
+        *profile_inventory["reports"],
+    ]
+
+    def view_evidence(*tokens: str, database_fallback: bool = True) -> dict[str, Any]:
+        matches = [
+            path
+            for path in all_evidence
+            if any(token in path.lower() for token in tokens)
+        ]
+        if matches:
+            return {"evidence_status": "ready", "evidence": matches[:20]}
+        if database_fallback and profile_inventory["databases"]:
+            return {
+                "evidence_status": "inspect_database",
+                "evidence": profile_inventory["databases"][:20],
+            }
+        return {"evidence_status": "missing", "evidence": []}
+
+    summary_evidence = (
+        {"evidence_status": "ready", "evidence": all_evidence[:20]}
+        if all_evidence
+        else {"evidence_status": "missing", "evidence": []}
+    )
+    return {
+        "schema": "torchtitan.glm5_2.mindstudio_performance_handoff",
+        "schema_version": 2,
+        "profile_root": str(profile),
+        "analysis_root": str(analysis) if analysis is not None else None,
+        "import_targets": import_targets,
+        "portable_base": str(portable) if portable is not None else None,
+        "portable_import_targets": portable_import_targets,
+        "profile_inventory": profile_inventory,
+        "views": [
+            {
+                "name": "Summary",
+                "use_when": "start every system-level investigation",
+                "question": (
+                    "Is time dominated by computing, communication, or free "
+                    "device intervals, and are ranks or stages imbalanced?"
+                ),
+                **summary_evidence,
+            },
+            {
+                "name": "Communication",
+                "use_when": "multi-rank communication is exposed or imbalanced",
+                "question": (
+                    "Which rank, domain, collective, or link has abnormal wait, "
+                    "payload, bandwidth, or non-overlapped time?"
+                ),
+                **view_evidence("communication", "hccs", "pcie", "roce"),
+            },
+            {
+                "name": "Timeline",
+                "use_when": "the summary points to a concrete time interval",
+                "question": (
+                    "Which Python, CANN, Runtime, stream, kernel, or collective "
+                    "caused it, and did Host launch readiness delay it?"
+                ),
+                **view_evidence("trace_view", "msprof_"),
+            },
+            {
+                "name": "Operator",
+                "use_when": "one operator family dominates computing time",
+                "question": (
+                    "Are count, duration, shape, utilization, or fallback "
+                    "behavior abnormal?"
+                ),
+                **view_evidence("operator", "op_summary", "kernel"),
+            },
+            {
+                "name": "Memory",
+                "use_when": "HBM pressure, allocation churn, or retention is suspected",
+                "question": (
+                    "Which operator or lifetime interval owns active, reserved, "
+                    "or repeatedly allocated device memory?"
+                ),
+                **view_evidence("memory", "mem_"),
+            },
+            {
+                "name": "RL",
+                "use_when": "the input contains supported RL MSTX ranges",
+                "question": (
+                    "Where are bubbles or imbalance across rollout, inference, "
+                    "reward, and training stages?"
+                ),
+                **view_evidence(
+                    "rollout", "reward", "verl", "reinforce", database_fallback=False
+                ),
+            },
+        ],
+        "notes": [
+            "Import a whole profile or cluster output root, not a rank-0 file.",
+            "RL view requires supported RL framework data and MSTX ranges.",
+            "A tool stage completing is not a performance PASS verdict.",
+        ],
+    }
+
+
 def inspect_tensorboard(run_directory: Path) -> dict[str, Any]:
     """Describe scalar TensorBoard event files emitted by TorchTitan."""
 
@@ -322,6 +483,7 @@ __all__ = [
     "inspect_memory_visualizations",
     "inspect_stack_visualizations",
     "inspect_tensorboard",
+    "mindstudio_insight_handoff",
     "render_flamegraphs",
     "render_mindstudio_flamegraphs",
 ]

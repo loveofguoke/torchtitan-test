@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "profile_name": "glm5_2_mindstudio_standard",
+  "selection_policy": "Track official master branches unless an operator records a reviewed tag or commit for a formal run.",
+  "compatibility": {
+    "cann": {
+      "version": null,
+      "selection": "installed environment",
+      "note": "Use the CANN release matched to the installed driver, firmware, torch, and torch_npu packages."
+    },
+    "driver": {
+      "version": null,
+      "selection": "installed environment"
+    },
+    "firmware": {
+      "version": null,
+      "selection": "installed environment"
+    },
+    "torch": {
+      "distribution": "torch",
+      "version": null,
+      "selection": "installed environment"
+    },
+    "torch_npu": {
+      "distribution": "torch-npu",
+      "import": "torch_npu",
+      "version": null,
+      "selection": "installed environment",
+      "note": "Keep torch_npu aligned with both torch and CANN according to the official Ascend compatibility matrix."
+    }
+  },
+  "tools": {
+    "msprobe": {
+      "required": true,
+      "source": {
+        "url": "https://gitcode.com/Ascend/msprobe.git",
+        "directory": "msprobe",
+        "path": "msprobe",
+        "ref": {
+          "kind": "branch",
+          "value": "master"
+        },
+        "commit": null,
+        "version": "latest on selected branch"
+      },
+      "runtime": {
+        "distribution": "mindstudio-probe",
+        "import": "msprobe",
+        "executable": "msprobe"
+      },
+      "bootstrap": {
+        "enabled": true,
+        "default": true,
+        "strategy": "build-wheel",
+        "build_requirements": [
+          "uv"
+        ],
+        "build_script": "build.py",
+        "build_arguments": [
+          "-e",
+          "include-mod=tb_graph_ascend"
+        ],
+        "artifact_glob": "artifacts/mindstudio_probe*.whl",
+        "note": "Run the official build.py with the tb_graph_ascend plugin and install the wheel it creates. Node.js 20.19.3 and npm 10.8.2 are the official recommended build versions."
+      }
+    },
+    "msprof": {
+      "required": true,
+      "source": {
+        "url": "https://gitcode.com/Ascend/msprof.git",
+        "directory": "msprof",
+        "path": "msprof",
+        "ref": {
+          "kind": "branch",
+          "value": "master"
+        },
+        "commit": null,
+        "version": "CANN-matched release or latest on selected branch"
+      },
+      "runtime": {
+        "executable": "msprof"
+      },
+      "bootstrap": {
+        "enabled": false,
+        "default": false,
+        "strategy": "cann-integrated",
+        "note": "The standard profile uses the msprof shipped with CANN. Source builds create a CANN runfile and require a separately reviewed CANN installation step."
+      }
+    },
+    "msprof-analyze": {
+      "required": true,
+      "source": {
+        "url": "https://gitcode.com/Ascend/msprof-analyze.git",
+        "directory": "msprof-analyze",
+        "path": "msprof-analyze",
+        "ref": {
+          "kind": "branch",
+          "value": "master"
+        },
+        "commit": null,
+        "version": "latest on selected branch"
+      },
+      "runtime": {
+        "distribution": "msprof-analyze",
+        "import": "msprof_analyze",
+        "executable": "msprof-analyze"
+      },
+      "bootstrap": {
+        "enabled": true,
+        "default": true,
+        "strategy": "editable",
+        "requirements": "requirements/build.txt",
+        "fallback_requirements": "requirements.txt",
+        "note": "Install the repository build requirements, then install the source checkout editable without resolving the same dependencies twice."
+      }
+    },
+    "msinsight": {
+      "required": false,
+      "source": {
+        "url": "https://gitcode.com/Ascend/msinsight.git",
+        "directory": "msinsight",
+        "path": "msinsight",
+        "ref": {
+          "kind": "branch",
+          "value": "master"
+        },
+        "commit": null,
+        "version": "latest on selected branch"
+      },
+      "runtime": {
+        "flamegraph_script": "scripts/flame_graph/flamegraph.py"
+      },
+      "bootstrap": {
+        "enabled": true,
+        "default": false,
+        "strategy": "source-only",
+        "note": "The workflow consumes repository scripts directly; no package installation is performed."
+      }
+    }
+  }
+}

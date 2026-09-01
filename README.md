@@ -102,6 +102,23 @@ See
 `--data`, `--capture`, and `--compare` workflows for migration and distributed
 self-consistency.
 
+## GLM-5.2 MindStudio official validation
+
+The independent MindStudio workflow adds official msProbe configuration
+checking, GPU/NPU module/API capture, API pre-check and comparison, plus NPU
+eager/`torch.compile` single-pass checking while reusing the same fixed token
+plan and seed checkpoint. It does not replace long-run precision or exploratory
+parity. The same entry also standardizes NPU performance work: msProf is the
+default whole-process collector, Ascend PyTorch Profiler is the framework-level
+drill-down collector, msprof-analyze performs compatible offline recipes, and
+MindStudio Insight is the interactive system/communication/timeline/operator/
+memory handoff. Start with
+[tests/glm5_2_mindstudio/README.md](tests/glm5_2_mindstudio/README.md) for source
+tool installation, doctor, single/distributed/all-topology commands, official
+metrics, output layout, and known limitations. Before claiming a formal result,
+follow its [server validation matrix](tests/glm5_2_mindstudio/docs/SERVER_VALIDATION_MATRIX_ZH.md)
+from single-card minimum closure through representative distributed topologies.
+
 ## Performance, graph, and combined experiments
 
 ### Documentation entry and reading order
@@ -187,6 +204,7 @@ Result ownership at a glance:
 | smoke | runtime log, exact launch contract, return code | requested training process exits successfully |
 | parity | intermediate tensors/gradients, parameters, logits/loss, top-k scores and boundary diagnostics | requested decisive components satisfy exploratory tolerances |
 | precision | multi-step loss/grad-norm curves, four error formulas, distributions, repeats and input-contract validation | configured migration or self-consistency standard |
+| MindStudio official | config packs, msProbe L0/L1 dumps/compare, API pre-check, Monitor V2 CSV, compile checker and hierarchical `.vis.db` | official result columns decide module/API outcomes; Monitor/visualization completion is diagnostic, and precision remains the end-to-end supplement |
 | performance | step time, throughput, memory/MFU when available, profiler window, operator/kernel and official Ascend analysis links | diagnostic only unless an external regression target is declared |
 | graph | the formal precision/performance reports with eager/graph policy metadata | same-device eager-versus-graph precision standard; performance is separate |
 | combination | linked precision suite plus per-topology endpoint timing and speedup | precision verdict remains authoritative; objectives do not weaken one another |
@@ -209,9 +227,12 @@ and compare output—are intentionally not flattened into `*_reports`.
 Use GitHub Releases in one of two content modes:
 
 - `--content analysis`: transfer reports, compact artifacts, metrics/logs, and
-  processed profiler/compiler visualization results; omit fixtures, raw CANN
-  collection trees, checkpoints, trainer state, and compiler caches. This is
-  the recommended bundle for local review, Codex diagnosis, and documentation.
+  processed profiler/compiler visualization results, including reviewed
+  MindStudio graph `.vis.db`; omit fixtures, raw tensors/CANN collection trees,
+  checkpoints, trainer state, and compiler caches. This is the recommended
+  bundle for local review, Codex diagnosis, and documentation. A `.vis.db` is
+  processed rather than raw tensor data, but may still reveal model names,
+  statistics, source paths, or server paths and must be reviewed before upload.
 - `--content full` (default): lossless transfer of every matched fixture, run,
   artifact, report, and raw profiler/compiler file. Use this when another
   machine must continue capture, rerun `tlparse`/`msprof`, or import the complete
@@ -278,11 +299,12 @@ python release_artifacts.py download \
   --backend wget
 ```
 
-The `wget` backend uses `--no-check-certificate`, so it should only be used on
-a trusted network for this known GitHub repository. Both backends verify the
-downloaded archive against its release SHA-256 asset, extract it into the
-original repository-relative directories, and remove the temporary archive and
-checksum file automatically.
+The `wget` backend keeps normal TLS certificate verification enabled. Both
+backends also verify the downloaded archive against its release SHA-256 asset,
+extract it into the original repository-relative directories, and remove the
+temporary archive and checksum file automatically. Certificate failures must
+be fixed through the machine trust store or proxy configuration, not by
+silently disabling verification.
 
 The download refuses to replace existing files by default. Add `--overwrite`
 only when the local copies are intentionally being refreshed. Use

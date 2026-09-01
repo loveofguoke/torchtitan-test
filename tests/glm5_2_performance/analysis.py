@@ -745,18 +745,48 @@ def extract_communication_summary(profiler_directory: Path) -> dict[str, Any]:
 
 
 def inspect_profiler_deliverables(profiler_directory: Path) -> dict[str, Any]:
-    """Classify official Ascend outputs and portable GPU traces."""
+    """Classify official Ascend outputs and portable GPU traces.
+
+    Ascend PyTorch Profiler and msProf use different outer directory names.
+    The former owns a ``*_ascend_pt`` root while the latter owns a ``PROF_*``
+    root with parsed files below ``mindstudio_profiler_output``. Both are
+    valid MindStudio Insight inputs, so reporting must not mistake the naming
+    difference for a missing capture.
+    """
 
     if not profiler_directory.is_dir():
         return {"ascend_profiles": [], "gpu_traces": [], "insight_ready": False}
 
+    profile_roots = {
+        path.resolve(): "ascend_pytorch_profiler"
+        for path in profiler_directory.rglob("*_ascend_pt")
+        if path.is_dir()
+    }
+    for path in profiler_directory.rglob("PROF_*"):
+        if not path.is_dir():
+            continue
+        if any(parent.name.endswith("_ascend_pt") for parent in path.parents):
+            continue
+        profile_roots[path.resolve()] = "msprof"
+
     ascend_profiles = []
-    for profile_root in sorted(profiler_directory.rglob("*_ascend_pt")):
+    for resolved_root, layout in sorted(
+        profile_roots.items(), key=lambda item: str(item[0])
+    ):
+        profile_root = Path(resolved_root)
         if not profile_root.is_dir():
             continue
-        output = profile_root / "ASCEND_PROFILER_OUTPUT"
+        output_directories = []
+        torch_output = profile_root / "ASCEND_PROFILER_OUTPUT"
+        if torch_output.is_dir():
+            output_directories.append(torch_output)
+        output_directories.extend(
+            path
+            for path in profile_root.rglob("mindstudio_profiler_output")
+            if path.is_dir() and path not in output_directories
+        )
         text_files = {
-            name: (output / name).is_file()
+            name: any((output / name).is_file() for output in output_directories)
             for name in (
                 "api_statistic.csv",
                 "communication.json",
@@ -780,10 +810,24 @@ def inspect_profiler_deliverables(profiler_directory: Path) -> dict[str, Any]:
             )
         }
         database_files = sorted(
-            path.name
-            for pattern in ("analysis.db", "ascend_pytorch_profiler*.db")
+            path.relative_to(profile_root).as_posix()
+            for output in (*output_directories, profile_root)
+            for pattern in (
+                "analysis.db",
+                "ascend_pytorch_profiler*.db",
+                "msprof_*.db",
+            )
             for path in output.glob(pattern)
             if path.is_file()
+        )
+        parsed_files = sorted(
+            {
+                path.relative_to(profile_root).as_posix()
+                for output in output_directories
+                for suffix in ("*.csv", "*.json", "*.xlsx", "*.html")
+                for path in output.rglob(suffix)
+                if path.is_file()
+            }
         )
         profiler_info_files = sorted(
             path.name for path in profile_root.glob("profiler_info*.json")
@@ -793,23 +837,27 @@ def inspect_profiler_deliverables(profiler_directory: Path) -> dict[str, Any]:
         )
         trace_view_files = sorted(
             path.relative_to(profiler_directory).as_posix()
-            for path in output.glob("trace_view.json*")
+            for output in output_directories
+            for pattern in ("trace_view.json*", "msprof_*.json")
+            for path in output.rglob(pattern)
             if path.is_file()
         )
-        parsed_text = any(text_files.values())
+        parsed_text = any(text_files.values()) or bool(parsed_files)
         parsed_database = bool(database_files)
         ascend_profiles.append(
             {
+                "layout": layout,
                 "root": str(profile_root),
                 "relative_root": profile_root.relative_to(
                     profiler_directory
                 ).as_posix(),
-                "raw_ready": bool(profiler_info_files),
+                "raw_ready": bool(profiler_info_files) or layout == "msprof",
                 "parsed_text": parsed_text,
                 "parsed_database": parsed_database,
                 "insight_ready": parsed_text or parsed_database,
                 "text_files": text_files,
                 "database_files": database_files,
+                "parsed_files": parsed_files,
                 "profiler_info_files": profiler_info_files,
                 "profiler_metadata_files": profiler_metadata_files,
                 "trace_view_files": trace_view_files,
@@ -821,6 +869,7 @@ def inspect_profiler_deliverables(profiler_directory: Path) -> dict[str, Any]:
         for path in profiler_directory.rglob("*.json")
         if "trace" in path.name.lower()
         and not any(parent.name.endswith("_ascend_pt") for parent in path.parents)
+        and not any(parent.name.startswith("PROF_") for parent in path.parents)
     )
     return {
         "ascend_profiles": ascend_profiles,
@@ -1569,7 +1618,9 @@ time is extracted from the Ascend profiler completion messages.</p>
     for profile in deliverables["ascend_profiles"]:
         files = [
             name for name, present in profile["text_files"].items() if present
-        ] + profile["database_files"] + profile["profiler_metadata_files"]
+        ] + profile["database_files"] + profile.get("parsed_files", [])[:8] + profile[
+            "profiler_metadata_files"
+        ]
         file_details = ", ".join(files) or "No parsed files"
         trace_links = ", ".join(
             linked_file(profiler_directory / relative_path, "trace_view.json")
@@ -1577,6 +1628,7 @@ time is extracted from the Ascend profiler completion messages.</p>
         ) or "not parsed"
         ascend_rows += (
             f'<tr><td><code>{html.escape(profile["relative_root"])}</code>'
+            f'<br><span class="subtle">{html.escape(profile.get("layout", "ascend"))}</span>'
             f'<br><span class="subtle">{html.escape(file_details)}</span></td>'
             f'<td>{badge(profile["raw_ready"], "captured", "metadata missing")}</td>'
             f'<td>{badge(profile["parsed_text"], "text ready", "text pending")}</td>'
@@ -1817,11 +1869,11 @@ a{{color:#155eef}} h3{{font-size:15px;margin:16px 0 6px}} h4{{font-size:14px;mar
 {diagnostic_sections}
 <section><h2>msprof-analyze output index</h2><p class="subtle">这里索引 advisor、compare、cluster、cluster time、free analysis 和逐 rank communication bottleneck 的实际输出文件。Return code 只表示工具执行状态；结论需要打开对应 HTML/CSV/JSON 阅读。</p>
 <table><thead><tr><th>Recipe</th><th>Return code</th><th>Files / size</th><th>Outputs and command</th></tr></thead><tbody>{analysis_output_rows}</tbody></table></section>
-<section><h2>Official Ascend deliverables</h2><p class="subtle">Each row is one <code>*_ascend_pt</code> profile root. Text/DB readiness is checked against the official PyTorch Profiler output layout.</p>
+<section><h2>Official Ascend deliverables</h2><p class="subtle">Each row is one complete official import root: Ascend PyTorch Profiler uses <code>*_ascend_pt</code>, while msProf uses <code>PROF_*</code>. Text/DB readiness is checked against the parsed output inside that root.</p>
 <table><thead><tr><th>Profile root and parsed files</th><th>Raw</th><th>Text</th><th>Database</th><th>MindStudio Insight</th><th>Timeline</th></tr></thead><tbody>{ascend_rows}</tbody></table></section>
 <section><h2>Interactive Timeline and hierarchy</h2><p class="subtle">The full Host/PyTorch/CANN/NPU hierarchy remains in the official trace instead of being flattened into this summary report. Profiles captured with <code>with_stack=true</code> also expose the Python call stack for framework events.</p>
 <table><thead><tr><th>Profile</th><th>Trace file</th><th>Viewer</th></tr></thead><tbody>{trace_rows}</tbody></table>
-<div class="callout"><strong>Open in MindStudio Insight:</strong> copy the complete <code>*_ascend_pt</code> directory and import that root. The linked <code>trace_view.json</code> can also be loaded into Perfetto or <code>chrome://tracing</code>. Do not import only a partial raw directory into Insight.</div>
+<div class="callout"><strong>Open in MindStudio Insight:</strong> copy the complete import root listed above (<code>*_ascend_pt</code>, <code>PROF_*</code>, or <code>cluster_analysis_output</code>). The linked <code>trace_view.json</code> can also be loaded into Perfetto or <code>chrome://tracing</code>. Use <code>mindstudio_insight_handoff.json</code> for portable paths after a Release download; do not import only one partial raw subdirectory.</div>
 <details><summary>GPU trace inputs available for comparison</summary><ul>{gpu_trace_items}</ul></details></section>
 <section><h2>CPU/NPU flame graphs</h2><p class="subtle">A flame graph is a duration aggregation by call stack; it complements rather than replaces the chronological Timeline. The official MindStudio generator reconstructs the Host CPU PyTorch API hierarchy from the Ascend profiler database. Folded-stack SVGs remain a portable CPU/NPU aggregation fallback.</p>
 <h3>Official MindStudio interactive HTML</h3><ul>{mindstudio_flamegraph_items}</ul>

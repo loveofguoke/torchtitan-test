@@ -21,15 +21,19 @@ artifact checksums. Git cleanliness is diagnostic, not a pass/fail condition.
 
 | Changed module | Required consumers to inspect |
 |---|---|
-| `glm5_2_common.topology` | precision, performance, checkpoint, stability, smoke, graph, combination |
-| naming/config hashing | fixtures, runs, artifacts, reports, legacy migration, GitHub Release |
+| `glm5_2_common.topology` | precision, performance, checkpoint, stability, smoke, graph, combination, MindStudio official validation |
+| naming/config hashing | fixtures, runs, artifacts, reports, legacy migration, MindStudio official validation, GitHub Release |
 | common execution/process lifecycle | checkpoint failure modes, smoke cleanup, all capture workflows |
-| fixed token plan or Trainer data CLI | precision, checkpoint, stability, graph precision, combination precision |
+| fixed token plan or Trainer data CLI | precision, checkpoint, stability, graph precision, combination precision, MindStudio official validation |
 | precision fixture/capture | self-consistency suite, migration suite, graph and combination precision |
 | graph mode or Turbo compile API | graph debug, graph smoke, graph precision/performance, combination |
 | profiler API or output layout | performance capture, preset-all matrix, stack/flamegraph and memory-timeline rendering, TensorBoard discovery, offline analysis, curated explorations, combination reports, Release |
 | graph diagnostics output | per-rank `TORCH_TRACE`, `tlparse`, Inductor FX/IR/code inventory, combination reports, Release |
-| external profiler/compiler tool or environment dependency | common dependency inventory, performance and graph guides/READMEs, combination reports, Release portability |
+| external profiler/compiler/accuracy tool or environment dependency | common dependency inventory, performance, graph and MindStudio guides/READMEs, combination reports, Release portability |
+| MindStudio toolchain lock/bootstrap/doctor | `glm5_2_mindstudio` capture/compare identity, source-install guide, server validation matrix, Release provenance |
+| MindStudio pre-check output layout | endpoint artifact discovery, pre-check compare, main report, README sync commands, Release analysis filter |
+| MindStudio Monitor V2 hook/config | single and distributed capture, PP/optimizer ownership validation, per-rank CSV completeness, report semantics |
+| MindStudio graph visualization output | L0/mix construct validation, `.vis.db` hash index, TensorBoard command, Release analysis sensitivity policy |
 | parity trace/report schema | paired and offline parity, artifact reader/writer, HTML regression tests |
 | output directory nesting | rerun reset, report links, docs, release discovery and restore |
 
@@ -79,3 +83,33 @@ changes recorded by the combination submission-readiness report.
 5. Keep raw runs ignored; preserve curated exploration evidence intentionally.
 6. Update README commands, report descriptions, Release discovery, and this
    document whenever framework organization changes.
+
+## MindStudio official-workflow audit
+
+Changes below require an additional audit even when the public CLI does not
+change:
+
+- A `toolchain.lock.json` or bootstrap change must verify the external
+  `toolchain.resolved.json`, doctor CLI/import coherence, capture identity, and
+  source-install documentation. Floating `master` is exploratory only; formal
+  runs pin a tag or full commit.
+- API pre-check has asymmetric storage: endpoint `reference`/`candidate`
+  results live under `mindstudio_artifacts/.../precision_precheck/`, while
+  `api_precision_compare` and its HTML/JSON index live under
+  `mindstudio_reports/.../precision_precheck/compare-rN/`. Audit all sync and
+  Release documentation after changing either path.
+- Monitor V2 comparison is an index of per-rank CSV captures, not an official
+  cross-device numerical comparator. Do not turn an `unparsed` monitor summary
+  into PASS. Revalidate sharded optimizer ownership and PP model-parts on the
+  target server after changing Trainer or topology integration.
+- `graph_visualize` consumes complete same-generation L0/mix captures and
+  produces processed `.vis.db` files. Release `analysis` may retain reviewed
+  databases while excluding raw tensors; the database can still contain model
+  names, statistics, source paths, and server paths.
+- Keep official module/API evidence, end-to-end training evidence, performance
+  capture evidence, and compile evidence in separate classes. Tool-stage
+  completion is never a numerical or performance verdict.
+- A `msprof-analyze cluster` option change must update the analysis identity,
+  CLI help, output inventory, Release discovery, and the official field guide.
+  `cluster --force` bypasses analyzer input checks; it is not the experiment
+  lifecycle `--force` and must never delete or replace a capture generation.

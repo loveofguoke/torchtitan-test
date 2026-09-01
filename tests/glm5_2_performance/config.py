@@ -17,6 +17,8 @@ from tests.glm5_2_common.topology import (
     standard_topologies as common_topologies,
 )
 
+from .collectors import PerformanceCollector
+
 
 DeviceType = Literal["auto", "cuda", "npu"]
 ParseMode = Literal["sync", "async", "offline"]
@@ -281,6 +283,8 @@ class PerformanceConfig:
     warmup_steps: int = 1
     active_steps: int = 3
     profiler_enabled: bool = True
+    collector: str = PerformanceCollector.TORCH_NPU_PROFILER.value
+    collector_args: tuple[str, ...] = ()
     local_batch_size: int = 2
     global_batch_size: int = 2
     sequence_length: int = 128
@@ -297,6 +301,27 @@ class PerformanceConfig:
     environment: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        try:
+            PerformanceCollector(self.collector)
+        except ValueError as error:
+            raise ValueError(
+                f"unknown performance collector: {self.collector!r}"
+            ) from error
+        if (
+            self.collector_args
+            and self.collector != PerformanceCollector.MSPROF.value
+        ):
+            raise ValueError("collector_args are supported only by msprof")
+        reserved_msprof_prefixes = ("--output", "--application", "--dynamic")
+        if any(
+            argument == prefix or argument.startswith(prefix + "=")
+            for argument in self.collector_args
+            for prefix in reserved_msprof_prefixes
+        ):
+            raise ValueError(
+                "collector_args must not override lifecycle-owned msprof "
+                "output, application, or dynamic-launch options"
+            )
         if min(
             self.steps,
             self.local_batch_size,
