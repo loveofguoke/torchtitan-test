@@ -114,8 +114,8 @@ Python/Torch 模块与算子
 
 它的底层依赖 CANN profiling 能力，并不是绕过 CANN 重新实现硬件采集。本项目
 在需要 TorchTitan step 生命周期、rank 选择、profiler schedule、module、shape、
-stack 或 memory 语义时使用它。MindStudio 标准入口的默认 collector 是 msProf；
-两者不是互斥替代关系。
+stack 或 memory 语义时使用它。它是 MindStudio PyTorch 训练标准入口的默认
+collector；msProf 作为底层或黑盒入口保留，两者不是互斥替代关系。
 
 当前三仓对应关系：
 
@@ -138,12 +138,13 @@ stack 或 memory 语义时使用它。MindStudio 标准入口的默认 collector
 | 入口 | PyTorch 代码内 | 命令行包裹进程或处理 profile 数据 |
 | step 窗口 | 容易和训练 step 精确对齐 | 更适合黑盒/底层排障，窗口控制方式不同 |
 | PyTorch 语义 | 天然关联框架算子 | 依采集和导出配置而定 |
-| 本项目定位 | PyTorch 深度归因 | 官方标准默认、跨框架通用采集 |
+| 本项目定位 | PyTorch 训练默认采集入口 | 底层、黑盒或跨框架通用采集 |
 
 不能说“msprof 基于 torch_npu”。更准确的关系是：两者都是 profiling 入口，
 `torch_npu.profiler` 通过 torch_npu/C 扩展接入 CANN，`msprof` 则是
-CANN/MindStudio 的命令行工具。当前 GLM 标准流程默认 msProf；需要框架语义时
-显式切换 `torch_npu_profiler`。具体命令和选择边界见
+CANN/MindStudio 的命令行工具。当前 GLM PyTorch 标准流程默认
+`torch_npu_profiler`；需要命令行包裹、无法修改训练程序或底层黑盒排障时显式
+切换 `msprof`。具体命令和选择边界见
 [PERFORMANCE_WORKFLOW_ZH.md](PERFORMANCE_WORKFLOW_ZH.md)。
 
 “msProf”有时也作为产品/组件品牌出现；脚本自动化中应以实际可执行文件 `msprof`、版本输出和所选官方文档为准，不能只靠大小写推断接口。
@@ -168,8 +169,9 @@ CANN/MindStudio 的命令行工具。当前 GLM 标准流程默认 msProf；需�
 - `compare` 的 NPU 输入要求 Ascend PyTorch Profiler/MindSpore 规定格式，GPU 输入
   使用 PyTorch Profiler trace。
 
-因此默认 msProf 用于系统采集、cluster 和 Insight；需要 advisor/compare 时要另做
-短窗口 Ascend PyTorch Profiler capture。工具同名不表示输入格式相同。
+因此默认 Ascend PyTorch Profiler capture 可按官方输入契约进入 advisor、cluster、
+compare 和 Insight；显式 msProf capture 主要进入 cluster 和 Insight。工具同名不
+表示输入格式相同。
 
 这解释了为什么不应把它与 msprof 合并：
 

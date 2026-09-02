@@ -723,7 +723,6 @@ def doctor_report(
     requires_msprof = scope in {
         "full",
         "performance",
-        "performance-capture",
     }
     requires_msprof_analyze = scope in {
         "full",

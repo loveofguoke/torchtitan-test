@@ -5,12 +5,12 @@
 ```text
 同一训练契约
   +-- profiler-off 重复运行 ----------------------> 性能数值基线
-  +-- msProf（默认） -----------------------------> CANN/NPU 系统证据
-  |                                                    +-- cluster（db）
-  |                                                    +-- MindStudio Insight
-  +-- Ascend PyTorch Profiler --------------------> PyTorch/CANN/NPU 深度证据
+  +-- Ascend PyTorch Profiler（默认） ------------> PyTorch/CANN/NPU 多层证据
                                                        +-- offline parse
                                                        +-- advisor/cluster/compare
+                                                       +-- MindStudio Insight
+  +-- msProf（显式可选） -------------------------> CANN/NPU 底层或黑盒证据
+                                                       +-- cluster（db）
                                                        +-- MindStudio Insight
 ```
 
@@ -42,8 +42,8 @@
 
 | collector | 当前执行 | 层级 | 正确用途 |
 |---|---:|---|---|
-| `msprof` | 是，默认 | CANN/NPU | 包装完整但短小的 TorchTitan 作业，得到 Insight 和 analyzer 输入。|
-| `torch_npu_profiler` | 是 | PyTorch/CANN/NPU | 需要 module、shape、stack、memory、schedule 窗口时深度采集。|
+| `torch_npu_profiler` | 是，默认 | PyTorch/CANN/NPU | 在训练进程内按 step schedule 采集 module、shape、stack、memory 和设备证据。|
+| `msprof` | 是，显式可选 | CANN/NPU | 用于命令行包裹整进程的底层或黑盒采集，得到 Insight 和 cluster 输入。|
 | `msopprof` | 否 | 单算子/Kernel | 从整网定位热点后做上板或仿真下钻，不是整网训练 launcher。|
 | `msmemscope` | 否 | 专项内存 | 内存泄漏、生命周期、低效内存；待目标 CANN 完成独立接入验证。|
 | `service_profiler` | 否 | 在线推理服务 | 面向 MindIE/vLLM/SGLang 请求链路，不适用于离线训练。|
@@ -66,21 +66,21 @@ MindIE/vLLM-Ascend/SGLang 服务。二者不能通过把整网训练命令硬塞
 
 这些链接是学习和后续接入入口，不代表当前 TorchTitan 训练 harness 已验证它们。
 
-msProf 是 CANN/NPU 的通用底座；Ascend PyTorch Profiler 在其能力上补充 PyTorch
-语义和 step schedule。默认使用 msProf 建立跨模型统一入口；需要
-`nn.Module -> ATen/ACL -> NPU Kernel` 关联时切到 `torch_npu_profiler`；测速时两者
-都关闭。
+msProf 是 CANN/NPU 的通用底层采集入口；Ascend PyTorch Profiler 在训练代码内
+接入同一底层 profiling 能力，并补充 PyTorch 语义和 step schedule。PyTorch/
+TorchTitan 标准流程默认使用 `torch_npu_profiler`，需要命令行包裹、无法修改程序
+或专门做底层黑盒排障时才显式选择 `msprof`；测速时两者都关闭。
 
 ## 3. 采集命令
 
 入口：
 
 ```bash
-# 默认 msProf 采集机
+# 默认 Ascend PyTorch Profiler 采集机
 python -m tests.glm5_2_mindstudio.toolchain doctor \
   --scope performance-capture
 
-# Ascend PyTorch Profiler 深度采集机
+# 兼容别名：Ascend PyTorch Profiler 采集机
 python -m tests.glm5_2_mindstudio.toolchain doctor \
   --scope performance-torch-npu-capture
 
@@ -129,12 +129,12 @@ min/median/max 作为性能数值。下面 profiler-active 的结果只做归因
 
 ### 3.2 profiler-active 证据采集
 
-单卡 msProf：
+单卡默认采集：
 
 ```bash
 export ASCEND_RT_VISIBLE_DEVICES=4
 python tests/glm5_2_mindstudio/performance_benchmark.py \
-  --capture --device npu --collector msprof \
+  --capture --device npu --collector torch_npu_profiler \
   --topology single --preset overview
 ```
 
@@ -143,7 +143,7 @@ python tests/glm5_2_mindstudio/performance_benchmark.py \
 ```bash
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 python tests/glm5_2_mindstudio/performance_benchmark.py \
-  --capture --device npu --collector msprof \
+  --capture --device npu --collector torch_npu_profiler \
   --topology fsdp8 --preset overview
 ```
 
@@ -151,21 +151,19 @@ python tests/glm5_2_mindstudio/performance_benchmark.py \
 
 ```bash
 python tests/glm5_2_mindstudio/performance_benchmark.py \
-  --capture --device npu --collector msprof \
+  --capture --device npu --collector torch_npu_profiler \
   --topology all --preset overview
 ```
 
-`all` 只是提供统一编排，并不表示应在共享服务器上一开始就全量采集。msProf 会采集
-完整作业，不受旧 `skip/warmup/active` schedule 控制；多拓扑、多 rank、text 导出
-可能产生数百 GiB。正式矩阵应先跑 profiler-off 全拓扑取得可比基线，再对 DP、TP、
-CP、PP、EP 和复合并行各选代表拓扑做 msProf；只有存储预算、采集窗口和保留策略
-明确时才执行上面的 `all`。需要精确 steady-state step 窗口时，优先使用
-`torch_npu_profiler`，或仅在当前 CANN 文档确认后用 `--collector-arg` 传入
-`delay/duration` 类选项。
+`all` 只是提供统一编排，并不表示应在共享服务器上一开始就全量采集。即使默认
+Ascend PyTorch Profiler 使用 step schedule，重型 preset 与多拓扑、多 rank 做
+笛卡尔积仍可能产生数百 GiB。正式矩阵应先跑 profiler-off 全拓扑取得可比基线，
+再对 DP、TP、CP、PP、EP 和复合并行各选代表拓扑做深度 capture；只有存储预算、
+采集窗口和保留策略明确时才执行上面的 `all`。
 
-这里 `overview` 只是复用旧 performance CLI 的轻量训练配置槽位，msProf 运行名
-明确写成 `basic-msprof`；它不会套用 torch_npu preset 的 level/shape/stack 配置。
-msProf 不允许 `--preset all`，因为重复八次完整作业不等于八种框架内采集策略。
+`overview` 是默认 Ascend PyTorch Profiler 的轻量策略。`--preset all` 会真正展开
+多套框架内采集策略，必须评估运行次数和存储。显式 `msprof` 不使用这些 preset 的
+level/shape/stack 配置，也不允许 `--preset all`。
 
 默认命令使用官方 `--type=text`。26.1 文档下该模式提供 JSON/CSV 和 DB，适合
 可读表格、cluster 和 Insight，但容量高于 db-only。按所装 CANN 的官方参数

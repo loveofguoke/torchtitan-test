@@ -117,15 +117,15 @@ API 预检、最小单算子复现、Profiler 或算子工具确认根因。对 
 和 rank min/median/max 建立基线。Profiler-active 的 step time 包含采集开销，不能直接
 当真实性能数字。
 
-### 3.2 默认 msProf 做系统级短采集
+### 3.2 默认 Ascend PyTorch Profiler 做训练内短窗口采集
 
-msProf 包裹一个短小训练作业，采集 CANN/NPU 系统数据。默认 text 会输出可读表格和
-DB；只需要 Insight DB 时可明确选择 db。采集前估算空间，并限制作业时长、rank 和
-`--storage-limit`。
+Ascend PyTorch Profiler 在训练进程内按 schedule 采集 PyTorch、CANN 和 NPU 多层
+数据，并保留 step、module、shape、stack、memory 等可选语义。采集前估算空间，
+限制 active step、rank 和重型采集项；msProf 保留给底层或黑盒整进程采集。
 
 ```bash
 python tests/glm5_2_mindstudio/performance_benchmark.py \
-  --capture --device npu --collector msprof \
+  --capture --device npu --collector torch_npu_profiler \
   --topology single --preset overview
 ```
 

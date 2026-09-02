@@ -664,17 +664,17 @@ capture 的官方 CSV 位于
 
 ## 8. NPU 性能标准流程
 
-当前默认 collector 是 msProf；它包装一次完整的短作业并输出 CANN/NPU 证据。
-需要 PyTorch module、shape、stack、memory 和 schedule 窗口时，显式切换
-`torch_npu_profiler`。先检查服务器：
+当前默认 collector 是 Ascend PyTorch Profiler（`torch_npu_profiler`）。它在
+PyTorch 训练进程内按 step schedule 采集 PyTorch、CANN 和 NPU 多层证据，并支持
+module、shape、stack、memory 等框架语义。先检查服务器：
 
 ```bash
 python -m tests.glm5_2_mindstudio.toolchain doctor \
   --scope performance-capture
 ```
 
-`performance-capture` 对应默认 msProf 采集机；使用 Ascend PyTorch Profiler
-深度采集时改为 `--scope performance-torch-npu-capture`。离线分析机使用
+`performance-capture` 对应默认 Ascend PyTorch Profiler 采集机；兼容别名
+`performance-torch-npu-capture` 具有相同的采集依赖。离线分析机使用
 `--scope performance-analysis`；只有同一环境同时承担采集和分析时才用
 `--scope performance`。
 
@@ -694,32 +694,32 @@ done
 ```bash
 export ASCEND_RT_VISIBLE_DEVICES=4
 python tests/glm5_2_mindstudio/performance_benchmark.py \
-  --capture --device npu --collector msprof \
+  --capture --device npu --collector torch_npu_profiler \
   --topology single --preset overview
 
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 python tests/glm5_2_mindstudio/performance_benchmark.py \
-  --capture --device npu --collector msprof \
+  --capture --device npu --collector torch_npu_profiler \
   --topology fsdp8 --preset overview
 
 python tests/glm5_2_mindstudio/performance_benchmark.py \
-  --capture --device npu --collector msprof \
+  --capture --device npu --collector torch_npu_profiler \
   --topology all --preset overview
 ```
 
-在已有 msProf 多卡 capture 上运行 cluster 并生成 Insight handoff：
+在已有 Ascend PyTorch Profiler 多卡 capture 上运行离线分析并生成 Insight handoff：
 
 ```bash
 python tests/glm5_2_mindstudio/performance_benchmark.py \
-  --analyze --device npu --collector msprof \
+  --analyze --device npu --collector torch_npu_profiler \
   --topology fsdp8 --preset overview --analysis-tools all
 ```
 
-`msprof-analyze` 的 recipe 不能脱离官方输入矩阵随意混用：msProf 数据可进入
-cluster 和 Insight；advisor 与 compare 的 NPU 输入要求 Ascend PyTorch Profiler
-`*_ascend_pt`。需要这两项时先用 `--collector torch_npu_profiler` 做深度 capture，
-再对同名 capture 执行 `--advisor` 或 `--compare-baseline`。CLI 会在清理旧数据前
-拒绝 collector/recipe 的无效组合。
+`msprof-analyze` 的 recipe 不能脱离官方输入矩阵随意混用。默认 Ascend PyTorch
+Profiler 产物可进入 offline、advisor、cluster、compare 和 Insight 中各自支持的
+流程。显式 `--collector msprof` 仅用于需要命令行包裹整进程的底层或黑盒采集；
+其数据可进入 cluster 和 Insight，但不能冒充 advisor/compare 所需的
+`*_ascend_pt`。CLI 会在清理旧数据前拒绝 collector/recipe 的无效组合。
 
 性能标准入口当前只允许 NPU；`--device cuda` 保留接口并明确报未实现。完整的采集器
 边界、`--type=text`/`db` 容量取舍、compare 和 Insight 阅读方法见
@@ -784,7 +784,7 @@ cluster 和 Insight；advisor 与 compare 的 NPU 输入要求 Ascend PyTorch Pr
 | `--monitor-target TEXT` | module 名字包含过滤 | 可重复 |
 | `--graph-overflow-check` | 标注分级图溢出/下溢 | graph_visualize only |
 | `--graph-progress-log` | 打印官方构图进度 | graph_visualize only |
-| `--collector NAME` | 性能采集入口 | MindStudio performance 默认 `msprof`；深度归因用 `torch_npu_profiler` |
+| `--collector NAME` | 性能采集入口 | 默认 `torch_npu_profiler`；底层或黑盒整进程采集可显式选择 `msprof` |
 | `--collector-arg=ARG` | 追加当前 CANN 版本确认过的 msProf 参数 | 可重复；不能覆盖 lifecycle 管理的 output/application/dynamic |
 | `--preset NAME` | Ascend PyTorch Profiler 策略 | msProf 保持 `overview` 占位，不接受 `all` |
 | `--analysis-tools none|offline|advisor|cluster|all` | 性能离线分析阶段 | msProf 的 `all` 只选 cluster；torch_npu 的 `all` 选 offline+advisor+cluster |

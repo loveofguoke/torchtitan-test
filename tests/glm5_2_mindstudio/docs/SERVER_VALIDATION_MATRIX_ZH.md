@@ -62,8 +62,8 @@ python -m tests.glm5_2_mindstudio.toolchain doctor --scope performance-torch-npu
 python -m tests.glm5_2_mindstudio.toolchain doctor --scope performance-analysis
 ```
 
-`performance-capture` 验证默认 msProf；`performance-torch-npu-capture` 验证
-框架级 Ascend PyTorch Profiler 环境且不强制 msProf；两者都不要求安装
+`performance-capture` 验证默认 Ascend PyTorch Profiler；
+`performance-torch-npu-capture` 是同一框架级采集环境的兼容 scope；两者都不要求安装
 msprof-analyze。`performance-analysis` 不要求 NPU/CANN 运行时。只有需要在同一
 环境完成 msProf 采集和离线分析全链路时才用 `--scope performance`。
 

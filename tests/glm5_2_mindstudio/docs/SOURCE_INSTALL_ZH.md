@@ -339,7 +339,7 @@ python -m tests.glm5_2_mindstudio.toolchain doctor \
 python -m tests.glm5_2_mindstudio.toolchain doctor \
   --scope accuracy-npu
 
-# 默认 msProf 采集机
+# 默认 Ascend PyTorch Profiler 采集机
 python -m tests.glm5_2_mindstudio.toolchain doctor \
   --scope performance-capture
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -38,6 +39,17 @@ from tests.glm5_2_performance.workflow import (
 
 
 class MindStudioPerformanceTest(unittest.TestCase):
+    def test_official_entry_defaults_to_ascend_pytorch_profiler(self) -> None:
+        entry = runpy.run_path(
+            str(
+                Path(__file__).parents[1]
+                / "glm5_2_mindstudio"
+                / "performance_benchmark.py"
+            ),
+            run_name="mindstudio_performance_defaults",
+        )
+        self.assertEqual(entry["CONFIG"].collector, "torch_npu_profiler")
+
     def test_collector_registry_keeps_unverified_tools_disabled(self) -> None:
         self.assertEqual(
             [entry["collector"] for entry in collector_inventory()],

@@ -387,7 +387,7 @@ class TestMindStudioToolchain(unittest.TestCase):
             )
 
         self.assertTrue(capture["ok"])
-        self.assertTrue(capture["checks"]["msprof"]["required"])
+        self.assertFalse(capture["checks"]["msprof"]["required"])
         self.assertFalse(capture["checks"]["msprof-analyze"]["required"])
         self.assertTrue(capture["checks"]["framework"]["required"])
         self.assertTrue(capture["checks"]["cann"]["required"])
