@@ -100,6 +100,68 @@ class MindStudioPerformanceTest(unittest.TestCase):
             self.assertIsNone(repeated_attempt)
             self.assertTrue((run / "cluster").is_dir())
 
+    def test_stale_derived_stage_is_rebuilt_without_touching_capture_or_peers(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = root / "run"
+            artifact = root / "artifact"
+            run.mkdir()
+            artifact.mkdir()
+            capture = run / "trainer_output"
+            capture.mkdir()
+            cluster = run / "cluster"
+            cluster.mkdir()
+            (run / "cluster.json").write_text("{}", encoding="utf-8")
+            request = {
+                "capture_identity": {"attempt_id": "capture-1"},
+                "operations": {
+                    "offline_parse": False,
+                    "parse_workers": None,
+                    "advisor": True,
+                    "cluster": True,
+                    "cluster_mode": "all",
+                    "cluster_agent_output": False,
+                    "cluster_bypass_input_safety_checks": False,
+                    "compare_baseline": None,
+                },
+                "analysis_toolchain": {"version": "26.1"},
+            }
+
+            old_attempt, should_run = _prepare_analysis_stage(
+                run_directory=run,
+                artifact_directory=artifact,
+                request=request,
+                stage="advisor",
+                force=False,
+            )
+            self.assertTrue(should_run)
+            assert old_attempt is not None
+            (run / "advisor").mkdir()
+            (run / "advisor.json").write_text("{}", encoding="utf-8")
+            old_attempt.update("completed")
+
+            changed_request = {
+                **request,
+                "analysis_toolchain": {"version": "26.1.1"},
+            }
+            new_attempt, should_rebuild = _prepare_analysis_stage(
+                run_directory=run,
+                artifact_directory=artifact,
+                request=changed_request,
+                stage="advisor",
+                force=False,
+            )
+
+            self.assertTrue(should_rebuild)
+            self.assertIsNotNone(new_attempt)
+            self.assertFalse((run / "advisor").exists())
+            self.assertFalse((run / "advisor.json").exists())
+            self.assertTrue(capture.is_dir())
+            self.assertTrue(cluster.is_dir())
+            self.assertTrue((run / "cluster.json").is_file())
+
     def test_official_entry_defaults_to_ascend_pytorch_profiler(self) -> None:
         entry = runpy.run_path(
             str(
@@ -711,11 +773,41 @@ class MindStudioPerformanceTest(unittest.TestCase):
                 toolchain_v1,
             )
 
+            def changed_advisor_side_effect(
+                run_directory: Path,
+                *,
+                analysis_toolchain: dict[str, object] | None = None,
+            ) -> dict[str, object]:
+                self.assertFalse((run_directory / "advisor").exists())
+                self.assertEqual(analysis_toolchain, toolchain_v2)
+                output = run_directory / "advisor"
+                output.mkdir()
+                (output / "updated.txt").write_text("updated", encoding="utf-8")
+                return {"return_code": 0}
+
             with patch(
                 "tests.glm5_2_performance.workflow._analysis_toolchain_metadata",
                 return_value=toolchain_v2,
-            ), self.assertRaisesRegex(FileExistsError, "advisor analysis"):
-                analyze(
+            ), patch(
+                "tests.glm5_2_performance.workflow.run_advisor",
+                side_effect=changed_advisor_side_effect,
+            ), patch(
+                "tests.glm5_2_performance.workflow.render_mindstudio_flamegraphs"
+            ), patch(
+                "tests.glm5_2_performance.workflow.render_flamegraphs"
+            ), patch(
+                "tests.glm5_2_performance.workflow.build_analysis",
+                return_value={},
+            ), patch(
+                "tests.glm5_2_performance.workflow.mindstudio_insight_handoff",
+                return_value=handoff,
+            ), patch(
+                "tests.glm5_2_performance.workflow.render_html_report",
+                side_effect=report_side_effect,
+            ), patch(
+                "tests.glm5_2_performance.workflow._sync_exploration_bundle"
+            ):
+                repeated_result = analyze(
                     root,
                     config,
                     device="npu",
@@ -726,7 +818,9 @@ class MindStudioPerformanceTest(unittest.TestCase):
                     cluster=False,
                     compare_baseline=None,
                 )
+            self.assertEqual(repeated_result, report)
             self.assertEqual(raw.read_bytes(), b"raw")
+            self.assertTrue((run / "advisor" / "updated.txt").is_file())
 
     def test_msprof_all_expands_to_cluster_only(self) -> None:
         config = PerformanceConfig(

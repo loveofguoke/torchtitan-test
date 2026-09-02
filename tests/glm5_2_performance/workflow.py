@@ -1908,15 +1908,36 @@ def _prepare_analysis_stage(
             state.get("status") == "completed"
             and state.get("context", {}).get("identity") != context["identity"]
         ):
-            raise FileExistsError(
-                f"completed {stage} analysis uses different inputs or options; "
-                f"pass --force to replace only that stage: {state_path}"
+            # Analysis outputs are derived from an immutable capture.  A tool
+            # upgrade or option change must invalidate only this stage; making
+            # users force the whole topology suite would either recapture the
+            # model unnecessarily or strand an interrupted ``--topology all``
+            # run behind stale derived state.  Resetting the stage paths keeps
+            # the capture and every independent completed analysis intact.
+            print(
+                f"Rebuild performance {stage} analysis because its inputs or "
+                f"options changed: {state_path}",
+                flush=True,
             )
-        reset_output_generation(
-            _analysis_stage_paths(run_directory, artifact_directory, stage),
-            label=f"incomplete performance {stage} analysis",
-            include_archives=False,
-        )
+            reset_output_generation(
+                _analysis_stage_paths(
+                    run_directory,
+                    artifact_directory,
+                    stage,
+                ),
+                label=f"stale performance {stage} analysis",
+                include_archives=False,
+            )
+        else:
+            reset_output_generation(
+                _analysis_stage_paths(
+                    run_directory,
+                    artifact_directory,
+                    stage,
+                ),
+                label=f"incomplete performance {stage} analysis",
+                include_archives=False,
+            )
     elif _analysis_stage_outputs_complete(run_directory, stage):
         # Adopt output produced by the former monolithic analysis lifecycle
         # only when its recorded request proves that this exact stage ran.

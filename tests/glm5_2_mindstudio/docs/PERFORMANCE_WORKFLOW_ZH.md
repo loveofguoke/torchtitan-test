@@ -317,7 +317,8 @@ torch、torch_npu、CANN，以及 TorchTitan profiler、TorchTitanTurbo NPU adap
 本仓 capture adapter 的源码哈希。它们都不要求采集服务器安装 msprof-analyze。
 离线分析在自己的 operation/analysis manifest 中记录 msprof-analyze 版本/源码，
 以及实际用于渲染的 Insight/FlameGraph 脚本哈希。采集栈升级需要新 capture；只升级
-analyzer 或可视化脚本只需 `--force --analyze`，不能把旧派生结果与新工具混在一起。
+analyzer、可视化脚本或分析选项时，重复原命令会自动清除并重建身份失配的单个派生
+阶段，不会重跑 capture，也不会把旧派生结果与新工具混在一起。
 `--compare-baseline` 对目录递归记录相对文件名、大小和纳秒 mtime 的树摘要；基准树
 内部 DB/JSON/XLSX 被改写后，不会错误复用旧 compare。
 
