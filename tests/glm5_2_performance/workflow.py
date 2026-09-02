@@ -1277,6 +1277,27 @@ def run_cluster_analysis(
         bypass_input_safety_checks=bypass_input_safety_checks,
         analysis_toolchain=analysis_toolchain,
     )
+    cluster_delivery = output_directory / "cluster_analysis_output"
+    if cluster_delivery.is_dir():
+        # MindStudio Insight requires the cluster aggregate and every rank's
+        # original profile to share one import root.  The rank profiles already
+        # live under profiler_directory, so mirror only the small derived
+        # cluster delivery instead of duplicating the multi-GB raw capture.
+        insight_delivery = profiler_directory / "cluster_analysis_output"
+        shutil.copytree(
+            cluster_delivery,
+            insight_delivery,
+            dirs_exist_ok=True,
+        )
+        results["mindstudio_insight_bundle"] = {
+            "import_root": str(profiler_directory),
+            "cluster_delivery": str(insight_delivery),
+            "files": sorted(
+                path.relative_to(insight_delivery).as_posix()
+                for path in insight_delivery.rglob("*")
+                if path.is_file()
+            ),
+        }
     if not extended:
         # The MindStudio standard path intentionally stops at the documented
         # 26.x ``cluster -m all`` contract. The extra recipes below predate
@@ -1824,6 +1845,13 @@ def _analysis_stage_paths(
             )
         )
         paths.extend(run_directory.glob("communication_bottleneck_rank_*"))
+        try:
+            paths.append(
+                _find_profiler_directory(run_directory)
+                / "cluster_analysis_output"
+            )
+        except FileNotFoundError:
+            pass
     elif stage == "compare":
         paths.extend((run_directory / "compare", run_directory / "compare.json"))
     return list(dict.fromkeys(paths))

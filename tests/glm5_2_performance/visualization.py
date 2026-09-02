@@ -49,7 +49,15 @@ def mindstudio_insight_handoff(
     profile = profile_root.resolve()
     analysis = analysis_root.resolve() if analysis_root is not None else None
     import_targets = [str(profile)]
-    if analysis is not None and analysis.is_dir():
+    # A co-located cluster delivery turns the complete profile root into the
+    # one official Insight import bundle.  Older captures may still keep the
+    # cluster output separately, so retain that layout as a compatibility
+    # fallback in the handoff manifest.
+    if (
+        not (profile / "cluster_analysis_output").is_dir()
+        and analysis is not None
+        and analysis.is_dir()
+    ):
         import_targets.extend(
             str(path)
             for path in sorted(

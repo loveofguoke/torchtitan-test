@@ -124,3 +124,13 @@ change:
   derived stages. Adding or forcing one stage must preserve completed outputs
   from the others; only changing the capture generation invalidates every
   derived stage.
+- The official `standard` preset must populate single-card Timeline, Memory,
+  and Operator views; `distributed` must additionally populate Summary and
+  Communication for every rank. Both therefore keep `profile_memory=True`.
+  `overview` remains the explicitly lightweight topology-scan policy and does
+  not promise a complete Insight Memory view.
+- After cluster analysis, the profiler root is the single portable Insight
+  import bundle: it contains every rank profile plus a mirrored
+  `cluster_analysis_output/`. The mirror duplicates only small derived files,
+  never raw rank traces. Cluster force/reset and Release/handoff discovery
+  must remove or index this mirror together with the canonical analysis copy.

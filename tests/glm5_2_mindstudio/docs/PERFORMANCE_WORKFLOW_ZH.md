@@ -139,7 +139,7 @@ min/median/max 作为性能数值。下面 profiler-active 的结果只做归因
 export ASCEND_RT_VISIBLE_DEVICES=4
 python tests/glm5_2_mindstudio/performance_benchmark.py \
   --probe --device npu --collector torch_npu_profiler \
-  --topology single --preset overview --analysis-tools all
+  --topology single --preset standard --analysis-tools all
 ```
 
 一个分布式拓扑：
@@ -165,7 +165,14 @@ Ascend PyTorch Profiler 使用 step schedule，重型 preset 与多拓扑、多 
 再对 DP、TP、CP、PP、EP 和复合并行各选代表拓扑做深度 capture；只有存储预算、
 采集窗口和保留策略明确时才执行上面的 `all`。
 
-`overview` 是默认 Ascend PyTorch Profiler 的轻量策略。`--preset all` 会真正展开
+`standard` 默认启用 Level1、PipeUtilization 和 `profile_memory=True`，因此同一份
+单卡 capture 可在 Insight 中查看 Timeline、Memory、Operator。`distributed`
+在此基础上采集全部 rank 的通信与互联数据，同一份多卡 capture 可进一步查看
+Summary 和 Communication。Memory 页面要求 `memory_record.csv` 与
+`operator_memory.csv` 同时存在；框架通过 `profile_memory=True` 生成它们。
+
+`overview` 是 Ascend PyTorch Profiler 的轻量策略，不保证 Memory 页面完整。
+`--preset all` 会真正展开
 多套框架内采集策略，必须评估运行次数和存储。显式 `msprof` 不使用这些 preset 的
 level/shape/stack 配置，也不允许 `--preset all`。
 
@@ -233,7 +240,9 @@ msprof-analyze compare -d PROFILE -bp BASELINE --output_path OUTPUT/compare
 ```
 
 - advisor 生成终端建议、HTML 和 XLSX，先看 High，再回到原始证据验证；
-- cluster 生成 `cluster_analysis_output`，应整目录导入 Insight；
+- cluster 生成 `cluster_analysis_output`；框架将它同步到包含全部 rank profile 的
+  profiler 根目录。导入该统一根目录可关联五个系统调优页面；单独导入 cluster
+  目录只适合 Summary/Communication 聚合视图；
 - compare 把训练耗时拆为算子/通信/调度，并比较算子耗时、通信和内存；XLSX 的
   差异是候选根因，不是自动 PASS/FAIL。
 
@@ -259,9 +268,11 @@ benchmark 的 `--force` 负责实验 generation；只有确认属主、权限和
 
 ## 5. MindStudio Insight 阅读路径
 
-`analyze` 生成 `mindstudio_insight_handoff.json`，列出完整 profile/import root、
-`cluster_analysis_output`、DB/Timeline/CSV/XLSX/HTML 清单和视图入口。服务器无 GUI
-时把 import target 整目录同步到 Windows/macOS。多卡不能只同步 rank 0。
+`analyze` 生成 `mindstudio_insight_handoff.json`。新 capture 只有一个首选 import
+root：完整 profiler 根目录，其中同时包含全部 `*_ascend_pt` rank 目录和
+`cluster_analysis_output`。服务器无 GUI 时把该目录整体同步到 Windows/macOS，
+然后在 Insight 中选择目录导入。多卡不能只同步 rank 0。历史 capture 若尚未生成
+同目录交付，handoff 才会兼容性地列出 profile 与 cluster 两个目标。
 
 按现象阅读：
 
@@ -283,7 +294,9 @@ Timeline 是时间顺序证据；火焰图是按调用栈聚合的耗时证据�
 mindstudio_runs/<card-scope>/<topology>/<run>/
   runtime.log / run_state.json
   trainer_output/profiling/msprof/       # msProf
-  trainer_output/profiling/traces/       # torch_npu.profiler
+  trainer_output/profiling/traces/       # torch_npu.profiler，也是 Insight 唯一导入根
+    rank_0_*_ascend_pt/ ...              # 每个 rank 的原始/解析数据
+    cluster_analysis_output/             # DB + CSV/JSON 集群聚合交付件
   advisor*/ cluster*/ compare*/
 
 mindstudio_artifacts/<card-scope>/<topology>/<run>/
@@ -318,7 +331,7 @@ analyzer 或可视化脚本只需 `--force --analyze`，不能把旧派生结果
 - raw profile 可含路径、算子名和 shape，公开前必须审查；
 - Release `analysis` 用于经审查的 DB/XLSX/HTML/JSON，原始大数据按需 `full`。
 
-`mindstudio_insight_handoff.json` 同时保存服务器绝对路径和相对仓库根的 portable
+`mindstudio_insight_handoff.json` 同时保存唯一导入根的服务器绝对路径和相对仓库根的 portable
 路径。Release `analysis` 保留经审查的 `msprof_*.db`、解析表、Timeline、XLSX/HTML
 和报告，但不保留原始 device payload；如果 Insight 的某个视图要求完整原始 profile，
 使用经安全审查的 `full` archive。handoff 中每个 Insight 视图还会给出

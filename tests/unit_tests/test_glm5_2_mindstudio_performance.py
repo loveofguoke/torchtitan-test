@@ -521,6 +521,11 @@ class MindStudioPerformanceTest(unittest.TestCase):
             )
             self.assertFalse((run / "cluster_time_summary").exists())
             self.assertFalse((run / "free_analysis").exists())
+            insight_delivery = profile / "cluster_analysis_output"
+            self.assertEqual(
+                {path.name for path in insight_delivery.iterdir()},
+                {path.name for path in delivery.iterdir()},
+            )
 
     def test_standard_compare_uses_documented_output_path_option(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -853,6 +858,33 @@ class MindStudioPerformanceTest(unittest.TestCase):
             {"Summary", "Communication", "Timeline", "Operator", "Memory", "RL"},
         )
         json.dumps(handoff)
+
+    def test_insight_handoff_prefers_one_colocated_import_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile = root / "profile"
+            (profile / "rank_0_capture_ascend_pt").mkdir(parents=True)
+            (profile / "cluster_analysis_output").mkdir()
+            separate = root / "analysis" / "cluster_analysis_output"
+            separate.mkdir(parents=True)
+
+            handoff = mindstudio_insight_handoff(
+                profile,
+                analysis_root=root / "analysis",
+                portable_base=root,
+            )
+
+        self.assertEqual(handoff["import_targets"], [str(profile.resolve())])
+        self.assertEqual(
+            handoff["portable_import_targets"],
+            [
+                {
+                    "kind": "profile",
+                    "server_path": str(profile.resolve()),
+                    "relative_path": "profile",
+                }
+            ],
+        )
 
     def test_performance_doctor_scope_is_public(self) -> None:
         self.assertEqual(canonical_doctor_scope("profiler"), "performance")

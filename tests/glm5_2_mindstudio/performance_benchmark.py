@@ -14,7 +14,11 @@ CONFIG = PerformanceConfig(
     name="glm5-mindstudio-performance",
     device="npu",
     topology="single",
-    preset="overview",
+    # The official single-card baseline must populate Insight's Timeline,
+    # Memory, and Operator views in one bounded capture.  Multi-card callers
+    # select ``distributed``, which additionally records Summary and
+    # Communication data for every rank.
+    preset="standard",
     collector="torch_npu_profiler",
     steps=30,
     skip_steps=10,

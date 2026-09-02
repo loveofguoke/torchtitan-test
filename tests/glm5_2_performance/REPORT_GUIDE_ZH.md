@@ -145,8 +145,8 @@ preset 是一次有明确成本和问题范围的采集策略，不是模型精�
 |---|---|---|---|
 | `overview` | 慢发生在哪个大层级 | Level0 基础 CPU/NPU 时间 | 首次采集，开销最低 |
 | `comparison` | 给 A/B 提供较轻归因证据 | Level0、简化控制 | 仍不能替代 profiler-off |
-| `standard` | AI Core 管线是否健康 | Level1、PipeUtilization、rank 0 | 单 rank 不代表分布式全部 rank |
-| `distributed` | 哪个 rank/collective 暴露 | 全 rank、通信、互联、离线解析 | 多卡数据大，优先 `repeat=1` 导入 Insight |
+| `standard` | 单卡 Timeline、Memory、Operator 与 AI Core 管线是否健康 | Level1、`profile_memory=True`、PipeUtilization、rank 0 | 单 rank 不代表分布式全部 rank |
+| `distributed` | 多卡 Timeline、Memory、Operator、Summary、Communication，以及哪个 rank/collective 暴露 | 全 rank、`profile_memory=True`、通信、互联、离线解析 | 多卡数据大，优先 `repeat=1` 导入 Insight |
 | `kernel` | 热点 kernel 是算力还是缓存问题 | shape、ArithmeticUtilization、L2 | counter 本身会增加开销 |
 | `operator` | 哪个 op/参数值得融合或改 layout | shapes、op attr/args、FLOPs 字段 | 元数据大，注意敏感信息 |
 | `memory` | 峰值由哪类 tensor/事件产生 | memory、stack/module、timeline export | 开销和产物都大 |

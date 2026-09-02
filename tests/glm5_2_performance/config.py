@@ -120,12 +120,14 @@ def profiler_presets() -> dict[str, ProfilerPreset]:
         "standard": ProfilerPreset(
             "standard",
             "level1",
+            profile_memory=True,
             aic_metrics="pipe_utilization",
         ),
         "distributed": ProfilerPreset(
             "distributed",
             "level1",
             profile_ranks="all",
+            profile_memory=True,
             parse_mode="offline",
             aic_metrics="pipe_utilization",
             data_simplification=False,

@@ -697,7 +697,7 @@ Advisor、适用时的 Cluster，以及 Insight 交接文件。单卡、一个�
 export ASCEND_RT_VISIBLE_DEVICES=4
 python tests/glm5_2_mindstudio/performance_benchmark.py \
   --probe --device npu --collector torch_npu_profiler \
-  --topology single --preset overview --analysis-tools all
+  --topology single --preset standard --analysis-tools all
 
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 python tests/glm5_2_mindstudio/performance_benchmark.py \
@@ -708,6 +708,17 @@ python tests/glm5_2_mindstudio/performance_benchmark.py \
   --probe --device npu --collector torch_npu_profiler \
   --topology all --preset overview --analysis-tools all
 ```
+
+`standard` 使用 Level1、PipeUtilization 和 `profile_memory=True`，单卡一次
+capture 即可填充 Insight 的 Timeline、Memory、Operator。`distributed` 同样默认
+开启内存采集，并对所有 rank 采集通信数据，因此一个多卡 capture 可同时填充
+Timeline、Memory、Operator、Summary、Communication。轻量 `overview` 不承诺
+Memory 页面完整；它用于先做低成本全拓扑扫描。
+
+Cluster 分析完成后，框架会把官方 `cluster_analysis_output/` 同步到包含所有
+`*_ascend_pt` rank 目录的 profiler 根目录，不复制大体积 rank 数据。下载并导入这
+一个根目录，即可让 Insight 同时关联 Timeline、Memory、Operator、Summary 和
+Communication。`mindstudio_insight_handoff.json` 会记录这个唯一首选导入路径。
 
 `--capture` 和 `--analyze` 是高级分阶段接口：用于采集机不安装分析工具、跨机器搬运
 raw，或对同一 capture 补跑某个工具。每个阶段拥有独立状态和目录；补跑 Cluster

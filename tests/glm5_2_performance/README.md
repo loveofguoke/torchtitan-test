@@ -46,8 +46,10 @@ The workflow is deliberately top-down:
 
 1. `overview`: Level0 timing with low collection overhead.
 2. `comparison`: Level0 with comparison-safe low-overhead controls.
-3. `standard`: Level1 pipe-utilization detail on rank 0.
-4. `distributed`: Level1 on every rank with pipe-utilization and interconnect
+3. `standard`: Level1 pipe-utilization and memory detail on rank 0. A
+   single-card capture populates MindStudio Insight Timeline, Memory, and
+   Operator views.
+4. `distributed`: Level1 on every rank with memory, pipe-utilization and interconnect
    data; raw data is parsed offline by default.
 5. `kernel`: Level1 shapes, arithmetic utilization, and L2 information.
 6. `operator`: shapes, operator attributes/arguments, and raw FLOPs capture.
