@@ -689,30 +689,34 @@ for r in 1 2 3; do
 done
 ```
 
-单卡、一个分布式拓扑和全部拓扑分别运行：
+标准流程用一条 `--probe --analysis-tools all` 命令依次完成采集、离线解析、
+Advisor、适用时的 Cluster，以及 Insight 交接文件。单卡、一个分布式拓扑和全部
+拓扑分别运行：
 
 ```bash
 export ASCEND_RT_VISIBLE_DEVICES=4
 python tests/glm5_2_mindstudio/performance_benchmark.py \
-  --capture --device npu --collector torch_npu_profiler \
-  --topology single --preset overview
+  --probe --device npu --collector torch_npu_profiler \
+  --topology single --preset overview --analysis-tools all
 
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 python tests/glm5_2_mindstudio/performance_benchmark.py \
-  --capture --device npu --collector torch_npu_profiler \
-  --topology fsdp8 --preset overview
+  --probe --device npu --collector torch_npu_profiler \
+  --topology fsdp8 --preset distributed --analysis-tools all
 
 python tests/glm5_2_mindstudio/performance_benchmark.py \
-  --capture --device npu --collector torch_npu_profiler \
-  --topology all --preset overview
+  --probe --device npu --collector torch_npu_profiler \
+  --topology all --preset overview --analysis-tools all
 ```
 
-在已有 Ascend PyTorch Profiler 多卡 capture 上运行离线分析并生成 Insight handoff：
+`--capture` 和 `--analyze` 是高级分阶段接口：用于采集机不安装分析工具、跨机器搬运
+raw，或对同一 capture 补跑某个工具。每个阶段拥有独立状态和目录；补跑 Cluster
+不会删除 Advisor，`--force --analyze` 也只重做本次明确选择的阶段：
 
 ```bash
 python tests/glm5_2_mindstudio/performance_benchmark.py \
   --analyze --device npu --collector torch_npu_profiler \
-  --topology fsdp8 --preset overview --analysis-tools all
+  --topology fsdp8 --preset distributed --analysis-tools all
 ```
 
 `msprof-analyze` 的 recipe 不能脱离官方输入矩阵随意混用。默认 Ascend PyTorch

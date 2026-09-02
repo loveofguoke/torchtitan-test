@@ -113,3 +113,14 @@ change:
   CLI help, output inventory, Release discovery, and the official field guide.
   `cluster --force` bypasses analyzer input checks; it is not the experiment
   lifecycle `--force` and must never delete or replace a capture generation.
+- MindStudio standard cluster analysis keeps the official DB and text
+  deliveries together under `cluster/cluster_analysis_output/`. Ascend
+  PyTorch Profiler captures commonly contain both input formats, so the
+  orchestrator runs the official cluster analyzer once for the DB input and
+  once through a disposable text-only view, then merges the analyzer-produced
+  CSV/JSON files beside `cluster_analysis.db`. Do not synthesize these files
+  from SQLite or restore the legacy top-level recipe directory fan-out.
+- Offline parse, advisor, cluster, and compare are independently resumable
+  derived stages. Adding or forcing one stage must preserve completed outputs
+  from the others; only changing the capture generation invalidates every
+  derived stage.

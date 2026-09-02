@@ -25,6 +25,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Sequence
@@ -1157,6 +1158,7 @@ def _run_msprof_analyze(
     name: str,
     command: list[str],
     analysis_toolchain: dict[str, Any] | None = None,
+    status_path: Path | None = None,
 ) -> dict[str, Any]:
     print(f"Running msprof-analyze {name}: {' '.join(command)}")
     result = subprocess.run(command, text=True, capture_output=True, check=False)
@@ -1167,7 +1169,7 @@ def _run_msprof_analyze(
         "stderr": result.stderr,
         "analysis_toolchain": analysis_toolchain,
     }
-    _write_json(run_directory / f"{name}.json", status)
+    _write_json(status_path or (run_directory / f"{name}.json"), status)
     if result.returncode:
         raise subprocess.CalledProcessError(result.returncode, command)
     return status
@@ -1266,6 +1268,15 @@ def run_cluster_analysis(
             analysis_toolchain=analysis_toolchain,
         )
     }
+    results["cluster_text"] = _run_cluster_text_delivery(
+        run_directory,
+        profiler_directory=profiler_directory,
+        output_directory=output_directory,
+        mode=mode,
+        agent_output=agent_output,
+        bypass_input_safety_checks=bypass_input_safety_checks,
+        analysis_toolchain=analysis_toolchain,
+    )
     if not extended:
         # The MindStudio standard path intentionally stops at the documented
         # 26.x ``cluster -m all`` contract. The extra recipes below predate
@@ -1359,6 +1370,103 @@ def run_cluster_analysis(
             for name, future in futures.items():
                 results[name] = future.result()
     return results
+
+
+def _run_cluster_text_delivery(
+    run_directory: Path,
+    *,
+    profiler_directory: Path,
+    output_directory: Path,
+    mode: str,
+    agent_output: bool,
+    bypass_input_safety_checks: bool,
+    analysis_toolchain: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Generate the official text delivery beside the official cluster DB.
+
+    Ascend PyTorch Profiler commonly exports both DB and text under each rank.
+    msprof-analyze selects one input format per invocation, so a mixed root can
+    yield only ``cluster_analysis.db``.  A temporary text-only view makes the
+    second official invocation deterministic; its CSV/JSON files are merged
+    into the same ``cluster_analysis_output`` and the staging tree is removed.
+    """
+
+    rank_roots = sorted(
+        path for path in profiler_directory.glob("*_ascend_pt") if path.is_dir()
+    )
+    text_names = {
+        "step_trace_time.csv",
+        "communication.json",
+        "communication_matrix.json",
+    }
+    with tempfile.TemporaryDirectory(prefix="glm5-cluster-text-") as directory:
+        temporary = Path(directory)
+        text_input = temporary / "input"
+        copied: list[str] = []
+        for rank_root in rank_roots:
+            destination = text_input / rank_root.name
+            destination.mkdir(parents=True)
+            for info in rank_root.glob("profiler_info_*.json"):
+                shutil.copy2(info, destination / info.name)
+                copied.append(str(info))
+            source_output = rank_root / "ASCEND_PROFILER_OUTPUT"
+            destination_output = destination / "ASCEND_PROFILER_OUTPUT"
+            destination_output.mkdir()
+            for name in text_names:
+                source = source_output / name
+                if source.is_file():
+                    shutil.copy2(source, destination_output / name)
+                    copied.append(str(source))
+        if not copied or not any(
+            (
+                text_input
+                / rank.name
+                / "ASCEND_PROFILER_OUTPUT"
+                / "step_trace_time.csv"
+            ).is_file()
+            for rank in rank_roots
+        ):
+            return {"status": "missing_text_input", "copied": copied}
+        text_output = temporary / "output"
+        command = [
+            _msprof_analyze_executable(),
+            "cluster",
+            "-m",
+            mode,
+            "-d",
+            str(text_input),
+            "-o",
+            str(text_output),
+        ]
+        if agent_output:
+            command.append("--agent")
+        if bypass_input_safety_checks:
+            command.append("--force")
+        status_path = output_directory / "cluster_text.json"
+        result = _run_msprof_analyze(
+            run_directory,
+            name="cluster_text",
+            command=command,
+            analysis_toolchain=analysis_toolchain,
+            status_path=status_path,
+        )
+        generated = text_output / "cluster_analysis_output"
+        destination = output_directory / "cluster_analysis_output"
+        if not generated.is_dir():
+            raise FileNotFoundError(
+                "msprof-analyze text cluster output is missing: "
+                f"{generated}"
+            )
+        destination.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(generated, destination, dirs_exist_ok=True)
+        result["merged_output"] = str(destination)
+        result["files"] = sorted(
+            path.relative_to(destination).as_posix()
+            for path in destination.rglob("*")
+            if path.is_file()
+        )
+        _write_json(status_path, result)
+        return result
 
 
 def _comparison_input(run_directory: Path) -> Path:
@@ -1509,6 +1617,7 @@ def _analysis_request(
     cluster_mode: str = "all",
     cluster_agent_output: bool = False,
     cluster_bypass_input_safety_checks: bool = False,
+    extended_cluster_analysis: bool = True,
     compare_baseline: Path | None = None,
     analysis_toolchain: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -1532,6 +1641,9 @@ def _analysis_request(
             ),
             "cluster_bypass_input_safety_checks": (
                 cluster_bypass_input_safety_checks if cluster else False
+            ),
+            "extended_cluster_analysis": (
+                extended_cluster_analysis if cluster else False
             ),
             "compare_baseline": baseline,
         },
@@ -1641,6 +1753,187 @@ def _analysis_outputs_complete(
     return all(path.exists() for path in required)
 
 
+def _analysis_stage_context(
+    request: dict[str, Any], stage: str
+) -> dict[str, Any]:
+    """Return the independently versioned identity for one analysis tool.
+
+    Capture data is shared, but offline parsing, Advisor, cluster analysis and
+    comparison are separate official operations with separate output roots.
+    Keeping their identities independent allows a later operation to be added
+    without invalidating or deleting an earlier operation.
+    """
+
+    operations = request["operations"]
+    stage_operations: dict[str, Any]
+    if stage == "offline_parse":
+        stage_operations = {
+            "parse_workers": operations.get("parse_workers"),
+        }
+    elif stage == "advisor":
+        stage_operations = {}
+    elif stage == "cluster":
+        stage_operations = {
+            "cluster_mode": operations.get("cluster_mode"),
+            "cluster_agent_output": operations.get("cluster_agent_output"),
+            "cluster_bypass_input_safety_checks": operations.get(
+                "cluster_bypass_input_safety_checks"
+            ),
+            "extended_cluster_analysis": operations.get(
+                "extended_cluster_analysis"
+            ),
+        }
+    elif stage == "compare":
+        stage_operations = {
+            "compare_baseline": operations.get("compare_baseline"),
+        }
+    else:
+        raise ValueError(f"unknown performance analysis stage: {stage}")
+    context = {
+        "capture_identity": request["capture_identity"],
+        "stage": stage,
+        "operations": stage_operations,
+        "analysis_toolchain": (
+            request.get("analysis_toolchain")
+            if stage in {"advisor", "cluster", "compare"}
+            else None
+        ),
+    }
+    context["identity"] = _json_identity(context)
+    return context
+
+
+def _analysis_stage_paths(
+    run_directory: Path,
+    artifact_directory: Path,
+    stage: str,
+) -> list[Path]:
+    state = artifact_directory / f"analysis_{stage}_state.json"
+    paths = [state, state.with_suffix(state.suffix + ".lock")]
+    if stage == "advisor":
+        paths.extend((run_directory / "advisor", run_directory / "advisor.json"))
+    elif stage == "cluster":
+        paths.extend(
+            (
+                run_directory / "cluster",
+                run_directory / "cluster.json",
+                run_directory / "cluster_time_summary",
+                run_directory / "cluster_time_summary.json",
+                run_directory / "free_analysis",
+                run_directory / "free_analysis.json",
+            )
+        )
+        paths.extend(run_directory.glob("communication_bottleneck_rank_*"))
+    elif stage == "compare":
+        paths.extend((run_directory / "compare", run_directory / "compare.json"))
+    return list(dict.fromkeys(paths))
+
+
+def _analysis_stage_outputs_complete(run_directory: Path, stage: str) -> bool:
+    if stage == "offline_parse":
+        profiler_directory = _find_profiler_directory(run_directory)
+        return any(profiler_directory.rglob("*.db"))
+    required = {
+        "advisor": (run_directory / "advisor", run_directory / "advisor.json"),
+        "cluster": (run_directory / "cluster", run_directory / "cluster.json"),
+        "compare": (run_directory / "compare", run_directory / "compare.json"),
+    }[stage]
+    return all(path.exists() for path in required)
+
+
+def _prepare_analysis_stage(
+    *,
+    run_directory: Path,
+    artifact_directory: Path,
+    request: dict[str, Any],
+    stage: str,
+    force: bool,
+) -> tuple[RunAttempt | None, bool]:
+    """Prepare one analysis stage and return ``(attempt, should_run)``."""
+
+    context = _analysis_stage_context(request, stage)
+    state_name = f"analysis_{stage}_state.json"
+    state_path = artifact_directory / state_name
+    if force:
+        reset_output_generation(
+            _analysis_stage_paths(run_directory, artifact_directory, stage),
+            label=f"performance {stage} analysis",
+            include_archives=False,
+        )
+    elif state_path.is_file():
+        assert_run_not_active(artifact_directory, state_name=state_name)
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, TypeError, ValueError) as error:
+            raise RuntimeError(
+                f"{stage} analysis state is unreadable; pass --force to "
+                f"replace only that stage: {state_path}"
+            ) from error
+        if (
+            state.get("status") == "completed"
+            and state.get("context", {}).get("identity") == context["identity"]
+            and _analysis_stage_outputs_complete(run_directory, stage)
+        ):
+            print(f"Skip completed performance {stage} analysis: {state_path}")
+            return None, False
+        if (
+            state.get("status") == "completed"
+            and state.get("context", {}).get("identity") != context["identity"]
+        ):
+            raise FileExistsError(
+                f"completed {stage} analysis uses different inputs or options; "
+                f"pass --force to replace only that stage: {state_path}"
+            )
+        reset_output_generation(
+            _analysis_stage_paths(run_directory, artifact_directory, stage),
+            label=f"incomplete performance {stage} analysis",
+            include_archives=False,
+        )
+    elif _analysis_stage_outputs_complete(run_directory, stage):
+        # Adopt output produced by the former monolithic analysis lifecycle
+        # only when its recorded request proves that this exact stage ran.
+        legacy_path = artifact_directory / "analysis_state.json"
+        legacy = None
+        if legacy_path.is_file():
+            try:
+                legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
+            except (OSError, TypeError, ValueError):
+                legacy = None
+        legacy_operations = (
+            legacy.get("context", {}).get("operations", {})
+            if isinstance(legacy, dict)
+            else {}
+        )
+        legacy_key = "compare_baseline" if stage == "compare" else stage
+        if (
+            isinstance(legacy, dict)
+            and legacy.get("status") == "completed"
+            and legacy_operations.get(legacy_key)
+            and legacy.get("context", {}).get("capture_identity")
+            == request["capture_identity"]
+        ):
+            attempt = RunAttempt.start(
+                artifact_directory,
+                kind=f"performance-{stage}-analysis",
+                context=context,
+                state_name=state_name,
+            )
+            attempt.update("completed", adopted_legacy_output=True)
+            print(f"Adopted completed legacy {stage} output: {state_path}")
+            return None, False
+        raise FileExistsError(
+            f"{stage} output exists without matching stage provenance; pass "
+            f"--force to replace only that stage: {state_path}"
+        )
+    attempt = RunAttempt.start(
+        artifact_directory,
+        kind=f"performance-{stage}-analysis",
+        context=context,
+        state_name=state_name,
+    )
+    return attempt, True
+
+
 def _reset_analysis_outputs(
     *,
     run_directory: Path,
@@ -1714,6 +2007,7 @@ def analyze(
     cluster_mode: str = "all",
     cluster_agent_output: bool = False,
     cluster_bypass_input_safety_checks: bool = False,
+    extended_cluster_analysis: bool = True,
     force: bool = False,
 ) -> Path:
     """Attach official analyses and build a portable report for one capture.
@@ -1805,103 +2099,113 @@ def analyze(
         cluster_bypass_input_safety_checks=(
             cluster_bypass_input_safety_checks
         ),
+        extended_cluster_analysis=extended_cluster_analysis,
         compare_baseline=compare_baseline,
         analysis_toolchain=analysis_toolchain,
     )
-    analysis_state_path = artifact_directory / "analysis_state.json"
-    if force:
-        _reset_analysis_outputs(
-            run_directory=run_directory,
-            artifact_directory=artifact_directory,
-            report_path=report_path,
-            exploration_directory=exploration_directory,
-        )
-    elif analysis_state_path.is_file():
-        try:
-            prior_state = json.loads(
-                analysis_state_path.read_text(encoding="utf-8")
-            )
-        except (OSError, TypeError, ValueError) as error:
-            raise RuntimeError(
-                "performance analysis state is unreadable; pass --force to "
-                f"replace derived outputs: {analysis_state_path}"
-            ) from error
-        assert_run_not_active(
-            artifact_directory,
-            state_name="analysis_state.json",
-        )
-        if (
-            prior_state.get("status") == "completed"
-            and prior_state.get("context", {}).get("identity")
-            == request["identity"]
-            and (artifact_directory / "analysis.json").is_file()
-            and report_path.is_file()
-            and _analysis_outputs_complete(run_directory, request)
-        ):
-            print(f"Skip completed performance analysis: {report_path}")
-            return report_path
-        if (
-            prior_state.get("status") == "completed"
-            and prior_state.get("context", {}).get("identity")
-            != request["identity"]
-        ):
-            raise FileExistsError(
-                "completed performance analysis uses a different capture, "
-                "operation set, baseline, or analyzer; pass --force to "
-                f"replace derived outputs only: {artifact_directory}"
-            )
-        _reset_analysis_outputs(
-            run_directory=run_directory,
-            artifact_directory=artifact_directory,
-            report_path=report_path,
-            exploration_directory=exploration_directory,
-        )
-    elif _analysis_outputs_exist(
-        run_directory=run_directory,
-        artifact_directory=artifact_directory,
-        report_path=report_path,
-    ):
-        raise FileExistsError(
-            "legacy performance analysis output has no analyzer provenance; "
-            "pass --force to replace derived outputs without deleting the "
-            f"raw capture: {artifact_directory}"
-        )
-
-    attempt = RunAttempt.start(
+    assert_run_not_active(
         artifact_directory,
-        kind="performance-analysis",
-        context=request,
         state_name="analysis_state.json",
     )
     try:
         if parse_offline and config.profiler_enabled:
-            offline_parse(run_directory, max_process_number=parse_workers)
+            parse_attempt, should_parse = _prepare_analysis_stage(
+                run_directory=run_directory,
+                artifact_directory=artifact_directory,
+                request=request,
+                stage="offline_parse",
+                force=force,
+            )
+            if should_parse:
+                assert parse_attempt is not None
+                try:
+                    offline_parse(
+                        run_directory,
+                        max_process_number=parse_workers,
+                    )
+                except BaseException as error:
+                    parse_attempt.update("failed", error=repr(error))
+                    raise
+                parse_attempt.update("completed")
         if advisor:
-            run_advisor(
-                run_directory,
-                analysis_toolchain=analysis_toolchain,
+            advisor_attempt, should_advise = _prepare_analysis_stage(
+                run_directory=run_directory,
+                artifact_directory=artifact_directory,
+                request=request,
+                stage="advisor",
+                force=force,
             )
+            if should_advise:
+                assert advisor_attempt is not None
+                try:
+                    run_advisor(
+                        run_directory,
+                        analysis_toolchain=analysis_toolchain,
+                    )
+                except BaseException as error:
+                    advisor_attempt.update("failed", error=repr(error))
+                    raise
+                advisor_attempt.update("completed")
         if cluster:
-            run_cluster_analysis(
-                run_directory,
-                extended=(
-                    config.collector
-                    != PerformanceCollector.MSPROF.value
-                ),
-                mode=cluster_mode,
-                agent_output=cluster_agent_output,
-                bypass_input_safety_checks=(
-                    cluster_bypass_input_safety_checks
-                ),
-                analysis_toolchain=analysis_toolchain,
+            cluster_attempt, should_cluster = _prepare_analysis_stage(
+                run_directory=run_directory,
+                artifact_directory=artifact_directory,
+                request=request,
+                stage="cluster",
+                force=force,
             )
+            if should_cluster:
+                assert cluster_attempt is not None
+                try:
+                    run_cluster_analysis(
+                        run_directory,
+                        extended=(
+                            extended_cluster_analysis
+                            and config.collector
+                            != PerformanceCollector.MSPROF.value
+                        ),
+                        mode=cluster_mode,
+                        agent_output=cluster_agent_output,
+                        bypass_input_safety_checks=(
+                            cluster_bypass_input_safety_checks
+                        ),
+                        analysis_toolchain=analysis_toolchain,
+                    )
+                except BaseException as error:
+                    cluster_attempt.update("failed", error=repr(error))
+                    raise
+                cluster_attempt.update("completed")
         if compare_baseline is not None:
-            run_performance_compare(
-                run_directory,
-                compare_baseline,
-                standard_cli=True,
-                analysis_toolchain=analysis_toolchain,
+            compare_attempt, should_compare = _prepare_analysis_stage(
+                run_directory=run_directory,
+                artifact_directory=artifact_directory,
+                request=request,
+                stage="compare",
+                force=force,
             )
+            if should_compare:
+                assert compare_attempt is not None
+                try:
+                    run_performance_compare(
+                        run_directory,
+                        compare_baseline,
+                        standard_cli=True,
+                        analysis_toolchain=analysis_toolchain,
+                    )
+                except BaseException as error:
+                    compare_attempt.update("failed", error=repr(error))
+                    raise
+                compare_attempt.update("completed")
+
+        # The report is a replaceable index over all stage directories. It is
+        # intentionally rebuilt after every analysis invocation so adding
+        # Cluster later makes the existing Advisor visible without rerunning it.
+        attempt = RunAttempt.start(
+            artifact_directory,
+            kind="performance-analysis-report",
+            context=request,
+            state_name="analysis_state.json",
+        )
         profiler_directory = _find_profiler_directory(run_directory)
         render_mindstudio_flamegraphs(profiler_directory)
         render_flamegraphs(profiler_directory)
@@ -1939,7 +2243,8 @@ def analyze(
             report_path=report_path,
         )
     except BaseException as error:
-        attempt.update("failed", error=repr(error))
+        if "attempt" in locals():
+            attempt.update("failed", error=repr(error))
         raise
     attempt.update(
         "completed",
@@ -2012,6 +2317,8 @@ def _profiled_rank_count(preset: ProfilerPreset, world_size: int) -> int:
 def run_profiler_cli(
     config: PerformanceConfig,
     script_path: str,
+    *,
+    standard_analysis: bool = False,
 ) -> None:
     topologies = performance_topologies()
     presets = profiler_presets()
@@ -2523,8 +2830,9 @@ def run_profiler_cli(
                     device=device,
                     topology=topology_name,
                 )
+            phase = "probe" if args.probe else "capture" if args.capture else "analysis"
             print(
-                f"Starting performance capture: topology={topology_name} "
+                f"Starting performance {phase}: topology={topology_name} "
                 f"({topologies[topology_name].world_size} ranks), "
                 f"preset={preset_name}",
                 flush=True,
@@ -2581,6 +2889,7 @@ def run_profiler_cli(
                     cluster_bypass_input_safety_checks=(
                         args.cluster_bypass_input_safety_checks
                     ),
+                    extended_cluster_analysis=not standard_analysis,
                     force=args.force and args.analyze,
                 )
                 if args.analyze:

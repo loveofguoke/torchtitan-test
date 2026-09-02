@@ -22,6 +22,7 @@ from tests.glm5_2_performance.config import PerformanceConfig, profiler_presets
 from tests.glm5_2_performance.visualization import mindstudio_insight_handoff
 from tests.glm5_2_performance.workflow import (
     _analysis_request,
+    _prepare_analysis_stage,
     _analysis_toolchain_metadata,
     _collector_toolchain_metadata,
     _config_is_compatible,
@@ -39,6 +40,66 @@ from tests.glm5_2_performance.workflow import (
 
 
 class MindStudioPerformanceTest(unittest.TestCase):
+    def test_analysis_stages_are_additive_and_keep_independent_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = root / "run"
+            artifact = root / "artifact"
+            run.mkdir()
+            artifact.mkdir()
+            request = {
+                "capture_identity": {"attempt_id": "capture-1"},
+                "operations": {
+                    "offline_parse": False,
+                    "parse_workers": None,
+                    "advisor": True,
+                    "cluster": True,
+                    "cluster_mode": "all",
+                    "cluster_agent_output": False,
+                    "cluster_bypass_input_safety_checks": False,
+                    "compare_baseline": None,
+                },
+                "analysis_toolchain": {"version": "26.1"},
+            }
+
+            advisor_attempt, should_advise = _prepare_analysis_stage(
+                run_directory=run,
+                artifact_directory=artifact,
+                request=request,
+                stage="advisor",
+                force=False,
+            )
+            self.assertTrue(should_advise)
+            assert advisor_attempt is not None
+            (run / "advisor").mkdir()
+            (run / "advisor.json").write_text("{}", encoding="utf-8")
+            advisor_attempt.update("completed")
+
+            cluster_attempt, should_cluster = _prepare_analysis_stage(
+                run_directory=run,
+                artifact_directory=artifact,
+                request=request,
+                stage="cluster",
+                force=False,
+            )
+            self.assertTrue(should_cluster)
+            self.assertTrue((run / "advisor").is_dir())
+            assert cluster_attempt is not None
+            (run / "cluster").mkdir()
+            (run / "cluster.json").write_text("{}", encoding="utf-8")
+            cluster_attempt.update("completed")
+
+            repeated_attempt, should_repeat = _prepare_analysis_stage(
+                run_directory=run,
+                artifact_directory=artifact,
+                request=request,
+                stage="advisor",
+                force=False,
+            )
+            self.assertFalse(should_repeat)
+            self.assertIsNone(repeated_attempt)
+            self.assertTrue((run / "cluster").is_dir())
+
     def test_official_entry_defaults_to_ascend_pytorch_profiler(self) -> None:
         entry = runpy.run_path(
             str(
@@ -361,7 +422,8 @@ class MindStudioPerformanceTest(unittest.TestCase):
                 return_value={"return_code": 0},
             ) as execute:
                 result = run_cluster_analysis(run, extended=False)
-        self.assertEqual(set(result), {"cluster"})
+        self.assertEqual(set(result), {"cluster", "cluster_text"})
+        self.assertEqual(result["cluster_text"]["status"], "missing_text_input")
         self.assertEqual(execute.call_count, 1)
         command = execute.call_args.kwargs["command"]
         self.assertEqual(command[1:4], ["cluster", "-m", "all"])
@@ -392,6 +454,73 @@ class MindStudioPerformanceTest(unittest.TestCase):
         )
         self.assertIn("--agent", command)
         self.assertIn("--force", command)
+
+    def test_cluster_merges_official_db_and_text_deliveries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory) / "run"
+            profile = run / "trainer_output" / "profiling" / "traces"
+            for rank in (0, 1):
+                rank_root = profile / f"rank_{rank}_capture_ascend_pt"
+                output = rank_root / "ASCEND_PROFILER_OUTPUT"
+                output.mkdir(parents=True)
+                (rank_root / f"profiler_info_{rank}.json").write_text(
+                    "{}", encoding="utf-8"
+                )
+                (output / "step_trace_time.csv").write_text(
+                    "Step,Computing\n1,1\n", encoding="utf-8"
+                )
+                (output / "communication.json").write_text(
+                    "{}", encoding="utf-8"
+                )
+                (output / "communication_matrix.json").write_text(
+                    "{}", encoding="utf-8"
+                )
+
+            def execute(
+                run_directory: Path,
+                *,
+                name: str,
+                command: list[str],
+                analysis_toolchain: dict[str, object] | None = None,
+                status_path: Path | None = None,
+            ) -> dict[str, object]:
+                output = Path(command[command.index("-o") + 1])
+                delivery = output / "cluster_analysis_output"
+                delivery.mkdir(parents=True)
+                if name == "cluster":
+                    (delivery / "cluster_analysis.db").write_bytes(b"db")
+                else:
+                    for file_name in (
+                        "cluster_step_trace_time.csv",
+                        "cluster_communication.json",
+                        "cluster_communication_matrix.json",
+                        "communication_group.json",
+                    ):
+                        (delivery / file_name).write_text("{}", encoding="utf-8")
+                return {"return_code": 0}
+
+            with patch(
+                "tests.glm5_2_performance.workflow._msprof_analyze_executable",
+                return_value="msprof-analyze",
+            ), patch(
+                "tests.glm5_2_performance.workflow._run_msprof_analyze",
+                side_effect=execute,
+            ):
+                run_cluster_analysis(run, extended=False)
+
+            delivery = run / "cluster" / "cluster_analysis_output"
+            self.assertEqual(
+                {path.name for path in delivery.iterdir()},
+                {
+                    "cluster_analysis.db",
+                    "cluster_step_trace_time.csv",
+                    "cluster_communication.json",
+                    "cluster_communication_matrix.json",
+                    "communication_group.json",
+                },
+            )
+            self.assertFalse((run / "cluster_time_summary").exists())
+            self.assertFalse((run / "free_analysis").exists())
 
     def test_standard_compare_uses_documented_output_path_option(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -580,7 +709,7 @@ class MindStudioPerformanceTest(unittest.TestCase):
             with patch(
                 "tests.glm5_2_performance.workflow._analysis_toolchain_metadata",
                 return_value=toolchain_v2,
-            ), self.assertRaisesRegex(FileExistsError, "different capture"):
+            ), self.assertRaisesRegex(FileExistsError, "advisor analysis"):
                 analyze(
                     root,
                     config,

@@ -146,16 +146,24 @@ msprof-analyze cluster \
 mindstudio_runs/<experiment>/<topology>/<run>/
 ├── cluster.json                 # 命令、return code、stdout/stderr、工具版本
 └── cluster/
-    └── cluster_analysis_output/
-        ├── cluster_analysis.db
-        ├── cluster_step_trace_time.csv
-        ├── cluster_communication.json
-        ├── cluster_communication_matrix.json
-        └── communication_group.json
+    ├── cluster_analysis_output/ # 两种官方输入格式的输出合并到这里
+    │   ├── cluster_analysis.db
+    │   ├── cluster_step_trace_time.csv
+    │   ├── cluster_communication.json
+    │   ├── cluster_communication_matrix.json
+    │   └── communication_group.json
+    └── cluster_text.json        # 第二次官方 text 分析的命令和状态
 ```
 
-具体文件是否出现取决于输入格式、采集级别、mode 和原始数据完整度。某文件缺失不能
-自动解释为“没有通信”，应先检查采集级别和输入目录。
+26.1 按输入格式生成不同交付件：db 输入生成 `cluster_analysis.db`，text 输入生成
+CSV/JSON。Ascend PyTorch Profiler 通常在同一 rank 根同时导出二者，而分析器单次
+调用只选择一种格式。因此标准工作流先用完整根生成 DB，再建立临时的 text-only
+输入运行第二次官方 `cluster`，最后把两次官方输出合并到同一个
+`cluster_analysis_output/`。临时输入和输出随即删除，不产生第三套持久数据。
+
+MindStudio 标准入口不会默认再生成顶层 `cluster_time_summary/`、`free_analysis/` 和
+逐 rank `communication_bottleneck_*` 目录。那些属于旧探索性 performance 的扩展
+recipe，不是标准 Cluster 交付结构。
 
 ## 6. cluster_step_trace_time.csv
 

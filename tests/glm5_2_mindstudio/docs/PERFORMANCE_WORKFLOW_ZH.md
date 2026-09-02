@@ -127,15 +127,19 @@ done
 以三次 profiler-off 的 median/p90 step time、tokens/s、peak HBM 和 rank
 min/median/max 作为性能数值。下面 profiler-active 的结果只做归因。
 
-### 3.2 profiler-active 证据采集
+### 3.2 profiler-active 标准采集与分析
+
+日常标准入口是 `--probe`：同一条命令先完成 bounded capture，所有 rank 退出后再
+离线解析，随后把 Advisor、Cluster 和 Insight handoff 写入各自目录。`--capture`
+与 `--analyze` 只作为跨机器或补跑分析的高级接口。
 
 单卡默认采集：
 
 ```bash
 export ASCEND_RT_VISIBLE_DEVICES=4
 python tests/glm5_2_mindstudio/performance_benchmark.py \
-  --capture --device npu --collector torch_npu_profiler \
-  --topology single --preset overview
+  --probe --device npu --collector torch_npu_profiler \
+  --topology single --preset overview --analysis-tools all
 ```
 
 一个分布式拓扑：
@@ -143,16 +147,16 @@ python tests/glm5_2_mindstudio/performance_benchmark.py \
 ```bash
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 python tests/glm5_2_mindstudio/performance_benchmark.py \
-  --capture --device npu --collector torch_npu_profiler \
-  --topology fsdp8 --preset overview
+  --probe --device npu --collector torch_npu_profiler \
+  --topology fsdp8 --preset distributed --analysis-tools all
 ```
 
 所有不超过八卡的拓扑：
 
 ```bash
 python tests/glm5_2_mindstudio/performance_benchmark.py \
-  --capture --device npu --collector torch_npu_profiler \
-  --topology all --preset overview
+  --probe --device npu --collector torch_npu_profiler \
+  --topology all --preset overview --analysis-tools all
 ```
 
 `all` 只是提供统一编排，并不表示应在共享服务器上一开始就全量采集。即使默认
@@ -194,9 +198,12 @@ python tests/glm5_2_mindstudio/performance_benchmark.py \
 当前 MindStudio performance 只实现 NPU。`--device cuda` 保留接口并明确报未实现；
 不能让 GPU 静默落入另一套未确认的采集语义。
 
-## 4. 分析命令
+## 4. 高级分阶段分析命令
 
-分析已存在 capture，不重跑训练。先按官方输入矩阵选择 recipe：
+分析已存在 capture，不重跑训练。该入口用于采集与分析环境分离、补跑工具或改变
+某一个工具的参数。`offline_parse`、`advisor`、`cluster`、`compare` 分别写入独立
+状态文件；新增一个阶段不会覆盖其他阶段，`--force` 只替换本次请求的阶段。先按
+官方输入矩阵选择 recipe：
 
 ```bash
 # msProf：多 rank cluster；单卡直接生成 Insight handoff
@@ -281,6 +288,11 @@ mindstudio_runs/<card-scope>/<topology>/<run>/
 
 mindstudio_artifacts/<card-scope>/<topology>/<run>/
   manifest.json / metrics.jsonl / analysis.json
+  analysis_offline_parse_state.json
+  analysis_advisor_state.json
+  analysis_cluster_state.json
+  analysis_compare_state.json
+  analysis_state.json                 # 汇总报告生成状态
   mindstudio_insight_handoff.json
 
 mindstudio_reports/<card-scope>/<topology>/<run>.html

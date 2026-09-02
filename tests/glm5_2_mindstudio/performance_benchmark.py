@@ -30,4 +30,4 @@ CONFIG = PerformanceConfig(
 
 
 if __name__ == "__main__":
-    run_profiler_cli(CONFIG, __file__)
+    run_profiler_cli(CONFIG, __file__, standard_analysis=True)
