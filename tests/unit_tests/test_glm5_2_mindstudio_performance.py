@@ -12,7 +12,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from tests.glm5_2_common.topology import ParallelTopology
 from tests.glm5_2_mindstudio.toolchain import canonical_doctor_scope
+from tests.glm5_2_performance.advanced_analysis import (
+    parse_recipe_policy,
+    resolve_recipe_plan,
+)
 from tests.glm5_2_performance.collectors import (
     PerformanceCollector,
     collector_inventory,
@@ -40,6 +45,64 @@ from tests.glm5_2_performance.workflow import (
 
 
 class MindStudioPerformanceTest(unittest.TestCase):
+    def test_necessary_advanced_recipes_cover_slow_rank_and_host_dispatch(
+        self,
+    ) -> None:
+        topology = ParallelTopology(
+            "ep2",
+            2,
+            data_parallel_shard_degree=2,
+            expert_parallel_degree=2,
+        )
+        plan = resolve_recipe_plan(
+            "necessary",
+            topology=topology,
+            mstx_enabled=False,
+            with_flops=False,
+            cluster_summary_baseline=True,
+        )
+        self.assertTrue(
+            {
+                "cluster_time_summary",
+                "cluster_time_compare_summary",
+                "slow_rank",
+                "slow_link",
+                "communication_bottleneck",
+                "free_analysis",
+                "cann_api_sum",
+                "ep_load_balance",
+            }.issubset(plan.recipes)
+        )
+
+    def test_all_advanced_recipes_skip_missing_capture_contracts(self) -> None:
+        plan = resolve_recipe_plan(
+            "all",
+            topology=ParallelTopology("single", 1),
+            mstx_enabled=False,
+            with_flops=False,
+            cluster_summary_baseline=False,
+        )
+        self.assertNotIn("module_statistic", plan.recipes)
+        self.assertNotIn("operator_mfu", plan.recipes)
+        self.assertNotIn("ep_load_balance", plan.recipes)
+        self.assertEqual(
+            plan.skipped["cluster_time_compare_summary"],
+            "requires --cluster-summary-baseline",
+        )
+
+    def test_explicit_mutating_recipe_is_accepted_but_never_automatic(
+        self,
+    ) -> None:
+        self.assertEqual(parse_recipe_policy("pp_chart"), ("pp_chart",))
+        plan = resolve_recipe_plan(
+            "all",
+            topology=ParallelTopology("pp2", 2, pipeline_parallel_degree=2),
+            mstx_enabled=True,
+            with_flops=True,
+            cluster_summary_baseline=False,
+        )
+        self.assertNotIn("pp_chart", plan.recipes)
+
     def test_analysis_stages_are_additive_and_keep_independent_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -516,6 +579,50 @@ class MindStudioPerformanceTest(unittest.TestCase):
         )
         self.assertIn("--agent", command)
         self.assertIn("--force", command)
+
+    def test_standard_cluster_runs_topology_aware_advanced_recipes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory)
+            profile = run / "trainer_output" / "profiling" / "traces"
+            for rank in (0, 1):
+                rank_root = profile / f"rank_{rank}_capture_ascend_pt"
+                rank_root.mkdir(parents=True)
+                (rank_root / f"profiler_info_{rank}.json").write_text(
+                    "{}", encoding="utf-8"
+                )
+            with patch(
+                "tests.glm5_2_performance.workflow._msprof_analyze_executable",
+                return_value="msprof-analyze",
+            ), patch(
+                "tests.glm5_2_performance.workflow._run_msprof_analyze",
+                return_value={"return_code": 0},
+            ) as execute:
+                result = run_cluster_analysis(
+                    run,
+                    extended=False,
+                    advanced_recipe_policy="necessary",
+                    topology=ParallelTopology(
+                        "ddp2", 2, data_parallel_replicate_degree=2
+                    ),
+                )
+        commands = [call.kwargs["command"] for call in execute.call_args_list]
+        self.assertIn("advanced", result)
+        self.assertTrue(
+            any("cluster_time_summary" in command for command in commands)
+        )
+        bottleneck_commands = [
+            command
+            for command in commands
+            if "communication_bottleneck" in command
+        ]
+        self.assertEqual(len(bottleneck_commands), 2)
+        self.assertEqual(
+            {
+                command[command.index("--rank_id") + 1]
+                for command in bottleneck_commands
+            },
+            {"0", "1"},
+        )
 
     def test_cluster_merges_official_db_and_text_deliveries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

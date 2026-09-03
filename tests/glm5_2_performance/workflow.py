@@ -37,8 +37,17 @@ from tests.glm5_2_common.cli import (
 )
 from tests.glm5_2_common.device import resolve_device_type
 from tests.glm5_2_common.naming import config_name, slug
-from tests.glm5_2_common.topology import select_topologies, training_command_args
+from tests.glm5_2_common.topology import (
+    ParallelTopology,
+    select_topologies,
+    training_command_args,
+)
 
+from .advanced_analysis import (
+    MUTATING_RECIPES,
+    recipe_arguments,
+    resolve_recipe_plan,
+)
 from .analysis import build_analysis, render_html_report
 from .collectors import (
     PerformanceCollector,
@@ -1231,12 +1240,17 @@ def run_cluster_analysis(
     run_directory: Path,
     *,
     extended: bool = True,
+    advanced_recipe_policy: str = "none",
+    topology: ParallelTopology | None = None,
+    mstx_enabled: bool = False,
+    with_flops: bool = False,
+    cluster_summary_baseline: Path | None = None,
     mode: str = "all",
     agent_output: bool = False,
     bypass_input_safety_checks: bool = False,
     analysis_toolchain: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Run the official cluster entry and optional legacy drill-down recipes."""
+    """Run the official cluster entry and selected advanced recipes."""
 
     if mode not in {"all", "communication_time", "communication_matrix"}:
         raise ValueError(
@@ -1299,10 +1313,21 @@ def run_cluster_analysis(
             ),
         }
     if not extended:
-        # The MindStudio standard path intentionally stops at the documented
-        # 26.x ``cluster -m all`` contract. The extra recipes below predate
-        # that contract and remain available only to the legacy performance
-        # workflow whose server images have already validated them.
+        if advanced_recipe_policy == "none":
+            return results
+        if topology is None:
+            raise ValueError("advanced cluster analysis requires a topology")
+        advanced = _run_advanced_cluster_analysis(
+            run_directory,
+            profiler_directory=profiler_directory,
+            topology=topology,
+            policy=advanced_recipe_policy,
+            mstx_enabled=mstx_enabled,
+            with_flops=with_flops,
+            cluster_summary_baseline=cluster_summary_baseline,
+            analysis_toolchain=analysis_toolchain,
+        )
+        results["advanced"] = advanced
         return results
     executable = _msprof_analyze_executable()
     recipes = {
@@ -1390,6 +1415,186 @@ def run_cluster_analysis(
             }
             for name, future in futures.items():
                 results[name] = future.result()
+    return results
+
+
+def _profiler_rank_ids(profiler_directory: Path) -> list[int]:
+    """Discover rank IDs from supported Ascend PyTorch Profiler layouts."""
+
+    rank_ids: set[int] = set()
+    for path in profiler_directory.rglob("profiler_info_*.json"):
+        match = re.search(r"profiler_info_(\d+)\.json$", path.name)
+        if match:
+            rank_ids.add(int(match.group(1)))
+    if not rank_ids:
+        for path in profiler_directory.iterdir():
+            match = re.search(r"(?:rank[_-]?)(\d+)", path.name)
+            if match:
+                rank_ids.add(int(match.group(1)))
+    return sorted(rank_ids)
+
+
+def _advanced_recipe_command(
+    executable: str,
+    *,
+    recipe: str,
+    profiler_directory: Path,
+    output_directory: Path,
+    rank_id: int | None = None,
+) -> list[str]:
+    command = [
+        executable,
+        "-m",
+        recipe,
+        "-d",
+        str(profiler_directory),
+        "-o",
+        str(output_directory),
+    ]
+    command.extend(recipe_arguments(recipe, rank_id=rank_id))
+    return command
+
+
+def _run_advanced_cluster_analysis(
+    run_directory: Path,
+    *,
+    profiler_directory: Path,
+    topology: ParallelTopology,
+    policy: str,
+    mstx_enabled: bool,
+    with_flops: bool,
+    cluster_summary_baseline: Path | None,
+    analysis_toolchain: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run official advanced recipes without altering the raw capture."""
+
+    plan = resolve_recipe_plan(
+        policy,
+        topology=topology,
+        mstx_enabled=mstx_enabled,
+        with_flops=with_flops,
+        cluster_summary_baseline=cluster_summary_baseline is not None,
+    )
+    executable = _msprof_analyze_executable()
+    root = run_directory / "cluster" / "advanced"
+    root.mkdir(parents=True, exist_ok=True)
+    results: dict[str, Any] = {"policy": policy, "skipped": plan.skipped}
+    rank_ids = _profiler_rank_ids(profiler_directory)
+
+    for recipe in plan.recipes:
+        if recipe == "cluster_time_compare_summary":
+            assert cluster_summary_baseline is not None
+            compare_root = root / "cluster_time_compare_summary"
+            candidate_summary = compare_root / "candidate"
+            baseline_summary = root / "cluster_time_compare_summary" / "baseline"
+            # The compare recipe requires ClusterTimeSummary DB tables. The
+            # ordinary summary recipe intentionally exports a readable CSV,
+            # so generate dedicated DB summaries for both inputs here.
+            results["cluster_time_summary_candidate_db"] = _run_msprof_analyze(
+                run_directory,
+                name="advanced_cluster_time_summary_candidate_db",
+                command=[
+                    executable,
+                    "-m",
+                    "cluster_time_summary",
+                    "-d",
+                    str(profiler_directory),
+                    "-o",
+                    str(candidate_summary),
+                ],
+                status_path=compare_root / "candidate.json",
+                analysis_toolchain=analysis_toolchain,
+            )
+            results["cluster_time_summary_baseline"] = _run_msprof_analyze(
+                run_directory,
+                name="advanced_cluster_time_summary_baseline",
+                command=[
+                    executable,
+                    "-m",
+                    "cluster_time_summary",
+                    "-d",
+                    str(cluster_summary_baseline),
+                    "-o",
+                    str(baseline_summary),
+                ],
+                status_path=compare_root / "baseline.json",
+                analysis_toolchain=analysis_toolchain,
+            )
+            command = [
+                executable,
+                "-m",
+                recipe,
+                "-d",
+                str(candidate_summary),
+                "--bp",
+                str(baseline_summary),
+                "-o",
+                str(compare_root / "compare"),
+            ]
+            results[recipe] = _run_msprof_analyze(
+                run_directory,
+                name=f"advanced_{recipe}",
+                command=command,
+                status_path=compare_root / "compare.json",
+                analysis_toolchain=analysis_toolchain,
+            )
+            continue
+        if recipe == "communication_bottleneck":
+            if not rank_ids:
+                raise RuntimeError(
+                    "communication_bottleneck could not discover profiler rank IDs"
+                )
+            rank_results: dict[str, Any] = {}
+            for rank_id in rank_ids:
+                name = f"communication_bottleneck_rank_{rank_id}"
+                rank_results[str(rank_id)] = _run_msprof_analyze(
+                    run_directory,
+                    name=f"advanced_{name}",
+                    command=_advanced_recipe_command(
+                        executable,
+                        recipe=recipe,
+                        profiler_directory=profiler_directory,
+                        output_directory=root / recipe / f"rank_{rank_id}",
+                        rank_id=rank_id,
+                    ),
+                    status_path=root / recipe / f"rank_{rank_id}.json",
+                    analysis_toolchain=analysis_toolchain,
+                )
+            results[recipe] = rank_results
+            continue
+        if recipe in MUTATING_RECIPES:
+            print(
+                f"Running explicitly requested source-mutating recipe: {recipe}",
+                flush=True,
+            )
+        output = root / recipe
+        results[recipe] = _run_msprof_analyze(
+            run_directory,
+            name=f"advanced_{recipe}",
+            command=_advanced_recipe_command(
+                executable,
+                recipe=recipe,
+                profiler_directory=profiler_directory,
+                output_directory=output,
+            ),
+            status_path=root / f"{recipe}.json",
+            analysis_toolchain=analysis_toolchain,
+        )
+
+    inventory = {
+        "policy": policy,
+        "topology": topology.name,
+        "recipes": list(plan.recipes),
+        "skipped": plan.skipped,
+        "rank_ids": rank_ids,
+        "outputs": sorted(
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*")
+            if path.is_file()
+        ),
+    }
+    _write_json(root / "index.json", inventory)
+    results["index"] = inventory
     return results
 
 
@@ -1639,6 +1844,8 @@ def _analysis_request(
     cluster_agent_output: bool = False,
     cluster_bypass_input_safety_checks: bool = False,
     extended_cluster_analysis: bool = True,
+    advanced_recipe_policy: str = "none",
+    cluster_summary_baseline: Path | None = None,
     compare_baseline: Path | None = None,
     analysis_toolchain: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -1665,6 +1872,17 @@ def _analysis_request(
             ),
             "extended_cluster_analysis": (
                 extended_cluster_analysis if cluster else False
+            ),
+            "advanced_recipe_policy": (
+                advanced_recipe_policy if cluster else "none"
+            ),
+            "cluster_summary_baseline": (
+                {
+                    "path": str(cluster_summary_baseline.resolve()),
+                    **_path_tree_identity(cluster_summary_baseline.resolve()),
+                }
+                if cluster and cluster_summary_baseline is not None
+                else None
             ),
             "compare_baseline": baseline,
         },
@@ -1697,6 +1915,7 @@ def _analysis_output_paths(
         run_directory / "advisor.json",
         run_directory / "cluster",
         run_directory / "cluster.json",
+        run_directory / "cluster" / "advanced",
         run_directory / "cluster_time_summary",
         run_directory / "cluster_time_summary.json",
         run_directory / "free_analysis",
@@ -1738,6 +1957,7 @@ def _analysis_outputs_exist(
         run_directory / "advisor.json",
         run_directory / "cluster",
         run_directory / "cluster.json",
+        run_directory / "cluster" / "advanced",
         run_directory / "cluster_time_summary",
         run_directory / "cluster_time_summary.json",
         run_directory / "free_analysis",
@@ -1802,6 +2022,12 @@ def _analysis_stage_context(
             ),
             "extended_cluster_analysis": operations.get(
                 "extended_cluster_analysis"
+            ),
+            "advanced_recipe_policy": operations.get(
+                "advanced_recipe_policy", "none"
+            ),
+            "cluster_summary_baseline": operations.get(
+                "cluster_summary_baseline"
             ),
         }
     elif stage == "compare":
@@ -2057,6 +2283,8 @@ def analyze(
     cluster_agent_output: bool = False,
     cluster_bypass_input_safety_checks: bool = False,
     extended_cluster_analysis: bool = True,
+    advanced_recipe_policy: str = "none",
+    cluster_summary_baseline: Path | None = None,
     force: bool = False,
 ) -> Path:
     """Attach official analyses and build a portable report for one capture.
@@ -2149,6 +2377,8 @@ def analyze(
             cluster_bypass_input_safety_checks
         ),
         extended_cluster_analysis=extended_cluster_analysis,
+        advanced_recipe_policy=advanced_recipe_policy,
+        cluster_summary_baseline=cluster_summary_baseline,
         compare_baseline=compare_baseline,
         analysis_toolchain=analysis_toolchain,
     )
@@ -2219,6 +2449,11 @@ def analyze(
                             cluster_bypass_input_safety_checks
                         ),
                         analysis_toolchain=analysis_toolchain,
+                        advanced_recipe_policy=advanced_recipe_policy,
+                        topology=performance_topologies()[config.topology],
+                        mstx_enabled=preset.mstx,
+                        with_flops=preset.with_flops,
+                        cluster_summary_baseline=cluster_summary_baseline,
                     )
                 except BaseException as error:
                     cluster_attempt.update("failed", error=repr(error))
@@ -2478,6 +2713,23 @@ def run_profiler_cli(
             "pass msprof-analyze cluster --force to bypass its ownership, "
             "permission, and large-file checks; unrelated to experiment "
             "lifecycle --force"
+        ),
+    )
+    parser.add_argument(
+        "--cluster-recipes",
+        default="necessary" if standard_analysis else "none",
+        help=(
+            "advanced msprof-analyze policy: none, necessary, all, or a "
+            "comma-separated official recipe list; MindStudio defaults to "
+            "necessary"
+        ),
+    )
+    parser.add_argument(
+        "--cluster-summary-baseline",
+        type=Path,
+        help=(
+            "baseline multi-rank profiler root for "
+            "cluster_time_compare_summary"
         ),
     )
     parser.add_argument(
@@ -2939,6 +3191,14 @@ def run_profiler_cli(
                         args.cluster_bypass_input_safety_checks
                     ),
                     extended_cluster_analysis=not standard_analysis,
+                    advanced_recipe_policy=(
+                        args.cluster_recipes
+                        if standard_analysis
+                        and effective.collector
+                        == PerformanceCollector.TORCH_NPU_PROFILER.value
+                        else "none"
+                    ),
+                    cluster_summary_baseline=args.cluster_summary_baseline,
                     force=args.force and args.analyze,
                 )
                 if args.analyze:

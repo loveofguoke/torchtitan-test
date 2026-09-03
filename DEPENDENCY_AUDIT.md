@@ -113,6 +113,11 @@ change:
   CLI help, output inventory, Release discovery, and the official field guide.
   `cluster --force` bypasses analyzer input checks; it is not the experiment
   lifecycle `--force` and must never delete or replace a capture generation.
+- Advanced msprof-analyze recipe selection is capture-, topology-, and
+  baseline-sensitive. Audit the cluster stage identity, per-rank discovery,
+  report inventory, Release discovery, and both cluster field guides. Recipes
+  that mutate rank databases (mstx2commop, p2p_pairing, and pp_chart) must
+  never be added to an automatic policy.
 - MindStudio standard cluster analysis keeps the official DB and text
   deliveries together under `cluster/cluster_analysis_output/`. Ascend
   PyTorch Profiler captures commonly contain both input formats, so the

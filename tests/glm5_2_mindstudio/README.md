@@ -53,6 +53,7 @@ Profiler 只登记正确用途，未完成目标服务器验证前不会伪造�
 5. [官方文档与能力矩阵](docs/OFFICIAL_DOCUMENTATION_MATRIX_ZH.md)：官方章节、GLM 入口、产物和支持状态逐项对应；
 6. [官方工具链全景](docs/OFFICIAL_TOOLCHAIN_ZH.md)：训练、图编译、性能、推理、算子工具的职责；
 7. [官方性能工作流](docs/PERFORMANCE_WORKFLOW_ZH.md)：msProf、Ascend PyTorch Profiler、msprof-analyze 与 Insight；
+8. [msprof-analyze 进阶分析](docs/MSPROF_ANALYZE_ADVANCED_ZH.md)：细粒度拆解/比对、通信瓶颈、慢 Rank/链路与 Host 下发；
 8. [集群分析操作与判读](docs/MSPROF_ANALYZE_CLUSTER_ZH.md)：cluster 参数、交付件、字段、Insight 页面和定位动作；
 9. [输出与报告](docs/OUTPUTS_AND_REPORTS_ZH.md)：raw、artifact、report、同步与保留策略；
 10. [服务器验收矩阵](docs/SERVER_VALIDATION_MATRIX_ZH.md)：从单卡最小闭环到 all topology 的真实验收顺序；
@@ -806,6 +807,8 @@ Profiler 产物可进入 offline、advisor、cluster、compare 和 Insight 中�
 | `--cluster-mode all|communication_time|communication_matrix` | 官方 cluster 解析范围 | 默认 `all`；只定位耗时或矩阵时可缩小 |
 | `--cluster-agent-output` | 请求官方 cluster JSON stdout | stdout 连同命令、stderr、return code 保存到 `cluster.json` |
 | `--cluster-bypass-input-safety-checks` | 传递官方 cluster `--force` | 绕过属主、权限和超大文件检查；与实验生命周期 `--force` 无关 |
+| `--cluster-recipes POLICY` | 官方进阶 recipe | `necessary`（MindStudio 默认）、`all`、`none` 或逗号分隔 recipe |
+| `--cluster-summary-baseline PATH` | 集群细粒度比对 baseline | 自动先拆解两份数据，再执行 `cluster_time_compare_summary` |
 | `--compare-baseline PATH` | msprof-analyze compare 基线 | candidate 必须是 torch_npu `*_ascend_pt`；支持满足官方格式的 NPU/NPU 或 GPU/NPU 比较 |
 | `--repeat N` | 选择 accuracy endpoint 已声明的重复编号 | migration/compile/config-check/monitor，默认脚本声明 1 次 |
 | `--replicate N` | 性能独立运行编号 | performance profiler-off/active A/B；不同编号进入不同目录 |

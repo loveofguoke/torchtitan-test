@@ -127,6 +127,7 @@ def profiler_presets() -> dict[str, ProfilerPreset]:
             "distributed",
             "level1",
             profile_ranks="all",
+            record_shapes=True,
             profile_memory=True,
             parse_mode="offline",
             aic_metrics="pipe_utilization",

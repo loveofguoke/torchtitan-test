@@ -27,6 +27,7 @@
 - [msprof-analyze compare](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msprof_analyze/docs/zh/user_guide/compare_tool_instruct.md)
 - [msprof-analyze advisor](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msprof_analyze/docs/zh/user_guide/advisor_instruct.md)
 - [msprof-analyze cluster](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msprof_analyze/docs/zh/user_guide/cluster_analyse_instruct.md)
+- [msprof-analyze 进阶分析](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msprof_analyze/docs/zh/advanced_features/README.md)
 - [Insight 系统调优快速入门](https://www.hiascend.com/document/detail/zh/mindstudio/latest/GUI_baseddevelopmenttool/MindStudioInsight/docs/zh/quick_start/system_tuning_quick_start.md)
 - [msMemScope 快速入门](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msMemScope/docs/zh/quick_start/quick_start.md)
 - [msOpProf 使用场景](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msOT/Operatordevelopmenttools/docs/zh/user_guide/msopprof_usage.md)
@@ -246,6 +247,12 @@ msprof-analyze compare -d PROFILE -bp BASELINE --output_path OUTPUT/compare
 - compare 把训练耗时拆为算子/通信/调度，并比较算子耗时、通信和内存；XLSX 的
   差异是候选根因，不是自动 PASS/FAIL。
 
+MindStudio 标准入口默认追加 `--cluster-recipes necessary`，对同一 DB 执行细粒度
+拆解、通信/慢 Rank/慢链路、Host 下发和空闲原因分析；EP 拓扑还会分析专家负载。
+指定 `--cluster-summary-baseline` 时会先拆解两份 profile，再做集群指标 A/B。
+完整命令、输入约束、字段和全部官方特性边界见
+[进阶分析操作指南](MSPROF_ANALYZE_ADVANCED_ZH.md)。
+
 官方 26.1 的能力边界必须保留：advisor 只读取 Ascend PyTorch Profiler
 `*_ascend_pt` 或 MindSpore `*_ascend_ms`；compare 的 NPU 端同样要求 Ascend
 PyTorch Profiler；cluster 才支持 msProf db、Ascend PyTorch Profiler text/db、
@@ -298,6 +305,7 @@ mindstudio_runs/<card-scope>/<topology>/<run>/
     rank_0_*_ascend_pt/ ...              # 每个 rank 的原始/解析数据
     cluster_analysis_output/             # DB + CSV/JSON 集群聚合交付件
   advisor*/ cluster*/ compare*/
+  cluster/advanced/                    # 官方进阶 recipe 与逐 Rank 结果
 
 mindstudio_artifacts/<card-scope>/<topology>/<run>/
   manifest.json / metrics.jsonl / analysis.json

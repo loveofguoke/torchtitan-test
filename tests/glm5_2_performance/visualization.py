@@ -320,6 +320,14 @@ def inspect_analysis_outputs(run_directory: Path) -> dict[str, Any]:
     status_paths = sorted(
         {path for pattern in patterns for path in run_directory.glob(pattern)}
     )
+    advanced_root = run_directory / "cluster" / "advanced"
+    if advanced_root.is_dir():
+        status_paths.extend(
+            path
+            for path in advanced_root.rglob("*.json")
+            if path.name != "index.json"
+        )
+        status_paths = sorted(set(status_paths))
     entries = []
     for status_path in status_paths:
         try:
