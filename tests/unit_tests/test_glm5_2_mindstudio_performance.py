@@ -62,6 +62,8 @@ class MindStudioPerformanceTest(unittest.TestCase):
         )
 
         self.assertNotEqual(with_shapes, without_shapes)
+        self.assertIn("-distributed-shapes-", with_shapes)
+        self.assertNotIn("-shapes-", without_shapes)
 
     def test_necessary_advanced_recipes_cover_slow_rank_and_host_dispatch(
         self,

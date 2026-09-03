@@ -456,6 +456,16 @@ def _run_name(
         base += f"-reduce-{reduce_precision}"
     if not config.profiler_enabled:
         base += "-profiler-off"
+    elif (
+        config.collector
+        == PerformanceCollector.TORCH_NPU_PROFILER.value
+        and effective_preset.record_shapes
+    ):
+        # Shape capture materially changes both storage cost and availability
+        # of analyses such as GLM5 MoE load balance.  Keep the full profiler
+        # contract in the hash, but expose this important distinction in the
+        # human-readable run name as well.
+        base += "-shapes"
     if config.replicate:
         base += f"-r{config.replicate}"
     if preset_overridden:
