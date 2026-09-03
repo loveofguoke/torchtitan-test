@@ -127,6 +127,63 @@ def _read_manifest(path: Path) -> dict[str, Any]:
         return {}
 
 
+def _official_output_dir(run_dir: Path) -> Path:
+    """Return the run-owned Nsight Systems output directory."""
+
+    return run_dir / "trainer_output" / "profiling" / "nsys"
+
+
+def _move_tree_without_overwrite(source: Path, destination: Path) -> None:
+    """Move a legacy output tree, refusing to mix conflicting generations."""
+
+    if not source.exists():
+        return
+    destination.mkdir(parents=True, exist_ok=True)
+    for path in sorted(source.rglob("*"), key=lambda item: len(item.parts)):
+        relative = path.relative_to(source)
+        target = destination / relative
+        if path.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            if path.read_bytes() != target.read_bytes():
+                raise RuntimeError(
+                    "refusing to merge conflicting legacy Nsight output: "
+                    f"{path} -> {target}"
+                )
+            path.unlink()
+        else:
+            path.replace(target)
+    shutil.rmtree(source)
+
+
+def _adopt_legacy_outputs(run_dir: Path, artifact_dir: Path) -> Path:
+    """Move pre-layout-fix official Nsight files from artifacts into runs."""
+
+    output = _official_output_dir(run_dir)
+    legacy_paths = (
+        (artifact_dir / "profile.nsys-rep", output / "profile.nsys-rep"),
+        (artifact_dir / "profile.sqlite", output / "profile.sqlite"),
+        (artifact_dir / "export_sqlite.log", output / "export_sqlite.log"),
+    )
+    for source, destination in legacy_paths:
+        if not source.is_file():
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            if source.read_bytes() != destination.read_bytes():
+                raise RuntimeError(
+                    "refusing to merge conflicting legacy Nsight output: "
+                    f"{source} -> {destination}"
+                )
+            source.unlink()
+        else:
+            source.replace(destination)
+    _move_tree_without_overwrite(artifact_dir / "stats", output / "stats")
+    return output
+
+
 def _capture(
     args: argparse.Namespace,
     *,
@@ -135,8 +192,9 @@ def _capture(
     run_dir: Path,
     artifact_dir: Path,
 ) -> None:
+    output_dir = _adopt_legacy_outputs(run_dir, artifact_dir)
     record = _read_manifest(artifact_dir)
-    report = artifact_dir / "profile.nsys-rep"
+    report = output_dir / "profile.nsys-rep"
     if (
         record.get("capture_status") == "completed"
         and record.get("contract") == contract
@@ -152,6 +210,7 @@ def _capture(
         )
     run_dir.mkdir(parents=True, exist_ok=True)
     artifact_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
     attempt = RunAttempt.start(
         run_dir,
         kind="nsys-performance",
@@ -185,7 +244,7 @@ def _capture(
         "--wait=all",
         "--stats=false",
         "--force-overwrite=true",
-        f"--output={artifact_dir / 'profile'}",
+        f"--output={output_dir / 'profile'}",
     ]
     if args.delay is not None:
         command.append(f"--delay={args.delay}")
@@ -213,6 +272,7 @@ def _capture(
         "runtime_log": str(run_dir / "nsys_profile.log"),
         "training_log": str(train_log),
         "attempt_id": attempt.attempt_id,
+        "official_output": str(output_dir),
     }
     (artifact_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -238,18 +298,23 @@ def _capture(
 
 
 def _analyze(
-    args: argparse.Namespace, *, contract: dict[str, Any], artifact_dir: Path
+    args: argparse.Namespace,
+    *,
+    contract: dict[str, Any],
+    run_dir: Path,
+    artifact_dir: Path,
 ) -> None:
+    output_dir = _adopt_legacy_outputs(run_dir, artifact_dir)
     manifest = _read_manifest(artifact_dir)
-    report = artifact_dir / "profile.nsys-rep"
+    report = output_dir / "profile.nsys-rep"
     if (
         manifest.get("capture_status") != "completed"
         or manifest.get("contract") != contract
         or not report.is_file()
     ):
         raise RuntimeError(f"matching completed capture not found: {artifact_dir}")
-    stats_dir = artifact_dir / "stats"
-    sqlite_path = artifact_dir / "profile.sqlite"
+    stats_dir = output_dir / "stats"
+    sqlite_path = output_dir / "profile.sqlite"
     expected = [stats_dir / f"{name}.csv" for name in args.stats_reports]
     if (
         manifest.get("analysis_status") == "completed"
@@ -270,7 +335,7 @@ def _analyze(
             str(report),
         ],
         cwd=_root(),
-        log=artifact_dir / "export_sqlite.log",
+        log=output_dir / "export_sqlite.log",
         env=env,
     )
     for name, output in zip(args.stats_reports, expected, strict=True):
@@ -308,14 +373,20 @@ def _analyze(
     manifest["analysis_status"] = "completed"
     manifest["sqlite"] = str(sqlite_path)
     manifest["statistics"] = [str(path) for path in expected]
+    manifest["official_output"] = str(output_dir)
     (artifact_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
 
 
 def _write_report(
-    report_path: Path, *, topology: ParallelTopology, artifact_dir: Path
+    report_path: Path,
+    *,
+    topology: ParallelTopology,
+    run_dir: Path,
+    artifact_dir: Path,
 ) -> None:
+    output_dir = _adopt_legacy_outputs(run_dir, artifact_dir)
     manifest = _read_manifest(artifact_dir)
     rows = "".join(
         f"<li><code>{html.escape(path)}</code></li>"
@@ -326,9 +397,9 @@ def _write_report(
         "<!doctype html><meta charset='utf-8'><title>GLM Nsight Systems report</title>"
         f"<h1>GLM CUDA Nsight Systems: {html.escape(topology.slug)}</h1>"
         "<p>Capture: <code>"
-        f"{html.escape(str(artifact_dir / 'profile.nsys-rep'))}</code></p>"
+        f"{html.escape(str(output_dir / 'profile.nsys-rep'))}</code></p>"
         "<p>SQLite: <code>"
-        f"{html.escape(str(artifact_dir / 'profile.sqlite'))}</code></p>"
+        f"{html.escape(str(output_dir / 'profile.sqlite'))}</code></p>"
         "<p>Open the .nsys-rep in Nsight Systems UI for the interactive timeline. "
         "Use the CSV summaries for CUDA API, kernel, memory, NVTX, and OS "
         "runtime aggregation.</p>"
@@ -476,6 +547,16 @@ def run_cli() -> int:
                 artifact_dir=artifact_dir,
             )
         if do_analyze:
-            _analyze(args, contract=contract, artifact_dir=artifact_dir)
-            _write_report(report_path, topology=topology, artifact_dir=artifact_dir)
+            _analyze(
+                args,
+                contract=contract,
+                run_dir=run_dir,
+                artifact_dir=artifact_dir,
+            )
+            _write_report(
+                report_path,
+                topology=topology,
+                run_dir=run_dir,
+                artifact_dir=artifact_dir,
+            )
     return 0

@@ -27,6 +27,7 @@ from tests.glm5_2_performance.collectors import (
 from tests.glm5_2_performance.config import PerformanceConfig, profiler_presets
 from tests.glm5_2_performance.visualization import mindstudio_insight_handoff
 from tests.glm5_2_performance.workflow import (
+    _adopt_legacy_cluster_outputs,
     _analysis_request,
     _prepare_analysis_stage,
     _analysis_toolchain_metadata,
@@ -46,6 +47,37 @@ from tests.glm5_2_performance.workflow import (
 
 
 class MindStudioPerformanceTest(unittest.TestCase):
+    def test_legacy_cluster_tree_is_adopted_into_profiler_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory) / "run"
+            profile = run / "trainer_output" / "profiling" / "traces"
+            profile.mkdir(parents=True)
+            legacy = run / "cluster" / "cluster_analysis_output"
+            legacy.mkdir(parents=True)
+            (legacy / "cluster_analysis.db").write_bytes(b"db")
+            (run / "cluster" / "cluster_text.json").write_text(
+                "{}", encoding="utf-8"
+            )
+            recipe = run / "free_analysis" / "cluster_analysis_output"
+            recipe.mkdir(parents=True)
+            (recipe / "free_analysis.csv").write_text("x\n", encoding="utf-8")
+
+            delivery = _adopt_legacy_cluster_outputs(run)
+
+            self.assertTrue((delivery / "cluster_analysis.db").is_file())
+            self.assertTrue(
+                (
+                    delivery
+                    / "advanced"
+                    / "free_analysis"
+                    / "cluster_analysis_output"
+                    / "free_analysis.csv"
+                ).is_file()
+            )
+            self.assertFalse((run / "cluster").exists())
+            self.assertFalse((run / "free_analysis").exists())
+            self.assertTrue((run / "cluster_text.json").is_file())
+
     def test_run_name_binds_default_profiler_capture_contract(self) -> None:
         config = PerformanceConfig(
             name="identity",
@@ -146,7 +178,8 @@ class MindStudioPerformanceTest(unittest.TestCase):
             root = Path(directory)
             run = root / "run"
             artifact = root / "artifact"
-            run.mkdir()
+            profile = run / "trainer_output" / "profiling" / "traces"
+            profile.mkdir(parents=True)
             artifact.mkdir()
             request = {
                 "capture_identity": {"attempt_id": "capture-1"},
@@ -186,7 +219,7 @@ class MindStudioPerformanceTest(unittest.TestCase):
             self.assertTrue(should_cluster)
             self.assertTrue((run / "advisor").is_dir())
             assert cluster_attempt is not None
-            (run / "cluster").mkdir()
+            (profile / "cluster_analysis_output").mkdir()
             (run / "cluster.json").write_text("{}", encoding="utf-8")
             cluster_attempt.update("completed")
 
@@ -199,7 +232,7 @@ class MindStudioPerformanceTest(unittest.TestCase):
             )
             self.assertFalse(should_repeat)
             self.assertIsNone(repeated_attempt)
-            self.assertTrue((run / "cluster").is_dir())
+            self.assertTrue((profile / "cluster_analysis_output").is_dir())
 
     def test_stale_derived_stage_is_rebuilt_without_touching_capture_or_peers(
         self,
@@ -715,7 +748,7 @@ class MindStudioPerformanceTest(unittest.TestCase):
             ):
                 run_cluster_analysis(run, extended=False)
 
-            delivery = run / "cluster" / "cluster_analysis_output"
+            delivery = profile / "cluster_analysis_output"
             self.assertEqual(
                 {path.name for path in delivery.iterdir()},
                 {
@@ -728,11 +761,7 @@ class MindStudioPerformanceTest(unittest.TestCase):
             )
             self.assertFalse((run / "cluster_time_summary").exists())
             self.assertFalse((run / "free_analysis").exists())
-            insight_delivery = profile / "cluster_analysis_output"
-            self.assertEqual(
-                {path.name for path in insight_delivery.iterdir()},
-                {path.name for path in delivery.iterdir()},
-            )
+            self.assertFalse((run / "cluster").exists())
 
     def test_standard_compare_uses_documented_output_path_option(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -17,6 +17,36 @@ from release_artifacts import (
 
 
 class TestReleaseArtifacts(unittest.TestCase):
+    def test_nsys_analysis_archive_reads_run_owned_official_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            experiment = "cuda-ddp2-bf16-standard-abcd1234"
+            run = root / "nsys_runs" / "2-card" / "ddp2" / experiment
+            output = run / "trainer_output" / "profiling" / "nsys"
+            artifact = root / "nsys_artifacts" / "2-card" / "ddp2" / experiment
+            output.mkdir(parents=True)
+            artifact.mkdir(parents=True)
+            (output / "profile.nsys-rep").write_bytes(b"raw")
+            (output / "profile.sqlite").write_bytes(b"sqlite")
+            (output / "stats").mkdir()
+            (output / "stats" / "cuda_api_sum.csv").write_text(
+                "Name\n", encoding="utf-8"
+            )
+            (artifact / "manifest.json").write_text("{}", encoding="utf-8")
+            archive = root / "analysis.tar.gz"
+
+            create_archive(root, experiment, archive, content="analysis")
+
+            with tarfile.open(archive) as bundle:
+                names = set(bundle.getnames())
+            prefix = f"nsys_runs/2-card/ddp2/{experiment}/trainer_output/profiling/nsys"
+            self.assertIn(f"{prefix}/profile.sqlite", names)
+            self.assertIn(f"{prefix}/stats/cuda_api_sum.csv", names)
+            self.assertNotIn(f"{prefix}/profile.nsys-rep", names)
+            self.assertIn(
+                f"nsys_artifacts/2-card/ddp2/{experiment}/manifest.json", names
+            )
+
     def test_wget_keeps_tls_certificate_verification_enabled(self) -> None:
         with (
             mock.patch("release_artifacts.shutil.which", return_value="wget"),

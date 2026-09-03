@@ -120,7 +120,8 @@ change:
   that mutate rank databases (mstx2commop, p2p_pairing, and pp_chart) must
   never be added to an automatic policy.
 - MindStudio standard cluster analysis keeps the official DB and text
-  deliveries together under `cluster/cluster_analysis_output/`. Ascend
+  deliveries together under
+  `trainer_output/profiling/traces/cluster_analysis_output/`. Ascend
   PyTorch Profiler captures commonly contain both input formats, so the
   orchestrator runs the official cluster analyzer once for the DB input and
   once through a disposable text-only view, then merges the analyzer-produced
@@ -136,7 +137,11 @@ change:
   `overview` remains the explicitly lightweight topology-scan policy and does
   not promise a complete Insight Memory view.
 - After cluster analysis, the profiler root is the single portable Insight
-  import bundle: it contains every rank profile plus a mirrored
-  `cluster_analysis_output/`. The mirror duplicates only small derived files,
-  never raw rank traces. Cluster force/reset and Release/handoff discovery
-  must remove or index this mirror together with the canonical analysis copy.
+  import bundle: it contains every rank profile plus the one canonical
+  `cluster_analysis_output/`. Never create a second run-level `cluster/` copy.
+  Historical layouts are byte-checked and moved into this official location
+  before resume; a conflict is an error rather than a silent data mix.
+- Nsight Systems `.nsys-rep`, `.sqlite`, official statistics and their logs are
+  run-owned under `trainer_output/profiling/nsys/`. `nsys_artifacts` contains
+  only lifecycle/provenance metadata. Historical artifact-owned payloads are
+  byte-checked and moved without recollection.

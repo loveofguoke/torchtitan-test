@@ -272,20 +272,27 @@ def _analysis_archive_filter(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
             ".xlsx",
         } else None
 
-    # Nsight Systems reports can be very large. Analysis archives retain the
-    # exported SQLite database, CSV summaries, logs, and manifest; the source
-    # .nsys-rep remains available only in lossless full archives.
+    # Nsight metadata is lightweight; official profiler payloads are run-owned.
     if root == "nsys_artifacts":
         if member.isdir():
             return member
-        return member if path.suffix.lower() in {
+        return member if path.suffix.lower() in {".json", ".log", ".md"} else None
+
+    # Nsight Systems reports can be very large. Analysis archives retain the
+    # run-owned SQLite export and CSV summaries, while the authoritative
+    # .nsys-rep remains available only in lossless full archives.
+    if root == "nsys_runs":
+        if member.isdir():
+            return member
+        if "nsys" in path.parts and path.suffix.lower() in {
             ".csv",
-            ".html",
             ".json",
             ".log",
             ".md",
             ".sqlite",
-        } else None
+        }:
+            return member
+        return member if path.name in ANALYSIS_RUN_FILES else None
 
     # Reports and other compact artifacts are already curated by their experiment.
     if root.endswith("_reports") or root.endswith("_artifacts"):

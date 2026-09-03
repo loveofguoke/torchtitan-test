@@ -1118,6 +1118,68 @@ def _find_profiler_directory(run_directory: Path) -> Path:
     return next((path for path in candidates if path.is_dir()), candidates[0])
 
 
+def _merge_legacy_analysis_tree(source: Path, destination: Path) -> None:
+    """Move derived files without mixing conflicting experiment generations."""
+
+    if not source.exists():
+        return
+    destination.mkdir(parents=True, exist_ok=True)
+    for path in sorted(source.rglob("*"), key=lambda item: len(item.parts)):
+        target = destination / path.relative_to(source)
+        if path.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            if path.read_bytes() != target.read_bytes():
+                raise RuntimeError(
+                    "refusing to merge conflicting performance analysis "
+                    f"outputs: {path} -> {target}"
+                )
+            path.unlink()
+        else:
+            path.replace(target)
+    shutil.rmtree(source)
+
+
+def _adopt_legacy_cluster_outputs(run_directory: Path) -> Path:
+    """Move historical cluster results into the official Insight import root."""
+
+    profiler_directory = _find_profiler_directory(run_directory)
+    delivery = profiler_directory / "cluster_analysis_output"
+    _merge_legacy_analysis_tree(
+        run_directory / "cluster" / "cluster_analysis_output", delivery
+    )
+    _merge_legacy_analysis_tree(
+        run_directory / "cluster" / "advanced", delivery / "advanced"
+    )
+    legacy_text_state = run_directory / "cluster" / "cluster_text.json"
+    current_text_state = run_directory / "cluster_text.json"
+    if legacy_text_state.is_file():
+        if current_text_state.is_file():
+            if legacy_text_state.read_bytes() != current_text_state.read_bytes():
+                raise RuntimeError(
+                    "refusing to merge conflicting cluster text state files: "
+                    f"{legacy_text_state} -> {current_text_state}"
+                )
+            legacy_text_state.unlink()
+        else:
+            legacy_text_state.replace(current_text_state)
+    for name in ("cluster_time_summary", "free_analysis"):
+        _merge_legacy_analysis_tree(
+            run_directory / name, delivery / "advanced" / name
+        )
+    for source in run_directory.glob("communication_bottleneck_rank_*"):
+        if source.is_dir():
+            _merge_legacy_analysis_tree(
+                source, delivery / "advanced" / source.name
+            )
+    legacy_cluster = run_directory / "cluster"
+    if legacy_cluster.is_dir() and not any(legacy_cluster.iterdir()):
+        legacy_cluster.rmdir()
+    return delivery
+
+
 def offline_parse(
     run_directory: Path,
     *,
@@ -1279,7 +1341,11 @@ def run_cluster_analysis(
         )
 
     profiler_directory = _find_profiler_directory(run_directory)
-    output_directory = run_directory / "cluster"
+    _adopt_legacy_cluster_outputs(run_directory)
+    # Keep the official msprof-analyze delivery beside the per-rank profiler
+    # data.  MindStudio Insight expects users to import this profiler root; a
+    # second run-level ``cluster/`` tree is neither official nor portable.
+    output_directory = profiler_directory
     command = [
         _msprof_analyze_executable(),
         "cluster",
@@ -1311,24 +1377,14 @@ def run_cluster_analysis(
         bypass_input_safety_checks=bypass_input_safety_checks,
         analysis_toolchain=analysis_toolchain,
     )
-    cluster_delivery = output_directory / "cluster_analysis_output"
+    cluster_delivery = profiler_directory / "cluster_analysis_output"
     if cluster_delivery.is_dir():
-        # MindStudio Insight requires the cluster aggregate and every rank's
-        # original profile to share one import root.  The rank profiles already
-        # live under profiler_directory, so mirror only the small derived
-        # cluster delivery instead of duplicating the multi-GB raw capture.
-        insight_delivery = profiler_directory / "cluster_analysis_output"
-        shutil.copytree(
-            cluster_delivery,
-            insight_delivery,
-            dirs_exist_ok=True,
-        )
         results["mindstudio_insight_bundle"] = {
             "import_root": str(profiler_directory),
-            "cluster_delivery": str(insight_delivery),
+            "cluster_delivery": str(cluster_delivery),
             "files": sorted(
-                path.relative_to(insight_delivery).as_posix()
-                for path in insight_delivery.rglob("*")
+                path.relative_to(cluster_delivery).as_posix()
+                for path in cluster_delivery.rglob("*")
                 if path.is_file()
             ),
         }
@@ -1359,7 +1415,7 @@ def run_cluster_analysis(
             "-d",
             str(profiler_directory),
             "-o",
-            str(run_directory / "cluster_time_summary"),
+            str(cluster_delivery / "advanced" / "cluster_time_summary"),
             "--export_type",
             "text",
         ],
@@ -1370,7 +1426,7 @@ def run_cluster_analysis(
             "-d",
             str(profiler_directory),
             "-o",
-            str(run_directory / "free_analysis"),
+            str(cluster_delivery / "advanced" / "free_analysis"),
             "--top_num",
             "20",
             "--export_type",
@@ -1394,7 +1450,11 @@ def run_cluster_analysis(
             "-d",
             str(profiler_directory),
             "-o",
-            str(run_directory / f"communication_bottleneck_rank_{rank_id}"),
+            str(
+                cluster_delivery
+                / "advanced"
+                / f"communication_bottleneck_rank_{rank_id}"
+            ),
             "--rank_id",
             rank_id,
             "--top_num",
@@ -1499,7 +1559,7 @@ def _run_advanced_cluster_analysis(
         cluster_summary_baseline=cluster_summary_baseline is not None,
     )
     executable = _msprof_analyze_executable()
-    root = run_directory / "cluster" / "advanced"
+    root = profiler_directory / "cluster_analysis_output" / "advanced"
     root.mkdir(parents=True, exist_ok=True)
     results: dict[str, Any] = {"policy": policy, "skipped": plan.skipped}
     rank_ids = _profiler_rank_ids(profiler_directory)
@@ -1691,7 +1751,7 @@ def _run_cluster_text_delivery(
             command.append("--agent")
         if bypass_input_safety_checks:
             command.append("--force")
-        status_path = output_directory / "cluster_text.json"
+        status_path = run_directory / "cluster_text.json"
         result = _run_msprof_analyze(
             run_directory,
             name="cluster_text",
@@ -1936,9 +1996,7 @@ def _analysis_output_paths(
         exploration_directory / "artifacts.json",
         run_directory / "advisor",
         run_directory / "advisor.json",
-        run_directory / "cluster",
         run_directory / "cluster.json",
-        run_directory / "cluster" / "advanced",
         run_directory / "cluster_time_summary",
         run_directory / "cluster_time_summary.json",
         run_directory / "free_analysis",
@@ -1978,9 +2036,7 @@ def _analysis_outputs_exist(
         report_path,
         run_directory / "advisor",
         run_directory / "advisor.json",
-        run_directory / "cluster",
         run_directory / "cluster.json",
-        run_directory / "cluster" / "advanced",
         run_directory / "cluster_time_summary",
         run_directory / "cluster_time_summary.json",
         run_directory / "free_analysis",
@@ -2007,8 +2063,11 @@ def _analysis_outputs_complete(
             (run_directory / "advisor", run_directory / "advisor.json")
         )
     if operations.get("cluster"):
+        cluster_delivery = (
+            _find_profiler_directory(run_directory) / "cluster_analysis_output"
+        )
         required.extend(
-            (run_directory / "cluster", run_directory / "cluster.json")
+            (cluster_delivery, run_directory / "cluster.json")
         )
     if operations.get("compare_baseline") is not None:
         required.extend(
@@ -2085,7 +2144,6 @@ def _analysis_stage_paths(
     elif stage == "cluster":
         paths.extend(
             (
-                run_directory / "cluster",
                 run_directory / "cluster.json",
                 run_directory / "cluster_time_summary",
                 run_directory / "cluster_time_summary.json",
@@ -2112,7 +2170,10 @@ def _analysis_stage_outputs_complete(run_directory: Path, stage: str) -> bool:
         return any(profiler_directory.rglob("*.db"))
     required = {
         "advisor": (run_directory / "advisor", run_directory / "advisor.json"),
-        "cluster": (run_directory / "cluster", run_directory / "cluster.json"),
+        "cluster": (
+            _find_profiler_directory(run_directory) / "cluster_analysis_output",
+            run_directory / "cluster.json",
+        ),
         "compare": (run_directory / "compare", run_directory / "compare.json"),
     }[stage]
     return all(path.exists() for path in required)
@@ -2128,6 +2189,10 @@ def _prepare_analysis_stage(
 ) -> tuple[RunAttempt | None, bool]:
     """Prepare one analysis stage and return ``(attempt, should_run)``."""
 
+    if stage == "cluster" and not force:
+        # Layout-only adoption preserves a completed historical analysis and
+        # lets the normal state/identity checks decide whether it can be reused.
+        _adopt_legacy_cluster_outputs(run_directory)
     context = _analysis_stage_context(request, stage)
     state_name = f"analysis_{stage}_state.json"
     state_path = artifact_directory / state_name

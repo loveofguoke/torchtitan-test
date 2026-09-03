@@ -426,7 +426,7 @@ These actions invoke, respectively:
 
 ```text
 msprof-analyze advisor all -d PROFILE_DIR -o ADVISOR_DIR
-msprof-analyze cluster -m all -d PROFILE_DIR -o CLUSTER_DIR
+msprof-analyze cluster -m all -d PROFILE_DIR -o PROFILE_DIR
 msprof-analyze compare -d PROFILE -bp BASELINE -o COMPARE_DIR
 ```
 
@@ -444,11 +444,12 @@ Profiler-control overrides are part of the run identity. For example,
 different run/artifact/report paths and can be compared without `--force` or
 overwriting either capture.
 
-For Ascend data, copy the complete `*_ascend_pt` directory to local storage and
-import that root into MindStudio Insight. Do not import only its
-`ASCEND_PROFILER_OUTPUT` child. The report verifies raw metadata and the
-official parsed Text/DB deliverables, then marks whether the profile is ready
-for Insight. Import `cluster_analysis_output` for the official cluster views.
+For Ascend data, copy the complete profiler root to local storage and import
+that root into MindStudio Insight. It contains every `*_ascend_pt` rank capture
+and the official `cluster_analysis_output/` delivery in one tree. Do not import
+only one rank's `ASCEND_PROFILER_OUTPUT` child. Historical run-level `cluster/`
+outputs are byte-checked and moved into this official tree automatically, so a
+completed capture does not need to run again.
 
 GPU trace JSON can be used as the baseline for `msprof-analyze compare` and can
 also be inspected in Perfetto. Despite the upstream API name

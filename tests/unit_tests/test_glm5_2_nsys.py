@@ -1,7 +1,15 @@
 from argparse import Namespace
+import json
+from pathlib import Path
+import tempfile
 
 from tests.glm5_2_common.topology import standard_topologies
-from tests.glm5_2_nsys.workflow import DEFAULT_STATS, _contract, _identity_name
+from tests.glm5_2_nsys.workflow import (
+    DEFAULT_STATS,
+    _adopt_legacy_outputs,
+    _contract,
+    _identity_name,
+)
 
 
 def _args() -> Namespace:
@@ -43,3 +51,28 @@ def test_nsys_identity_changes_with_trace_policy() -> None:
     second = _identity_name(args, topology, _contract(args, topology, "v1"))
 
     assert first != second
+
+
+def test_legacy_nsys_payload_is_adopted_by_run_without_reprofiling() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        run = root / "run"
+        artifact = root / "artifact"
+        artifact.mkdir()
+        (artifact / "manifest.json").write_text(
+            json.dumps({"capture_status": "completed"}), encoding="utf-8"
+        )
+        (artifact / "profile.nsys-rep").write_bytes(b"report")
+        (artifact / "profile.sqlite").write_bytes(b"sqlite")
+        stats = artifact / "stats"
+        stats.mkdir()
+        (stats / "cuda_api_sum.csv").write_text("Name\n", encoding="utf-8")
+
+        output = _adopt_legacy_outputs(run, artifact)
+
+        assert output == run / "trainer_output" / "profiling" / "nsys"
+        assert (output / "profile.nsys-rep").read_bytes() == b"report"
+        assert (output / "profile.sqlite").read_bytes() == b"sqlite"
+        assert (output / "stats" / "cuda_api_sum.csv").is_file()
+        assert not (artifact / "profile.nsys-rep").exists()
+        assert (artifact / "manifest.json").is_file()

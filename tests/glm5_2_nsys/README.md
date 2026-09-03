@@ -105,21 +105,27 @@ members while retaining completed ones.
 nsys_runs/<N-card>/<topology>/<experiment>/
   nsys_profile.log
   training.log
-  trainer_output/
+  trainer_output/profiling/nsys/
+    profile.nsys-rep
+    profile.sqlite
+    export_sqlite.log
+    stats/*.csv
+    stats/*.log
   run_state.json
 
 nsys_artifacts/<N-card>/<topology>/<experiment>/
-  profile.nsys-rep
-  profile.sqlite
   manifest.json
-  export_sqlite.log
-  stats/*.csv
-  stats/*.log
 
 nsys_reports/<N-card>/<topology>/<experiment>.html
 ```
 
-Open `profile.nsys-rep` in Nsight Systems UI to inspect CPU/PyTorch/NVTX,
+The `nsys_artifacts` tree contains only orchestration metadata. Official
+Nsight capture and export products stay together under the run's
+`trainer_output/profiling/nsys/` directory. Existing captures made with the
+older artifact-owned layout are moved there automatically after their bytes
+are checked; no profiling rerun is required.
+
+Open `trainer_output/profiling/nsys/profile.nsys-rep` in Nsight Systems UI to inspect CPU/PyTorch/NVTX,
 CUDA API launches, GPU streams, kernels, memory operations, and NCCL events
 when collected. The CSV files are lightweight inputs for Codex and automated
 GPU/NPU comparison. Profiler-active timings are attribution evidence, not an
