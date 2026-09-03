@@ -57,6 +57,7 @@ class MindStudioPerformanceTest(unittest.TestCase):
         plan = resolve_recipe_plan(
             "necessary",
             topology=topology,
+            record_shapes=True,
             mstx_enabled=False,
             with_flops=False,
             cluster_summary_baseline=True,
@@ -78,6 +79,7 @@ class MindStudioPerformanceTest(unittest.TestCase):
         plan = resolve_recipe_plan(
             "all",
             topology=ParallelTopology("single", 1),
+            record_shapes=False,
             mstx_enabled=False,
             with_flops=False,
             cluster_summary_baseline=False,
@@ -86,9 +88,24 @@ class MindStudioPerformanceTest(unittest.TestCase):
         self.assertNotIn("operator_mfu", plan.recipes)
         self.assertNotIn("ep_load_balance", plan.recipes)
         self.assertEqual(
+            plan.skipped["ep_load_balance"],
+            "requires record_shapes capture data",
+        )
+        self.assertEqual(
             plan.skipped["cluster_time_compare_summary"],
             "requires --cluster-summary-baseline",
         )
+
+    def test_moe_load_balance_applies_without_expert_parallelism(self) -> None:
+        plan = resolve_recipe_plan(
+            "necessary",
+            topology=ParallelTopology("fsdp2", 2, data_parallel_shard_degree=2),
+            record_shapes=True,
+            mstx_enabled=False,
+            with_flops=False,
+            cluster_summary_baseline=False,
+        )
+        self.assertIn("ep_load_balance", plan.recipes)
 
     def test_explicit_mutating_recipe_is_accepted_but_never_automatic(
         self,
@@ -97,6 +114,7 @@ class MindStudioPerformanceTest(unittest.TestCase):
         plan = resolve_recipe_plan(
             "all",
             topology=ParallelTopology("pp2", 2, pipeline_parallel_degree=2),
+            record_shapes=True,
             mstx_enabled=True,
             with_flops=True,
             cluster_summary_baseline=False,

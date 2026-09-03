@@ -86,6 +86,7 @@ def resolve_recipe_plan(
     policy: str,
     *,
     topology: ParallelTopology,
+    record_shapes: bool,
     mstx_enabled: bool,
     with_flops: bool,
     cluster_summary_baseline: bool,
@@ -98,8 +99,10 @@ def resolve_recipe_plan(
         return AdvancedRecipePlan((), skipped)
     if parsed == "necessary":
         selected = list(NECESSARY_RECIPES)
-        if topology.ep > 1:
-            selected.append("ep_load_balance")
+        # GLM5 is an MoE model in every topology.  The recipe remains useful
+        # at EP=1 for expert-token and GroupedMM imbalance; EP>1 additionally
+        # exposes cross-rank dispatch and expert placement imbalance.
+        selected.append("ep_load_balance")
         if cluster_summary_baseline:
             selected.append("cluster_time_compare_summary")
     elif parsed == "all":
@@ -118,9 +121,9 @@ def resolve_recipe_plan(
             "requires a dedicated Nsys GPU baseline and is not the same as "
             "cluster_time_compare_summary"
         )
-    if "ep_load_balance" in selected and topology.ep == 1:
+    if "ep_load_balance" in selected and not record_shapes:
         selected.remove("ep_load_balance")
-        skipped["ep_load_balance"] = "requires an EP topology"
+        skipped["ep_load_balance"] = "requires record_shapes capture data"
     for recipe in ("mstx_sum", "module_statistic"):
         if recipe in selected and not mstx_enabled:
             selected.remove(recipe)

@@ -31,7 +31,7 @@ communication_bottleneck（逐实际 Rank）
 cann_api_sum
 free_analysis
 export_summary
-ep_load_balance（仅 EP 拓扑）
+ep_load_balance（所有 GLM5 MoE 拓扑；需要 shape）
 cluster_time_compare_summary（提供 baseline 时）
 ```
 
@@ -169,7 +169,7 @@ profile 直接冒充拆解结果。
 | 拆解比对 | `module_statistic` | 需 Module-domain MSTX；`all` 按采集契约启用 |
 | 拆解比对 | `calibrate_npu_gpu` | 需 Nsys GPU DB 与模块打点；独立性能校准流程 |
 | 计算 | `compute_op_sum`、`freq_analysis` | necessary |
-| 计算 | `ep_load_balance` | EP 拓扑 necessary |
+| 计算 | `ep_load_balance` | 所有 GLM5 MoE 拓扑在 `record_shapes` 采集下 necessary；EP 拓扑额外反映跨 Rank dispatch/专家放置不均衡 |
 | 计算 | `computational_op_masking` | 可显式选择；并行通信域名称必须与数据一致 |
 | 计算 | `operator_mfu` | 需 `with_flops`、MSTX、shape 和 Level1+ |
 | 通信 | `communication_group_map`、`communication_time_sum`、`communication_matrix_sum`、`hccl_sum` | necessary |
