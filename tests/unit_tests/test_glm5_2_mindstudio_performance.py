@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -45,6 +46,23 @@ from tests.glm5_2_performance.workflow import (
 
 
 class MindStudioPerformanceTest(unittest.TestCase):
+    def test_run_name_binds_default_profiler_capture_contract(self) -> None:
+        config = PerformanceConfig(
+            name="identity",
+            topology="single",
+            preset="distributed",
+        )
+        preset = profiler_presets()["distributed"]
+
+        with_shapes = _run_name(config, "npu", preset)
+        without_shapes = _run_name(
+            config,
+            "npu",
+            replace(preset, record_shapes=False),
+        )
+
+        self.assertNotEqual(with_shapes, without_shapes)
+
     def test_necessary_advanced_recipes_cover_slow_rank_and_host_dispatch(
         self,
     ) -> None:

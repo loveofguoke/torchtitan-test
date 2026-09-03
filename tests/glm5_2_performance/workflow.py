@@ -469,7 +469,16 @@ def _run_name(
     if not config.collector_args:
         identity.pop("collector_args", None)
     identity["resolved_device"] = device
-    if preset_overridden:
+    if (
+        config.profiler_enabled
+        and config.collector
+        == PerformanceCollector.TORCH_NPU_PROFILER.value
+    ):
+        # The profiler contract changes both collected evidence and which
+        # offline recipes are valid.  Bind it unconditionally instead of only
+        # for CLI overrides: otherwise changing a preset default can collide
+        # with an older completed capture that has the same human-readable
+        # name but a different environment.
         identity["profiler_environment"] = effective_preset.environment()
     return config_name(base, identity)
 
