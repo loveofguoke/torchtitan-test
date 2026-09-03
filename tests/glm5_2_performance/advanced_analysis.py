@@ -143,22 +143,27 @@ def recipe_arguments(
     *,
     rank_id: int | None = None,
     top_num: int = 20,
+    export_type: str | None = None,
 ) -> list[str]:
     """Return official optional arguments for one advanced recipe."""
 
     if recipe == "communication_bottleneck":
         if rank_id is None:
             raise ValueError("communication_bottleneck requires rank_id")
-        return [
+        arguments = [
             "--rank_id",
             str(rank_id),
             "--top_num",
             str(top_num),
-            "--export_type",
-            "text",
         ]
+        if export_type is not None:
+            arguments.extend(("--export_type", export_type))
+        return arguments
     if recipe == "free_analysis":
-        return ["--top_num", str(top_num), "--export_type", "text"]
+        arguments = ["--top_num", str(top_num)]
+        if export_type is not None:
+            arguments.extend(("--export_type", export_type))
+        return arguments
     if recipe in {
         "cluster_time_summary",
         "module_statistic",
@@ -169,5 +174,5 @@ def recipe_arguments(
         "cann_api_sum",
         "mstx_sum",
     }:
-        return ["--export_type", "text"]
+        return ["--export_type", export_type] if export_type is not None else []
     return []

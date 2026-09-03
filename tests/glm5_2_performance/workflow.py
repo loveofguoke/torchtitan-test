@@ -1147,12 +1147,31 @@ def _adopt_legacy_cluster_outputs(run_directory: Path) -> Path:
 
     profiler_directory = _find_profiler_directory(run_directory)
     delivery = profiler_directory / "cluster_analysis_output"
+    legacy_advanced = delivery / "advanced"
+    if legacy_advanced.is_dir():
+        for recipe_root in tuple(legacy_advanced.iterdir()):
+            if recipe_root.is_dir():
+                nested = recipe_root / "cluster_analysis_output"
+                _merge_legacy_analysis_tree(
+                    nested if nested.is_dir() else recipe_root,
+                    delivery,
+                )
+        if legacy_advanced.is_dir() and not any(legacy_advanced.iterdir()):
+            legacy_advanced.rmdir()
     _merge_legacy_analysis_tree(
         run_directory / "cluster" / "cluster_analysis_output", delivery
     )
-    _merge_legacy_analysis_tree(
-        run_directory / "cluster" / "advanced", delivery / "advanced"
-    )
+    run_level_advanced = run_directory / "cluster" / "advanced"
+    if run_level_advanced.is_dir():
+        for recipe_root in tuple(run_level_advanced.iterdir()):
+            if recipe_root.is_dir():
+                nested = recipe_root / "cluster_analysis_output"
+                _merge_legacy_analysis_tree(
+                    nested if nested.is_dir() else recipe_root,
+                    delivery,
+                )
+        if run_level_advanced.is_dir() and not any(run_level_advanced.iterdir()):
+            run_level_advanced.rmdir()
     legacy_text_state = run_directory / "cluster" / "cluster_text.json"
     current_text_state = run_directory / "cluster_text.json"
     if legacy_text_state.is_file():
@@ -1166,14 +1185,19 @@ def _adopt_legacy_cluster_outputs(run_directory: Path) -> Path:
         else:
             legacy_text_state.replace(current_text_state)
     for name in ("cluster_time_summary", "free_analysis"):
+        source_root = run_directory / name
         _merge_legacy_analysis_tree(
-            run_directory / name, delivery / "advanced" / name
+            source_root / "cluster_analysis_output", delivery
         )
+        if source_root.is_dir() and not any(source_root.iterdir()):
+            source_root.rmdir()
     for source in run_directory.glob("communication_bottleneck_rank_*"):
         if source.is_dir():
             _merge_legacy_analysis_tree(
-                source, delivery / "advanced" / source.name
+                source / "cluster_analysis_output", delivery
             )
+            if source.is_dir() and not any(source.iterdir()):
+                source.rmdir()
     legacy_cluster = run_directory / "cluster"
     if legacy_cluster.is_dir() and not any(legacy_cluster.iterdir()):
         legacy_cluster.rmdir()
@@ -1407,32 +1431,7 @@ def run_cluster_analysis(
         results["advanced"] = advanced
         return results
     executable = _msprof_analyze_executable()
-    recipes = {
-        "cluster_time_summary": [
-            executable,
-            "-m",
-            "cluster_time_summary",
-            "-d",
-            str(profiler_directory),
-            "-o",
-            str(cluster_delivery / "advanced" / "cluster_time_summary"),
-            "--export_type",
-            "text",
-        ],
-        "free_analysis": [
-            executable,
-            "-m",
-            "free_analysis",
-            "-d",
-            str(profiler_directory),
-            "-o",
-            str(cluster_delivery / "advanced" / "free_analysis"),
-            "--top_num",
-            "20",
-            "--export_type",
-            "text",
-        ],
-    }
+    recipes = ("cluster_time_summary", "free_analysis")
     rank_ids = sorted(
         {
             match.group(1)
@@ -1441,61 +1440,28 @@ def run_cluster_analysis(
         },
         key=int,
     )
-    communication_recipes = {}
-    for rank_id in rank_ids:
-        communication_recipes[f"communication_bottleneck_rank_{rank_id}"] = [
-            executable,
-            "-m",
-            "communication_bottleneck",
-            "-d",
-            str(profiler_directory),
-            "-o",
-            str(
-                cluster_delivery
-                / "advanced"
-                / f"communication_bottleneck_rank_{rank_id}"
-            ),
-            "--rank_id",
-            rank_id,
-            "--top_num",
-            "20",
-            "--export_type",
-            "text",
-        ]
-    for name, recipe in recipes.items():
-        results[name] = _run_msprof_analyze(
+    for name in recipes:
+        results[name] = _run_recipe_exports(
             run_directory,
-            name=name,
-            command=recipe,
+            executable=executable,
+            recipe=name,
+            profiler_directory=profiler_directory,
+            status_prefix=name,
             analysis_toolchain=analysis_toolchain,
         )
-    workers = _msprof_analyze_workers()
-    if workers == 1:
-        for name, recipe in communication_recipes.items():
-            results[name] = _run_msprof_analyze(
-                run_directory,
-                name=name,
-                command=recipe,
-                analysis_toolchain=analysis_toolchain,
-            )
-    else:
-        print(
-            "Running communication_bottleneck recipes with "
-            f"{workers} workers"
+    # This recipe has a required rank argument. Run both official export modes
+    # for every captured rank against the same canonical output root.
+    for rank_id in rank_ids:
+        name = f"communication_bottleneck_rank_{rank_id}"
+        results[name] = _run_recipe_exports(
+            run_directory,
+            executable=executable,
+            recipe="communication_bottleneck",
+            profiler_directory=profiler_directory,
+            rank_id=int(rank_id),
+            status_prefix=name,
+            analysis_toolchain=analysis_toolchain,
         )
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {
-                name: executor.submit(
-                    _run_msprof_analyze,
-                    run_directory,
-                    name=name,
-                    command=recipe,
-                    analysis_toolchain=analysis_toolchain,
-                )
-                for name, recipe in communication_recipes.items()
-            }
-            for name, future in futures.items():
-                results[name] = future.result()
     return results
 
 
@@ -1522,6 +1488,7 @@ def _advanced_recipe_command(
     profiler_directory: Path,
     output_directory: Path,
     rank_id: int | None = None,
+    export_type: str | None = None,
 ) -> list[str]:
     command = [
         executable,
@@ -1532,8 +1499,46 @@ def _advanced_recipe_command(
         "-o",
         str(output_directory),
     ]
-    command.extend(recipe_arguments(recipe, rank_id=rank_id))
+    command.extend(
+        recipe_arguments(
+            recipe,
+            rank_id=rank_id,
+            export_type=export_type,
+        )
+    )
     return command
+
+
+def _run_recipe_exports(
+    run_directory: Path,
+    *,
+    executable: str,
+    recipe: str,
+    profiler_directory: Path,
+    rank_id: int | None = None,
+    status_prefix: str,
+    analysis_toolchain: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Generate both official DB and Text deliveries in one output root."""
+
+    results: dict[str, Any] = {}
+    for export_type in ("db", "text"):
+        name = f"{status_prefix}_{export_type}"
+        results[export_type] = _run_msprof_analyze(
+            run_directory,
+            name=name,
+            command=_advanced_recipe_command(
+                executable,
+                recipe=recipe,
+                profiler_directory=profiler_directory,
+                output_directory=profiler_directory,
+                rank_id=rank_id,
+                export_type=export_type,
+            ),
+            status_path=run_directory / f"{name}.json",
+            analysis_toolchain=analysis_toolchain,
+        )
+    return results
 
 
 def _run_advanced_cluster_analysis(
@@ -1559,17 +1564,17 @@ def _run_advanced_cluster_analysis(
         cluster_summary_baseline=cluster_summary_baseline is not None,
     )
     executable = _msprof_analyze_executable()
-    root = profiler_directory / "cluster_analysis_output" / "advanced"
-    root.mkdir(parents=True, exist_ok=True)
+    delivery = profiler_directory / "cluster_analysis_output"
+    delivery.mkdir(parents=True, exist_ok=True)
     results: dict[str, Any] = {"policy": policy, "skipped": plan.skipped}
     rank_ids = _profiler_rank_ids(profiler_directory)
 
     for recipe in plan.recipes:
         if recipe == "cluster_time_compare_summary":
             assert cluster_summary_baseline is not None
-            compare_root = root / "cluster_time_compare_summary"
+            compare_root = Path(tempfile.mkdtemp(prefix="glm5-cluster-compare-"))
             candidate_summary = compare_root / "candidate"
-            baseline_summary = root / "cluster_time_compare_summary" / "baseline"
+            baseline_summary = compare_root / "baseline"
             # The compare recipe requires ClusterTimeSummary DB tables. The
             # ordinary summary recipe intentionally exports a readable CSV,
             # so generate dedicated DB summaries for both inputs here.
@@ -1585,7 +1590,7 @@ def _run_advanced_cluster_analysis(
                     "-o",
                     str(candidate_summary),
                 ],
-                status_path=compare_root / "candidate.json",
+                status_path=run_directory / "cluster_time_summary_candidate_db.json",
                 analysis_toolchain=analysis_toolchain,
             )
             results["cluster_time_summary_baseline"] = _run_msprof_analyze(
@@ -1600,7 +1605,7 @@ def _run_advanced_cluster_analysis(
                     "-o",
                     str(baseline_summary),
                 ],
-                status_path=compare_root / "baseline.json",
+                status_path=run_directory / "cluster_time_summary_baseline_db.json",
                 analysis_toolchain=analysis_toolchain,
             )
             command = [
@@ -1612,15 +1617,16 @@ def _run_advanced_cluster_analysis(
                 "--bp",
                 str(baseline_summary),
                 "-o",
-                str(compare_root / "compare"),
+                str(profiler_directory),
             ]
             results[recipe] = _run_msprof_analyze(
                 run_directory,
                 name=f"advanced_{recipe}",
                 command=command,
-                status_path=compare_root / "compare.json",
+                status_path=run_directory / "cluster_time_compare_summary.json",
                 analysis_toolchain=analysis_toolchain,
             )
+            shutil.rmtree(compare_root)
             continue
         if recipe == "communication_bottleneck":
             if not rank_ids:
@@ -1630,17 +1636,13 @@ def _run_advanced_cluster_analysis(
             rank_results: dict[str, Any] = {}
             for rank_id in rank_ids:
                 name = f"communication_bottleneck_rank_{rank_id}"
-                rank_results[str(rank_id)] = _run_msprof_analyze(
+                rank_results[str(rank_id)] = _run_recipe_exports(
                     run_directory,
-                    name=f"advanced_{name}",
-                    command=_advanced_recipe_command(
-                        executable,
-                        recipe=recipe,
-                        profiler_directory=profiler_directory,
-                        output_directory=root / recipe / f"rank_{rank_id}",
-                        rank_id=rank_id,
-                    ),
-                    status_path=root / recipe / f"rank_{rank_id}.json",
+                    executable=executable,
+                    recipe=recipe,
+                    profiler_directory=profiler_directory,
+                    rank_id=rank_id,
+                    status_prefix=f"advanced_{name}",
                     analysis_toolchain=analysis_toolchain,
                 )
             results[recipe] = rank_results
@@ -1650,17 +1652,12 @@ def _run_advanced_cluster_analysis(
                 f"Running explicitly requested source-mutating recipe: {recipe}",
                 flush=True,
             )
-        output = root / recipe
-        results[recipe] = _run_msprof_analyze(
+        results[recipe] = _run_recipe_exports(
             run_directory,
-            name=f"advanced_{recipe}",
-            command=_advanced_recipe_command(
-                executable,
-                recipe=recipe,
-                profiler_directory=profiler_directory,
-                output_directory=output,
-            ),
-            status_path=root / f"{recipe}.json",
+            executable=executable,
+            recipe=recipe,
+            profiler_directory=profiler_directory,
+            status_prefix=f"advanced_{recipe}",
             analysis_toolchain=analysis_toolchain,
         )
 
@@ -1671,12 +1668,11 @@ def _run_advanced_cluster_analysis(
         "skipped": plan.skipped,
         "rank_ids": rank_ids,
         "outputs": sorted(
-            path.relative_to(root).as_posix()
-            for path in root.rglob("*")
+            path.relative_to(delivery).as_posix()
+            for path in delivery.rglob("*")
             if path.is_file()
         ),
     }
-    _write_json(root / "index.json", inventory)
     results["index"] = inventory
     return results
 
@@ -2005,6 +2001,8 @@ def _analysis_output_paths(
         run_directory / "compare.json",
     ]
     paths.extend(run_directory.glob("communication_bottleneck_rank_*"))
+    paths.extend(run_directory.glob("advanced_*.json"))
+    paths.append(run_directory / "cluster_text.json")
     command_directory = exploration_directory / "tool_commands"
     for name in (
         "advisor.json",
@@ -2045,6 +2043,8 @@ def _analysis_outputs_exist(
         run_directory / "compare.json",
     ]
     candidates.extend(run_directory.glob("communication_bottleneck_rank_*"))
+    candidates.extend(run_directory.glob("advanced_*.json"))
+    candidates.append(run_directory / "cluster_text.json")
     profiler_directory = _find_profiler_directory(run_directory)
     candidates.append(profiler_directory / "mindstudio_flamegraphs")
     if profiler_directory.is_dir():
@@ -2097,6 +2097,8 @@ def _analysis_stage_context(
         stage_operations = {}
     elif stage == "cluster":
         stage_operations = {
+            "output_layout": "profiler-root-cluster-analysis-output-v2",
+            "recipe_export_types": ["db", "text"],
             "cluster_mode": operations.get("cluster_mode"),
             "cluster_agent_output": operations.get("cluster_agent_output"),
             "cluster_bypass_input_safety_checks": operations.get(
@@ -2152,6 +2154,10 @@ def _analysis_stage_paths(
             )
         )
         paths.extend(run_directory.glob("communication_bottleneck_rank_*"))
+        paths.extend(run_directory.glob("cluster_time_summary_*.json"))
+        paths.extend(run_directory.glob("free_analysis_*.json"))
+        paths.extend(run_directory.glob("advanced_*.json"))
+        paths.append(run_directory / "cluster_text.json")
         try:
             paths.append(
                 _find_profiler_directory(run_directory)

@@ -65,15 +65,7 @@ class MindStudioPerformanceTest(unittest.TestCase):
             delivery = _adopt_legacy_cluster_outputs(run)
 
             self.assertTrue((delivery / "cluster_analysis.db").is_file())
-            self.assertTrue(
-                (
-                    delivery
-                    / "advanced"
-                    / "free_analysis"
-                    / "cluster_analysis_output"
-                    / "free_analysis.csv"
-                ).is_file()
-            )
+            self.assertTrue((delivery / "free_analysis.csv").is_file())
             self.assertFalse((run / "cluster").exists())
             self.assertFalse((run / "free_analysis").exists())
             self.assertTrue((run / "cluster_text.json").is_file())
@@ -681,12 +673,31 @@ class MindStudioPerformanceTest(unittest.TestCase):
         self.assertTrue(
             any("cluster_time_summary" in command for command in commands)
         )
+        recipe_commands = [
+            command
+            for command in commands
+            if len(command) > 2 and command[1] == "-m"
+        ]
+        self.assertTrue(recipe_commands)
+        self.assertTrue(
+            all(
+                Path(command[command.index("-o") + 1]) == profile
+                for command in recipe_commands
+            )
+        )
         bottleneck_commands = [
             command
             for command in commands
             if "communication_bottleneck" in command
         ]
-        self.assertEqual(len(bottleneck_commands), 2)
+        self.assertEqual(len(bottleneck_commands), 4)
+        self.assertEqual(
+            {
+                command[command.index("--export_type") + 1]
+                for command in bottleneck_commands
+            },
+            {"db", "text"},
+        )
         self.assertEqual(
             {
                 command[command.index("--rank_id") + 1]

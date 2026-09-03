@@ -430,6 +430,13 @@ msprof-analyze cluster -m all -d PROFILE_DIR -o PROFILE_DIR
 msprof-analyze compare -d PROFILE -bp BASELINE -o COMPARE_DIR
 ```
 
+For every selected read-only advanced recipe, the orchestrator invokes the
+official command twice with `--export_type=db` and `--export_type=text`, using
+`PROFILE_DIR` as the shared `-o`. Consequently all official tables, CSV, and
+JSON deliveries remain in the single canonical
+`PROFILE_DIR/cluster_analysis_output/`; no framework-defined `advanced/` or
+run-level `cluster/` output tree is created.
+
 ## MindStudio Insight handoff
 
 The generated HTML is the first-level dashboard. It includes training step

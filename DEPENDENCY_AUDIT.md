@@ -118,7 +118,9 @@ change:
   baseline-sensitive. Audit the cluster stage identity, per-rank discovery,
   report inventory, Release discovery, and both cluster field guides. Recipes
   that mutate rank databases (mstx2commop, p2p_pairing, and pp_chart) must
-  never be added to an automatic policy.
+  never be added to an automatic policy. Read-only recipes use the profiler
+  root as their shared official `-o` and run both `--export_type=db` and
+  `--export_type=text`; never introduce an `advanced/` delivery hierarchy.
 - MindStudio standard cluster analysis keeps the official DB and text
   deliveries together under
   `trainer_output/profiling/traces/cluster_analysis_output/`. Ascend

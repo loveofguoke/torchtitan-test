@@ -740,13 +740,16 @@ capture 即可填充 Insight 的 Timeline、Memory、Operator。`distributed` �
 Timeline、Memory、Operator、Summary、Communication。轻量 `overview` 不承诺
 Memory 页面完整；它用于先做低成本全拓扑扫描。
 
-Cluster 分析完成后，框架会把官方 `cluster_analysis_output/` 同步到包含所有
-`*_ascend_pt` rank 目录的 profiler 根目录，不复制大体积 rank 数据。下载并导入这
-一个根目录，即可让 Insight 同时关联 Timeline、Memory、Operator、Summary 和
-Communication。`mindstudio_insight_handoff.json` 会记录这个唯一首选导入路径。
+Cluster 分析直接以 profiler 根目录作为官方 `-o`，因此唯一的
+`cluster_analysis_output/` 与所有 `*_ascend_pt` rank 目录天然位于同一棵树中，
+不存在同步副本。下载并导入这一个根目录，即可让 Insight 同时关联 Timeline、
+Memory、Operator、Summary 和 Communication。进阶 recipe 同样以该根目录为
+`-o`，并依次请求 `--export_type=db` 和 `--export_type=text`：表写入同一个
+`cluster_analysis.db`，CSV 等文本交付件写入官方命名的子目录。
+`mindstudio_insight_handoff.json` 会记录这个唯一首选导入路径。
 
 `--capture` 和 `--analyze` 是高级分阶段接口：用于采集机不安装分析工具、跨机器搬运
-raw，或对同一 capture 补跑某个工具。每个阶段拥有独立状态和目录；补跑 Cluster
+raw，或对同一 capture 补跑某个工具。每个阶段拥有独立状态；补跑 Cluster
 不会删除 Advisor，`--force --analyze` 也只重做本次明确选择的阶段：
 
 ```bash
