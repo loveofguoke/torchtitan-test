@@ -1118,7 +1118,12 @@ def _find_profiler_directory(run_directory: Path) -> Path:
     return next((path for path in candidates if path.is_dir()), candidates[0])
 
 
-def _merge_legacy_analysis_tree(source: Path, destination: Path) -> None:
+def _merge_legacy_analysis_tree(
+    source: Path,
+    destination: Path,
+    *,
+    discard_conflicts: bool = False,
+) -> None:
     """Move derived files without mixing conflicting experiment generations."""
 
     if not source.exists():
@@ -1132,6 +1137,14 @@ def _merge_legacy_analysis_tree(source: Path, destination: Path) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
             if path.read_bytes() != target.read_bytes():
+                if discard_conflicts:
+                    # Legacy advanced recipes used separate output roots, so
+                    # each produced a different file named cluster_analysis.db.
+                    # SQLite databases cannot be combined as files. Keep the
+                    # canonical base delivery and let the changed cluster-stage
+                    # identity rerun the recipe against that database.
+                    path.unlink()
+                    continue
                 raise RuntimeError(
                     "refusing to merge conflicting performance analysis "
                     f"outputs: {path} -> {target}"
@@ -1147,6 +1160,11 @@ def _adopt_legacy_cluster_outputs(run_directory: Path) -> Path:
 
     profiler_directory = _find_profiler_directory(run_directory)
     delivery = profiler_directory / "cluster_analysis_output"
+    # Adopt the official base Cluster delivery first. Legacy per-recipe
+    # databases below are derived outputs and must never replace this database.
+    _merge_legacy_analysis_tree(
+        run_directory / "cluster" / "cluster_analysis_output", delivery
+    )
     legacy_advanced = delivery / "advanced"
     if legacy_advanced.is_dir():
         for recipe_root in tuple(legacy_advanced.iterdir()):
@@ -1155,12 +1173,10 @@ def _adopt_legacy_cluster_outputs(run_directory: Path) -> Path:
                 _merge_legacy_analysis_tree(
                     nested if nested.is_dir() else recipe_root,
                     delivery,
+                    discard_conflicts=True,
                 )
         if legacy_advanced.is_dir() and not any(legacy_advanced.iterdir()):
             legacy_advanced.rmdir()
-    _merge_legacy_analysis_tree(
-        run_directory / "cluster" / "cluster_analysis_output", delivery
-    )
     run_level_advanced = run_directory / "cluster" / "advanced"
     if run_level_advanced.is_dir():
         for recipe_root in tuple(run_level_advanced.iterdir()):
@@ -1169,6 +1185,7 @@ def _adopt_legacy_cluster_outputs(run_directory: Path) -> Path:
                 _merge_legacy_analysis_tree(
                     nested if nested.is_dir() else recipe_root,
                     delivery,
+                    discard_conflicts=True,
                 )
         if run_level_advanced.is_dir() and not any(run_level_advanced.iterdir()):
             run_level_advanced.rmdir()
@@ -1187,14 +1204,18 @@ def _adopt_legacy_cluster_outputs(run_directory: Path) -> Path:
     for name in ("cluster_time_summary", "free_analysis"):
         source_root = run_directory / name
         _merge_legacy_analysis_tree(
-            source_root / "cluster_analysis_output", delivery
+            source_root / "cluster_analysis_output",
+            delivery,
+            discard_conflicts=True,
         )
         if source_root.is_dir() and not any(source_root.iterdir()):
             source_root.rmdir()
     for source in run_directory.glob("communication_bottleneck_rank_*"):
         if source.is_dir():
             _merge_legacy_analysis_tree(
-                source / "cluster_analysis_output", delivery
+                source / "cluster_analysis_output",
+                delivery,
+                discard_conflicts=True,
             )
             if source.is_dir() and not any(source.iterdir()):
                 source.rmdir()

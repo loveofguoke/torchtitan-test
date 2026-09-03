@@ -60,11 +60,16 @@ class MindStudioPerformanceTest(unittest.TestCase):
             )
             recipe = run / "free_analysis" / "cluster_analysis_output"
             recipe.mkdir(parents=True)
+            (recipe / "cluster_analysis.db").write_bytes(b"legacy-recipe-db")
             (recipe / "free_analysis.csv").write_text("x\n", encoding="utf-8")
 
             delivery = _adopt_legacy_cluster_outputs(run)
 
             self.assertTrue((delivery / "cluster_analysis.db").is_file())
+            self.assertEqual(
+                (delivery / "cluster_analysis.db").read_bytes(),
+                b"db",
+            )
             self.assertTrue((delivery / "free_analysis.csv").is_file())
             self.assertFalse((run / "cluster").exists())
             self.assertFalse((run / "free_analysis").exists())
