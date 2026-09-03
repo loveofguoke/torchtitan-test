@@ -32,6 +32,9 @@ EXPERIMENT_ROOTS = (
     "mindstudio_runs",
     "mindstudio_artifacts",
     "mindstudio_reports",
+    "nsys_runs",
+    "nsys_artifacts",
+    "nsys_reports",
     "stability_fixtures",
     "stability_artifacts",
     "stability_runs",
@@ -76,6 +79,7 @@ ANALYSIS_RUN_FILES = {
     "report.md",
     "run_state.json",
     "runtime.log",
+    "training.log",
     "training_contract.json",
 }
 ANALYSIS_RUN_DIRECTORIES = {
@@ -92,6 +96,7 @@ ANALYSIS_RUN_DIRECTORIES = {
     "reports",
     "tensorboard",
     "tool_commands",
+    "stats",
 }
 
 
@@ -265,6 +270,21 @@ def _analysis_archive_filter(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
             ".log",
             ".md",
             ".xlsx",
+        } else None
+
+    # Nsight Systems reports can be very large. Analysis archives retain the
+    # exported SQLite database, CSV summaries, logs, and manifest; the source
+    # .nsys-rep remains available only in lossless full archives.
+    if root == "nsys_artifacts":
+        if member.isdir():
+            return member
+        return member if path.suffix.lower() in {
+            ".csv",
+            ".html",
+            ".json",
+            ".log",
+            ".md",
+            ".sqlite",
         } else None
 
     # Reports and other compact artifacts are already curated by their experiment.

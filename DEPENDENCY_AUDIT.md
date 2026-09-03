@@ -28,6 +28,7 @@ artifact checksums. Git cleanliness is diagnostic, not a pass/fail condition.
 | precision fixture/capture | self-consistency suite, migration suite, graph and combination precision |
 | graph mode or Turbo compile API | graph debug, graph smoke, graph precision/performance, combination |
 | profiler API or output layout | performance capture, preset-all matrix, stack/flamegraph and memory-timeline rendering, TensorBoard discovery, offline analysis, curated explorations, combination reports, Release |
+| Nsight Systems CLI or GPU performance output layout | `glm5_2_nsys` capture, stats/export, report paths, lifecycle tests, GPU/NPU comparison inputs, Release discovery |
 | graph diagnostics output | per-rank `TORCH_TRACE`, `tlparse`, Inductor FX/IR/code inventory, combination reports, Release |
 | external profiler/compiler/accuracy tool or environment dependency | common dependency inventory, performance, graph and MindStudio guides/READMEs, combination reports, Release portability |
 | MindStudio toolchain lock/bootstrap/doctor | `glm5_2_mindstudio` capture/compare identity, source-install guide, server validation matrix, Release provenance |
