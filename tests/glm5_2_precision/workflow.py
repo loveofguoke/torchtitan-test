@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,15 @@ from .artifacts import (
     read_captured_metrics,
 )
 from .standards import PrecisionStandard
+from .msprobe_tensorboard import (
+    MSPROBE_CONFIG_PATH_ENV,
+    MsprobeCaptureConfig,
+    build_tensorboard_assets,
+    serve_tensorboard,
+    tensorboard_command,
+    validate_dump_directory,
+    write_capture_config,
+)
 
 
 ExperimentKind = Literal["migration", "self_consistency"]
@@ -426,6 +436,27 @@ def _run_directory(
     return root / config.run_root / config.scenario_name / name
 
 
+def _msprobe_run_directory(
+    root: Path,
+    config: FormalExperimentConfig,
+    role: str,
+    endpoint: TrainingEndpoint,
+    repeat: int,
+) -> Path:
+    return Path(
+        str(_run_directory(root, config, role, endpoint, repeat)) + "-msprobe"
+    )
+
+
+def _msprobe_visualization_directory(
+    root: Path, config: FormalExperimentConfig
+) -> Path:
+    directory = root / config.report_root / config.scenario_name
+    if config.report_subdirectory:
+        directory /= config.report_subdirectory
+    return directory / "msprobe_tensorboard"
+
+
 def _seed_checkpoint_path(fixture_directory: Path) -> Path:
     manifest_path = fixture_directory / "fixture.json"
     if not manifest_path.is_file():
@@ -573,6 +604,7 @@ def _torchrun_command(
     endpoint: TrainingEndpoint,
     dump_folder: Path,
     checkpoint_path: Path,
+    entry_module: str = "tests.glm5_2_precision.capture_metrics",
 ) -> list[str]:
     if (
         config.training.global_batch_size
@@ -617,7 +649,7 @@ def _torchrun_command(
         "--role=rank",
         "--tee=3",
         "-m",
-        "tests.glm5_2_precision.capture_metrics",
+        entry_module,
         "--module",
         config.training.module,
         "--config",
@@ -914,6 +946,190 @@ def capture_endpoint(
     )
 
 
+def capture_msprobe_endpoint(
+    root: Path,
+    config: FormalExperimentConfig,
+    *,
+    role: Literal["reference", "candidate"],
+    repeat: int,
+    capture_config: MsprobeCaptureConfig,
+    force: bool,
+    resume: bool = False,
+) -> Path:
+    """Run a separate diagnostic capture for msProbe visualizations.
+
+    This deliberately does not create a formal ``PrecisionArtifact`` because
+    msProbe hooks may add synchronization and perturb the measured run.
+    """
+
+    if force and resume:
+        raise ValueError("force and resume are mutually exclusive")
+    endpoint = config.reference if role == "reference" else config.candidate
+    if endpoint.num_nodes != 1:
+        raise ValueError(
+            "msProbe TensorBoard capture currently requires a single-node endpoint"
+        )
+    if not 1 <= repeat <= endpoint.repeats:
+        raise ValueError(f"repeat must be in [1, {endpoint.repeats}]")
+    if any(rank >= endpoint.topology.world_size for rank in capture_config.ranks):
+        raise ValueError(
+            "every msProbe rank must be less than endpoint world_size="
+            f"{endpoint.topology.world_size}"
+        )
+    if any(step >= config.training.steps for step in capture_config.steps):
+        raise ValueError(
+            "msProbe uses zero-based step indexes; every selected step must be "
+            f"less than training.steps={config.training.steps}"
+        )
+    diagnostic_training = replace(
+        config.training, steps=max(capture_config.steps) + 1
+    )
+    diagnostic_config = replace(config, training=diagnostic_training)
+
+    fixture_directory = _fixture_directory(root, config)
+    checkpoint_path = _seed_checkpoint_path(fixture_directory)
+    fixture_manifest = json.loads(
+        (fixture_directory / "fixture.json").read_text(encoding="utf-8")
+    )
+    run_directory = _msprobe_run_directory(
+        root, config, role, endpoint, repeat
+    )
+    dump_path = run_directory / "msprobe_dump"
+    manifest_path = run_directory / "msprobe_capture.json"
+    if run_directory.exists():
+        if resume:
+            completed = False
+            if manifest_path.is_file():
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                expected_capture = json.loads(json.dumps(asdict(capture_config)))
+                try:
+                    validate_dump_directory(dump_path)
+                except RuntimeError:
+                    pass
+                else:
+                    completed = (
+                        manifest.get("role") == role
+                        and manifest.get("repeat") == repeat
+                        and manifest.get("endpoint") == asdict(endpoint)
+                        and manifest.get("msprobe") == expected_capture
+                    )
+            if completed:
+                print(f"Skipping completed msProbe capture: {run_directory}")
+                return run_directory
+            print(f"Existing msProbe capture is incomplete; rerunning: {run_directory}")
+            shutil.rmtree(run_directory)
+        elif not force:
+            raise FileExistsError(
+                "msProbe capture already exists; pass --resume to reuse it or "
+                f"--force to replace it: {run_directory}"
+            )
+        else:
+            shutil.rmtree(run_directory)
+    run_directory.mkdir(parents=True)
+
+    metrics_path = run_directory / "raw_metrics.jsonl"
+    runtime_log = run_directory / "runtime.log"
+    config_path = write_capture_config(
+        run_directory / "msprobe_config.json",
+        dump_path=dump_path,
+        config=capture_config,
+    )
+
+    environment = os.environ.copy()
+    environment.update(endpoint.environment)
+    environment[endpoint.visible_devices_env] = endpoint.visible_devices
+    environment["TORCHTITAN_DEVICE"] = endpoint.torchtitan_device
+    environment["GLM5_PRECISION_METRICS_PATH"] = str(metrics_path)
+    environment[MSPROBE_CONFIG_PATH_ENV] = str(config_path)
+    if config.training.fixed_global_batches:
+        from .fixed_batches import FIXED_BATCHES_ENV
+
+        fixed_batches_path = fixture_directory / str(
+            fixture_manifest["fixed_batches_relative_path"]
+        )
+        expected_digest = fixture_manifest["fixed_batches_sha256"]
+        if not fixed_batches_path.is_file():
+            raise FileNotFoundError(fixed_batches_path)
+        if _directory_digest(fixed_batches_path) != expected_digest:
+            raise RuntimeError(f"fixed batch checksum mismatch: {fixed_batches_path}")
+        environment[FIXED_BATCHES_ENV] = str(fixed_batches_path)
+
+    metrics_rank = (
+        0
+        if endpoint.topology.pipeline_parallel_degree == 1
+        or endpoint.topology.pipeline_parallel_schedule == "ZBVZeroBubble"
+        else (
+            endpoint.topology.world_size
+            // endpoint.topology.pipeline_parallel_degree
+        )
+        * (endpoint.topology.pipeline_parallel_degree - 1)
+    )
+    environment["LOG_RANK"] = str(metrics_rank)
+    command = _torchrun_command(
+        root=root,
+        config=diagnostic_config,
+        endpoint=endpoint,
+        dump_folder=run_directory / "trainer_output",
+        checkpoint_path=checkpoint_path,
+        entry_module="tests.glm5_2_precision.capture_metrics_with_msprobe",
+    )
+    _run_process(
+        command,
+        root=root,
+        environment=environment,
+        log_path=runtime_log,
+    )
+    validate_dump_directory(dump_path)
+
+    capture_manifest = {
+        "schema": "torchtitan.glm5_2.msprobe_capture",
+        "schema_version": 1,
+        "role": role,
+        "repeat": repeat,
+        "fixture_scenario_name": config.scenario_name,
+        "endpoint": asdict(endpoint),
+        "training": _normalized_training(diagnostic_training),
+        "msprobe": asdict(capture_config),
+        "config_path": str(config_path),
+        "dump_path": str(dump_path),
+        "command": command,
+        "source": _source_metadata(root),
+        "warning": (
+            "Diagnostic capture only: msProbe hooks may add synchronization; "
+            "do not use these metrics for formal precision or performance claims."
+        ),
+    }
+    _write_json(manifest_path, capture_manifest)
+    return run_directory
+
+
+def build_msprobe_visualization(
+    root: Path,
+    config: FormalExperimentConfig,
+    *,
+    repeat: int,
+    force: bool,
+    resume: bool = False,
+) -> Path:
+    """Build one TensorBoard logdir from paired reference/candidate dumps."""
+
+    if config.reference.num_nodes != 1 or config.candidate.num_nodes != 1:
+        raise ValueError("msProbe TensorBoard visualization requires single-node runs")
+    reference_run = _msprobe_run_directory(
+        root, config, "reference", config.reference, repeat
+    )
+    candidate_run = _msprobe_run_directory(
+        root, config, "candidate", config.candidate, repeat
+    )
+    return build_tensorboard_assets(
+        reference_dump=reference_run / "msprobe_dump",
+        candidate_dump=candidate_run / "msprobe_dump",
+        output=_msprobe_visualization_directory(root, config),
+        force=force,
+        resume=resume,
+    )
+
+
 def _apply_endpoint_overrides(
     endpoint: TrainingEndpoint,
     *,
@@ -957,7 +1173,17 @@ def run_formal_cli(
         choices=("reference", "candidate"),
         help="capture one endpoint",
     )
+    actions.add_argument(
+        "--capture-msprobe",
+        choices=("reference", "candidate"),
+        help="capture one endpoint with diagnostic msProbe hooks",
+    )
     actions.add_argument("--compare", action="store_true", help="generate report")
+    actions.add_argument(
+        "--visualize-msprobe",
+        action="store_true",
+        help="build paired msProbe hierarchy/trend databases for TensorBoard",
+    )
     actions.add_argument("--list-topologies", action="store_true")
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--topology", choices=sorted(topology_registry))
@@ -982,10 +1208,59 @@ def run_formal_cli(
         action="store_true",
         help="reuse validated completed work and rerun only incomplete captures",
     )
+    parser.add_argument(
+        "--msprobe-step",
+        action="append",
+        type=int,
+        help="zero-based training step to dump; repeat for multiple steps (default: 0)",
+    )
+    parser.add_argument(
+        "--msprobe-rank",
+        action="append",
+        type=int,
+        help="rank to dump; repeat for multiple ranks (default: all ranks)",
+    )
+    parser.add_argument(
+        "--msprobe-task",
+        choices=("statistics", "tensor"),
+        default="statistics",
+        help="statistics is recommended for the first visualization pass",
+    )
+    parser.add_argument(
+        "--msprobe-level",
+        choices=("L0", "mix"),
+        default="mix",
+        help="both levels preserve model structure required by TensorBoard",
+    )
+    parser.add_argument(
+        "--serve-tensorboard",
+        action="store_true",
+        help="serve the generated visualization after --visualize-msprobe",
+    )
+    parser.add_argument("--tensorboard-port", type=int, default=6006)
+    parser.add_argument(
+        "--tensorboard-bind-all",
+        action="store_true",
+        help="make TensorBoard reachable off-host (use only on a trusted network)",
+    )
     args = parser.parse_args()
 
     if args.force and args.resume:
         parser.error("--force and --resume are mutually exclusive")
+    msprobe_capture_options = (
+        args.msprobe_step,
+        args.msprobe_rank,
+        args.msprobe_task != "statistics",
+        args.msprobe_level != "mix",
+    )
+    if any(msprobe_capture_options) and not args.capture_msprobe:
+        parser.error("msProbe capture options require --capture-msprobe")
+    if (
+        args.serve_tensorboard
+        or args.tensorboard_bind_all
+        or args.tensorboard_port != 6006
+    ) and not args.visualize_msprobe:
+        parser.error("TensorBoard serving options require --visualize-msprobe")
 
     if args.list_topologies:
         for name, topology in topology_registry.items():
@@ -1056,6 +1331,45 @@ def run_formal_cli(
             print("Capture completed; this node does not own the metrics artifact.")
         else:
             print(f"Captured artifact: {path}")
+    elif args.capture_msprobe:
+        steps = tuple(sorted(set(args.msprobe_step or (0,))))
+        ranks = tuple(sorted(set(args.msprobe_rank or ())))
+        path = capture_msprobe_endpoint(
+            root,
+            config,
+            role=args.capture_msprobe,
+            repeat=args.repeat,
+            capture_config=MsprobeCaptureConfig(
+                steps=steps,
+                ranks=ranks,
+                task=args.msprobe_task,
+                level=args.msprobe_level,
+            ),
+            force=args.force,
+            resume=args.resume,
+        )
+        print(f"Captured msProbe diagnostics: {path}")
+    elif args.visualize_msprobe:
+        path = build_msprobe_visualization(
+            root,
+            config,
+            repeat=args.repeat,
+            force=args.force,
+            resume=args.resume,
+        )
+        command = tensorboard_command(
+            path,
+            port=args.tensorboard_port,
+            bind_all=args.tensorboard_bind_all,
+        )
+        print(f"msProbe TensorBoard logdir: {path}")
+        print("Launch TensorBoard: " + shlex.join(command))
+        if args.serve_tensorboard:
+            serve_tensorboard(
+                path,
+                port=args.tensorboard_port,
+                bind_all=args.tensorboard_bind_all,
+            )
     else:
         from .report import compare_and_write_report
 

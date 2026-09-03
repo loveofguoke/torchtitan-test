@@ -182,6 +182,63 @@ standard then requires bitwise-identical reference/candidate loss and grad norm.
 Parallel decomposition changes reduction order, so the supplied example uses
 the migration fallback standard while still requiring exact candidate repeats.
 
+## msProbe TensorBoard diagnostics
+
+The msProbe path is deliberately separate from formal `--capture` runs.
+`PrecisionDebugger` hooks can add device synchronization, so these diagnostic
+runs must not be used for formal loss/gradient gates or throughput claims.
+
+Install a `mindstudio-probe` build containing both the `tb_graph_ascend` and
+`trend_analyzer` modules. Prepare the normal shared fixture first, then capture
+the reference and candidate. The default captures zero-based step 0 on every
+rank with `task=statistics` and `level=mix`, which is the recommended low-volume
+first pass and supplies both model structure and tensor statistics. Diagnostic
+training stops immediately after the last selected msProbe step:
+
+```bash
+python tests/glm5_2_precision/single_vs_distributed_npu_eager_benchmark.py \
+  --data --resume
+
+python tests/glm5_2_precision/single_vs_distributed_npu_eager_benchmark.py \
+  --capture-msprobe reference --repeat 1 --resume
+
+python tests/glm5_2_precision/single_vs_distributed_npu_eager_benchmark.py \
+  --capture-msprobe candidate --repeat 1 --resume
+```
+
+Select additional steps or a subset of ranks by repeating `--msprobe-step` or
+`--msprobe-rank`. Use `--msprobe-task tensor` only after the statistics view has
+narrowed the problem because a full tensor dump is much larger. Both `L0` and
+`mix` are accepted; `mix` is the default because it exposes module and API
+structure to the hierarchy view.
+
+After the paired captures complete, generate the hierarchy comparison and two
+trend databases:
+
+```bash
+python tests/glm5_2_precision/single_vs_distributed_npu_eager_benchmark.py \
+  --visualize-msprobe --repeat 1 --resume
+```
+
+The command prints a local-only TensorBoard launch command. It can also start
+the server directly:
+
+```bash
+python tests/glm5_2_precision/single_vs_distributed_npu_eager_benchmark.py \
+  --visualize-msprobe --repeat 1 --resume --serve-tensorboard
+```
+
+Use `--tensorboard-bind-all` only on a trusted network. TensorBoard exposes the
+`GRAPH_ASCEND` tab for the reference/candidate hierarchy comparison and the
+`TREND ANALYZER` tab for Step/Rank/Module heatmaps and curves. The generated
+logdir is under the experiment's `<report_root>/<scenario>/msprobe_tensorboard/`
+(or the candidate topology subdirectory for a shared-reference matrix). It contains a
+`.vis.db`, `reference.trend.db`, `candidate.trend.db`, and a JSON manifest with
+the exact official msProbe commands. The hierarchy database compares the first
+captured local rank at the first captured step, which remains portable across
+single/FSDP/DDP layouts; both trend databases retain every selected step and
+rank.
+
 ## Multi-node capture
 
 Define or select a topology whose `world_size` covers every node. The built-in
