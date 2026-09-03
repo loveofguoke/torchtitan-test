@@ -18,8 +18,14 @@ from tests.glm5_2_precision.workflow import (
 
 
 OfficialWorkflow = Literal["config-check", "migration", "compile", "monitor"]
-DumpTask = Literal["statistics", "tensor"]
-DumpLevel = Literal["L0", "L1", "mix"]
+DumpTask = Literal[
+    "statistics",
+    "tensor",
+    "structure",
+    "overflow_check",
+    "nan_check",
+]
+DumpLevel = Literal["L0", "L1", "L2", "mix"]
 
 
 def _validate_repository_root(name: str, value: str) -> None:
@@ -49,7 +55,7 @@ class MsProbeDumpConfig:
     module_or_api_list: tuple[str, ...] = ()
     tensor_list: tuple[str, ...] = ()
     data_mode: tuple[str, ...] = ("all",)
-    summary_mode: Literal["statistics", "md5"] = "statistics"
+    summary_mode: Literal["statistics", "md5", "xor"] = "statistics"
 
     def __post_init__(self) -> None:
         if not self.steps or min(self.steps) < 0:
@@ -66,6 +72,8 @@ class MsProbeDumpConfig:
             raise ValueError("msProbe async dump does not support md5 summaries")
         if self.async_dump and self.task == "tensor" and not self.module_or_api_list:
             raise ValueError("msProbe async tensor dump requires a non-empty list")
+        if self.task == "nan_check" and self.level != "L1":
+            raise ValueError("msProbe nan_check requires dump level L1")
 
     def official_config(self, dump_path: Path) -> dict[str, Any]:
         """Return the JSON object consumed by ``PrecisionDebugger``."""
@@ -74,8 +82,9 @@ class MsProbeDumpConfig:
             "scope": list(self.scope),
             "list": list(self.module_or_api_list),
             "data_mode": list(self.data_mode),
-            "summary_mode": self.summary_mode,
         }
+        if self.task in {"statistics", "tensor"}:
+            task_options["summary_mode"] = self.summary_mode
         if self.task == "statistics":
             task_options["tensor_list"] = list(self.tensor_list)
         return {
@@ -220,8 +229,6 @@ class MindStudioExperimentConfig:
     run_root: str = "mindstudio_runs"
     artifact_root: str = "mindstudio_artifacts"
     report_root: str = "mindstudio_reports"
-    formal_precision_reports: tuple[str, ...] = ()
-    performance_reports: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("fixture_root", "run_root", "artifact_root", "report_root"):

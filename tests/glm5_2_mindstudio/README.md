@@ -13,7 +13,8 @@
   -> 修改后使用相同契约执行 A/B 验收
 ```
 
-当前代码只位于 `torchtitan-test`。它通过源码安装的 `torchtitan` 和
+当前代码只位于 `torchtitan-test`。这是一套独立实验，不读取、不链接、也不以
+`glm5_2_precision` 或 parity 的报告作为精度判据。它通过源码安装的 `torchtitan` 和
 `TorchTitanTurbo` 运行模型，不修改 TorchTitan 数学实现，也不在测试仓库
 复制 NPU patch。
 
@@ -29,18 +30,20 @@ Profiler 只登记正确用途，未完成目标服务器验证前不会伪造�
 | --- | --- | --- |
 | 工具源码 checkout、安装计划、版本/路径 doctor | 已实现 | `tools/bootstrap_mindstudio_toolchain.py`、`toolchain.py` |
 | 固定 token plan 和 seed checkpoint | 已实现 | 每个 benchmark 的 `--data` |
-| GPU/NPU 模块级、API 级采集 | 已实现 | `migration_benchmark.py` |
+| GPU/NPU 模块级、API 级、kernel 级采集 | 已实现 | `migration_benchmark.py` 的 `L0/L1/mix/L2` |
+| 同一 GPU 官方链路自检 | 已实现 | `self_consistency_benchmark.py` |
 | 官方离线 `msprobe compare` | 已实现 | `migration_benchmark.py --compare` |
 | NPU eager/compile 模块前向与反向比较 | 已实现 | `compile_accuracy_benchmark.py` |
 | GPU/NPU 训练前配置检查与逐 rank compare | 已实现 | `configuration_check_benchmark.py` |
 | API 精度预检与两端预检结果比对 | 已实现 | `--precheck`、`--precheck-compare` |
-| 训练状态监控 | 已实现，独立于短时 dump capture | `training_monitor_benchmark.py` |
+| 长程训练状态监控 | 已实现，step 数按问题复现窗口显式指定 | `training_monitor_benchmark.py` |
 | 分级图可视化与 TensorBoard 索引 | 已实现 | migration 完成 L0/mix capture 后执行 `--graph-visualize` |
 | NPU 性能采集、分析、可视化 | 已实现标准入口 | `performance_benchmark.py`、`docs/PERFORMANCE_WORKFLOW_ZH.md` |
 | 推理部署、算子生产交付 | 尚未纳入当前训练工作流 | 能力边界见官方文档矩阵 |
 
 “命令成功”只说明官方工具阶段完成，不等于精度通过。最终判断必须阅读
-官方结果中的 `Result`、`Err_Message` 和各项误差指标，并结合端到端训练结果。
+官方结果中的 `Result`、`Err_Message` 和各项误差指标，并结合 msProbe Monitor V2
+的长程训练状态证据。
 
 ## 2. 文档入口
 
@@ -95,7 +98,8 @@ python -m pip check
 ### 3.2 源码安装官方工具
 
 默认脚本在仓库外 clone `msprobe` 和 `msprof-analyze`。msProbe wheel 会按官方
-方式包含 `tb_graph_ascend`，因此构建机还需官方推荐的 Node.js 20.19.3 与 npm
+方式包含 `tb_graph_ascend`、`trend_analyzer`、`nan_check` 和
+`xor_checksum`，因此构建机还需官方推荐的 Node.js 20.19.3 与 npm
 10.8.2。先查看完整计划：
 
 ```bash
@@ -187,6 +191,24 @@ python tests/glm5_2_mindstudio/migration_benchmark.py \
 ```
 
 ## 4. GPU/NPU 模块与 API 精度迁移
+
+在跨设备实验前，可以先在 GPU 服务器验证 msProbe 采集和官方 compare 闭环：
+
+```bash
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+
+python tests/glm5_2_mindstudio/self_consistency_benchmark.py \
+  --data --data-device cuda --topology single --force
+python tests/glm5_2_mindstudio/self_consistency_benchmark.py \
+  --capture reference --topology single
+python tests/glm5_2_mindstudio/self_consistency_benchmark.py \
+  --capture candidate --topology single
+python tests/glm5_2_mindstudio/self_consistency_benchmark.py \
+  --compare --topology single --xlsx
+```
+
+该入口使用两次独立 GPU capture，验证固定输入、dump 完整性和官方 comparator；
+它不包含 NPU，因此不产生 GPU/NPU 迁移结论。
 
 下面命令对应最常用的单卡标准流程。fixture 可以在 GPU 或 NPU 任一端生成，
 但只生成一次并同步到另一端。
@@ -600,7 +622,9 @@ python tests/glm5_2_mindstudio/configuration_check_benchmark.py \
 ## 7. 官方训练状态监控
 
 Monitor V2 是长时间、低开销的异常筛查，不应让短时 L0/L1 dump capture 跑数百
-step。默认仅监控 rank 0 的 `weight_grad`，在 TorchTitan 完成一次 optimizer step
+step。官方没有固定 5000-step 标准；命令必须用 `--training-steps` 明确覆盖预期的
+问题复现窗口。默认从 rank 0 的 `weight_grad` 开始；module、optimizer、param 和
+cc 按问题现象显式开启。在 TorchTitan 完成一次 optimizer step
 后手动调用一次 `mon.step()`；配置固定 `patch_optimizer_step=false`，避免重复计步。
 
 ```bash
@@ -611,17 +635,17 @@ python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
 
 # GPU reference
 python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
-  --capture reference --topology single --training-steps 100
+  --capture reference --topology single --training-steps 5000
 
 # NPU candidate（GPU/NPU 服务器分开时，在 NPU 端同步 fixture 后执行）
 unset CUDA_VISIBLE_DEVICES
 export ASCEND_RT_VISIBLE_DEVICES=4
 python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
-  --capture candidate --topology single --training-steps 100
+  --capture candidate --topology single --training-steps 5000
 
 # 同步 artifact 后生成索引；不虚构官方不存在的 cross-device verdict
 python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
-  --compare --topology single --training-steps 100
+  --compare --topology single --training-steps 5000
 ```
 
 指定一个分布式拓扑或完整矩阵时，四个阶段的 topology 选择必须一致。例如：
@@ -630,23 +654,23 @@ python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
 # 代表性分布式拓扑
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
-  --capture candidate --topology fsdp8 --training-steps 100
+  --capture candidate --topology fsdp8 --training-steps 5000
 python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
-  --compare --topology fsdp8 --training-steps 100
+  --compare --topology fsdp8 --training-steps 5000
 
 # all：分别在 GPU/NPU 端 capture，汇合 artifact 后 compare
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
   --data --data-device cuda --topology all
 python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
-  --capture reference --topology all --training-steps 100
+  --capture reference --topology all --training-steps 5000
 
 unset CUDA_VISIBLE_DEVICES
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
-  --capture candidate --topology all --training-steps 100
+  --capture candidate --topology all --training-steps 5000
 python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
-  --compare --topology all --training-steps 100
+  --compare --topology all --training-steps 5000
 ```
 
 `module`、
@@ -752,6 +776,8 @@ Profiler 产物可进入 offline、advisor、cluster、compare 和 Insight 中�
 | `--precheck reference|candidate` | 对已有 L1/mix capture 逐 step、逐 rank 运行 `acc_check`/`multi_acc_check` | 只适用于 migration |
 | `--precheck-compare` | 用 `api_precision_compare` 比较两端 details CSV | 要求两端 capture 和 pre-check 都完整 |
 | `--graph-visualize` | 对完整 L0/mix migration capture 运行官方分级图比较 | 生成 `.vis.db` 与 TensorBoard 启动索引，不启动服务 |
+| `--overflow-check reference|candidate` | 对已完成 dump 运行官方首个 INF/NaN 节点分析 | 每个 step 独立保存 msProbe 输出和日志 |
+| `--trend reference|candidate` | 将已有 L0/mix dump 或 Monitor V2 CSV 转成官方趋势数据库 | 生成 `.trend.db`，在 TensorBoard 的 Trend Analyzer 中查看 |
 | `--compare` | 离线读取完整 artifact 并运行/汇总官方比较 | 不启动模型 |
 | `--doctor` | 只读检查工具和环境 | 不自动修复 |
 | `--doctor-device cuda|npu` | 指定 capture 端的 readiness scope | 未唯一 export 设备时必填 |
@@ -759,8 +785,8 @@ Profiler 产物可进入 offline、advisor、cluster、compare 和 Insight 中�
 | `--topology NAME` | 单个拓扑或 `all` | 默认 `single` |
 | `--topologies a,b` | 显式拓扑集合 | 与 `--topology` 选择语义互斥 |
 | `--data-device cuda|npu` | 指定 fixture 生成端 | 也可只 export 一种可见设备变量 |
-| `--dump-task statistics|tensor` | 统计量或全量 tensor | 默认 statistics |
-| `--level L0|L1|mix` | 模块、API 或两者 | 默认 L0 |
+| `--dump-task statistics|tensor|structure|overflow_check|nan_check` | 统计量、完整 tensor、仅结构、软件溢出检查或 NPU 寄存器 NaN/Inf 检查 | 默认 statistics；nan_check 只允许 NPU L1 |
+| `--level L0|L1|L2|mix` | 模块、API、kernel 或模块+API | 默认 L0；L2 仅在算子级下钻时使用 |
 | `--dump-step N` | msProbe 0-based step | 默认 0；训练日志第一个 step 通常是 1 |
 | `--dump-steps 0,2` | 多个 0-based dump step | 与 `--dump-step` 互斥 |
 | `--dump-ranks 0,3` | 只采指定 global rank | 空配置按官方语义采全部 |
@@ -768,7 +794,7 @@ Profiler 产物可进入 offline、advisor、cluster、compare 和 Insight 中�
 | `--module-or-api VALUE` | 指定官方 module/API list，可重复 | migration capture |
 | `--tensor-list VALUE` | 指定 statistics tensor 类别，可重复 | migration capture |
 | `--data-mode a,b` | 覆盖 msProbe data_mode | migration capture |
-| `--summary-mode statistics|md5` | 统计或校验摘要 | migration capture |
+| `--summary-mode statistics|md5|xor` | 统计、CRC-32 或轻量 XOR 摘要 | xor 使用源码构建的 xor_checksum 加速模块 |
 | `--async-dump` | 开启官方异步 dump | 先按目标版本验证完整性 |
 | `--no-extra-info` | 关闭官方 extra_info | 会减少调用栈等定位信息 |
 | `--backend NAME` | compile checker backend | 默认由 benchmark 配置定义 |
@@ -800,6 +826,13 @@ Profiler 产物可进入 offline、advisor、cluster、compare 和 Insight 中�
 | `--monitor-target TEXT` | module 名字包含过滤 | 可重复 |
 | `--graph-overflow-check` | 标注分级图溢出/下溢 | graph_visualize only |
 | `--graph-progress-log` | 打印官方构图进度 | graph_visualize only |
+| `--graph-side compare|reference|candidate` | 选择双图比较或单边构图 | 默认 compare |
+| `--layer-mapping FILE` | 给双图比较传递官方 `-lm mapping.yaml` | 跨框架/命名不一致时使用 |
+| `--enable-layer-mapping` | 传递不带文件的官方 `-lm` | 仅在官方内置映射适用时使用 |
+| `--trend-format auto|dump|monitor` | `msprobe data2db` 输入格式 | 默认 auto |
+| `--trend-mapping FILE` | 趋势解析时重写/统一模块名称 | JSON mapping |
+| `--trend-processes N` | Monitor CSV 趋势解析进程数 | 默认 1；dump 暂不支持多进程加速 |
+| `--no-trend-micro-step` | 关闭趋势数据库的 micro-step 拆分 | 默认开启 |
 | `--collector NAME` | 性能采集入口 | 默认 `torch_npu_profiler`；底层或黑盒整进程采集可显式选择 `msprof` |
 | `--collector-arg=ARG` | 追加当前 CANN 版本确认过的 msProf 参数 | 可重复；不能覆盖 lifecycle 管理的 output/application/dynamic |
 | `--preset NAME` | Ascend PyTorch Profiler 策略 | msProf 保持 `overview` 占位，不接受 `all` |

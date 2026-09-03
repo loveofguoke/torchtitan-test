@@ -57,9 +57,11 @@ from .msprobe_adapter import (
     config_check_compare_command,
     find_dump_compare_input,
     find_precheck_details,
+    overflow_check_command,
     precheck_command,
     precheck_compare_command,
     summarize_official_results,
+    trend_data2db_command,
     validate_compile_report,
     write_compare_invocation,
 )
@@ -737,14 +739,16 @@ def _validate_dump_outputs(
     steps: Sequence[int],
     configured_ranks: Sequence[int],
     world_size: int,
+    task: str = "statistics",
 ) -> None:
     ranks = tuple(configured_ranks) or tuple(range(world_size))
+    required_name = "construct.json" if task == "structure" else "dump.json"
     missing = [
-        official_output / f"step{step}" / f"rank{rank}" / "dump.json"
+        official_output / f"step{step}" / f"rank{rank}" / required_name
         for step in steps
         for rank in ranks
         if not (
-            official_output / f"step{step}" / f"rank{rank}" / "dump.json"
+            official_output / f"step{step}" / f"rank{rank}" / required_name
         ).is_file()
     ]
     if missing:
@@ -1082,6 +1086,11 @@ def capture_official(
         ),
     }
     environment.update(environment_overrides)
+    if config.workflow == "migration" and config.dump.task == "nan_check":
+        if endpoint.device_type != "npu":
+            raise ValueError("msProbe nan_check is supported only on NPU")
+        environment["INF_NAN_MODE_FORCE_DISABLE"] = "1"
+        environment_overrides["INF_NAN_MODE_FORCE_DISABLE"] = "1"
     if config.workflow == "config-check":
         environment["GLM5_MINDSTUDIO_MODE"] = "config-check"
         official_config = {
@@ -1224,6 +1233,7 @@ def capture_official(
                 steps=config.dump.steps,
                 configured_ranks=config.dump.ranks,
                 world_size=topology.world_size,
+                task=config.dump.task,
             )
         elif config.workflow == "compile":
             _validate_compile_outputs(
@@ -2201,6 +2211,8 @@ def compare_official(
     tensor_log: bool,
     xlsx: bool,
     force: bool,
+    consistent_check: bool = False,
+    consistent_backend: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     _validate_compare_options(
@@ -2302,6 +2314,8 @@ def compare_official(
             "diff_analysis": diff_analysis,
             "tensor_log": tensor_log,
             "xlsx": xlsx,
+            "consistent_check": consistent_check,
+            "consistent_backend": consistent_backend,
         },
     }
     comparison_digest = config_digest(comparison_identity, length=64)
@@ -2348,6 +2362,8 @@ def compare_official(
                         diff_analysis=diff_analysis,
                         tensor_log=tensor_log,
                         xlsx=xlsx,
+                        consistent_check=consistent_check,
+                        consistent_backend=consistent_backend,
                     )
                 )
         print(
@@ -2479,6 +2495,8 @@ def compare_official(
                     diff_analysis=diff_analysis,
                     tensor_log=tensor_log,
                     xlsx=xlsx,
+                    consistent_check=consistent_check,
+                    consistent_backend=consistent_backend,
                 )
                 write_compare_invocation(
                     step_directory / "invocation.json", command
@@ -2594,6 +2612,8 @@ def run_mindstudio_cli(
     actions.add_argument("--precheck", choices=("reference", "candidate"))
     actions.add_argument("--precheck-compare", action="store_true")
     actions.add_argument("--graph-visualize", action="store_true")
+    actions.add_argument("--overflow-check", choices=("reference", "candidate"))
+    actions.add_argument("--trend", choices=("reference", "candidate"))
     actions.add_argument("--compare", action="store_true")
     actions.add_argument("--doctor", action="store_true")
     actions.add_argument("--list-topologies", action="store_true")
@@ -2606,8 +2626,17 @@ def run_mindstudio_cli(
         choices=("cuda", "npu"),
         help="readiness scope for a GPU or NPU capture server",
     )
-    parser.add_argument("--dump-task", choices=("statistics", "tensor"))
-    parser.add_argument("--level", choices=("L0", "L1", "mix"))
+    parser.add_argument(
+        "--dump-task",
+        choices=(
+            "statistics",
+            "tensor",
+            "structure",
+            "overflow_check",
+            "nan_check",
+        ),
+    )
+    parser.add_argument("--level", choices=("L0", "L1", "L2", "mix"))
     parser.add_argument("--dump-step", type=int)
     parser.add_argument(
         "--dump-steps",
@@ -2639,7 +2668,7 @@ def run_mindstudio_cli(
         "--data-mode",
         help="comma-separated msProbe data_mode values",
     )
-    parser.add_argument("--summary-mode", choices=("statistics", "md5"))
+    parser.add_argument("--summary-mode", choices=("statistics", "md5", "xor"))
     parser.add_argument("--async-dump", action="store_true")
     parser.add_argument("--no-extra-info", action="store_true")
     parser.add_argument("--backend")
@@ -2656,8 +2685,21 @@ def run_mindstudio_cli(
     parser.add_argument("--diff-analysis", action="store_true")
     parser.add_argument("--tensor-log", action="store_true")
     parser.add_argument("--xlsx", action="store_true")
+    parser.add_argument(
+        "--graph-side",
+        choices=("compare", "reference", "candidate"),
+        default="compare",
+    )
+    parser.add_argument("--layer-mapping", type=Path)
+    parser.add_argument("--enable-layer-mapping", action="store_true")
     parser.add_argument("--graph-overflow-check", action="store_true")
     parser.add_argument("--graph-progress-log", action="store_true")
+    parser.add_argument(
+        "--trend-format", choices=("auto", "dump", "monitor"), default="auto"
+    )
+    parser.add_argument("--trend-mapping", type=Path)
+    parser.add_argument("--trend-processes", type=int, default=1)
+    parser.add_argument("--no-trend-micro-step", action="store_true")
     parser.add_argument(
         "--precheck-device-ids",
         default="0",
@@ -2702,6 +2744,17 @@ def run_mindstudio_cli(
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+
+    if (
+        base_config.workflow == "monitor"
+        and args.training_steps is None
+        and not args.doctor
+        and not args.list_topologies
+    ):
+        parser.error(
+            "the official Monitor workflow requires an explicit "
+            "--training-steps reproduction window"
+        )
 
     if args.list_topologies:
         for name, topology in registry.items():
@@ -3113,11 +3166,148 @@ def run_mindstudio_cli(
                 overflow_check=args.graph_overflow_check,
                 tensor_log=args.tensor_log,
                 progress_log=args.graph_progress_log,
+                graph_side=args.graph_side,
+                layer_mapping=args.layer_mapping,
+                enable_layer_mapping=args.enable_layer_mapping,
                 dry_run=args.dry_run,
             )
             print(f"Hierarchical graph report: {path}")
         return
 
+    if args.trend:
+        role = args.trend
+        if config.workflow not in {"migration", "monitor"}:
+            parser.error("--trend requires the migration or monitor workflow")
+        if config.workflow == "migration" and config.dump.level not in {"L0", "mix"}:
+            parser.error("dump trend visualization requires --level L0 or mix")
+        if config.workflow == "migration" and config.dump.task not in {
+            "statistics",
+            "tensor",
+        }:
+            parser.error(
+                "dump trend visualization requires statistics or tensor data"
+            )
+        if args.trend_processes < 1:
+            parser.error("--trend-processes must be positive")
+        for topology in selected:
+            _, artifact_directory, report_directory = _paths(
+                root, config, topology, role, args.repeat
+            )
+            if not artifact_is_complete(artifact_directory):
+                raise MindStudioArtifactError(
+                    "official capture is incomplete; run --capture first: "
+                    f"{artifact_directory}"
+                )
+            output_directory = report_directory / f"trend-{role}-r{args.repeat}"
+            if args.force and output_directory.exists() and not args.dry_run:
+                reset_output_generation(
+                    (output_directory,), label="msProbe trend analysis"
+                )
+            data_directory = artifact_directory / "official"
+            command = trend_data2db_command(
+                data=data_directory,
+                output=output_directory,
+                data_format=args.trend_format,
+                mapping=args.trend_mapping,
+                micro_step=not args.no_trend_micro_step,
+                process_num=args.trend_processes,
+            )
+            print(
+                f"Starting trend conversion: role={role}, "
+                f"topology={topology.name}",
+                flush=True,
+            )
+            if args.dry_run:
+                print(shlex.join(command))
+                continue
+            output_directory.mkdir(parents=True, exist_ok=True)
+            write_compare_invocation(output_directory / "invocation.json", command)
+            _run_process(
+                command,
+                root=root,
+                environment=os.environ.copy(),
+                log_path=output_directory / "runtime.log",
+                context={
+                    "Operation": "trend_data2db",
+                    "Role": role,
+                    "Topology": topology.name,
+                },
+            )
+            databases = sorted(output_directory.rglob("*.trend.db"))
+            if not databases:
+                raise MindStudioArtifactError(
+                    f"msprobe data2db produced no .trend.db under {output_directory}"
+                )
+            print(f"Trend database: {databases[0]}")
+            print(
+                "TensorBoard command: "
+                f"tensorboard --logdir {output_directory.resolve()} --bind_all"
+            )
+        return
+
+    if args.overflow_check:
+        if config.workflow != "migration":
+            parser.error(
+                "--overflow-check is supported only by the migration workflow"
+            )
+        role = args.overflow_check
+        for topology in selected:
+            _, artifact_directory, report_directory = _paths(
+                root, config, topology, role, args.repeat
+            )
+            if not artifact_is_complete(artifact_directory):
+                raise MindStudioArtifactError(
+                    "official capture is incomplete; run --capture first: "
+                    f"{artifact_directory}"
+                )
+            output_directory = report_directory / f"overflow-{role}-r{args.repeat}"
+            if args.force and output_directory.exists() and not args.dry_run:
+                reset_output_generation(
+                    (output_directory,),
+                    label="msProbe overflow analysis",
+                )
+            elif output_directory.exists() and not args.dry_run:
+                archive_previous_output(output_directory)
+            for step in config.dump.steps:
+                step_output = output_directory / f"step{step}"
+                command = overflow_check_command(
+                    input_path=find_dump_compare_input(artifact_directory, step),
+                    output=step_output,
+                )
+                print(
+                    f"Starting first-overflow analysis: role={role}, "
+                    f"topology={topology.name}, step={step}",
+                    flush=True,
+                )
+                if args.dry_run:
+                    print(shlex.join(command))
+                    continue
+                step_output.mkdir(parents=True, exist_ok=True)
+                write_compare_invocation(step_output / "invocation.json", command)
+                _run_process(
+                    command,
+                    root=root,
+                    environment=os.environ.copy(),
+                    log_path=step_output / "runtime.log",
+                    context={
+                        "Operation": "overflow_check",
+                        "Role": role,
+                        "Topology": topology.name,
+                        "Step": step,
+                    },
+                )
+            if not args.dry_run:
+                print(f"First-overflow report: {output_directory}")
+        return
+
+    if (
+        config.workflow == "migration"
+        and config.dump.task not in {"statistics", "tensor"}
+    ):
+        parser.error(
+            "--compare requires a statistics or tensor capture; use "
+            "--graph-visualize, --overflow-check, or --trend for other data"
+        )
     if args.force and not args.dry_run:
         reset_compare_outputs(
             root,
@@ -3151,9 +3341,6 @@ def run_mindstudio_cli(
         experiment_name=config.storage_name,
         workflow=config.workflow,
         rows=rows,
-        supplemental_report_patterns=(
-            *config.formal_precision_reports,
-            *config.performance_reports,
-        ),
+        supplemental_report_patterns=(),
     )
     print(f"MindStudio report: {path}")

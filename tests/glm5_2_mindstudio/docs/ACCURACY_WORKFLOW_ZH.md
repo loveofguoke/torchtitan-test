@@ -1,5 +1,27 @@
 # GLM-5.2 MindStudio 官方精度迁移流程
 
+本流程是独立的 msProbe 实验合同。报告、判定、长程筛查和定位结论全部来自
+本目录保存的官方工具输出与对应训练日志，不引用 parity 或其他 precision 实验。
+
+官方闭环在本项目中的对应关系是：
+
+```text
+训练前配置检查        configuration_check_benchmark.py
+长程训练状态监控      training_monitor_benchmark.py (显式指定复现窗口)
+模块级快速定界        migration_benchmark.py --level L0
+API 级下钻            migration_benchmark.py --level L1/mix
+kernel 级下钻         migration_benchmark.py --level L2
+API 高精度预检        migration_benchmark.py --precheck
+GPU/NPU 官方比对      migration_benchmark.py --compare
+分级图可视化          migration_benchmark.py --graph-visualize
+首个溢出节点分析      migration_benchmark.py --overflow-check
+eager/compile 比对    compile_accuracy_benchmark.py
+```
+
+这些阶段不是把 5000 step 全量 dump。Monitor V2 负责低开销长程筛查；发现异常
+step 后，再用 L0 -> L1/mix -> tensor 或 L2 对少量 step 逐层下钻。这对应官方
+大模型训练精度定位指南的使用方式。
+
 本文说明如何按 MindStudio 26.1 官方训练精度指南完成 CheckList、问题复现、状态监测、
 模块/API 采集、预检、比较、分级可视化和修复后验收。
 
@@ -155,7 +177,10 @@ tensor list、data mode、同步/异步 dump 和 extra info。例如下面这组
 的实验配置将失真。当前 summary mode 没有暴露 xor；要新增它应先核对目标版本
 schema 并补配置验证和测试。
 
-官方文档还列出 `acc_check`、`structure`、`overflow_check`、`nan_check` 等任务。
+正式入口支持 `statistics`、`tensor`、`structure`、`overflow_check` 和
+`nan_check`。`acc_check` 不作为 capture task：它由 `--precheck` 对已有 API
+信息单独运行。`nan_check` 读取 NPU 寄存器状态，只允许 NPU L1，并由启动器设置
+`INF_NAN_MODE_FORCE_DISABLE=1`；工具链源码构建必须包含 `nan_check` 模块。
 当前 `MsProbeDumpConfig` 没有宣称实现这些模式；需要时先按锁定版本新增显式
 配置、测试和报告解析。
 
@@ -538,12 +563,12 @@ python tests/glm5_2_mindstudio/configuration_check_benchmark.py \
 
 ### 9.2 训练状态监控
 
-官方训练状态监控与本项目 raw metrics 目的不同：前者面向运行时计算、通信、
-优化器等异常，后者记录 loss/grad norm 作为端到端数值证据。当前
+官方训练状态监控面向长程运行中的激活、梯度、参数、优化器和通信异常。当前
 `training_monitor_benchmark.py` 在 Trainer 创建模型与优化器后调用
 `TrainerMonitorV2.start()`，每个完整 train step 后调用一次 `step()`，并在正常
-结束或异常退出时通过 `finally` 调用 `stop()`。默认仅开低开销 `weight_grad`；
-module/optimizer/param/cc 是显式可选项。完整命令与 PP/compile 边界见目录 README。
+结束或异常退出时通过 `finally` 调用 `stop()`。官方没有固定训练步数；调用者必须
+用 `--training-steps` 指定能够覆盖问题复现的窗口。默认只开官方案例常用的
+weight_grad，module、optimizer、param 和 cc 根据现象显式开启。
 
 ```text
 TorchTitan Trainer.train
@@ -561,22 +586,23 @@ export CUDA_VISIBLE_DEVICES=7
 python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
   --data --data-device cuda --topology single
 python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
-  --capture reference --topology single --training-steps 100
+  --capture reference --topology single --training-steps 5000
 
 unset CUDA_VISIBLE_DEVICES
 export ASCEND_RT_VISIBLE_DEVICES=4
 python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
-  --capture candidate --topology single --training-steps 100
+  --capture candidate --topology single --training-steps 5000
 
 python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
-  --compare --topology single --training-steps 100
+  --compare --topology single --training-steps 5000
 ```
 
 每个端点的 `official/rank_<rank>/**/*.csv` 是权威监控数据；compare 只生成
 `official_compare/monitor_index.json` 将两端身份关联起来。官方 Monitor V2 没有
 GPU/NPU cross-device 数值 comparator，所以这里的 `unparsed`/索引完成不是 FAIL，
 也不能改写成 PASS。先从 CSV 找出异常 step/rank/module，再在对应 step 运行 L0/L1
-dump 与多 step precision。
+dump。Monitor 的 CSV、训练日志和官方 dump/compare 共同组成这套独立 msProbe
+实验的长程与定位证据，不引用其他实验目录的结论。
 
 分布式先验证 FSDP/TP/EP 的 sharded 参数与 optimizer 容器，再验证 PP 的 model-parts
 名称和 optimizer ownership。当前 workflow 会警告 PP 尚需服务器专项验收，并拒绝
@@ -780,7 +806,41 @@ msProbe capture 只运行少量目标 step，因为它要保存模块/API 数据
 - acc_check 不支持、被过滤或运行失败的 API 会产生 SKIP/error，需要阅读 Message；
 - API 单测的 CPU 高精度标杆不能覆盖完整网络中的通信、全局状态和误差传播；
 - 跨平台模块命名不同可能需要人工 mapping；
-- 当前 adapter 没有自动编排所有 msProbe task，也没有替官方 GUI/CLI 重新实现。
+- 框架无关的官方 task 已由统一 capture CLI 编排；Megatron/verl 专用能力不冒充
+  TorchTitan 能力。
+
+## 趋势可视化与单边构图
+
+L0/mix dump 完成后，可直接生成单边结构图或双边比较图：
+
+```bash
+python tests/glm5_2_mindstudio/migration_benchmark.py \
+  --graph-visualize --graph-side candidate --topology single --level L0
+
+python tests/glm5_2_mindstudio/migration_benchmark.py \
+  --graph-visualize --graph-side compare --topology single --level L0 \
+  --layer-mapping mapping.yaml
+```
+
+多 step、多 rank 或 Monitor V2 数据使用官方 `msprobe data2db` 转成趋势数据库：
+
+```bash
+python tests/glm5_2_mindstudio/migration_benchmark.py \
+  --trend candidate --topology all --level L0 --trend-format dump
+
+python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
+  --trend candidate --topology all --training-steps 5000 \
+  --trend-format monitor --trend-processes 8
+```
+
+每个成员生成独立 `.trend.db`，终端同时打印数据库路径与 TensorBoard 命令。
+TensorBoard 中选择 `TREND ANALYZER`，可沿 Step、Rank、Module Name 三个维度查看
+热力图和折线趋势。
+
+官方 graph merge 与 `compare --consistent_check` 是框架特定能力：前者当前按
+Megatron rank order 合并且不支持 CP，后者只用于 verl 的受支持模型。adapter 保留
+官方命令构造能力，但不向 GLM5 通用 CLI 暴露，防止把参数可执行误报为 TorchTitan
+语义已适配。
 
 ## 13. 排障闭环
 
@@ -809,3 +869,30 @@ msProbe capture 只运行少量目标 step，因为它要保存模块/API 数据
 
 这个顺序把“能跑、数值正确、长期稳定、性能高效”分成不同证据，避免用一个工具
 回答它不负责的问题。
+
+## 14. kernel 级与首个溢出节点下钻
+
+只有 L1 已把异常缩到 NPU 算子、仍需观察 kernel 级输入输出时，才建立独立 L2
+generation。L2 数据不能和原有 L0/L1 artifact 混用：
+
+```bash
+python tests/glm5_2_mindstudio/migration_benchmark.py \
+  --data --data-device npu --topology single \
+  --level L2 --dump-steps 0,1 --force
+
+python tests/glm5_2_mindstudio/migration_benchmark.py \
+  --capture candidate --topology single \
+  --level L2 --dump-steps 0,1
+```
+
+当 dump 或 Monitor 发现 INF/NaN 时，对已经完成的官方 capture 执行首节点分析：
+
+```bash
+python tests/glm5_2_mindstudio/migration_benchmark.py \
+  --overflow-check candidate --topology single \
+  --level L0 --dump-steps 0,1
+```
+
+输出位于当前实验 report 的 `overflow-candidate-r1/stepN/`，其中
+`runtime.log`、`invocation.json` 和 msProbe 原始输出共同构成证据。该命令调用
+官方 `msprobe overflow_check`，项目不重写其传播关系或结论。

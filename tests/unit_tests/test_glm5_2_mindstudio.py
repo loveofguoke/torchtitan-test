@@ -39,9 +39,11 @@ from tests.glm5_2_mindstudio.msprobe_adapter import (
     config_check_compare_command,
     find_dump_compare_input,
     graph_visualize_command,
+    overflow_check_command,
     precheck_command,
     precheck_compare_command,
     summarize_official_results,
+    trend_data2db_command,
     validate_compile_report,
 )
 from tests.glm5_2_mindstudio.report import write_report_index
@@ -569,6 +571,92 @@ class TestMindStudioOfficialAdapter(unittest.TestCase):
                 overflow_check=True,
                 tensor_log=True,
                 progress_log=True,
+            ),
+        )
+
+        self.assertEqual(
+            [
+                "/opt/mindstudio/bin/msprobe",
+                "graph_visualize",
+                "-tp",
+                str(Path("target")),
+                "-o",
+                str(Path("output")),
+                "-lm",
+                str(Path("mapping.yaml")),
+            ],
+            graph_visualize_command(
+                target=Path("target"),
+                golden=None,
+                output=Path("output"),
+                layer_mapping=Path("mapping.yaml"),
+            ),
+        )
+
+    @patch(
+        "tests.glm5_2_mindstudio.msprobe_adapter.resolve_tool_executable",
+        return_value="/opt/mindstudio/bin/msprobe",
+    )
+    def test_trend_data2db_command_preserves_official_cli_contract(
+        self,
+        _which,
+    ) -> None:
+        self.assertEqual(
+            [
+                "/opt/mindstudio/bin/msprobe",
+                "data2db",
+                "--data",
+                str(Path("dump")),
+                "--db",
+                str(Path("trend")),
+                "--format",
+                "dump",
+                "--micro_step",
+                "false",
+                "--process_num",
+                "2",
+                "--mapping",
+                str(Path("mapping.json")),
+            ],
+            trend_data2db_command(
+                data=Path("dump"),
+                output=Path("trend"),
+                data_format="dump",
+                mapping=Path("mapping.json"),
+                micro_step=False,
+                process_num=2,
+            ),
+        )
+
+    def test_dump_tasks_follow_official_constraints(self) -> None:
+        for task in ("statistics", "tensor", "structure", "overflow_check"):
+            config = MsProbeDumpConfig(task=task)  # type: ignore[arg-type]
+            self.assertEqual(task, config.official_config(Path("dump"))["task"])
+        nan = MsProbeDumpConfig(task="nan_check", level="L1")
+        self.assertEqual("nan_check", nan.official_config(Path("dump"))["task"])
+        with self.assertRaisesRegex(ValueError, "requires dump level L1"):
+            MsProbeDumpConfig(task="nan_check", level="L0")
+
+    @patch(
+        "tests.glm5_2_mindstudio.msprobe_adapter.resolve_tool_executable",
+        return_value="/opt/mindstudio/bin/msprobe",
+    )
+    def test_overflow_check_command_preserves_official_cli_contract(
+        self,
+        _which,
+    ) -> None:
+        self.assertEqual(
+            [
+                "/opt/mindstudio/bin/msprobe",
+                "overflow_check",
+                "-i",
+                str(Path("dump/step0")),
+                "-o",
+                str(Path("report/overflow")),
+            ],
+            overflow_check_command(
+                input_path=Path("dump/step0"),
+                output=Path("report/overflow"),
             ),
         )
 

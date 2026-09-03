@@ -34,8 +34,9 @@
 | API 精度预检 | L1 API dump -> acc_check result/details | `migration_benchmark.py --precheck ROLE` | 单端 API 对 CPU 高精度结果 | SUPPORTED |
 | API 预检比较 | 两端 details -> api_precision_compare | `migration_benchmark.py --precheck-compare` | `precheck_report.html` 和官方 CSV | SUPPORTED |
 | graph_visualize | L0/mix construct -> `.vis.db` | `migration_benchmark.py --graph-visualize` | TensorBoard Ascend Graph | SUPPORTED |
+| structure/overflow/nan capture | 结构、软件统计溢出或 NPU 寄存器状态 -> construct/dump | `migration_benchmark.py --capture ... --dump-task TASK` | construct、首异常节点和 is_nan | SUPPORTED |
 | TrainerMonitorV2 | 训练模块、优化器、配置 -> 多 step CSV | `training_monitor_benchmark.py` | 激活/梯度/权重/优化器状态趋势 | SUPPORTED |
-| 趋势可视化 | 大规模 monitor/dump -> 分层趋势 | 监测产物可交接；目标版本 CLI 需服务器确认 | 官方趋势页面/CLI | HANDOFF |
+| 趋势可视化 | 大规模 monitor/dump -> `.trend.db` | `migration_benchmark.py --trend ROLE` 或 monitor 同名入口 | TensorBoard Trend Analyzer | SUPPORTED |
 | [编译精度比对](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msProbe/docs/zh/user_guide/accuracy_compare/pytorch_compile_accuracy_compare_instruct.md) | 同一 NPU 的 eager/compile -> PrecisionChecker CSV | `compile_accuracy_benchmark.py` | 每 rank、model part、module 的 fwd/bwd 结果 | SUPPORTED |
 
 ### 2.1 标准命令顺序

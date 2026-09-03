@@ -56,12 +56,6 @@ CONFIG = MindStudioExperimentConfig(
         capture_input=True,
         policy="glm5-block",
     ),
-    formal_precision_reports=(
-        "graph_reports/precision/*",
-    ),
-    performance_reports=(
-        "combination_reports/performance/*",
-    ),
 )
 
 

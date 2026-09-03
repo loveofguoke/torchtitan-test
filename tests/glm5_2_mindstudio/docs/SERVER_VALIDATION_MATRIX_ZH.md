@@ -45,7 +45,7 @@ python -m tests.glm5_2_mindstudio.toolchain doctor --scope full
 | C. GPU L0 自检 | 同一 GPU 做两端最小 L0 statistics | `dump.json`、construct、官方 CSV | 工具自身闭环且结果符合预期 | adapter 已实现，需人工建立同设备端点配置验证 |
 | D. GPU/NPU L0 | migration single，step 0，rank 0 | 两端 official dump、compare CSV/summary | 所有相关 forward/backward 状态均审阅 | `IMPLEMENTED`，服务器待验收 |
 | E. API 预检 | L1 statistics + 两端 `--precheck` + `--precheck-compare` | result/details CSV、precheck report/index | 单端相对 CPU 标杆和两端预检比较均无未解释 error | `IMPLEMENTED`，服务器待验收 |
-| F. Monitor V2 | single，100 step，rank 0，weight_grad | `official/rank_0/**/*.csv`、monitor index | CSV 覆盖期望 step，值有限；仅作筛查，不产生跨设备官方 PASS | `IMPLEMENTED`，服务器待验收 |
+| F. Monitor V2 | single，显式复现窗口，rank 0，先 weight_grad 后按现象扩展 | `official/rank_0/**/*.csv`、训练日志、monitor index | CSV 覆盖指定窗口且值有限；用于长程筛查，不伪造跨设备官方 PASS | `IMPLEMENTED`，服务器待验收 |
 | G. 分级图可视化 | L0/mix single capture 后 `--graph-visualize` | 非空 construct、`.vis.db`、hash index | TensorBoard Ascend Graph 插件能打开层级图并关联两端 | `IMPLEMENTED`，服务器待验收 |
 | H. compile accuracy | NPU single，PrecisionChecker single-pass | 每 rank/part CSV、`compile_coverage_rankN.json`、聚合 CSV、artifact input contract | 每 rank/part 非零 GLM block，存在非 SKIP 的模块 forward/backward 决定性行，不能只有 header/LOSS；runtime input contract 有效；不等价 fullgraph | `IMPLEMENTED`，backend 待验收 |
 | I. 代表性分布式 | 至少 DP/FSDP、TP、PP、EP/复合各一例 | 每个选定 rank 的官方结果 | 不丢 rank，PP ownership/part 命名人工确认 | 编排已实现，专项待验收 |

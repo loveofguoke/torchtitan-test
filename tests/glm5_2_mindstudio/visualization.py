@@ -233,6 +233,14 @@ def run_graph_visualization(
     overflow_check: bool = False,
     tensor_log: bool = False,
     progress_log: bool = False,
+    graph_side: str = "compare",
+    layer_mapping: Path | None = None,
+    enable_layer_mapping: bool = False,
+    merge_rank_size: Sequence[int] | None = None,
+    merge_tp: Sequence[int] | None = None,
+    merge_pp: Sequence[int] | None = None,
+    merge_vpp: Sequence[int] | None = None,
+    merge_order: str | None = None,
     dry_run: bool = False,
 ) -> Path:
     if config.workflow != "migration":
@@ -241,34 +249,50 @@ def run_graph_visualization(
         raise ValueError("graph visualization requires an L0 or mix dump")
     if tensor_log and config.dump.task != "tensor":
         raise ValueError("graph tensor logging requires a tensor dump")
+    if graph_side not in {"compare", "reference", "candidate"}:
+        raise ValueError("graph_side must be compare, reference, or candidate")
+    if layer_mapping is not None and not layer_mapping.is_file():
+        raise ValueError(f"layer mapping file does not exist: {layer_mapping}")
 
-    reference, reference_manifest = _load_capture(
-        root, config, topology, "reference", repeat
-    )
-    candidate, candidate_manifest = _load_capture(
-        root, config, topology, "candidate", repeat
-    )
-    reference_generation = str(reference_manifest["fixture_generation_id"])
-    candidate_generation = str(candidate_manifest["fixture_generation_id"])
-    if reference_generation != candidate_generation:
+    roles = ("reference", "candidate") if graph_side == "compare" else (graph_side,)
+    captures = {
+        role: _load_capture(root, config, topology, role, repeat)
+        for role in roles
+    }
+    generations = {
+        str(manifest["fixture_generation_id"])
+        for _, manifest in captures.values()
+    }
+    if len(generations) != 1:
         raise MindStudioArtifactError(
-            "reference and candidate graph dumps use different fixture generations"
+            "selected graph dumps use different fixture generations"
         )
-    _require_construct_files(reference, config, topology)
-    _require_construct_files(candidate, config, topology)
+    generation = generations.pop()
+    for artifact, _ in captures.values():
+        _require_construct_files(artifact, config, topology)
     toolchain, toolchain_identity = _toolchain()
     identity = {
         "experiment": config.identity,
         "topology": topology.name,
         "repeat": repeat,
-        "fixture_generation_id": reference_generation,
-        "reference_files": reference_manifest["official_files"],
-        "candidate_files": candidate_manifest["official_files"],
+        "fixture_generation_id": generation,
+        "capture_files": {
+            role: manifest["official_files"]
+            for role, (_, manifest) in captures.items()
+        },
         "options": {
+            "graph_side": graph_side,
             "fuzzy_match": fuzzy_match,
             "overflow_check": overflow_check,
             "tensor_log": tensor_log,
             "progress_log": progress_log,
+            "layer_mapping": str(layer_mapping) if layer_mapping else None,
+            "enable_layer_mapping": enable_layer_mapping,
+            "merge_rank_size": list(merge_rank_size or ()),
+            "merge_tp": list(merge_tp or ()),
+            "merge_pp": list(merge_pp or ()),
+            "merge_vpp": list(merge_vpp or ()),
+            "merge_order": merge_order,
         },
         "toolchain": toolchain_identity,
     }
@@ -279,7 +303,7 @@ def run_graph_visualization(
     if artifact_is_complete(
         artifact_directory,
         experiment_digest=digest,
-        fixture_generation_id=reference_generation,
+        fixture_generation_id=generation,
     ):
         print(f"Skip completed graph visualization: {artifact_directory}", flush=True)
         return _write_report(
@@ -289,8 +313,13 @@ def run_graph_visualization(
             run_directory=run_directory,
             identity=identity,
         )
-    target = _graph_input(candidate, config, topology)
-    golden = _graph_input(reference, config, topology)
+    target_role = "candidate" if graph_side in {"compare", "candidate"} else "reference"
+    target = _graph_input(captures[target_role][0], config, topology)
+    golden = (
+        _graph_input(captures["reference"][0], config, topology)
+        if graph_side == "compare"
+        else None
+    )
     official_output = artifact_directory / "official"
     command = graph_visualize_command(
         target=target,
@@ -300,6 +329,13 @@ def run_graph_visualization(
         overflow_check=overflow_check,
         tensor_log=tensor_log,
         progress_log=progress_log,
+        layer_mapping=layer_mapping,
+        enable_layer_mapping=enable_layer_mapping,
+        rank_size=merge_rank_size,
+        tp=merge_tp,
+        pp=merge_pp,
+        vpp=merge_vpp,
+        order=merge_order,
     )
     if dry_run:
         print(json.dumps({"command": command, "identity": identity}, indent=2))
@@ -320,7 +356,7 @@ def run_graph_visualization(
         context={
             "topology": topology.name,
             "repeat": repeat,
-            "fixture_generation_id": reference_generation,
+            "fixture_generation_id": generation,
             "experiment_digest": digest,
         },
     )
@@ -343,7 +379,7 @@ def run_graph_visualization(
             "schema": "torchtitan.glm5_2.mindstudio_graph_visualization_artifact",
             "schema_version": 1,
             "experiment_digest": digest,
-            "fixture_generation_id": reference_generation,
+            "fixture_generation_id": generation,
             "official_output": "official",
             "official_files": output_index(official_output),
             "identity": identity,
@@ -356,7 +392,7 @@ def run_graph_visualization(
             {
                 "status": "completed",
                 "experiment_digest": digest,
-                "fixture_generation_id": reference_generation,
+                "fixture_generation_id": generation,
                 "attempt_id": attempt.attempt_id,
             },
         )

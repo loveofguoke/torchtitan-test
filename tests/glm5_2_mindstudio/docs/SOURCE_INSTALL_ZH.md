@@ -212,12 +212,14 @@ git rev-parse HEAD
 python -m pip install uv
 node --version   # 官方推荐 20.19.3
 npm --version    # 官方推荐 10.8.2
-python build.py -e include-mod=tb_graph_ascend
+python build.py \
+  -e include-mod=tb_graph_ascend,trend_analyzer,nan_check,xor_checksum
 python -m pip install ./artifacts/mindstudio_probe*.whl
 ```
 
 等价的自动入口是上一节 bootstrap。该脚本会记录实际执行命令和 wheel 路径；
-不会假设 msProbe 支持 editable install。`tb_graph_ascend` 是官方
+不会假设 msProbe 支持 editable install。上述模块分别提供官方分级图、趋势图、
+NPU 寄存器 NaN/Inf 检测和 XOR 摘要加速；`tb_graph_ascend` 是官方
 `graph_visualize` 生成 `.vis.db` 后在 TensorBoard 中分级展示所需的插件；缺少
 Node/npm 时可以先只做 dump/compare，但不能声称分级图可视化环境完整。
 

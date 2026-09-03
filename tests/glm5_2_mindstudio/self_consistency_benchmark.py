@@ -2,7 +2,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Official msProbe GPU-to-NPU module/API accuracy workflow."""
+"""Official msProbe same-GPU reference/candidate validation workflow."""
 
 from pathlib import Path
 import sys
@@ -25,7 +25,7 @@ TOPOLOGIES = standard_topologies()
 ALL_DEVICES = "0,1,2,3,4,5,6,7"
 
 CONFIG = MindStudioExperimentConfig(
-    name="glm5-2-official-accuracy-migration",
+    name="glm5-2-official-accuracy-self",
     workflow="migration",
     reference=TrainingEndpoint(
         name="gpu-reference",
@@ -35,8 +35,8 @@ CONFIG = MindStudioExperimentConfig(
         repeats=1,
     ),
     candidate=TrainingEndpoint(
-        name="npu-candidate",
-        device_type="npu",
+        name="gpu-candidate",
+        device_type="cuda",
         visible_devices=ALL_DEVICES,
         topology=TOPOLOGIES["single"],
         repeats=1,

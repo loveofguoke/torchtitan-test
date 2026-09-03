@@ -60,9 +60,6 @@ CONFIG = MindStudioExperimentConfig(
         collect_times=100,
         weight_grad=True,
     ),
-    formal_precision_reports=(
-        "precision_reports/migration-cuda-npu-*-s5000-*",
-    ),
 )
 
 

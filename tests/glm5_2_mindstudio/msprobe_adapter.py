@@ -39,6 +39,8 @@ def compare_command(
     diff_analysis: bool = False,
     tensor_log: bool = False,
     xlsx: bool = False,
+    consistent_check: bool = False,
+    consistent_backend: str | None = None,
 ) -> list[str]:
     executable = _msprobe_executable()
     command = [
@@ -63,6 +65,14 @@ def compare_command(
         command.append("-tensor_log")
     if xlsx:
         command.append("--xlsx")
+    if consistent_backend is not None and not consistent_check:
+        raise ValueError("consistent_backend requires consistent_check")
+    if consistent_check:
+        if consistent_backend not in {"fsdp", "megatron"}:
+            raise ValueError(
+                "consistent_check requires backend fsdp or megatron"
+            )
+        command.extend(("--consistent_check", "--backend", consistent_backend))
     return command
 
 
@@ -87,14 +97,21 @@ def config_check_compare_command(
 def graph_visualize_command(
     *,
     target: Path,
-    golden: Path,
+    golden: Path | None,
     output: Path,
     fuzzy_match: bool = False,
     overflow_check: bool = False,
     tensor_log: bool = False,
     progress_log: bool = False,
+    layer_mapping: Path | None = None,
+    enable_layer_mapping: bool = False,
+    rank_size: Sequence[int] | None = None,
+    tp: Sequence[int] | None = None,
+    pp: Sequence[int] | None = None,
+    vpp: Sequence[int] | None = None,
+    order: str | None = None,
 ) -> list[str]:
-    """Build the public hierarchical graph comparison command."""
+    """Build the public single-graph or dual-graph visualization command."""
 
     executable = _msprobe_executable()
     command = [
@@ -102,11 +119,14 @@ def graph_visualize_command(
         "graph_visualize",
         "-tp",
         str(target),
-        "-gp",
-        str(golden),
-        "-o",
-        str(output),
     ]
+    if golden is not None:
+        command.extend(("-gp", str(golden)))
+    command.extend(("-o", str(output)))
+    if layer_mapping is not None:
+        command.extend(("-lm", str(layer_mapping)))
+    elif enable_layer_mapping:
+        command.append("-lm")
     if fuzzy_match:
         command.append("-fm")
     if overflow_check:
@@ -115,7 +135,79 @@ def graph_visualize_command(
         command.append("-tensor_log")
     if progress_log:
         command.append("-progress_log")
+    merge_options = {
+        "--rank_size": rank_size,
+        "--tp": tp,
+        "--pp": pp,
+        "--vpp": vpp,
+    }
+    specified = {name: values for name, values in merge_options.items() if values}
+    if specified:
+        if golden is None:
+            raise ValueError("graph merging requires a dual-graph comparison")
+        required = {"--rank_size", "--tp", "--pp"}
+        if not required.issubset(specified):
+            raise ValueError(
+                "graph merging requires rank_size, tp, and pp pairs"
+            )
+        if any(len(values) != 2 for values in specified.values()):
+            raise ValueError("graph merge options require target/golden pairs")
+        for name, values in merge_options.items():
+            if values:
+                command.append(name)
+                command.extend(str(value) for value in values)
+        if order is not None:
+            command.extend(("--order", order))
+    elif order is not None:
+        raise ValueError("graph order requires graph merging options")
     return command
+
+
+def trend_data2db_command(
+    *,
+    data: Path,
+    output: Path,
+    data_format: str = "auto",
+    mapping: Path | None = None,
+    micro_step: bool = True,
+    process_num: int = 1,
+) -> list[str]:
+    """Build the official trend-analyzer data2db command."""
+
+    if data_format not in {"auto", "dump", "monitor"}:
+        raise ValueError("trend format must be auto, dump, or monitor")
+    if process_num < 1:
+        raise ValueError("trend process_num must be positive")
+    command = [
+        _msprobe_executable(),
+        "data2db",
+        "--data",
+        str(data),
+        "--db",
+        str(output),
+        "--format",
+        data_format,
+        "--micro_step",
+        str(micro_step).lower(),
+        "--process_num",
+        str(process_num),
+    ]
+    if mapping is not None:
+        command.extend(("--mapping", str(mapping)))
+    return command
+
+
+def overflow_check_command(*, input_path: Path, output: Path) -> list[str]:
+    """Build the public first-overflow-node analysis command."""
+
+    return [
+        _msprobe_executable(),
+        "overflow_check",
+        "-i",
+        str(input_path),
+        "-o",
+        str(output),
+    ]
 
 
 def precheck_command(

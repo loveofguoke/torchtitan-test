@@ -766,7 +766,11 @@ class TestMindStudioBootstrap(unittest.TestCase):
             )
         )
         self.assertTrue(
-            any("include-mod=tb_graph_ascend" in command for command in commands)
+            any(
+                "include-mod=tb_graph_ascend,trend_analyzer,nan_check,"
+                "xor_checksum" in command
+                for command in commands
+            )
         )
         self.assertTrue(any("--editable" in command for command in commands))
         self.assertTrue(
@@ -841,7 +845,10 @@ class TestMindStudioBootstrap(unittest.TestCase):
             for index, command in enumerate(commands)
             if len(command) > 1 and command[1].endswith("build.py")
         )
-        self.assertIn("include-mod=tb_graph_ascend", commands[build_index])
+        self.assertIn(
+            "include-mod=tb_graph_ascend,trend_analyzer,nan_check,xor_checksum",
+            commands[build_index],
+        )
         install_index = next(
             index
             for index, command in enumerate(commands)
