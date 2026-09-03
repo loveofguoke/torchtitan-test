@@ -846,6 +846,7 @@ Profiler 产物可进入 offline、advisor、cluster、compare 和 Insight 中�
 | `--cluster-recipes POLICY` | 官方进阶 recipe | `necessary`（MindStudio 默认）、`all`、`none` 或逗号分隔 recipe |
 | `--cluster-summary-baseline PATH` | 集群细粒度比对 baseline | 自动先拆解两份数据，再执行 `cluster_time_compare_summary` |
 | `--compare-baseline PATH` | msprof-analyze compare 基线 | candidate 必须是 torch_npu `*_ascend_pt`；支持满足官方格式的 NPU/NPU 或 GPU/NPU 比较 |
+| `--compare-ranks BASELINE,CANDIDATE` | 对同一次多卡 capture 的两个逻辑 rank 运行官方 compare | 与 `--compare-baseline` 互斥；例如 `0,1`，不重新采集 |
 | `--repeat N` | 选择 accuracy endpoint 已声明的重复编号 | migration/compile/config-check/monitor，默认脚本声明 1 次 |
 | `--replicate N` | 性能独立运行编号 | performance profiler-off/active A/B；不同编号进入不同目录 |
 | `--force` | 删除所选旧 generation/阶段后重跑 | 不能和旧数据混搭 |

@@ -34,6 +34,8 @@ from tests.glm5_2_performance.workflow import (
     _collector_toolchain_metadata,
     _config_is_compatible,
     _path_tree_identity,
+    _parse_compare_ranks,
+    _rank_comparison_input,
     _run_name,
     _scoped_parent,
     _training_command,
@@ -798,6 +800,51 @@ class MindStudioPerformanceTest(unittest.TestCase):
         command = execute.call_args.kwargs["command"]
         self.assertIn("--output_path", command)
         self.assertNotIn("-o", command)
+        output = Path(command[command.index("--output_path") + 1])
+        self.assertEqual(
+            output,
+            run
+            / "trainer_output"
+            / "profiling"
+            / "msprof"
+            / "compare_analysis_output"
+            / "profile_compare",
+        )
+
+    def test_rank_compare_uses_two_rank_profile_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory) / "run"
+            profile = run / "trainer_output" / "profiling" / "traces"
+            rank_roots = []
+            for rank in (0, 1):
+                rank_root = profile / f"rank_{rank}_capture_ascend_pt"
+                rank_root.mkdir(parents=True)
+                (rank_root / f"profiler_info_{rank}.json").write_text(
+                    "{}", encoding="utf-8"
+                )
+                rank_roots.append(rank_root)
+            self.assertEqual(_parse_compare_ranks("0,1"), (0, 1))
+            self.assertEqual(_rank_comparison_input(run, 1), rank_roots[1])
+            with patch(
+                "tests.glm5_2_performance.workflow._msprof_analyze_executable",
+                return_value="msprof-analyze",
+            ), patch(
+                "tests.glm5_2_performance.workflow._run_msprof_analyze",
+                return_value={"return_code": 0},
+            ) as execute:
+                run_performance_compare(
+                    run,
+                    rank_roots[0],
+                    candidate=rank_roots[1],
+                    comparison_name="rank_0_vs_rank_1",
+                    standard_cli=True,
+                )
+        command = execute.call_args.kwargs["command"]
+        self.assertEqual(Path(command[command.index("-d") + 1]), rank_roots[1])
+        self.assertEqual(Path(command[command.index("-bp") + 1]), rank_roots[0])
+        output = Path(command[command.index("--output_path") + 1])
+        self.assertEqual(output.name, "rank_0_vs_rank_1")
+        self.assertEqual(output.parent.name, "compare_analysis_output")
 
     def test_msprof_capability_gate_rejects_pytorch_only_analysis(self) -> None:
         config = PerformanceConfig(name="official", collector="msprof")

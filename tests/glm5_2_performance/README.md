@@ -430,6 +430,20 @@ msprof-analyze cluster -m all -d PROFILE_DIR -o PROFILE_DIR
 msprof-analyze compare -d PROFILE -bp BASELINE -o COMPARE_DIR
 ```
 
+For an inter-rank KernelCompare from one existing multi-rank capture, select
+the baseline and candidate logical ranks explicitly:
+
+```bash
+python tests/glm5_2_mindstudio/performance_benchmark.py \
+  --analyze --device npu --topology ddp2 --preset distributed \
+  --record-shapes --analysis-tools none --compare-ranks 0,1
+```
+
+The official workbook and related compare deliveries are written below
+`trainer_output/profiling/traces/compare_analysis_output/rank_0_vs_rank_1/`.
+The rank order is baseline,candidate, and the command neither trains nor
+captures again.
+
 For every selected read-only advanced recipe, the orchestrator invokes the
 official command twice with `--export_type=db` and `--export_type=text`, using
 `PROFILE_DIR` as the shared `-o`. Consequently all official tables, CSV, and

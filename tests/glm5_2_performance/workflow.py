@@ -1805,10 +1805,30 @@ def _comparison_input(run_directory: Path) -> Path:
     return ascend_roots[0] if len(ascend_roots) == 1 else profiler_directory
 
 
+def _rank_comparison_input(run_directory: Path, rank_id: int) -> Path:
+    """Return the unique official Ascend profiler root for one logical rank."""
+
+    profiler_directory = _find_profiler_directory(run_directory)
+    matches: set[Path] = set()
+    for info in profiler_directory.rglob(f"profiler_info_{rank_id}.json"):
+        for parent in info.parents:
+            if parent.name.endswith("_ascend_pt"):
+                matches.add(parent)
+                break
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"expected exactly one Ascend profile root for rank {rank_id}, "
+            f"found {len(matches)} under {profiler_directory}"
+        )
+    return next(iter(matches))
+
+
 def run_performance_compare(
     run_directory: Path,
     baseline: Path,
     *,
+    candidate: Path | None = None,
+    comparison_name: str = "profile_compare",
     standard_cli: bool = False,
     analysis_toolchain: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -1816,12 +1836,26 @@ def run_performance_compare(
 
     if not baseline.exists():
         raise FileNotFoundError(f"performance baseline not found: {baseline}")
-    output_directory = run_directory / "compare"
+    profiler_directory = _find_profiler_directory(run_directory)
+    legacy_output = run_directory / "compare"
+    if legacy_output.is_dir():
+        _merge_legacy_analysis_tree(
+            legacy_output,
+            profiler_directory / "compare_analysis_output" / "profile_compare",
+        )
+    output_directory = (
+        profiler_directory / "compare_analysis_output" / comparison_name
+    )
+    comparison_input = (
+        candidate.resolve()
+        if candidate is not None
+        else _comparison_input(run_directory)
+    )
     command = [
         _msprof_analyze_executable(),
         "compare",
         "-d",
-        str(_comparison_input(run_directory)),
+        str(comparison_input),
         "-bp",
         str(baseline.resolve()),
         "--output_path" if standard_cli else "-o",
@@ -1947,6 +1981,7 @@ def _analysis_request(
     advanced_recipe_policy: str = "none",
     cluster_summary_baseline: Path | None = None,
     compare_baseline: Path | None = None,
+    compare_ranks: tuple[int, int] | None = None,
     analysis_toolchain: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     baseline: dict[str, Any] | None = None
@@ -1985,6 +2020,7 @@ def _analysis_request(
                 else None
             ),
             "compare_baseline": baseline,
+            "compare_ranks": list(compare_ranks) if compare_ranks else None,
         },
         "analysis_toolchain": analysis_toolchain,
         "visualization_toolchain": _visualization_toolchain_identity(),
@@ -2036,6 +2072,7 @@ def _analysis_output_paths(
     paths.extend(command_directory.glob("communication_bottleneck_rank_*.json"))
     profiler_directory = _find_profiler_directory(run_directory)
     paths.append(profiler_directory / "mindstudio_flamegraphs")
+    paths.append(profiler_directory / "compare_analysis_output")
     if profiler_directory.is_dir():
         paths.extend(profiler_directory.rglob("*_flamegraph.svg"))
     return list(dict.fromkeys(paths))
@@ -2068,6 +2105,7 @@ def _analysis_outputs_exist(
     candidates.append(run_directory / "cluster_text.json")
     profiler_directory = _find_profiler_directory(run_directory)
     candidates.append(profiler_directory / "mindstudio_flamegraphs")
+    candidates.append(profiler_directory / "compare_analysis_output")
     if profiler_directory.is_dir():
         candidates.extend(profiler_directory.rglob("*_flamegraph.svg"))
     return any(path.exists() for path in candidates)
@@ -2090,9 +2128,16 @@ def _analysis_outputs_complete(
         required.extend(
             (cluster_delivery, run_directory / "cluster.json")
         )
-    if operations.get("compare_baseline") is not None:
+    if (
+        operations.get("compare_baseline") is not None
+        or operations.get("compare_ranks") is not None
+    ):
         required.extend(
-            (run_directory / "compare", run_directory / "compare.json")
+            (
+                _find_profiler_directory(run_directory)
+                / "compare_analysis_output",
+                run_directory / "compare.json",
+            )
         )
     return all(path.exists() for path in required)
 
@@ -2138,6 +2183,8 @@ def _analysis_stage_context(
     elif stage == "compare":
         stage_operations = {
             "compare_baseline": operations.get("compare_baseline"),
+            "compare_ranks": operations.get("compare_ranks"),
+            "output_layout": "profiler-root-compare-analysis-output-v1",
         }
     else:
         raise ValueError(f"unknown performance analysis stage: {stage}")
@@ -2187,7 +2234,14 @@ def _analysis_stage_paths(
         except FileNotFoundError:
             pass
     elif stage == "compare":
-        paths.extend((run_directory / "compare", run_directory / "compare.json"))
+        paths.append(run_directory / "compare.json")
+        try:
+            paths.append(
+                _find_profiler_directory(run_directory)
+                / "compare_analysis_output"
+            )
+        except FileNotFoundError:
+            pass
     return list(dict.fromkeys(paths))
 
 
@@ -2201,7 +2255,10 @@ def _analysis_stage_outputs_complete(run_directory: Path, stage: str) -> bool:
             _find_profiler_directory(run_directory) / "cluster_analysis_output",
             run_directory / "cluster.json",
         ),
-        "compare": (run_directory / "compare", run_directory / "compare.json"),
+        "compare": (
+            _find_profiler_directory(run_directory) / "compare_analysis_output",
+            run_directory / "compare.json",
+        ),
     }[stage]
     return all(path.exists() for path in required)
 
@@ -2355,6 +2412,7 @@ def _validate_analysis_capabilities(
     advisor: bool,
     cluster: bool,
     compare_baseline: Path | None,
+    compare_ranks: tuple[int, int] | None = None,
     run_directory: Path | None = None,
 ) -> None:
     """Enforce the input formats supported by msprof-analyze 26.1."""
@@ -2364,7 +2422,7 @@ def _validate_analysis_capabilities(
     unsupported = []
     if advisor:
         unsupported.append("advisor")
-    if compare_baseline is not None:
+    if compare_baseline is not None or compare_ranks is not None:
         unsupported.append("compare")
     if unsupported:
         raise ValueError(
@@ -2394,6 +2452,7 @@ def analyze(
     advisor: bool,
     cluster: bool,
     compare_baseline: Path | None,
+    compare_ranks: tuple[int, int] | None = None,
     cluster_mode: str = "all",
     cluster_agent_output: bool = False,
     cluster_bypass_input_safety_checks: bool = False,
@@ -2412,6 +2471,7 @@ def analyze(
         advisor=advisor,
         cluster=cluster,
         compare_baseline=compare_baseline,
+        compare_ranks=compare_ranks,
     )
     run_name = _run_name(config, device, preset)
     run_parent = _scoped_parent(root, config.run_root, config.topology)
@@ -2464,6 +2524,7 @@ def analyze(
         advisor=advisor,
         cluster=cluster,
         compare_baseline=compare_baseline,
+        compare_ranks=compare_ranks,
         run_directory=run_directory,
     )
     if (
@@ -2475,7 +2536,7 @@ def analyze(
             "torch_npu offline parsing cannot process an msprof collector run"
         )
     requires_official_analyzer = (
-        advisor or cluster or compare_baseline is not None
+        advisor or cluster or compare_baseline is not None or compare_ranks is not None
     )
     analysis_toolchain = (
         _analysis_toolchain_metadata() if requires_official_analyzer else None
@@ -2495,6 +2556,7 @@ def analyze(
         advanced_recipe_policy=advanced_recipe_policy,
         cluster_summary_baseline=cluster_summary_baseline,
         compare_baseline=compare_baseline,
+        compare_ranks=compare_ranks,
         analysis_toolchain=analysis_toolchain,
     )
     assert_run_not_active(
@@ -2575,7 +2637,7 @@ def analyze(
                     cluster_attempt.update("failed", error=repr(error))
                     raise
                 cluster_attempt.update("completed")
-        if compare_baseline is not None:
+        if compare_baseline is not None or compare_ranks is not None:
             compare_attempt, should_compare = _prepare_analysis_stage(
                 run_directory=run_directory,
                 artifact_directory=artifact_directory,
@@ -2586,12 +2648,28 @@ def analyze(
             if should_compare:
                 assert compare_attempt is not None
                 try:
-                    run_performance_compare(
-                        run_directory,
-                        compare_baseline,
-                        standard_cli=True,
-                        analysis_toolchain=analysis_toolchain,
-                    )
+                    if compare_ranks is not None:
+                        baseline_rank, candidate_rank = compare_ranks
+                        run_performance_compare(
+                            run_directory,
+                            _rank_comparison_input(run_directory, baseline_rank),
+                            candidate=_rank_comparison_input(
+                                run_directory, candidate_rank
+                            ),
+                            comparison_name=(
+                                f"rank_{baseline_rank}_vs_rank_{candidate_rank}"
+                            ),
+                            standard_cli=True,
+                            analysis_toolchain=analysis_toolchain,
+                        )
+                    else:
+                        assert compare_baseline is not None
+                        run_performance_compare(
+                            run_directory,
+                            compare_baseline,
+                            standard_cli=True,
+                            analysis_toolchain=analysis_toolchain,
+                        )
                 except BaseException as error:
                     compare_attempt.update("failed", error=repr(error))
                     raise
@@ -2712,6 +2790,18 @@ def _profiled_rank_count(preset: ProfilerPreset, world_size: int) -> int:
         if part.strip()
     }
     return len({rank for rank in ranks if 0 <= rank < world_size})
+
+
+def _parse_compare_ranks(value: str) -> tuple[int, int]:
+    """Parse BASELINE,CANDIDATE logical rank IDs."""
+
+    try:
+        parts = tuple(int(part.strip()) for part in value.split(","))
+    except ValueError as error:
+        raise ValueError("compare ranks must be integers") from error
+    if len(parts) != 2 or parts[0] == parts[1] or min(parts) < 0:
+        raise ValueError("compare ranks must be two distinct non-negative ranks")
+    return parts[0], parts[1]
 
 
 def run_profiler_cli(
@@ -2933,6 +3023,13 @@ def run_profiler_cli(
         type=Path,
         help="GPU trace or NPU profile path for msprof-analyze compare",
     )
+    parser.add_argument(
+        "--compare-ranks",
+        help=(
+            "baseline,candidate logical ranks from the same capture; runs "
+            "official msprof-analyze compare without recapturing"
+        ),
+    )
     parser.add_argument("--force", action="store_true")
     parser.add_argument(
         "--extra-train-arg",
@@ -2941,6 +3038,15 @@ def run_profiler_cli(
         help="append a raw TorchTitan CLI argument",
     )
     args = parser.parse_args()
+
+    compare_ranks: tuple[int, int] | None = None
+    if args.compare_ranks is not None:
+        try:
+            compare_ranks = _parse_compare_ranks(args.compare_ranks)
+        except ValueError as error:
+            parser.error(f"--compare-ranks must be BASELINE,CANDIDATE: {error}")
+    if compare_ranks is not None and args.compare_baseline is not None:
+        parser.error("--compare-ranks and --compare-baseline are mutually exclusive")
 
     requested_topology = None if args.topology == "all" else args.topology
     requested_preset = args.preset or config.preset
@@ -3127,9 +3233,11 @@ def run_profiler_cli(
         topologies=args.topologies,
         default=(effective.topology,),
     )
-    if args.compare_baseline is not None and len(selected) != 1:
+    if (
+        args.compare_baseline is not None or compare_ranks is not None
+    ) and len(selected) != 1:
         parser.error(
-            "--compare-baseline requires exactly one topology; run compare "
+            "performance compare requires exactly one topology; run compare "
             "separately for each topology with its matching baseline"
         )
     if (
@@ -3139,6 +3247,7 @@ def run_profiler_cli(
             "advisor" in analysis_tools
             or "cluster" in analysis_tools
             or args.compare_baseline is not None
+            or compare_ranks is not None
         )
     ):
         # Validate the offline host before deleting any prior derived report.
@@ -3215,6 +3324,11 @@ def run_profiler_cli(
     for preset_name, preset in selected_presets:
         for topology_name in selected:
             topology = topologies[topology_name]
+            if compare_ranks is not None and max(compare_ranks) >= topology.world_size:
+                parser.error(
+                    f"--compare-ranks {args.compare_ranks} is invalid for "
+                    f"{topology_name} with {topology.world_size} ranks"
+                )
             effective_preset = (
                 preset
                 if effective.collector == PerformanceCollector.MSPROF.value
@@ -3301,6 +3415,7 @@ def run_profiler_cli(
                     advisor="advisor" in analysis_tools,
                     cluster=cluster_enabled,
                     compare_baseline=args.compare_baseline,
+                    compare_ranks=compare_ranks,
                     cluster_mode=args.cluster_mode,
                     cluster_agent_output=args.cluster_agent_output,
                     cluster_bypass_input_safety_checks=(
