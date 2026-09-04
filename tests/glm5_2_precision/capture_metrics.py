@@ -70,6 +70,10 @@ def _install_jsonl_metrics_capture() -> None:
 
 
 def main() -> None:
+    if os.environ.get("GLM5_PRECISION_DETECT_ANOMALY") == "1":
+        import torch
+
+        torch.autograd.set_detect_anomaly(True)
     device_type = os.environ.get("TORCHTITAN_DEVICE", "gpu")
     if device_type == "npu":
         import torchtitanturbo  # noqa: F401

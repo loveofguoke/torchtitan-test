@@ -25,11 +25,18 @@ from .artifacts import (
 )
 from .standards import PrecisionStandard
 from .msprobe_tensorboard import (
+    MSPROBE_BLOCK_BACKWARD_ENV,
+    MSPROBE_BLOCK_BOUNDARIES_ENV,
+    MSPROBE_BLOCK_GLOBAL_STEP_ENV,
     MSPROBE_CONFIG_PATH_ENV,
+    MSPROBE_PARAMETER_STATE_ENV,
+    MSPROBE_ROUTER_STATE_ENV,
     MsprobeCaptureConfig,
+    MsprobeParallelSpec,
     build_tensorboard_assets,
     serve_tensorboard,
     tensorboard_command,
+    validate_debug_dump_directory,
     validate_dump_directory,
     write_capture_config,
 )
@@ -1003,7 +1010,10 @@ def capture_msprobe_endpoint(
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 expected_capture = json.loads(json.dumps(asdict(capture_config)))
                 try:
-                    validate_dump_directory(dump_path)
+                    if capture_config.level == "debug":
+                        validate_debug_dump_directory(dump_path)
+                    else:
+                        validate_dump_directory(dump_path)
                 except RuntimeError:
                     pass
                 else:
@@ -1041,6 +1051,16 @@ def capture_msprobe_endpoint(
     environment["TORCHTITAN_DEVICE"] = endpoint.torchtitan_device
     environment["GLM5_PRECISION_METRICS_PATH"] = str(metrics_path)
     environment[MSPROBE_CONFIG_PATH_ENV] = str(config_path)
+    if capture_config.block_boundaries:
+        environment[MSPROBE_BLOCK_BOUNDARIES_ENV] = "1"
+    if capture_config.block_global_step:
+        environment[MSPROBE_BLOCK_GLOBAL_STEP_ENV] = "1"
+    if capture_config.block_backward:
+        environment[MSPROBE_BLOCK_BACKWARD_ENV] = "1"
+    if capture_config.parameter_state:
+        environment[MSPROBE_PARAMETER_STATE_ENV] = "1"
+    if capture_config.router_state:
+        environment[MSPROBE_ROUTER_STATE_ENV] = "1"
     if config.training.fixed_global_batches:
         from .fixed_batches import FIXED_BATCHES_ENV
 
@@ -1079,7 +1099,10 @@ def capture_msprobe_endpoint(
         environment=environment,
         log_path=runtime_log,
     )
-    validate_dump_directory(dump_path)
+    if capture_config.level == "debug":
+        validate_debug_dump_directory(dump_path)
+    else:
+        validate_dump_directory(dump_path)
 
     capture_manifest = {
         "schema": "torchtitan.glm5_2.msprobe_capture",
@@ -1121,10 +1144,22 @@ def build_msprobe_visualization(
     candidate_run = _msprobe_run_directory(
         root, config, "candidate", config.candidate, repeat
     )
+
+    def parallel_spec(topology: ParallelTopology) -> MsprobeParallelSpec:
+        return MsprobeParallelSpec(
+            rank_size=topology.world_size,
+            tensor_parallel=topology.tensor_parallel_degree,
+            pipeline_parallel=topology.pipeline_parallel_degree,
+            data_parallel=topology.data_parallel_degree,
+            expert_parallel=topology.expert_parallel_degree,
+        )
+
     return build_tensorboard_assets(
         reference_dump=reference_run / "msprobe_dump",
         candidate_dump=candidate_run / "msprobe_dump",
         output=_msprobe_visualization_directory(root, config),
+        reference_parallel=parallel_spec(config.reference.topology),
+        candidate_parallel=parallel_spec(config.candidate.topology),
         force=force,
         resume=resume,
     )
@@ -1228,9 +1263,34 @@ def run_formal_cli(
     )
     parser.add_argument(
         "--msprobe-level",
-        choices=("L0", "mix"),
+        choices=("L0", "mix", "debug"),
         default="mix",
-        help="both levels preserve model structure required by TensorBoard",
+        help="use debug with PrecisionDebugger.save boundary probes",
+    )
+    parser.add_argument(
+        "--msprobe-block-boundaries",
+        action="store_true",
+        help="save global logical GLM5 block inputs/outputs (requires tensor/debug)",
+    )
+    parser.add_argument(
+        "--msprobe-block-global-step",
+        action="store_true",
+        help="reconstruct one global-step tensor per GLM5 block boundary",
+    )
+    parser.add_argument(
+        "--msprobe-block-backward",
+        action="store_true",
+        help="save global-step GLM5 block grad_input/grad_output tensors",
+    )
+    parser.add_argument(
+        "--msprobe-parameter-state",
+        action="store_true",
+        help="save all trainable gradients, optimizer updates, and updated parameters",
+    )
+    parser.add_argument(
+        "--msprobe-router-state",
+        action="store_true",
+        help="save global-step GLM5 router decisions and backward tensors",
     )
     parser.add_argument(
         "--serve-tensorboard",
@@ -1252,6 +1312,11 @@ def run_formal_cli(
         args.msprobe_rank,
         args.msprobe_task != "statistics",
         args.msprobe_level != "mix",
+        args.msprobe_block_boundaries,
+        args.msprobe_block_global_step,
+        args.msprobe_block_backward,
+        args.msprobe_parameter_state,
+        args.msprobe_router_state,
     )
     if any(msprobe_capture_options) and not args.capture_msprobe:
         parser.error("msProbe capture options require --capture-msprobe")
@@ -1344,6 +1409,11 @@ def run_formal_cli(
                 ranks=ranks,
                 task=args.msprobe_task,
                 level=args.msprobe_level,
+                block_boundaries=args.msprobe_block_boundaries,
+                block_global_step=args.msprobe_block_global_step,
+                block_backward=args.msprobe_block_backward,
+                parameter_state=args.msprobe_parameter_state,
+                router_state=args.msprobe_router_state,
             ),
             force=args.force,
             resume=args.resume,

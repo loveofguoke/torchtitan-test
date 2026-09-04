@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""NPU eager single-card versus four-card topology precision benchmark."""
+"""NPU eager msProbe single-card versus distributed diagnostic entry."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from tests.glm5_2_precision.workflow import (  # noqa: E402
 
 
 def _steps() -> int:
-    value = int(os.environ.get("GLM5_EAGER_ALIGNMENT_STEPS", "10"))
+    value = int(os.environ.get("GLM5_EAGER_ALIGNMENT_STEPS", "1"))
     if value < 1:
         raise ValueError("GLM5_EAGER_ALIGNMENT_STEPS must be positive")
     return value
@@ -71,6 +71,8 @@ CONFIG = FormalExperimentConfig(
         training_dtype="float32",
         mixed_precision_param=PARAM_DTYPE,
         checkpoint_kind="random_seed",
+        # A single complete step is sufficient for the msProbe operator/module
+        # diagnostic, but both topologies must consume byte-identical inputs.
         fixed_global_batches=True,
         exploratory_steps=(),
     ),

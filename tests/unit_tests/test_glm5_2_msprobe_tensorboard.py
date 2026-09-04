@@ -11,9 +11,11 @@ from tests.glm5_2_precision import msprobe_tensorboard
 from tests.glm5_2_precision.msprobe_tensorboard import (
     MSPROBE_CONFIG_PATH_ENV,
     MsprobeCaptureConfig,
+    MsprobeParallelSpec,
     build_tensorboard_assets,
     install_trainer_capture,
     tensorboard_command,
+    validate_debug_dump_directory,
     write_capture_config,
 )
 
@@ -23,6 +25,7 @@ def _dump(directory: Path) -> Path:
     rank.mkdir(parents=True)
     (rank / "dump.json").write_text("{}\n", encoding="utf-8")
     (rank / "construct.json").write_text("{}\n", encoding="utf-8")
+    (rank / "stack.json").write_text("{}\n", encoding="utf-8")
     return directory
 
 
@@ -39,6 +42,52 @@ def test_capture_config_supports_hierarchy_and_trend_views(tmp_path: Path) -> No
     assert payload["step"] == [0, 3]
     assert payload["rank"] == [1]
     assert payload["statistics"]["summary_mode"] == "statistics"
+
+
+def test_block_boundary_capture_uses_public_debug_tensor_mode(tmp_path: Path) -> None:
+    config = MsprobeCaptureConfig(
+        task="tensor",
+        level="debug",
+        ranks=(0,),
+        block_boundaries=True,
+        block_global_step=True,
+        block_backward=True,
+        parameter_state=True,
+        router_state=True,
+    )
+    payload = config.payload(tmp_path / "dump")
+
+    assert payload["task"] == "tensor"
+    assert payload["level"] == "debug"
+    assert "block_boundaries" not in payload
+    assert "block_global_step" not in payload
+    assert "block_backward" not in payload
+    assert "parameter_state" not in payload
+    assert "router_state" not in payload
+
+    with pytest.raises(ValueError, match="task=tensor and level=debug"):
+        MsprobeCaptureConfig(block_boundaries=True)
+    with pytest.raises(ValueError, match="requires block-boundary capture"):
+        MsprobeCaptureConfig(block_global_step=True)
+    with pytest.raises(ValueError, match="requires global-step block capture"):
+        MsprobeCaptureConfig(block_backward=True)
+    with pytest.raises(ValueError, match="task=tensor and level=debug"):
+        MsprobeCaptureConfig(parameter_state=True)
+    with pytest.raises(ValueError, match="task=tensor and level=debug"):
+        MsprobeCaptureConfig(router_state=True)
+
+
+def test_debug_dump_validation_requires_saved_data(tmp_path: Path) -> None:
+    rank = tmp_path / "step0" / "rank0"
+    rank.mkdir(parents=True)
+    (rank / "debug.json").write_text('{"data": {}}\n', encoding="utf-8")
+    with pytest.raises(RuntimeError, match="no saved msProbe debug tensors"):
+        validate_debug_dump_directory(tmp_path)
+
+    (rank / "debug.json").write_text(
+        '{"data": {"block_00_output.forward.0": {}}}\n', encoding="utf-8"
+    )
+    assert validate_debug_dump_directory(tmp_path) == tmp_path
 
 
 def test_trainer_capture_wraps_every_step_and_finalizes_on_error(
@@ -127,6 +176,8 @@ def test_build_tensorboard_assets_runs_official_msprobe_commands(
         reference_dump=reference,
         candidate_dump=candidate,
         output=tmp_path / "tensorboard",
+        reference_parallel=MsprobeParallelSpec(rank_size=1),
+        candidate_parallel=MsprobeParallelSpec(rank_size=1),
         msprobe_executable=executable,
     )
 
@@ -136,11 +187,23 @@ def test_build_tensorboard_assets_runs_official_msprobe_commands(
     assert commands[0][1:] == [
         "graph_visualize",
         "-tp",
-        str((candidate / "step0" / "rank0").resolve()),
+        str((candidate / "step0").resolve()),
         "-gp",
-        str((reference / "step0" / "rank0").resolve()),
+        str((reference / "step0").resolve()),
         "-o",
         str(output.resolve()),
+        "--rank_size",
+        "1",
+        "1",
+        "--tp",
+        "1",
+        "1",
+        "--pp",
+        "1",
+        "1",
+        "--vpp",
+        "1",
+        "1",
     ]
     assert [command[1] for command in commands] == [
         "graph_visualize",
@@ -154,6 +217,18 @@ def test_build_tensorboard_assets_runs_official_msprobe_commands(
         "GRAPH_ASCEND",
         "TREND ANALYZER",
     ]
+    assert manifest["comparison"]["kind"] == "msprobe_parallel_merge"
+
+
+def test_parallel_merge_rejects_single_vs_data_parallel(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="identical Data Parallelism"):
+        build_tensorboard_assets(
+            reference_dump=_dump(tmp_path / "reference"),
+            candidate_dump=_dump(tmp_path / "candidate"),
+            output=tmp_path / "tensorboard",
+            reference_parallel=MsprobeParallelSpec(rank_size=1),
+            candidate_parallel=MsprobeParallelSpec(rank_size=4, data_parallel=4),
+        )
 
 
 def test_tensorboard_command_is_local_by_default(tmp_path: Path) -> None:

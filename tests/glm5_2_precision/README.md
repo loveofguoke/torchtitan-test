@@ -6,6 +6,11 @@ locate a numerical divergence. This suite decides whether a long-running
 training process is accurate and stable enough for migration or distributed
 self-consistency.
 
+For the separate MindStudio/msProbe eager operator diagnostic, see
+[MINDSTUDIO_EAGER_ALIGNMENT.md](MINDSTUDIO_EAGER_ALIGNMENT.md). That workflow
+uses one complete logical step and must not be interpreted through this
+package's historical multi-step training-curve criteria.
+
 The two suites are intentionally independent. They share TorchTitan model and
 data assets, and a formal report can link sampled exploratory reports through
 `exploratory_reports`, but exploratory trace results never decide the formal
@@ -234,10 +239,14 @@ Use `--tensorboard-bind-all` only on a trusted network. TensorBoard exposes the
 logdir is under the experiment's `<report_root>/<scenario>/msprobe_tensorboard/`
 (or the candidate topology subdirectory for a shared-reference matrix). It contains a
 `.vis.db`, `reference.trend.db`, `candidate.trend.db`, and a JSON manifest with
-the exact official msProbe commands. The hierarchy database compares the first
-captured local rank at the first captured step, which remains portable across
-single/FSDP/DDP layouts; both trend databases retain every selected step and
-rank.
+the exact official msProbe commands. The hierarchy database uses msProbe's
+cross-partition graph merge on the one captured step; both trend databases
+retain every captured rank. This mode is valid only when both sides have the
+same data-parallel degree and neither side uses expert parallelism. Therefore a
+single-card reference can be compared directly only with TP/PP/VPP-only
+candidates. msProbe 26.1 documents this merger for Megatron and MindSpeed-LLM,
+so a TorchTitan result remains a compatibility diagnostic rather than a
+portable certification claim.
 
 ## Multi-node capture
 

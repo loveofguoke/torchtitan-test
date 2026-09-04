@@ -15,14 +15,72 @@ from importlib import metadata
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 from typing import Any, Literal, Sequence
 
 
 MSPROBE_CONFIG_PATH_ENV = "GLM5_MSPROBE_CONFIG_PATH"
+MSPROBE_BLOCK_BOUNDARIES_ENV = "GLM5_MSPROBE_BLOCK_BOUNDARIES"
+MSPROBE_BLOCK_GLOBAL_STEP_ENV = "GLM5_MSPROBE_BLOCK_GLOBAL_STEP"
+MSPROBE_BLOCK_BACKWARD_ENV = "GLM5_MSPROBE_BLOCK_BACKWARD"
+MSPROBE_PARAMETER_STATE_ENV = "GLM5_MSPROBE_PARAMETER_STATE"
+MSPROBE_ROUTER_STATE_ENV = "GLM5_MSPROBE_ROUTER_STATE"
 SCHEMA = "torchtitan.glm5_2.msprobe_tensorboard"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+
+@dataclass(frozen=True)
+class MsprobeParallelSpec:
+    """Parallel metadata consumed by msProbe's graph-merging interface."""
+
+    rank_size: int
+    tensor_parallel: int = 1
+    pipeline_parallel: int = 1
+    data_parallel: int = 1
+    expert_parallel: int = 1
+    virtual_pipeline_parallel: int = 1
+
+    def __post_init__(self) -> None:
+        values = (
+            self.rank_size,
+            self.tensor_parallel,
+            self.pipeline_parallel,
+            self.data_parallel,
+            self.expert_parallel,
+            self.virtual_pipeline_parallel,
+        )
+        if any(value < 1 for value in values):
+            raise ValueError("msProbe parallel degrees must be positive")
+        expected = (
+            self.tensor_parallel
+            * self.pipeline_parallel
+            * self.data_parallel
+        )
+        if expected != self.rank_size:
+            raise ValueError(
+                "msProbe rank_size must equal tp * pp * dp when CP is disabled: "
+                f"{self.rank_size} != {expected}"
+            )
+
+
+def validate_parallel_merge_pair(
+    reference: MsprobeParallelSpec,
+    candidate: MsprobeParallelSpec,
+) -> None:
+    """Enforce the cross-partition support documented by msProbe 26.1."""
+
+    if reference.expert_parallel != 1 or candidate.expert_parallel != 1:
+        raise ValueError(
+            "msProbe 26.1 graph merging does not support Expert Parallelism"
+        )
+    if reference.data_parallel != candidate.data_parallel:
+        raise ValueError(
+            "msProbe 26.1 graph merging requires identical Data Parallelism; "
+            f"reference dp={reference.data_parallel}, "
+            f"candidate dp={candidate.data_parallel}"
+        )
 
 
 @dataclass(frozen=True)
@@ -32,7 +90,12 @@ class MsprobeCaptureConfig:
     steps: tuple[int, ...] = (0,)
     ranks: tuple[int, ...] = ()
     task: Literal["statistics", "tensor"] = "statistics"
-    level: Literal["L0", "mix"] = "mix"
+    level: Literal["L0", "mix", "debug"] = "mix"
+    block_boundaries: bool = False
+    block_global_step: bool = False
+    block_backward: bool = False
+    parameter_state: bool = False
+    router_state: bool = False
 
     def __post_init__(self) -> None:
         if not self.steps or any(step < 0 for step in self.steps):
@@ -43,6 +106,32 @@ class MsprobeCaptureConfig:
             raise ValueError("msProbe ranks must be non-negative")
         if tuple(sorted(set(self.ranks))) != self.ranks:
             raise ValueError("msProbe ranks must be sorted and unique")
+        if self.block_boundaries and (
+            self.task != "tensor" or self.level != "debug"
+        ):
+            raise ValueError(
+                "block-boundary capture requires msProbe task=tensor and level=debug"
+            )
+        if self.block_global_step and not self.block_boundaries:
+            raise ValueError(
+                "global-step block capture requires block-boundary capture"
+            )
+        if self.block_backward and not self.block_global_step:
+            raise ValueError(
+                "block backward capture requires global-step block capture"
+            )
+        if self.parameter_state and (
+            self.task != "tensor" or self.level != "debug"
+        ):
+            raise ValueError(
+                "parameter-state capture requires msProbe task=tensor and level=debug"
+            )
+        if self.router_state and (
+            self.task != "tensor" or self.level != "debug"
+        ):
+            raise ValueError(
+                "router-state capture requires msProbe task=tensor and level=debug"
+            )
 
     def payload(self, dump_path: str | Path) -> dict[str, Any]:
         task_options: dict[str, Any] = {
@@ -105,13 +194,628 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
     debugger = PrecisionDebugger(config_path=str(path))
     original_train_step = Trainer.train_step
 
+    def reorder_rank_major_batches(
+        gathered: Any,
+        *,
+        data_parallel_size: int,
+        waves: int,
+    ) -> Any:
+        """Restore fixture order from rank-major all-gather output."""
+
+        if data_parallel_size < 1 or waves < 1:
+            raise ValueError("data-parallel size and waves must be positive")
+        groups = data_parallel_size * waves
+        if gathered.shape[0] % groups:
+            raise ValueError(
+                f"gathered batch {gathered.shape[0]} is not divisible by {groups}"
+            )
+        local_batch_size = gathered.shape[0] // groups
+        trailing_shape = tuple(gathered.shape[1:])
+        rank_major = gathered.reshape(
+            data_parallel_size,
+            waves,
+            local_batch_size,
+            *trailing_shape,
+        )
+        fixture_order = rank_major.permute(
+            1,
+            0,
+            2,
+            *range(3, rank_major.ndim),
+        )
+        return fixture_order.reshape(-1, *trailing_shape).contiguous()
+
+    def logical_tensor(value: Any) -> Any:
+        """Return the global logical value without attaching an observer graph."""
+
+        import torch
+
+        def wait_if_async(tensor: Any) -> Any:
+            if type(tensor).__name__ != "AsyncCollectiveTensor":
+                return tensor
+            from torch.distributed._functional_collectives import wait_tensor
+
+            return wait_tensor(tensor)
+
+        if not isinstance(value, torch.Tensor):
+            return value
+        value = value.detach()
+        try:
+            from torch.distributed.tensor import DTensor, Replicate
+        except ImportError:  # pragma: no cover - older PyTorch compatibility
+            return value
+        if not isinstance(value, DTensor):
+            return wait_if_async(value)
+        if all(isinstance(placement, Replicate) for placement in value.placements):
+            return wait_if_async(value.to_local())
+        # Every TP rank must execute this collective before rank 0 saves it.
+        return wait_if_async(value.full_tensor())
+
+    def install_block_boundary_hooks(trainer: Any) -> None:
+        instance_marker = "_glm5_msprobe_block_boundary_handles"
+        if hasattr(trainer, instance_marker):
+            return
+
+        import torch.distributed as dist
+
+        handles = []
+        discovered: set[int] = set()
+        buffers: dict[tuple[int, str], list[Any]] = {}
+        gradient_buffers: dict[tuple[int, str], dict[int, Any]] = {}
+        setattr(trainer, "_glm5_msprobe_block_boundary_buffers", buffers)
+        setattr(trainer, "_glm5_msprobe_block_gradient_buffers", gradient_buffers)
+        for model_part in trainer.model_parts:
+            for module_name, module in model_part.named_modules():
+                match = re.search(r"(?:^|\.)layers\.(\d+)$", module_name)
+                if match is None:
+                    continue
+                block_index = int(match.group(1))
+                if block_index in discovered:
+                    continue
+                discovered.add(block_index)
+
+                def save_boundary(
+                    _module: Any,
+                    args: tuple[Any, ...],
+                    output: Any,
+                    *,
+                    index: int = block_index,
+                ) -> None:
+                    if not args:
+                        raise RuntimeError(f"GLM5 block {index} has no positional input")
+                    block_input = logical_tensor(args[0])
+                    block_output = logical_tensor(output)
+                    if os.environ.get(MSPROBE_BLOCK_GLOBAL_STEP_ENV) == "1":
+                        input_chunks = buffers.setdefault((index, "input"), [])
+                        invocation = len(input_chunks)
+                        input_chunks.append(block_input.clone())
+                        buffers.setdefault((index, "output"), []).append(
+                            block_output.clone()
+                        )
+                        if os.environ.get(MSPROBE_BLOCK_BACKWARD_ENV) == "1":
+                            import torch
+
+                            def register_gradient(
+                                value: Any,
+                                boundary: str,
+                            ) -> None:
+                                if not isinstance(value, torch.Tensor):
+                                    raise RuntimeError(
+                                        f"GLM5 block {index} {boundary} is not a tensor"
+                                    )
+                                if not value.requires_grad:
+                                    raise RuntimeError(
+                                        f"GLM5 block {index} {boundary} does not require grad"
+                                    )
+
+                                def capture_gradient(
+                                    gradient: Any,
+                                    *,
+                                    block: int = index,
+                                    edge: str = boundary,
+                                    call: int = invocation,
+                                ) -> Any:
+                                    logical_gradient = logical_tensor(gradient)
+                                    gradient_buffers.setdefault(
+                                        (block, edge), {}
+                                    )[call] = logical_gradient.clone()
+                                    return gradient
+
+                                value.register_hook(capture_gradient)
+
+                            register_gradient(args[0], "grad_input")
+                            register_gradient(output, "grad_output")
+                    elif not dist.is_initialized() or dist.get_rank() == 0:
+                        debugger.save(
+                            block_input,
+                            f"block_{index:02d}_input",
+                            save_backward=False,
+                        )
+                        debugger.save(
+                            block_output,
+                            f"block_{index:02d}_output",
+                            save_backward=False,
+                        )
+
+                handles.append(module.register_forward_hook(save_boundary))
+
+        if not discovered:
+            raise RuntimeError("no GLM5 transformer blocks found for msProbe capture")
+        setattr(trainer, instance_marker, tuple(handles))
+
+    def clear_block_boundary_buffers(trainer: Any) -> None:
+        buffers = getattr(trainer, "_glm5_msprobe_block_boundary_buffers")
+        buffers.clear()
+        gradient_buffers = getattr(
+            trainer, "_glm5_msprobe_block_gradient_buffers"
+        )
+        gradient_buffers.clear()
+
+    def stage_dump_owner(trainer: Any) -> bool:
+        import torch.distributed as dist
+
+        parallel_dims = trainer.parallel_dims
+        data_parallel_size = (
+            parallel_dims.dp_replicate * parallel_dims.dp_shard
+        )
+        stage_width = data_parallel_size * parallel_dims.cp * parallel_dims.tp
+        return not dist.is_initialized() or dist.get_rank() % stage_width == 0
+
+    def global_step_tensor(
+        trainer: Any,
+        chunks: list[Any],
+        *,
+        allow_leading_extra: bool,
+    ) -> Any:
+        import torch
+        import torch.distributed as dist
+
+        parallel_dims = trainer.parallel_dims
+        data_parallel_size = (
+            parallel_dims.dp_replicate * parallel_dims.dp_shard
+        )
+        first_shape = tuple(chunks[0].shape)
+        if any(tuple(chunk.shape) != first_shape for chunk in chunks):
+            raise RuntimeError("block boundary has inconsistent chunks")
+        local_step = torch.cat(chunks, dim=0).contiguous()
+        expected_local_rows = (
+            trainer.config.training.global_batch_size // data_parallel_size
+        )
+        if local_step.shape[0] < expected_local_rows:
+            raise RuntimeError(
+                f"captured {local_step.shape[0]} rows, expected {expected_local_rows}"
+            )
+        extra_rows = local_step.shape[0] - expected_local_rows
+        chunk_rows = first_shape[0]
+        if extra_rows % chunk_rows:
+            raise RuntimeError("block boundary has a partial extra chunk")
+        if extra_rows and not allow_leading_extra:
+            raise RuntimeError(f"block gradient has {extra_rows} unexpected rows")
+        if extra_rows:
+            local_step = local_step[extra_rows:].contiguous()
+        waves = expected_local_rows // chunk_rows
+        if data_parallel_size > 1:
+            batch_mesh = parallel_dims.get_mesh("batch")
+            gathered = torch.empty(
+                (data_parallel_size * local_step.shape[0], *local_step.shape[1:]),
+                dtype=local_step.dtype,
+                device=local_step.device,
+            )
+            dist.all_gather_into_tensor(
+                gathered,
+                local_step,
+                group=batch_mesh.get_group(),
+            )
+            return reorder_rank_major_batches(
+                gathered,
+                data_parallel_size=data_parallel_size,
+                waves=waves,
+            )
+        return local_step
+
+    def save_global_step_boundaries(trainer: Any) -> None:
+        buffers = getattr(trainer, "_glm5_msprobe_block_boundary_buffers")
+        owns_stage_dump = stage_dump_owner(trainer)
+
+        for (block_index, boundary), chunks in sorted(buffers.items()):
+            if not chunks:
+                raise RuntimeError(
+                    f"GLM5 block {block_index} {boundary} captured no tensors"
+                )
+            # Pipeline schedules perform one leading shape-propagation call when
+            # they are first stepped.  It is not a training microbatch (and on
+            # non-first stages may contain uninitialized placeholder values).
+            # Retain exactly the trailing rows belonging to this optimizer step.
+            global_step = global_step_tensor(
+                trainer,
+                chunks,
+                allow_leading_extra=True,
+            )
+            if owns_stage_dump:
+                debugger.save(
+                    global_step,
+                    f"block_{block_index:02d}_{boundary}",
+                    save_backward=False,
+                )
+
+    def save_global_step_gradients(trainer: Any) -> None:
+        buffers = getattr(trainer, "_glm5_msprobe_block_boundary_buffers")
+        gradient_buffers = getattr(
+            trainer, "_glm5_msprobe_block_gradient_buffers"
+        )
+        owns_stage_dump = stage_dump_owner(trainer)
+        data_parallel_size = (
+            trainer.parallel_dims.dp_replicate * trainer.parallel_dims.dp_shard
+        )
+        expected_local_rows = (
+            trainer.config.training.global_batch_size // data_parallel_size
+        )
+
+        for (block_index, boundary), captured in sorted(gradient_buffers.items()):
+            forward_boundary = "input" if boundary == "grad_input" else "output"
+            forward_chunks = buffers[(block_index, forward_boundary)]
+            chunk_rows = forward_chunks[0].shape[0]
+            expected_calls = expected_local_rows // chunk_rows
+            extra_calls = len(forward_chunks) - expected_calls
+            expected_indexes = range(extra_calls, len(forward_chunks))
+            missing = [index for index in expected_indexes if index not in captured]
+            if missing:
+                raise RuntimeError(
+                    f"GLM5 block {block_index} {boundary} is missing calls {missing}"
+                )
+            ordered_chunks = [captured[index] for index in expected_indexes]
+            global_step = global_step_tensor(
+                trainer,
+                ordered_chunks,
+                allow_leading_extra=False,
+            )
+            if owns_stage_dump:
+                debugger.save(
+                    global_step,
+                    f"block_{block_index:02d}_{boundary}",
+                    save_backward=False,
+                )
+
+    def install_router_state_hooks(trainer: Any) -> None:
+        instance_marker = "_glm5_msprobe_router_state_handles"
+        if hasattr(trainer, instance_marker):
+            return
+
+        import torch
+
+        handles = []
+        discovered: set[int] = set()
+        buffers: dict[tuple[int, str], list[Any]] = {}
+        gradient_buffers: dict[tuple[int, str], dict[int, Any]] = {}
+        gradient_sources: dict[tuple[int, str], str] = {}
+        setattr(trainer, "_glm5_msprobe_router_state_buffers", buffers)
+        setattr(
+            trainer,
+            "_glm5_msprobe_router_state_gradient_buffers",
+            gradient_buffers,
+        )
+        setattr(
+            trainer,
+            "_glm5_msprobe_router_state_gradient_sources",
+            gradient_sources,
+        )
+
+        def capture_forward(layer: int, field: str, value: Any) -> int:
+            logical = logical_tensor(value)
+            field_buffers = buffers.setdefault((layer, field), [])
+            invocation = len(field_buffers)
+            field_buffers.append(logical.clone())
+            return invocation
+
+        def register_gradient(
+            layer: int,
+            field: str,
+            source: str,
+            value: Any,
+            invocation: int,
+        ) -> None:
+            if not isinstance(value, torch.Tensor) or not value.requires_grad:
+                raise RuntimeError(
+                    f"GLM5 router layer {layer} {field} does not require grad"
+                )
+            gradient_sources[(layer, field)] = source
+
+            def capture(gradient: Any) -> Any:
+                import torch.distributed as dist
+
+                summed = gradient.detach()
+                try:
+                    from torch.distributed.tensor import DTensor
+                except ImportError:  # pragma: no cover
+                    DTensor = ()
+                if isinstance(summed, DTensor):
+                    summed = summed.to_local()
+                summed = summed.clone()
+                if trainer.parallel_dims.tp > 1:
+                    dist.all_reduce(
+                        summed,
+                        group=trainer.parallel_dims.get_mesh("tp").get_group(),
+                    )
+                logical = logical_tensor(gradient)
+                gradient_buffers.setdefault((layer, field), {})[
+                    invocation
+                ] = logical.clone()
+                summed_field = f"{field}_tp_sum"
+                gradient_sources[(layer, summed_field)] = source
+                gradient_buffers.setdefault((layer, summed_field), {})[
+                    invocation
+                ] = summed
+                return gradient
+
+            value.register_hook(capture)
+
+        for model_part in trainer.model_parts:
+            for module_name, module in model_part.named_modules():
+                match = re.search(r"(?:^|\.)layers\.(\d+)\.moe\.router$", module_name)
+                if match is None:
+                    continue
+                layer = int(match.group(1))
+                if layer in discovered:
+                    continue
+                discovered.add(layer)
+
+                def capture_gate(
+                    _module: Any,
+                    args: tuple[Any, ...],
+                    output: Any,
+                    *,
+                    index: int = layer,
+                ) -> None:
+                    if not args:
+                        raise RuntimeError(f"GLM5 router gate layer {index} has no input")
+                    invocation = capture_forward(index, "gate_input", args[0])
+                    output_invocation = capture_forward(index, "gate_logits", output)
+                    if invocation != output_invocation:
+                        raise RuntimeError(
+                            f"GLM5 router gate layer {index} invocation mismatch"
+                        )
+                    register_gradient(
+                        index,
+                        "gate_grad_input",
+                        "gate_input",
+                        args[0],
+                        invocation,
+                    )
+                    register_gradient(
+                        index,
+                        "gate_grad_logits",
+                        "gate_logits",
+                        output,
+                        invocation,
+                    )
+
+                def capture_router(
+                    router: Any,
+                    args: tuple[Any, ...],
+                    output: Any,
+                    *,
+                    index: int = layer,
+                ) -> None:
+                    if not isinstance(output, tuple) or len(output) != 3:
+                        raise RuntimeError(
+                            f"GLM5 router layer {index} returned an unexpected value"
+                        )
+                    topk_scores, topk_ids, scores = output
+                    scores_logical = logical_tensor(scores)
+                    topk_scores_logical = logical_tensor(topk_scores)
+                    topk_ids_logical = logical_tensor(topk_ids).long()
+                    invocation = capture_forward(index, "scores", scores)
+                    capture_forward(index, "topk_scores", topk_scores)
+
+                    selection_map = torch.zeros_like(scores_logical).scatter(
+                        -1,
+                        topk_ids_logical,
+                        1.0,
+                    )
+                    weighted_map = torch.zeros_like(scores_logical).scatter(
+                        -1,
+                        topk_ids_logical,
+                        topk_scores_logical,
+                    )
+                    capture_forward(index, "selection_map", selection_map)
+                    capture_forward(index, "weighted_map", weighted_map)
+
+                    scores_for_choice = scores_logical
+                    if len(args) > 1 and args[1] is not None:
+                        scores_for_choice = scores_for_choice + logical_tensor(args[1])
+                    choice_values = torch.topk(
+                        scores_for_choice,
+                        k=router.top_k + 1,
+                        dim=-1,
+                        sorted=True,
+                    ).values
+                    margin = (
+                        choice_values[..., router.top_k - 1]
+                        - choice_values[..., router.top_k]
+                    )
+                    capture_forward(index, "topk_margin", margin)
+
+                    register_gradient(
+                        index,
+                        "scores_grad",
+                        "scores",
+                        scores,
+                        invocation,
+                    )
+                    register_gradient(
+                        index,
+                        "topk_scores_grad",
+                        "topk_scores",
+                        topk_scores,
+                        invocation,
+                    )
+
+                handles.append(module.gate.register_forward_hook(capture_gate))
+                handles.append(module.register_forward_hook(capture_router))
+
+        if not discovered:
+            raise RuntimeError("no GLM5 MoE routers found for msProbe capture")
+        setattr(trainer, instance_marker, tuple(handles))
+
+    def clear_router_state_buffers(trainer: Any) -> None:
+        getattr(trainer, "_glm5_msprobe_router_state_buffers").clear()
+        getattr(trainer, "_glm5_msprobe_router_state_gradient_buffers").clear()
+        getattr(trainer, "_glm5_msprobe_router_state_gradient_sources").clear()
+
+    def save_global_step_router_state(trainer: Any) -> None:
+        buffers = getattr(trainer, "_glm5_msprobe_router_state_buffers")
+        gradient_buffers = getattr(
+            trainer, "_glm5_msprobe_router_state_gradient_buffers"
+        )
+        gradient_sources = getattr(
+            trainer, "_glm5_msprobe_router_state_gradient_sources"
+        )
+        owns_stage_dump = stage_dump_owner(trainer)
+        data_parallel_size = (
+            trainer.parallel_dims.dp_replicate * trainer.parallel_dims.dp_shard
+        )
+        expected_local_rows = (
+            trainer.config.training.global_batch_size // data_parallel_size
+        )
+
+        for (layer, field), chunks in sorted(buffers.items()):
+            if not chunks:
+                raise RuntimeError(f"GLM5 router layer {layer} {field} is empty")
+            global_step = global_step_tensor(
+                trainer,
+                chunks,
+                allow_leading_extra=True,
+            )
+            if owns_stage_dump:
+                debugger.save(
+                    global_step,
+                    f"router_{layer:02d}_{field}",
+                    save_backward=False,
+                )
+
+        for (layer, field), captured in sorted(gradient_buffers.items()):
+            source = gradient_sources[(layer, field)]
+            forward_chunks = buffers[(layer, source)]
+            chunk_rows = forward_chunks[0].shape[0]
+            expected_calls = expected_local_rows // chunk_rows
+            extra_calls = len(forward_chunks) - expected_calls
+            expected_indexes = range(extra_calls, len(forward_chunks))
+            missing = [index for index in expected_indexes if index not in captured]
+            if missing:
+                raise RuntimeError(
+                    f"GLM5 router layer {layer} {field} is missing calls {missing}"
+                )
+            global_step = global_step_tensor(
+                trainer,
+                [captured[index] for index in expected_indexes],
+                allow_leading_extra=False,
+            )
+            if owns_stage_dump:
+                debugger.save(
+                    global_step,
+                    f"router_{layer:02d}_{field}",
+                    save_backward=False,
+                )
+
+    def named_trainable_parameters(trainer: Any) -> dict[str, Any]:
+        parameters: dict[str, Any] = {}
+        for model_part in trainer.model_parts:
+            for name, parameter in model_part.named_parameters():
+                if not parameter.requires_grad:
+                    continue
+                if name in parameters and parameters[name] is not parameter:
+                    raise RuntimeError(f"duplicate trainable parameter name: {name}")
+                parameters[name] = parameter
+        if not parameters:
+            raise RuntimeError("no trainable parameters found for msProbe capture")
+        return parameters
+
+    def snapshot_trainable_parameters(trainer: Any) -> dict[str, Any]:
+        return {
+            name: parameter.detach().clone()
+            for name, parameter in named_trainable_parameters(trainer).items()
+        }
+
+    def parameter_debug_name(name: str) -> str:
+        return re.sub(r"[^A-Za-z0-9_]+", "__", name).strip("_")
+
+    def save_parameter_state(
+        trainer: Any,
+        initial_parameters: dict[str, Any],
+    ) -> None:
+        import torch
+
+        parameters = named_trainable_parameters(trainer)
+        if parameters.keys() != initial_parameters.keys():
+            raise RuntimeError("trainable parameter names changed during train_step")
+        owns_stage_dump = stage_dump_owner(trainer)
+        debug_names: set[str] = set()
+
+        for name, parameter in sorted(parameters.items()):
+            debug_name = parameter_debug_name(name)
+            if debug_name in debug_names:
+                raise RuntimeError(f"parameter debug-name collision: {debug_name}")
+            debug_names.add(debug_name)
+            initial = logical_tensor(initial_parameters[name])
+            updated = logical_tensor(parameter)
+            update = updated - initial
+            if owns_stage_dump:
+                grad_present = torch.tensor(
+                    [float(parameter.grad is not None), float(parameter.grad is None)],
+                    dtype=torch.float32,
+                    device=updated.device,
+                )
+                debugger.save(
+                    grad_present,
+                    f"parameter_grad_present__{debug_name}",
+                    save_backward=False,
+                )
+            if parameter.grad is not None:
+                gradient = logical_tensor(parameter.grad)
+                if owns_stage_dump:
+                    debugger.save(
+                        gradient,
+                        f"parameter_grad__{debug_name}",
+                        save_backward=False,
+                    )
+            if owns_stage_dump:
+                debugger.save(
+                    update,
+                    f"parameter_update__{debug_name}",
+                    save_backward=False,
+                )
+                debugger.save(
+                    updated,
+                    f"parameter_after__{debug_name}",
+                    save_backward=False,
+                )
+
     @wraps(original_train_step)
     def train_step_with_msprobe(self: Any, *args: Any, **kwargs: Any) -> Any:
+        if os.environ.get(MSPROBE_BLOCK_BOUNDARIES_ENV) == "1":
+            install_block_boundary_hooks(self)
+            if os.environ.get(MSPROBE_BLOCK_GLOBAL_STEP_ENV) == "1":
+                clear_block_boundary_buffers(self)
+        if os.environ.get(MSPROBE_ROUTER_STATE_ENV) == "1":
+            install_router_state_hooks(self)
+            clear_router_state_buffers(self)
+        initial_parameters = None
+        if os.environ.get(MSPROBE_PARAMETER_STATE_ENV) == "1":
+            initial_parameters = snapshot_trainable_parameters(self)
         # PrecisionDebugger explicitly accepts a list/tuple of model parts and
         # prefixes their module names with the local part index.
         debugger.start(model=self.model_parts)
         try:
-            return original_train_step(self, *args, **kwargs)
+            result = original_train_step(self, *args, **kwargs)
+            if os.environ.get(MSPROBE_BLOCK_GLOBAL_STEP_ENV) == "1":
+                save_global_step_boundaries(self)
+            if os.environ.get(MSPROBE_BLOCK_BACKWARD_ENV) == "1":
+                save_global_step_gradients(self)
+            if os.environ.get(MSPROBE_ROUTER_STATE_ENV) == "1":
+                save_global_step_router_state(self)
+            if initial_parameters is not None:
+                save_parameter_state(self, initial_parameters)
+            return result
         finally:
             try:
                 debugger.stop()
@@ -136,6 +840,24 @@ def validate_dump_directory(path: str | Path) -> Path:
         raise RuntimeError(f"no msProbe dump.json found under {directory}")
     if not construct_files:
         raise RuntimeError(f"no msProbe construct.json found under {directory}")
+    stack_files = list(directory.rglob("stack.json")) if directory.is_dir() else []
+    if not stack_files:
+        raise RuntimeError(f"no msProbe stack.json found under {directory}")
+    return directory
+
+
+def validate_debug_dump_directory(path: str | Path) -> Path:
+    """Require at least one non-empty public ``PrecisionDebugger.save`` dump."""
+
+    directory = Path(path)
+    debug_files = list(directory.rglob("debug.json")) if directory.is_dir() else []
+    if not debug_files:
+        raise RuntimeError(f"no msProbe debug.json found under {directory}")
+    if not any(
+        json.loads(item.read_text(encoding="utf-8")).get("data")
+        for item in debug_files
+    ):
+        raise RuntimeError(f"no saved msProbe debug tensors found under {directory}")
     return directory
 
 
@@ -208,21 +930,29 @@ def build_tensorboard_assets(
     reference_dump: str | Path,
     candidate_dump: str | Path,
     output: str | Path,
+    reference_parallel: MsprobeParallelSpec,
+    candidate_parallel: MsprobeParallelSpec,
     force: bool = False,
     resume: bool = False,
     msprobe_executable: str | Path | None = None,
 ) -> Path:
-    """Build hierarchy and trend databases consumed by TensorBoard."""
+    """Build an official cross-partition msProbe graph comparison and trends."""
 
     if force and resume:
         raise ValueError("force and resume are mutually exclusive")
     reference = validate_dump_directory(reference_dump).resolve()
     candidate = validate_dump_directory(candidate_dump).resolve()
-    # A single-rank hierarchy comparison is portable across TorchTitan's
-    # single/FSDP/DDP layouts. The Trend Analyzer still receives the complete
-    # roots and therefore retains every captured step and rank.
-    graph_reference = _dump_leaf_directories(reference)[0]
-    graph_candidate = _dump_leaf_directories(candidate)[0]
+    validate_parallel_merge_pair(reference_parallel, candidate_parallel)
+    reference_leaves = _dump_leaf_directories(reference)
+    candidate_leaves = _dump_leaf_directories(candidate)
+    reference_steps = {path.parent for path in reference_leaves}
+    candidate_steps = {path.parent for path in candidate_leaves}
+    if len(reference_steps) != 1 or len(candidate_steps) != 1:
+        raise ValueError(
+            "the MindStudio baseline comparison requires exactly one captured step"
+        )
+    graph_reference = next(iter(reference_steps))
+    graph_candidate = next(iter(candidate_steps))
     destination = Path(output).resolve()
     manifest_path = destination / "msprobe_tensorboard.json"
     expected = (
@@ -262,6 +992,18 @@ def build_tensorboard_assets(
         str(graph_reference),
         "-o",
         str(destination),
+        "--rank_size",
+        str(candidate_parallel.rank_size),
+        str(reference_parallel.rank_size),
+        "--tp",
+        str(candidate_parallel.tensor_parallel),
+        str(reference_parallel.tensor_parallel),
+        "--pp",
+        str(candidate_parallel.pipeline_parallel),
+        str(reference_parallel.pipeline_parallel),
+        "--vpp",
+        str(candidate_parallel.virtual_pipeline_parallel),
+        str(reference_parallel.virtual_pipeline_parallel),
     ]
     _run(graph_command)
     commands.append(graph_command)
@@ -301,6 +1043,18 @@ def build_tensorboard_assets(
         "output": str(destination),
         "assets": sorted(path.name for path in destination.glob("*.db")),
         "commands": commands,
+        "comparison": {
+            "kind": "msprobe_parallel_merge",
+            "task": "statistics",
+            "level": "mix",
+            "steps": [0],
+            "reference_parallel": reference_parallel.__dict__,
+            "candidate_parallel": candidate_parallel.__dict__,
+            "framework_validation": (
+                "msProbe documents graph merging for Megatron/MindSpeed-LLM; "
+                "TorchTitan compatibility must be established by this run"
+            ),
+        },
         "tensorboard": {
             "logdir": str(destination),
             "tabs": ["GRAPH_ASCEND", "TREND ANALYZER"],
@@ -357,13 +1111,17 @@ def serve_tensorboard(
 
 
 __all__ = [
+    "MSPROBE_BLOCK_BOUNDARIES_ENV",
     "MSPROBE_CONFIG_PATH_ENV",
     "MsprobeCaptureConfig",
+    "MsprobeParallelSpec",
     "build_tensorboard_assets",
     "install_trainer_capture",
     "require_visualization_plugins",
     "serve_tensorboard",
     "tensorboard_command",
+    "validate_parallel_merge_pair",
     "validate_dump_directory",
+    "validate_debug_dump_directory",
     "write_capture_config",
 ]
