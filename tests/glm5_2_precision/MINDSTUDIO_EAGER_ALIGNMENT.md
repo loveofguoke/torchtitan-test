@@ -317,6 +317,34 @@ The patched single-card run is exactly identical to the pre-fix reference for
 all 628 parameter-state tensors (minimum cosine 1.0 and maximum absolute error
 0), confirming that the normalized degree-one TP placement is an identity.
 
+### AdamW first-step update-chain confirmation
+
+A focused single-card versus TP4 run captures 662 tensors through the public
+`PrecisionDebugger.save()` interface and compares them with native
+`msprobe compare -m auto`. All 662 rows match and the MindStudio `Result`
+column is `pass`. The diagnostic freezes the optimizer hyperparameters before
+the scheduler runs and records pre-clip gradient, post-clip gradient, first and
+second moments, reconstructed FP32 AdamW deltas, and the actual parameter
+delta. The global norm differs by only 9.30e-6 (single 1.4018544, TP4
+1.4018451), so clipping applies effectively the same coefficient.
+
+| Parameter | Pre/post-clip cosine | `exp_avg` / `exp_avg_sq` cosine | Adaptive/intended delta cosine | Gradient sign differences | Actual minus intended max abs |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| layer 3 attention `kv_norm.weight` (control) | 0.999903 / 0.999903 | 0.999903 / 0.999930 | 1.000000 / 1.000000 | 0 / 64 | 6.92e-8 |
+| layer 6 attention `kv_norm.weight` | 0.999820 / 0.999820 | 0.999820 / 0.999815 | 0.873088 / 0.872576 | 5 / 64 | 6.95e-8 |
+| layer 4 router `gate.weight` | 0.999330 / 0.999330 | 0.999330 / 0.999566 | 0.979337 / 0.979337 | 24 / 2048 | 1.75e-9 |
+
+The control parameter has no sign differences and its update remains aligned.
+For layer 6, four elements receive an opposite near-full first-step adaptive
+update; the maximum single-versus-TP4 difference is 0.001581, close to twice
+the 0.0008 learning rate. The router has 16 such elements and a maximum
+difference of 0.001589. This is the expected first-step AdamW behavior: with
+zero-initialized moments, `m / sqrt(v)` is approximately the gradient sign, so
+a small residual around zero can change the update by about `2 * lr` even when
+the gradient cosine is above 0.999. The actual FP32 parameter delta tracks the
+reconstructed intended delta within numerical noise, excluding clipping,
+optimizer-state corruption, and parameter write-back as independent TP bugs.
+
 The final combined regression captures 765 tensors per topology. All 16 block
 forward and 16 block backward boundaries continue to satisfy the compatibility
 rule with zero unsupported metrics. FSDP2-TP2 block-backward minimum cosine
