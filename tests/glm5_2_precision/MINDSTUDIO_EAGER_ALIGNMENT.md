@@ -354,3 +354,38 @@ Six weighted-routing-map diagnostics retain maximum absolute error above 1
 because the same small set of near-tie tokens selects a different expert; this
 is a forward discrete-routing diagnostic and is unchanged by the backward-only
 placement fix.
+
+### PP2-TP2-EP2 full-composition regression
+
+The final four-card composition enables PP2, TP2, and EP2 together. The Turbo
+TP-Partial correction is intentionally inactive because EP owns the routed
+gradient layout. Pipeline rank 0 saves 365 stage-0 tensors and rank 2 saves 400
+stage-1 tensors; together they cover the same 765 logical diagnostics as the
+single-card reference. Both stages are compared independently with native
+`msprobe compare -m auto`.
+
+All 737 semantically common tensors pass the MindStudio `Result` criterion:
+
+| Metric | Tensors | Minimum cosine | Maximum absolute error | Compatibility failures |
+| --- | ---: | ---: | ---: | ---: |
+| Block forward | 16 | 0.999996 | 0.0444336 | 0 |
+| Block backward | 16 | 0.999989 | 2.38419e-6 | 0 |
+| Parameter gradient | 127 | 0.998442 | 1.57662e-4 | 0 |
+| Optimizer delta | 167 | 0.910258 | 0.00159914 | 44 |
+| Updated parameter | 167 | 0.999645 | 0.00159914 | 0 |
+| Router state | 77 | 0.995199 | 1.25001 | 0 |
+
+The raw stage reports contain 744 `pass` rows and 21 shape errors. Every error
+belongs to a diagnostic `_tp_sum` tensor. All 28 `_tp_sum` tensors are excluded,
+including seven whose shapes happen to match, because an all-reduce across the
+TP mesh is not the correct logical reconstruction when EP shares that mesh.
+This is the same predefined exclusion used for FSDP2-TP2-EP2, not a numerical
+failure discovered after comparison. The remaining 44 low-cosine isolated
+optimizer deltas have the already-confirmed first-step AdamW sign-amplification
+signature; no parameter gradient or updated parameter fails compatibility.
+
+The single-card loss/gradient norm are 8.14224625/1.40185440; PP2-TP2-EP2 gives
+8.14226818/1.40230775. Router gate parameter-gradient minimum cosine is
+0.999666, and router gate updated-parameter minimum cosine is 0.999778. Six
+weighted routing maps retain maximum absolute error above 1 due to near-tie
+expert choices, consistent with the other TP combinations.
