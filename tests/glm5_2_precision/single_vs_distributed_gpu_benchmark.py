@@ -43,6 +43,7 @@ TOPOLOGIES = {
         data_parallel_shard_degree=2,
     ),
     "tp4": ParallelTopology("tp4", 4, tensor_parallel_degree=4),
+    "tp8": ParallelTopology("tp8", 8, tensor_parallel_degree=8),
     "pp4-gpipe": ParallelTopology(
         "pp4-gpipe",
         4,
