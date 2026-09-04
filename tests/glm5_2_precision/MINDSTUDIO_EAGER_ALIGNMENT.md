@@ -389,3 +389,32 @@ The single-card loss/gradient norm are 8.14224625/1.40185440; PP2-TP2-EP2 gives
 0.999666, and router gate updated-parameter minimum cosine is 0.999778. Six
 weighted routing maps retain maximum absolute error above 1 due to near-tie
 expert choices, consistent with the other TP combinations.
+
+### Eight-card TP scale-out regression
+
+The same topology-invariant fixture is extended from TP4 to TP8 without
+changing the eager, one-step MindStudio contract. The debug model has eight
+attention heads and eight experts, so TP8 exercises the maximum meaningful TP
+degree for this model. Both the single-card reference and TP8 candidate capture
+all 765 tensors, and native `msprobe compare -m auto` reports 765 `pass`, zero
+errors, and no missing tensors.
+
+| Metric | Tensors | Minimum cosine | Maximum absolute error | Compatibility failures |
+| --- | ---: | ---: | ---: | ---: |
+| Block forward | 16 | 0.999995 | 0.078125 | 0 |
+| Block backward | 16 | 0.999985 | 1.90735e-6 | 0 |
+| Parameter gradient | 127 | 0.998309 | 1.13498e-4 | 0 |
+| Optimizer delta | 167 | 0.887072 | 0.00159879 | 46 |
+| Updated parameter | 167 | 0.999590 | 0.00159879 | 0 |
+| Router state | 105 | 0.987392 | 1.24979 | 0 |
+
+The single-card loss/gradient norm are 8.14224625/1.40185440; TP8 gives
+8.14215469/1.40182996. Router gate parameter-gradient minimum cosine is
+0.999294 and its updated-parameter minimum cosine is 0.999759. Unlike EP
+combinations, all 28 TP-summed router gradients are semantically valid here
+and pass. Router top-k score-gradient cosine reaches 0.987392, but the maximum
+absolute error is only 4.68990e-6. Five weighted routing maps have maximum
+absolute error above 1 because of near-tie expert choices. The 46 isolated
+optimizer-delta compatibility failures retain the previously confirmed
+first-step AdamW sign-amplification signature; all parameter gradients and
+updated parameters pass compatibility.
