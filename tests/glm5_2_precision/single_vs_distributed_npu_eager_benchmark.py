@@ -94,7 +94,10 @@ CONFIG = FormalExperimentConfig(
     report_root="npu_eager_mindstudio_reports",
     run_root="npu_eager_mindstudio_runs",
     # All candidates intentionally share one fixture and one single-card capture.
-    shared_reference_group="four-card-topology-suite",
+    shared_reference_group=(
+        os.environ.get("GLM5_EAGER_SHARED_REFERENCE_GROUP")
+        or "four-card-topology-suite"
+    ),
 )
 
 
