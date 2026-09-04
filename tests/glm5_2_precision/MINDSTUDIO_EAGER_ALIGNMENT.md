@@ -418,3 +418,52 @@ absolute error above 1 because of near-tie expert choices. The 46 isolated
 optimizer-delta compatibility failures retain the previously confirmed
 first-step AdamW sign-amplification signature; all parameter gradients and
 updated parameters pass compatibility.
+
+### Canonical eight-card topology matrix
+
+The complete canonical eight-card matrix from `standard_topologies()` is run
+with the same fixed eager, one-step MindStudio fixture. This is a bounded
+coverage matrix rather than an unrestricted Cartesian product: DDP8, FSDP8,
+TP8, PP8, FSDP8-EP8, FSDP2-TP4, FSDP4-TP2, FSDP2-PP4,
+FSDP2-TP2-PP2, and FSDP2-TP4-EP8. Every semantically valid tensor passes the
+native `msprobe compare -m auto` result criterion.
+
+| Topology | Valid/raw tensors | MindStudio pass/error | Forward minimum cosine | Backward minimum cosine | Gradient minimum cosine | Optimizer-delta minimum cosine (compatibility failures) | Updated-parameter minimum cosine | Router minimum cosine |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| DDP8 | 765/765 | 765/0 | 1.000000 | 1.000000 | 1.000000 | 1.000000 (0) | 1.000000 | 1.000000 |
+| FSDP8 | 765/765 | 765/0 | 1.000000 | 1.000000 | 1.000000 | 1.000000 (0) | 1.000000 | 1.000000 |
+| TP8 | 765/765 | 765/0 | 0.999995 | 0.999985 | 0.998309 | 0.887072 (46) | 0.999590 | 0.987392 |
+| PP8 | 765/765 | 765/0 | 1.000000 | 1.000000 | 0.999932 | 0.977301 (2) | 0.999943 | 0.999997 |
+| FSDP8-EP8 | 737/765 | 765/0 | 1.000000 | 1.000000 | 0.999998 | 0.999388 (0) | 0.999998 | 0.999998 |
+| FSDP2-TP4 | 765/765 | 765/0 | 0.999995 | 0.999985 | 0.998410 | 0.872575 (48) | 0.999645 | 0.996286 |
+| FSDP4-TP2 | 765/765 | 765/0 | 0.999996 | 0.999989 | 0.998216 | 0.910855 (45) | 0.999618 | 0.994730 |
+| FSDP2-PP4 | 765/765 | 765/0 | 1.000000 | 1.000000 | 0.992340 | 0.924458 (3) | 0.999943 | 0.999997 |
+| FSDP2-TP2-PP2 | 765/765 | 765/0 | 0.999996 | 0.999989 | 0.992356 | 0.910482 (46) | 0.999616 | 0.994730 |
+| FSDP2-TP4-EP8 | 737/765 | 744/21 | 0.999995 | 0.999985 | 0.998259 | 0.878886 (50) | 0.999603 | 0.993705 |
+
+For both EP-enabled rows, all 28 `_tp_sum` diagnostics are excluded by the
+predefined semantic rule: a TP all-reduce is not a valid logical
+reconstruction when EP shares that mesh. FSDP8-EP8 happens to report all 765
+raw rows as passing, whereas FSDP2-TP4-EP8 reports 21 raw shape errors; all 21
+errors are among the excluded `_tp_sum` diagnostics. The resulting 737 valid
+rows pass in both cases.
+
+PP8 and FSDP2-PP4 use GPipe because the fixture has two microbatches, fewer
+than the eight or four stages required by 1F1B. Pipeline reports are combined
+across stages and contain exactly the expected 765 logical tensors. The probe
+also permits a dense-only pipeline stage to contain no MoE router, while the
+combined tensor count continues to enforce complete model coverage.
+
+The isolated optimizer-delta failures on TP-containing rows have the already
+confirmed first-step AdamW sign-amplification signature. No parameter gradient
+or updated parameter fails the project compatibility rule. A narrower result
+deserves follow-up: FSDP2-PP4 and FSDP2-TP2-PP2 have final `norm.weight`
+gradient cosine 0.99233967 and 0.99235603 respectively, with maximum absolute
+error about 0.004882. Both pass the 0.99 compatibility threshold and their
+updated `norm.weight` cosine is 1.0, but this FSDP-plus-PP-specific gap is the
+only new eight-card anomaly and should be isolated before treating the matrix
+as evidence of exact numerical identity.
+
+No Turbo or TorchTitan production code is changed for this matrix. The only
+new changes are test topology definitions and probe support for the valid
+deep-pipeline fixture.
