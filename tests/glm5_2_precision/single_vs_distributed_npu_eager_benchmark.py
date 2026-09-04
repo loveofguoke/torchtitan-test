@@ -39,8 +39,16 @@ def _param_dtype() -> str:
     return value
 
 
+def _global_batch_size() -> int:
+    value = int(os.environ.get("GLM5_EAGER_GLOBAL_BATCH_SIZE", "16"))
+    if value < 1:
+        raise ValueError("GLM5_EAGER_GLOBAL_BATCH_SIZE must be positive")
+    return value
+
+
 STEPS = _steps()
 PARAM_DTYPE = _param_dtype()
+GLOBAL_BATCH_SIZE = _global_batch_size()
 ALL_DEVICES = os.environ.get("GLM5_EAGER_NPU_DEVICES", "0,1,2,3")
 REFERENCE_DEVICE = os.environ.get("GLM5_EAGER_REFERENCE_NPU", "0")
 
@@ -64,7 +72,7 @@ CONFIG = FormalExperimentConfig(
     training=FormalTrainingConfig(
         steps=STEPS,
         local_batch_size=2,
-        global_batch_size=16,
+        global_batch_size=GLOBAL_BATCH_SIZE,
         sequence_length=128,
         seed=61,
         deterministic=True,
