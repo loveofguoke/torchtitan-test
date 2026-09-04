@@ -124,6 +124,23 @@ TOPOLOGIES.update(
         )
     }
 )
+TOPOLOGIES["pp8"] = ParallelTopology(
+    "pp8-gpipe",
+    8,
+    pipeline_parallel_degree=8,
+    pipeline_parallel_schedule="GPipe",
+    extra_args=(
+        "--parallelism.pipeline_parallel_first_stage_less_layers=0",
+        "--parallelism.pipeline_parallel_last_stage_less_layers=0",
+    ),
+)
+TOPOLOGIES["fsdp2-pp4"] = ParallelTopology(
+    "fsdp2-pp4-gpipe",
+    8,
+    data_parallel_shard_degree=2,
+    pipeline_parallel_degree=4,
+    pipeline_parallel_schedule="GPipe",
+)
 
 CONFIG = FormalExperimentConfig(
     name="glm5-2-distributed-self-consistency",
