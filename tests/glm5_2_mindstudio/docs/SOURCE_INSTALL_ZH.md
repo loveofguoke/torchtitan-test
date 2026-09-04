@@ -464,7 +464,27 @@ msProbe tensor dump、checkpoint、token plan、source stack、profile op args �
 - 记录删除策略和保留期限；
 - 运行官方工具时使用普通用户和最小权限。
 
-## 14. 官方参考
+## 14. 算子与内存专项工具
+
+`msopprof` 运行程序应来自与当前 CANN/芯片匹配的算子工具安装；源码主要用于阅读参数和实现：
+
+```bash
+python tools/bootstrap_mindstudio_toolchain.py \
+  --root /home/$USER/mindstudio-tools --tool msopprof
+python -m tests.glm5_2_mindstudio.toolchain doctor --scope operator
+```
+
+msMemScope 包含运行时 hook 动态库，不能只做 `pip install` 就假设完整可用。先取得源码，再按其 install guide 为当前架构安装并加载官方环境：
+
+```bash
+python tools/bootstrap_mindstudio_toolchain.py \
+  --root /home/$USER/mindstudio-tools --tool msmemscope
+python -m tests.glm5_2_mindstudio.toolchain doctor --scope memory
+```
+
+doctor 只检查 CANN、框架和 CLI 是否可见；`LD_PRELOAD` 中每个 hook 库与多 rank 子进程能否工作，必须用单卡最小采集验证。完整步骤分别见 [算子调优](OPERATOR_TUNING_WORKFLOW_ZH.md) 和 [内存调优](MEMORY_TUNING_WORKFLOW_ZH.md)。
+
+## 15. 官方参考
 
 - [MindStudio 总入口](https://www.hiascend.com/document/detail/zh/mindstudio/latest/index/index.html)
 - [msTT](https://gitcode.com/Ascend/mstt)
@@ -473,3 +493,5 @@ msProbe tensor dump、checkpoint、token plan、source stack、profile op args �
 - [MindStudio Insight](https://gitcode.com/Ascend/msinsight)
 - [msOT](https://gitcode.com/Ascend/msot)
 - [msIT](https://gitcode.com/Ascend/msit)
+- [msOpProf](https://gitcode.com/Ascend/msopprof)
+- [msMemScope](https://gitcode.com/Ascend/msmemscope)

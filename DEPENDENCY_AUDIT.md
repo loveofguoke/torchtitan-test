@@ -31,6 +31,7 @@ artifact checksums. Git cleanliness is diagnostic, not a pass/fail condition.
 | Nsight Systems CLI or GPU performance output layout | `glm5_2_nsys` capture, stats/export, report paths, lifecycle tests, GPU/NPU comparison inputs, Release discovery |
 | graph diagnostics output | per-rank `TORCH_TRACE`, `tlparse`, Inductor FX/IR/code inventory, combination reports, Release |
 | external profiler/compiler/accuracy tool or environment dependency | common dependency inventory, performance, graph and MindStudio guides/READMEs, combination reports, Release portability |
+| msOpProf or msMemScope CLI/output layout | MindStudio specialized tuning launchers, toolchain doctor/lock, operator/memory guides, lifecycle tests, Release analysis filter |
 | MindStudio toolchain lock/bootstrap/doctor | `glm5_2_mindstudio` capture/compare identity, source-install guide, server validation matrix, Release provenance |
 | MindStudio pre-check output layout | endpoint artifact discovery, pre-check compare, main report, README sync commands, Release analysis filter |
 | MindStudio Monitor V2 hook/config | single and distributed capture, PP/optimizer ownership validation, per-rank CSV completeness, report semantics |
@@ -147,3 +148,7 @@ change:
   run-owned under `trainer_output/profiling/nsys/`. `nsys_artifacts` contains
   only lifecycle/provenance metadata. Historical artifact-owned payloads are
   byte-checked and moved without recollection.
+- msOpProf and msMemScope are independent from system profiling. Preserve their
+  native `OPPROF_*` and memory DB/CSV trees below `mindstudio_runs/operator/`
+  and `mindstudio_runs/memory/`; never rename or synthesize official files.
+  Tool-specific metrics and hook settings are part of capture identity.

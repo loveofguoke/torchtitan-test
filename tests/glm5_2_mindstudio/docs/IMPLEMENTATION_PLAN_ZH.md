@@ -45,6 +45,12 @@ MindStudio 26.1 官方文档为准。可执行命令以 [README](../README.md) �
 - MindStudio Insight handoff：索引 Summary、Timeline、Communication、Operator、Memory
   所需的完整导入根和便携路径。
 
+### 2.3 独立算子与内存调优
+
+- `operator_tuning_benchmark.py`：包装官方 msOpProf 上板、仿真、Kernel 过滤和指标选择，原样保留 `OPPROF_*`；
+- `memory_tuning_benchmark.py`：用 msMemScope 包装 common 拓扑训练，支持 op/kernel 事件、泄漏、拆解、DB/CSV 和两份采集对比；
+- 两者只复用启动参数和 lifecycle，不复用系统 profiler 原始数据，也不改变 TorchTitan/Turbo。
+
 ### 2.3 生命周期与证据完整性
 
 - 独立 `mindstudio_fixtures/runs/artifacts/reports`；
@@ -91,8 +97,8 @@ PrecisionChecker single-pass 检查被编译模块的前向和反向，再按官
 正确的后续工具，但下列流程尚未伪装为已自动化：
 
 - 推理模型转换、量化、服务化部署和 AISBench；
-- 自定义算子的工程生成、仿真、Sanitizer、单算子 msOpProf 和生产交付；
-- msMemScope 对任意进程的注入式全自动编排；
+- 自定义算子的工程生成、Sanitizer 和生产交付；msOpProf 已提供通用采集入口，但具体算子工程仍由算子开发流程负责；
+- msMemScope 已支持 TorchTitan 训练编排；Python API 的精细 watch/describe 标签仍需按具体问题在用户代码或专用 probe 中设置；
 - msServiceProfiler 的推理服务启动和请求回放。
 
 这些能力必须在确定目标模型格式、服务进程、算子工程和工具版本后增加专用 adapter。

@@ -294,6 +294,30 @@ def _analysis_archive_filter(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
             return member
         return member if path.name in ANALYSIS_RUN_FILES else None
 
+    # Specialized MindStudio tuning keeps official processed operator/memory
+    # deliveries in the run. Retain tables, databases and Insight visualization
+    # payloads, but never the profiler's raw ``dump`` subtree.
+    if root == "mindstudio_runs" and len(path.parts) > 1 and path.parts[1] in {
+        "operator",
+        "memory",
+    }:
+        if member.isdir():
+            return member
+        if "dump" in path.parts:
+            return None
+        if path.name in ANALYSIS_RUN_FILES:
+            return member
+        return member if path.suffix.lower() in {
+            ".bin",
+            ".csv",
+            ".db",
+            ".html",
+            ".json",
+            ".log",
+            ".md",
+            ".xlsx",
+        } else None
+
     # Reports and other compact artifacts are already curated by their experiment.
     if root.endswith("_reports") or root.endswith("_artifacts"):
         return member

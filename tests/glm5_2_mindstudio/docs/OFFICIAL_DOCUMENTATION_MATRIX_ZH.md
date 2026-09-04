@@ -71,7 +71,7 @@ python tests/glm5_2_mindstudio/migration_benchmark.py --graph-visualize --topolo
 | [性能比对](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msprof_analyze/docs/zh/user_guide/compare_tool_instruct.md) | 官方支持的 baseline 与 comparison profile | `--compare-baseline PATH` | 计算/通信/调度、算子、内存差异 | SUPPORTED |
 | [专家建议](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msprof_analyze/docs/zh/user_guide/advisor_instruct.md) | `*_ascend_pt` | `--advisor` | HTML/XLSX/terminal suggestions | SUPPORTED |
 | [Insight 系统调优快速入门](https://www.hiascend.com/document/detail/zh/mindstudio/2610/GUI_baseddevelopmenttool/MindStudioInsight/docs/zh/quick_start/system_tuning_quick_start.md) | 完整 profile 或 cluster output | handoff JSON 给出导入根 | Summary/Timeline/Communication/Operator/Memory | HANDOFF |
-| msMemScope | 指定进程和内存采集配置 | 需确定目标工具版本和注入方式 | 内存申请、释放、泄漏与碎片证据 | SPECIALIZED |
+| [msMemScope](MEMORY_TUNING_WORKFLOW_ZH.md) | 指定进程和内存采集配置 | `memory_tuning_benchmark.py --probe ...` | 内存申请、释放、泄漏、拆解与对比 | SUPPORTED，待服务器验收 |
 | msMonitor | 长时在线性能与健康监测 | 需部署 monitor 服务/数据库 | 长时异常和集群指标 | SPECIALIZED |
 | msPTI/msTX | 框架/应用埋点接口 | 当前训练已有 MSTX 开关；其他 API 按需接入 | 自定义 range、事件和关联 | HANDOFF |
 
@@ -102,7 +102,8 @@ python tests/glm5_2_mindstudio/migration_benchmark.py --graph-visualize --topolo
 
 官方 Insight 的采集器映射不能混用：系统调优主要导入 msProf/Ascend PyTorch
 Profiler，算子调优导入 msOpProf，服务化调优导入服务化 Profiling，内存调优导入
-msMemScope。当前训练闭环只自动生成系统调优 handoff；其他场景必须使用对应采集器。
+msMemScope。当前训练闭环分别提供系统、算子和内存入口；三者必须使用各自采集器与
+Insight 导入根，不能混用原始数据。
 
 官方 26.1 规格提示：多个性能文件总量建议不超过 20GB；JSON 建议单文件不超过 1GB，
 系统调优 DB 建议单文件不超过 1GB，CSV 建议单文件不超过 500MB。工具的硬限制更高，
@@ -128,7 +129,7 @@ msMemScope。当前训练闭环只自动生成系统调优 handoff；其他场�
 | msOpGen | 生成算子工程 | 已确定要交付独立 Ascend 算子 | SPECIALIZED |
 | msDebug | 功能和内核调试 | 单算子复现失败或 kernel 行为异常 | SPECIALIZED |
 | msSanitizer | 越界、竞态、异常检测 | NaN/随机失效/内存踩踏指向 kernel | SPECIALIZED |
-| msOpProf | 单算子多维性能采集 | Operator 页面已定位到具体 op/shape | SPECIALIZED |
+| [msOpProf](OPERATOR_TUNING_WORKFLOW_ZH.md) | 单算子多维性能采集 | Operator 页面已定位到具体 op/shape | SUPPORTED，待服务器验收 |
 | msKL | 算子调用与验证 | 单算子复现和基准 | SPECIALIZED |
 | msInsight 算子调优 | 展示 Pipe、带宽、指令和内存访问 | msOpProf 产物完成后 | HANDOFF |
 

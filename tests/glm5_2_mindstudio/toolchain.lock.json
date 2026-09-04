@@ -136,6 +136,42 @@
         "strategy": "source-only",
         "note": "The workflow consumes repository scripts directly; no package installation is performed."
       }
+    },
+    "msopprof": {
+      "required": false,
+      "source": {
+        "url": "https://gitcode.com/Ascend/msopprof.git",
+        "directory": "msopprof",
+        "path": "msopprof",
+        "ref": {"kind": "branch", "value": "master"},
+        "commit": null,
+        "version": "CANN-matched release or reviewed source"
+      },
+      "runtime": {"executable": "msopprof"},
+      "bootstrap": {
+        "enabled": true,
+        "default": false,
+        "strategy": "source-only",
+        "note": "The executable is normally supplied by the CANN operator toolchain; this checkout is retained for implementation and documentation study."
+      }
+    },
+    "msmemscope": {
+      "required": false,
+      "source": {
+        "url": "https://gitcode.com/Ascend/msmemscope.git",
+        "directory": "msmemscope",
+        "path": "msmemscope",
+        "ref": {"kind": "branch", "value": "master"},
+        "commit": null,
+        "version": "latest reviewed source compatible with CANN"
+      },
+      "runtime": {"import": "msmemscope", "executable": "msmemscope"},
+      "bootstrap": {
+        "enabled": true,
+        "default": false,
+        "strategy": "source-only",
+        "note": "Use the repository's official install script/package for the target architecture; source-only bootstrap must not guess system library installation paths."
+      }
     }
   }
 }

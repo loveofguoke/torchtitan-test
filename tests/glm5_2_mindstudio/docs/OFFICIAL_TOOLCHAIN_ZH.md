@@ -214,7 +214,36 @@ RL 流水；单算子源码热点也要求 msOpProf 对应产物。项目生成�
 完整的官方案例复现顺序见
 [OFFICIAL_PRACTICE_ROADMAP_ZH.md](OFFICIAL_PRACTICE_ROADMAP_ZH.md)。
 
-### 2.7 msTX：给性能时间线添加业务语义
+### 2.7 msOpProf：算子/Kernel 专项性能采集
+
+`msOpProf` 面向已经缩小到少量算子或 Kernel 的深度调优。它不负责回答整次
+TorchTitan 训练的吞吐、通信占比或 rank 长尾，而是在系统调优已经定位热点之后，
+继续采集该 Kernel 的流水、内存访问、Cache、资源冲突、Occupancy、Roofline 和
+可选源码映射等指标。其原生 `OPPROF_*` 结果可作为独立的算子调优数据导入
+MindStudio Insight，不能用系统调优目录冒充。
+
+本项目提供独立入口：
+
+```bash
+python tests/glm5_2_mindstudio/operator_tuning_benchmark.py \
+  --kernel-name 'TopK*' \
+  --metrics Default \
+  -- python /abs/path/to/glm5_dsa_topk_probe.py
+```
+
+具体的 onboard/simulator 选择、Kernel 过滤、采集次数、输出目录、Insight 导入和
+指标阅读顺序见 [OPERATOR_TUNING_WORKFLOW_ZH.md](OPERATOR_TUNING_WORKFLOW_ZH.md)。
+不同芯片和版本支持的扩展指标并不完全相同，正式实验必须先运行 toolchain doctor，
+并以当前版本 `msopprof --help` 和官方文档为准。
+
+官方入口：
+
+- [msOpProf 快速入门](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msOT/Operatordevelopmenttools/docs/zh/quick_start/msopprof_quick_start.md)
+- [MindStudio Insight 算子调优快速入门](https://www.hiascend.com/document/detail/zh/mindstudio/latest/GUI_baseddevelopmenttool/MindStudioInsight/docs/zh/quick_start/operator_tuning_quick_start.md)
+- [MindStudio Insight 算子调优](https://www.hiascend.com/document/detail/zh/mindstudio/latest/GUI_baseddevelopmenttool/MindStudioInsight/docs/zh/user_guide/operator_tuning.md)
+- [msOpProf 源码](https://gitcode.com/Ascend/msopprof)
+
+### 2.8 msTX：给性能时间线添加业务语义
 
 msTX 是 instrumentation 标记能力。它让 timeline 不只显示 kernel 名称，还能显示自定义训练阶段、layer、microbatch 或 collective sequence 等 range/mark。
 
@@ -231,21 +260,23 @@ msTX 是 instrumentation 标记能力。它让 timeline 不只显示 kernel 名�
 
 入口：[msTX 源码与说明](https://gitcode.com/Ascend/mstx)
 
-### 2.8 msMemScope：内存专项采集与分析
+### 2.9 msMemScope：内存专项采集与分析
 
 msMemScope 面向内存事件、泄漏、低效内存、内存块监测和生命周期分解。它提供
 Python `config/start/stop/step` 接口，也提供包装应用的命令行模式。它回答的是
 “内存为什么没有释放、为何反复申请、哪些块低效”，不替代整网 step time、通信和
 算子性能采集。
 
-当前项目在 collector registry 中保留该类型，但在完成 CANN 版本、LD_PRELOAD、
-多 rank 子进程、输出格式和清理语义的服务器验收前明确报未实现。该边界比生成一条
-未经验证的 shell 命令更可靠。
+当前项目通过 `memory_tuning_benchmark.py` 提供独立入口，复用 common 拓扑和训练
+参数，原样保存官方 DB/CSV，并支持两份采集的官方 step 对比。它不复用系统 profiler
+数据。CANN 版本、LD_PRELOAD、多 rank 子进程和具体分析项仍必须在目标服务器 doctor
+及最小 single capture 中验证，未验证不能写成 PASS。
 
 官方入口：
 
 - [msMemScope 快速入门](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msMemScope/docs/zh/quick_start/quick_start.md)
 - [msMemScope 源码](https://gitcode.com/Ascend/msmemscope)
+- [本项目内存调优流程](MEMORY_TUNING_WORKFLOW_ZH.md)
 
 ## 3. 图编译工具链
 

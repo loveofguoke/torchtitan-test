@@ -21,8 +21,10 @@
 性能标准流程见
 [docs/PERFORMANCE_WORKFLOW_ZH.md](docs/PERFORMANCE_WORKFLOW_ZH.md)。该入口默认使用
 msProf 建立通用 CANN/NPU 采集；需要 PyTorch module、shape、stack、memory 和
-schedule 窗口时切到 Ascend PyTorch Profiler。msOpProf、msMemScope 和服务化
-Profiler 只登记正确用途，未完成目标服务器验证前不会伪造整网训练命令。
+schedule 窗口时切到 Ascend PyTorch Profiler。系统调优、单算子调优和内存事件调优
+是三个独立工作流：后两者分别见
+[算子调优](docs/OPERATOR_TUNING_WORKFLOW_ZH.md) 与
+[内存调优](docs/MEMORY_TUNING_WORKFLOW_ZH.md)，不会改变现有系统调优默认值。
 
 ## 1. 当前实现状态
 
@@ -39,6 +41,8 @@ Profiler 只登记正确用途，未完成目标服务器验证前不会伪造�
 | 长程训练状态监控 | 已实现，step 数按问题复现窗口显式指定 | `training_monitor_benchmark.py` |
 | 分级图可视化与 TensorBoard 索引 | 已实现 | migration 完成 L0/mix capture 后执行 `--graph-visualize` |
 | NPU 性能采集、分析、可视化 | 已实现标准入口 | `performance_benchmark.py`、`docs/PERFORMANCE_WORKFLOW_ZH.md` |
+| msOpProf 单算子上板/仿真采集与 Insight handoff | 已实现独立入口，需目标服务器验证具体指标支持 | `operator_tuning_benchmark.py` |
+| msMemScope 单/多卡内存事件、泄漏/拆解与 step 对比 | 已实现独立入口，需按目标 CANN 安装 hook 库 | `memory_tuning_benchmark.py` |
 | 推理部署、算子生产交付 | 尚未纳入当前训练工作流 | 能力边界见官方文档矩阵 |
 
 “命令成功”只说明官方工具阶段完成，不等于精度通过。最终判断必须阅读
@@ -57,11 +61,13 @@ Profiler 只登记正确用途，未完成目标服务器验证前不会伪造�
 6. [官方工具链全景](docs/OFFICIAL_TOOLCHAIN_ZH.md)：训练、图编译、性能、推理、算子工具的职责；
 7. [官方性能工作流](docs/PERFORMANCE_WORKFLOW_ZH.md)：msProf、Ascend PyTorch Profiler、msprof-analyze 与 Insight；
 8. [msprof-analyze 进阶分析](docs/MSPROF_ANALYZE_ADVANCED_ZH.md)：细粒度拆解/比对、通信瓶颈、慢 Rank/链路与 Host 下发；
-8. [集群分析操作与判读](docs/MSPROF_ANALYZE_CLUSTER_ZH.md)：cluster 参数、交付件、字段、Insight 页面和定位动作；
-9. [输出与报告](docs/OUTPUTS_AND_REPORTS_ZH.md)：raw、artifact、report、同步与保留策略；
-10. [服务器验收矩阵](docs/SERVER_VALIDATION_MATRIX_ZH.md)：从单卡最小闭环到 all topology 的真实验收顺序；
-11. [官方实践学习与复现路线](docs/OFFICIAL_PRACTICE_ROADMAP_ZH.md)：按现象选择精度、性能、图编译、算子和推理工具；
-12. [实施计划与边界](docs/IMPLEMENTATION_PLAN_ZH.md)：标准工作流的实施状态与验收边界。
+9. [集群分析操作与判读](docs/MSPROF_ANALYZE_CLUSTER_ZH.md)：cluster 参数、交付件、字段、Insight 页面和定位动作；
+10. [算子调优](docs/OPERATOR_TUNING_WORKFLOW_ZH.md)：msOpProf 上板/仿真、核内指标和 Insight 算子页面；
+11. [内存调优](docs/MEMORY_TUNING_WORKFLOW_ZH.md)：msMemScope 事件、泄漏/拆解/对比和 Insight 内存页面；
+12. [输出与报告](docs/OUTPUTS_AND_REPORTS_ZH.md)：raw、artifact、report、同步与保留策略；
+13. [服务器验收矩阵](docs/SERVER_VALIDATION_MATRIX_ZH.md)：从单卡最小闭环到 all topology 的真实验收顺序；
+14. [官方实践学习与复现路线](docs/OFFICIAL_PRACTICE_ROADMAP_ZH.md)：按现象选择精度、性能、图编译、算子和推理工具；
+15. [实施计划与边界](docs/IMPLEMENTATION_PLAN_ZH.md)：标准工作流的实施状态与验收边界。
 
 官方权威入口：
 

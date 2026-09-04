@@ -35,6 +35,8 @@ DOCTOR_SCOPES = (
     "performance-capture",
     "performance-torch-npu-capture",
     "performance-analysis",
+    "operator",
+    "memory",
 )
 
 _DOCTOR_SCOPE_ALIASES = {
@@ -59,6 +61,10 @@ _DOCTOR_SCOPE_ALIASES = {
     "performance-analysis": "performance-analysis",
     "performance_analysis": "performance-analysis",
     "offline-analysis": "performance-analysis",
+    "operator": "operator",
+    "operator-tuning": "operator",
+    "memory": "memory",
+    "memory-tuning": "memory",
 }
 
 _TOOL_ALIASES = {
@@ -69,6 +75,8 @@ _TOOL_ALIASES = {
     "msprof-analyze": "msprof-analyze",
     "mindstudio-insight": "msinsight",
     "msinsight": "msinsight",
+    "msopprof": "msopprof",
+    "msmemscope": "msmemscope",
 }
 
 _CANN_ENVIRONMENT_VARIABLES = (
@@ -718,6 +726,8 @@ def doctor_report(
         "performance",
         "performance-capture",
         "performance-torch-npu-capture",
+        "operator",
+        "memory",
     }
     requires_framework = scope != "performance-analysis"
     requires_msprof = scope in {
@@ -734,7 +744,11 @@ def doctor_report(
         "performance-capture",
         "performance-torch-npu-capture",
         "performance-analysis",
+        "operator",
+        "memory",
     }
+    requires_msopprof = scope == "operator"
+    requires_msmemscope = scope == "memory"
 
     msprobe_import = python_package_metadata(
         "msprobe", ("mindstudio-probe", "mindstudio_probe")
@@ -770,6 +784,20 @@ def doctor_report(
         ("info",),
         environment_variable=None,
         required=False,
+        environ=environment,
+    )
+    msopprof = _executable_status(
+        "msopprof",
+        ("--version",),
+        environment_variable="TORCHTITAN_MSOPPROF",
+        required=requires_msopprof,
+        environ=environment,
+    )
+    msmemscope = _executable_status(
+        "msmemscope",
+        ("--version",),
+        environment_variable="TORCHTITAN_MSMEMSCOPE",
+        required=requires_msmemscope,
         environ=environment,
     )
 
@@ -808,6 +836,8 @@ def doctor_report(
         },
         "msinsight": _msinsight_status(root, environment),
         "npu-smi": npu_smi,
+        "msopprof": msopprof,
+        "msmemscope": msmemscope,
         "source_checkouts": {
             "required": False,
             "ok": bool(root is not None)
