@@ -303,15 +303,26 @@ def test_four_stage_pipeline_uses_gpipe_for_two_microbatches() -> None:
     assert "--parallelism.pipeline_parallel_schedule=GPipe" in topology.command_args()
 
 
-def test_eight_way_tensor_parallel_topology_is_available() -> None:
+def test_canonical_eight_card_topologies_are_available() -> None:
     from tests.glm5_2_precision.single_vs_distributed_gpu_benchmark import (
         TOPOLOGIES,
     )
 
-    topology = TOPOLOGIES["tp8"]
-    assert topology.world_size == 8
-    assert topology.tensor_parallel_degree == 8
-    assert "--parallelism.tensor_parallel_degree=8" in topology.command_args()
+    expected = {
+        "ddp8",
+        "fsdp8",
+        "tp8",
+        "pp8",
+        "ep8",
+        "fsdp2-tp4",
+        "fsdp4-tp2",
+        "fsdp2-pp4",
+        "fsdp2-tp2-pp2",
+        "fsdp2-tp4-ep8",
+    }
+    assert expected <= TOPOLOGIES.keys()
+    assert all(TOPOLOGIES[name].world_size == 8 for name in expected)
+    assert TOPOLOGIES["tp8"].tensor_parallel_degree == 8
 
 
 def _resumable_config(root: Path) -> FormalExperimentConfig:

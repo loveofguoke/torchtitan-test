@@ -2,7 +2,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Formal GLM5 debugmodel single-GPU versus four-GPU precision benchmark."""
+"""Formal GLM5 debugmodel single-GPU versus distributed precision benchmark."""
 
 import os
 from pathlib import Path
@@ -21,6 +21,7 @@ from tests.glm5_2_precision.workflow import (  # noqa: E402
     ParallelTopology,
     TrainingEndpoint,
     run_formal_cli,
+    standard_topologies,
 )
 
 
@@ -43,7 +44,6 @@ TOPOLOGIES = {
         data_parallel_shard_degree=2,
     ),
     "tp4": ParallelTopology("tp4", 4, tensor_parallel_degree=4),
-    "tp8": ParallelTopology("tp8", 8, tensor_parallel_degree=8),
     "pp4-gpipe": ParallelTopology(
         "pp4-gpipe",
         4,
@@ -106,6 +106,24 @@ TOPOLOGIES = {
         expert_parallel_degree=2,
     ),
 }
+_STANDARD_TOPOLOGIES = standard_topologies()
+TOPOLOGIES.update(
+    {
+        name: _STANDARD_TOPOLOGIES[name]
+        for name in (
+            "ddp8",
+            "fsdp8",
+            "tp8",
+            "pp8",
+            "ep8",
+            "fsdp2-tp4",
+            "fsdp4-tp2",
+            "fsdp2-pp4",
+            "fsdp2-tp2-pp2",
+            "fsdp2-tp4-ep8",
+        )
+    }
+)
 
 CONFIG = FormalExperimentConfig(
     name="glm5-2-distributed-self-consistency",
