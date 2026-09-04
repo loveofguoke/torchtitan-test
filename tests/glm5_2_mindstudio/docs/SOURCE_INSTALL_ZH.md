@@ -126,7 +126,10 @@ msprof --help >/dev/null 2>&1 && echo "msprof: available" || echo "msprof: unava
 - `ASCEND_HOME_PATH`、库搜索路径的有效摘要；
 - 编译器和 Triton-Ascend 版本（图模式/自定义 kernel 时）。
 
-当前项目资料中的图模式实验基于 CANN 9.1 系列，并使用与该数据格式兼容的 MindStudio Insight 26.1 系列桌面端。新环境仍需按所选官方兼容矩阵复核，不能把这一组合推广为所有服务器的固定答案。
+本项目所有新 MindStudio、图模式、性能、精度和 Full DSA 实验统一使用 CANN
+9.1.0，并使用与该数据格式兼容的 MindStudio Insight 26.1 系列桌面端。容器中
+CANN 9.0.0 只用于读取历史结果，不再用于新实验。该约束是 GLM 三仓项目的标准，
+仍不能推广为其他项目或任意 TorchNPU wheel 的通用答案。
 
 ### 3.2 三仓源码安装
 
@@ -402,6 +405,11 @@ doctor；任一工具 checkout 或安装包变化都应建立新 generation。
 
 - torch 和 msProbe；
 - 不要求 torch_npu、CANN 或 Insight。
+
+纯 GPU 环境只构建 msProbe 基础 wheel，不构建 `nan_check`、`xor_checksum`、
+`aclgraph_dump` 等 NPU 专属模块。默认 bootstrap 面向完整 NPU 环境，不能原样用作
+纯 GPU 安装命令。Nsys、基础 msProbe、GPU 内网离线分析环境以及单向数据同步的
+完整配置见 [GPU 采集与内网离线比较环境](GPU_COLLECTION_AND_OFFLINE_ANALYSIS_ZH.md)。
 
 ### 10.4 CPU compare/Windows 检查
 

@@ -32,6 +32,7 @@ artifact checksums. Git cleanliness is diagnostic, not a pass/fail condition.
 | graph diagnostics output | per-rank `TORCH_TRACE`, `tlparse`, Inductor FX/IR/code inventory, combination reports, Release |
 | external profiler/compiler/accuracy tool or environment dependency | common dependency inventory, performance, graph and MindStudio guides/READMEs, combination reports, Release portability |
 | msOpProf or msMemScope CLI/output layout | MindStudio specialized tuning launchers, toolchain doctor/lock, operator/memory guides, lifecycle tests, Release analysis filter |
+| GPU MindStudio collection/analysis environment | MindStudio README/source install, msProbe GPU capture, Nsight Systems output, calibrate_npu_gpu input contract, Release/inbound transport |
 | MindStudio toolchain lock/bootstrap/doctor | `glm5_2_mindstudio` capture/compare identity, source-install guide, server validation matrix, Release provenance |
 | MindStudio pre-check output layout | endpoint artifact discovery, pre-check compare, main report, README sync commands, Release analysis filter |
 | MindStudio Monitor V2 hook/config | single and distributed capture, PP/optimizer ownership validation, per-rank CSV completeness, report semantics |
@@ -95,6 +96,9 @@ change:
   `toolchain.resolved.json`, doctor CLI/import coherence, capture identity, and
   source-install documentation. Floating `master` is exploratory only; formal
   runs pin a tag or full commit.
+- All new GLM MindStudio, graph, performance, accuracy, and Full DSA runs use
+  CANN 9.1.0. Doctor must reject an NPU shell that resolves CANN 9.0.0; historical
+  9.0.0 outputs remain readable evidence but are not a new capture environment.
 - API pre-check has asymmetric storage: endpoint `reference`/`candidate`
   results live under `mindstudio_artifacts/.../precision_precheck/`, while
   `api_precision_compare` and its HTML/JSON index live under

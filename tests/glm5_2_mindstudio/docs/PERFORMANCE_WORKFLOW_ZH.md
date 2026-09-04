@@ -206,6 +206,11 @@ python tests/glm5_2_mindstudio/performance_benchmark.py \
 当前 MindStudio performance 只实现 NPU。`--device cuda` 保留接口并明确报未实现；
 不能让 GPU 静默落入另一套未确认的采集语义。
 
+GPU 标杆由独立的 `tests/glm5_2_nsys` 采集。官方 `calibrate_npu_gpu` 读取 Nsys
+SQLite 和 Ascend PyTorch Profiler DB，并依赖 NVTX/MSTX Module 标记；GPU 内网
+部署和数据汇合命令见
+[GPU 采集与内网离线比较环境](GPU_COLLECTION_AND_OFFLINE_ANALYSIS_ZH.md)。
+
 ## 4. 高级分阶段分析命令
 
 分析已存在 capture，不重跑训练。该入口用于采集与分析环境分离、补跑工具或改变

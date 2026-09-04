@@ -55,19 +55,20 @@ schedule 窗口时切到 Ascend PyTorch Profiler。系统调优、单算子调�
 
 1. 本 README：安装、命令、参数、目录与边界；
 2. [源码安装与环境检查](docs/SOURCE_INSTALL_ZH.md)：环境分层、源码工具安装、doctor；
-3. [GPU/NPU 模块与 API 精度流程](docs/ACCURACY_WORKFLOW_ZH.md)：官方五阶段、预检、指标与结果判读；
-4. [eager/compile 精度流程](docs/COMPILE_ACCURACY_WORKFLOW_ZH.md)：single-pass、FSDP2、多卡限制；
-5. [官方文档与能力矩阵](docs/OFFICIAL_DOCUMENTATION_MATRIX_ZH.md)：官方章节、GLM 入口、产物和支持状态逐项对应；
-6. [官方工具链全景](docs/OFFICIAL_TOOLCHAIN_ZH.md)：训练、图编译、性能、推理、算子工具的职责；
-7. [官方性能工作流](docs/PERFORMANCE_WORKFLOW_ZH.md)：msProf、Ascend PyTorch Profiler、msprof-analyze 与 Insight；
-8. [msprof-analyze 进阶分析](docs/MSPROF_ANALYZE_ADVANCED_ZH.md)：细粒度拆解/比对、通信瓶颈、慢 Rank/链路与 Host 下发；
-9. [集群分析操作与判读](docs/MSPROF_ANALYZE_CLUSTER_ZH.md)：cluster 参数、交付件、字段、Insight 页面和定位动作；
-10. [算子调优](docs/OPERATOR_TUNING_WORKFLOW_ZH.md)：msOpProf 上板/仿真、核内指标和 Insight 算子页面；
-11. [内存调优](docs/MEMORY_TUNING_WORKFLOW_ZH.md)：msMemScope 事件、泄漏/拆解/对比和 Insight 内存页面；
-12. [输出与报告](docs/OUTPUTS_AND_REPORTS_ZH.md)：raw、artifact、report、同步与保留策略；
-13. [服务器验收矩阵](docs/SERVER_VALIDATION_MATRIX_ZH.md)：从单卡最小闭环到 all topology 的真实验收顺序；
-14. [官方实践学习与复现路线](docs/OFFICIAL_PRACTICE_ROADMAP_ZH.md)：按现象选择精度、性能、图编译、算子和推理工具；
-15. [实施计划与边界](docs/IMPLEMENTATION_PLAN_ZH.md)：标准工作流的实施状态与验收边界。
+3. [GPU 采集与内网离线比较环境](docs/GPU_COLLECTION_AND_OFFLINE_ANALYSIS_ZH.md)：Nsys、基础 msProbe、msprof-analyze 与单向数据汇合；
+4. [GPU/NPU 模块与 API 精度流程](docs/ACCURACY_WORKFLOW_ZH.md)：官方五阶段、预检、指标与结果判读；
+5. [eager/compile 精度流程](docs/COMPILE_ACCURACY_WORKFLOW_ZH.md)：single-pass、FSDP2、多卡限制；
+6. [官方文档与能力矩阵](docs/OFFICIAL_DOCUMENTATION_MATRIX_ZH.md)：官方章节、GLM 入口、产物和支持状态逐项对应；
+7. [官方工具链全景](docs/OFFICIAL_TOOLCHAIN_ZH.md)：训练、图编译、性能、推理、算子工具的职责；
+8. [官方性能工作流](docs/PERFORMANCE_WORKFLOW_ZH.md)：msProf、Ascend PyTorch Profiler、msprof-analyze 与 Insight；
+9. [msprof-analyze 进阶分析](docs/MSPROF_ANALYZE_ADVANCED_ZH.md)：细粒度拆解/比对、通信瓶颈、慢 Rank/链路与 Host 下发；
+10. [集群分析操作与判读](docs/MSPROF_ANALYZE_CLUSTER_ZH.md)：cluster 参数、交付件、字段、Insight 页面和定位动作；
+11. [算子调优](docs/OPERATOR_TUNING_WORKFLOW_ZH.md)：msOpProf 上板/仿真、核内指标和 Insight 算子页面；
+12. [内存调优](docs/MEMORY_TUNING_WORKFLOW_ZH.md)：msMemScope 事件、泄漏/拆解/对比和 Insight 内存页面；
+13. [输出与报告](docs/OUTPUTS_AND_REPORTS_ZH.md)：raw、artifact、report、同步与保留策略；
+14. [服务器验收矩阵](docs/SERVER_VALIDATION_MATRIX_ZH.md)：从单卡最小闭环到 all topology 的真实验收顺序；
+15. [官方实践学习与复现路线](docs/OFFICIAL_PRACTICE_ROADMAP_ZH.md)：按现象选择精度、性能、图编译、算子和推理工具；
+16. [实施计划与边界](docs/IMPLEMENTATION_PLAN_ZH.md)：标准工作流的实施状态与验收边界。
 
 官方权威入口：
 
@@ -83,6 +84,10 @@ schedule 窗口时切到 Ascend PyTorch Profiler。系统调优、单算子调�
 GPU reference 服务器需要可用的 CUDA PyTorch 环境。NPU candidate 服务器需要
 互相兼容的 driver、firmware、CANN、PyTorch 和 torch_npu。工具脚本不会替用户
 升级这些核心组件。
+
+本项目所有新 MindStudio、图模式、性能、精度和 Full DSA 实验统一使用
+**CANN 9.1.0**。容器中的 9.0.0 只用于阅读历史结果，不再作为新实验环境；doctor
+会把误加载 9.0.0 报为 required failure。
 
 三个仓库使用源码安装：
 
@@ -100,6 +105,9 @@ python -m pip check
 
 路径可替换成实际挂载目录。GPU 端不要求安装 torch_npu；NPU 端必须能
 `import torchtitanturbo` 并由其加载 NPU 适配。
+
+GPU 内网服务器的 Nsys、基础 msProbe、离线 `msprof-analyze` 安装与 NPU 数据
+单向汇合方式见 [GPU 采集与内网离线比较环境](docs/GPU_COLLECTION_AND_OFFLINE_ANALYSIS_ZH.md)。
 
 ### 3.2 源码安装官方工具
 

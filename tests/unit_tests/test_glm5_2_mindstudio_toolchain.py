@@ -65,7 +65,7 @@ class TestMindStudioToolchain(unittest.TestCase):
             cann = root / "cann"
             cann.mkdir()
             (cann / "version.info").write_text(
-                "Version=8.5.0\npackage_name=CANN\n", encoding="utf-8"
+                "Version=9.1.0\npackage_name=CANN\n", encoding="utf-8"
             )
             flamegraph = root / "flamegraph.py"
             flamegraph.write_text("pass\n", encoding="utf-8")
@@ -136,12 +136,29 @@ class TestMindStudioToolchain(unittest.TestCase):
             report["checks"]["cann"]["roots"][0]["version_files"][0][
                 "values"
             ]["Version"],
-            "8.5.0",
+            "9.1.0",
         )
         self.assertTrue(report["checks"]["msinsight"]["ok"])
         self.assertIsInstance(json.dumps(report), str)
         for call in run.call_args_list:
             self.assertFalse(call.kwargs["check"])
+
+    def test_doctor_rejects_nonstandard_cann_version_for_npu(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            cann = Path(temporary_directory) / "cann-9.0.0"
+            cann.mkdir()
+            (cann / "version.info").write_text(
+                "Version=9.0.0\npackage_name=CANN\n", encoding="utf-8"
+            )
+            status = toolchain._cann_status(
+                {"ASCEND_HOME_PATH": str(cann)},
+                required=True,
+                expected_version="9.1.0",
+            )
+
+        self.assertFalse(status["ok"])
+        self.assertEqual(status["detected_versions"], ["9.0.0"])
+        self.assertIn("required project version 9.1.0", status["error"])
 
     def test_doctor_keeps_optional_msinsight_out_of_required_failures(self):
         def missing_distribution(name):
@@ -330,7 +347,7 @@ class TestMindStudioToolchain(unittest.TestCase):
                 "reported_version": "26.0.0" if ok else None,
             }
 
-        def cann_status(_environment, *, required):
+        def cann_status(_environment, *, required, **_kwargs):
             return {
                 "required": required,
                 "ok": mode["value"] in {"capture", "full"},

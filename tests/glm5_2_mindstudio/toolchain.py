@@ -483,6 +483,7 @@ def _executable_status(
     environment_variable: str | None,
     required: bool,
     environ: Mapping[str, str],
+    timeout: int = 10,
 ) -> dict[str, Any]:
     path, error = _resolve_executable(command, environment_variable, environ)
     status: dict[str, Any] = {
@@ -515,7 +516,7 @@ def _executable_status(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
-            timeout=10,
+            timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired) as probe_error:
         status["error"] = repr(probe_error)
@@ -586,7 +587,10 @@ def _cann_version_paths(root: Path) -> list[Path]:
 
 
 def _cann_status(
-    environ: Mapping[str, str], *, required: bool = True
+    environ: Mapping[str, str],
+    *,
+    required: bool = True,
+    expected_version: str | None = None,
 ) -> dict[str, Any]:
     variables = {
         name: environ[name]
@@ -612,13 +616,37 @@ def _cann_status(
                 "version_files": version_files,
             }
         )
-    ok = bool(variables) and any(root["exists"] for root in roots)
+    detected_versions = sorted(
+        {
+            value.strip().strip('"')
+            for root in roots
+            for version_file in root["version_files"]
+            for key, value in version_file["values"].items()
+            if key.lower() == "version"
+        }
+    )
+    root_available = bool(variables) and any(root["exists"] for root in roots)
+    version_matches = (
+        expected_version is None or expected_version in detected_versions
+    )
+    ok = root_available and version_matches
+    if not root_available:
+        error = "no existing CANN environment root was found"
+    elif not version_matches:
+        error = (
+            f"loaded CANN versions {detected_versions or ['unknown']} do not match "
+            f"the required project version {expected_version}"
+        )
+    else:
+        error = None
     return {
         "required": required,
         "ok": ok,
+        "expected_version": expected_version,
+        "detected_versions": detected_versions,
         "environment": variables,
         "roots": roots,
-        "error": None if ok else "no existing CANN environment root was found",
+        "error": error,
     }
 
 
@@ -759,12 +787,13 @@ def doctor_report(
         environment_variable="TORCHTITAN_MSPROBE",
         required=requires_msprobe,
         environ=environment,
+        timeout=60,
     )
     torch = python_package_metadata("torch", ("torch",))
     torch_npu = python_package_metadata("torch_npu", ("torch-npu", "torch_npu"))
     msprof = _executable_status(
         "msprof",
-        ("--version",),
+        ("--help",),
         environment_variable="TORCHTITAN_MSPROF",
         required=requires_msprof,
         environ=environment,
@@ -788,7 +817,7 @@ def doctor_report(
     )
     msopprof = _executable_status(
         "msopprof",
-        ("--version",),
+        ("--help",),
         environment_variable="TORCHTITAN_MSOPPROF",
         required=requires_msopprof,
         environ=environment,
@@ -826,7 +855,11 @@ def doctor_report(
             "torch": torch,
             "torch_npu": torch_npu,
         },
-        "cann": _cann_status(environment, required=requires_npu),
+        "cann": _cann_status(
+            environment,
+            required=requires_npu,
+            expected_version=lock["compatibility"]["cann"]["version"],
+        ),
         "msprof": msprof,
         "msprof-analyze": {
             "required": requires_msprof_analyze,

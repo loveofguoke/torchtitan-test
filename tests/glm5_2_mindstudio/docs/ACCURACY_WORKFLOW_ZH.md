@@ -37,6 +37,9 @@ step 后，再用 L0 -> L1/mix -> tensor 或 L2 对少量 step 逐层下钻。�
 
 版本非常重要。本文描述本仓库 adapter 所依赖的当前官方接口，正式实验仍要把
 msProbe revision、安装版本和 CANN/PyTorch/torch_npu 版本写入 artifact。
+纯 GPU 标杆端只安装基础 msProbe，不要求 CANN/torch_npu；GPU 数据不能离开内网
+时的采集、单向汇合与本地 compare 配置见
+[GPU 采集与内网离线比较环境](GPU_COLLECTION_AND_OFFLINE_ANALYSIS_ZH.md)。
 
 ## 1. 官方精度定位的三层证据
 
