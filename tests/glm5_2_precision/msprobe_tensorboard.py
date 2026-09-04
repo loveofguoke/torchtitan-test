@@ -689,7 +689,11 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 handles.append(module.gate.register_forward_hook(capture_gate))
                 handles.append(module.register_forward_hook(capture_router))
 
-        if not discovered:
+        # A pipeline stage may legitimately contain only dense layers (the
+        # eight-stage debug model's first stage owns dense layer 0). Other
+        # stages still save their local routers and the combined dump count is
+        # validated against the single-card reference.
+        if not discovered and getattr(trainer.parallel_dims, "pp", 1) == 1:
             raise RuntimeError("no GLM5 MoE routers found for msProbe capture")
         setattr(trainer, instance_marker, tuple(handles))
 
