@@ -467,3 +467,66 @@ as evidence of exact numerical identity.
 No Turbo or TorchTitan production code is changed for this matrix. The only
 new changes are test topology definitions and probe support for the valid
 deep-pipeline fixture.
+
+### Final RMSNorm gradient localization
+
+A focused public `PrecisionDebugger.save()` probe captures seven tensors at
+the final RMSNorm boundary: input, output, output gradient, an FP32 weight
+gradient reconstructed as `sum((output / weight) * grad_output)`, the real
+pre-clip and post-clip parameter gradients, and the residual between the real
+pre-clip gradient and the boundary reconstruction. Each capture is compared
+with the single-card reference using native `msprobe compare -m auto`; all
+seven rows pass MindStudio's result criterion.
+
+The first matrix keeps global batch 16. PP8 and FSDP8 isolate each parallel
+axis, while DDP2-PP4 and FSDP2-PP4 distinguish replicated and sharded data
+parallelism. FSDP2-PP2 repeats the affected composition with 1F1B instead of
+the eight-card GPipe schedule.
+
+| Topology | Outer accumulation | PP microbatches per schedule | Boundary-reconstructed gradient cosine / norm | Pre-clip parameter-gradient cosine / norm | Reference pre-clip norm |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| PP8 | 8 | 2 | 1.000000 / 0.100117 | 1.000000 / 0.100124 | 0.100118 |
+| FSDP8 | 1 | none | 1.000000 / 0.100118 | 1.000000 / 0.100118 | 0.100118 |
+| DDP2-PP4 | 4 | 2 | 1.000000 / 0.100117 | 0.992461 / 0.075170 | 0.100118 |
+| FSDP2-PP4 | 4 | 2 | 1.000000 / 0.100117 | 0.992340 / 0.075296 | 0.100118 |
+| FSDP2-PP2 | 4 | 2 | 1.000000 / 0.100117 | 0.992340 / 0.075296 | 0.100118 |
+
+The final norm input, output, and output gradient remain aligned, and the
+boundary reconstruction has maximum absolute error only 1.82e-6. The real
+parameter gradient has already diverged before clipping: its residual from
+the boundary reconstruction has L2 norm 0.027047 for FSDP2-PP4, compared with
+7.54e-5 in the single-card reference. Post-clip cosine is unchanged, so
+gradient clipping only propagates the pre-existing error. DDP2-PP4 reproduces
+the same failure, excluding FSDP parameter sharding and the Turbo
+`NpuRMSNorm.full_tensor()` compatibility branch as root causes. FSDP2-PP2
+reproduces it under 1F1B, excluding GPipe and pipeline depth.
+
+Two crossed microbatch ablations isolate the remaining dimension:
+
+| Global batch | Outer accumulation | PP microbatches per schedule | Pre-clip cosine | Candidate/reference pre-clip norm |
+| ---: | ---: | ---: | ---: | ---: |
+| 4 | 1 | 2 | 0.975016 | 0.084389 / 0.107304 |
+| 4 | 1 | 1 | 1.000000 | 0.107304 / 0.107304 |
+| 16 | 4 | 1 | 1.000000 | 0.100118 / 0.100118 |
+
+Multiple outer `pp_schedule.step` calls are therefore safe when each schedule
+contains one pipeline microbatch. A single schedule is incorrect when it owns
+multiple microbatches. The first divergent boundary is the data-parallel
+parameter gradient produced after the per-microbatch backward tensors have
+already aligned and before clipping begins.
+
+In this runtime, both TorchTitan DDP replication and FSDP sharding are
+composable `FSDPModule` variants inside the pipeline stage. PyTorch's
+`backward_maybe_with_nosync()` disables gradient synchronization for every
+microbatch, and `perform_reduce_grad()` later enables it and manually invokes
+the FSDP parameter-group `post_backward()` hooks. The controlled results
+localize the defect to that multi-microbatch accumulation-to-`REDUCE_GRAD`
+transition on NPU. Loss normalization is not responsible: `scale_grads=False`
+is consistent with the globally normalized summed loss, and the independently
+reconstructed boundary gradient matches the single-card reference.
+
+This localization adds test diagnostics and topology controls only. Turbo and
+TorchTitan production code remain unchanged. Before choosing a production
+fix, the same microbatch crossing should be run on the matching GPU/PyTorch
+runtime; an NPU-only result belongs in the Turbo pipeline adaptation, while a
+backend-independent result should be addressed upstream.
