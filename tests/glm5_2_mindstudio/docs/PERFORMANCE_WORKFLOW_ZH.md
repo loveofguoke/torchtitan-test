@@ -303,7 +303,7 @@ Timeline 是时间顺序证据；火焰图是按调用栈聚合的耗时证据�
 ## 6. 输出、同步与生命周期
 
 ```text
-mindstudio_runs/<card-scope>/<topology>/<run>/
+mindstudio_runs/performance/system/<card-scope>/<topology>/<run>/
   runtime.log / run_state.json
   trainer_output/profiling/msprof/       # msProf
   trainer_output/profiling/traces/       # torch_npu.profiler，也是 Insight 唯一导入根
@@ -312,7 +312,7 @@ mindstudio_runs/<card-scope>/<topology>/<run>/
   advisor*/ cluster*/ compare*/
   cluster/advanced/                    # 官方进阶 recipe 与逐 Rank 结果
 
-mindstudio_artifacts/<card-scope>/<topology>/<run>/
+mindstudio_artifacts/performance/system/<card-scope>/<topology>/<run>/
   manifest.json / metrics.jsonl / analysis.json
   analysis_offline_parse_state.json
   analysis_advisor_state.json
@@ -321,7 +321,7 @@ mindstudio_artifacts/<card-scope>/<topology>/<run>/
   analysis_state.json                 # 汇总报告生成状态
   mindstudio_insight_handoff.json
 
-mindstudio_reports/<card-scope>/<topology>/<run>.html
+mindstudio_reports/performance/system/<card-scope>/<topology>/<run>.html
 ```
 
 采集 manifest 只记录影响采集语义的身份。msProf 路径记录 collector 参数、lock、

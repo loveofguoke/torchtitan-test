@@ -10,7 +10,24 @@ from tests.glm5_2_common.cli import (
     replace_topology,
     reset_output_generation,
     RunAttempt,
+    write_experiment_overview,
 )
+
+
+def test_experiment_overview_is_human_and_machine_readable(tmp_path: Path) -> None:
+    write_experiment_overview(
+        tmp_path,
+        title="Example capture",
+        summary={"device": "npu", "topology": "tp8", "steps": 30},
+        entry_command=["python", "benchmark.py", "--topology", "tp8"],
+    )
+
+    payload = json.loads((tmp_path / "experiment.json").read_text("utf-8"))
+    readme = (tmp_path / "README.md").read_text("utf-8")
+    assert payload["device"] == "npu"
+    assert payload["entry_command"][-1] == "tp8"
+    assert "Example capture" in readme
+    assert "--topology tp8" in readme
 
 
 def test_all_topology_runner_replaces_both_cli_forms() -> None:

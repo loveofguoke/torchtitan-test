@@ -24,6 +24,61 @@ from typing import Any, Sequence
 import uuid
 
 
+def write_experiment_overview(
+    directory: Path,
+    *,
+    title: str,
+    summary: dict[str, Any],
+    entry_command: Sequence[str] | None = None,
+) -> None:
+    """Write the human and machine entry points for an experiment directory.
+
+    Directory-name hashes are identity guards, not a user interface.  Every
+    run directory should therefore explain itself without requiring readers to
+    decode its name or inspect the expanded torchrun command.
+    """
+
+    directory.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema": "torchtitan.glm5_2.experiment_overview",
+        "schema_version": 1,
+        "title": title,
+        **summary,
+    }
+    if entry_command is not None:
+        payload["entry_command"] = [str(part) for part in entry_command]
+    (directory / "experiment.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    lines = [f"# {title}", ""]
+    for key, value in summary.items():
+        rendered = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        lines.append(f"- `{key}`: `{rendered}`")
+    if entry_command is not None:
+        lines.extend(
+            (
+                "",
+                "## Entry command",
+                "",
+                "```bash",
+                " ".join(str(part) for part in entry_command),
+                "```",
+            )
+        )
+    lines.extend(
+        (
+            "",
+            "`experiment.json` is the complete machine-readable overview. ",
+            "Expanded worker launch details remain in the workflow-specific ",
+            "command and runtime-log files.",
+            "",
+        )
+    )
+    (directory / "README.md").write_text("\n".join(lines), encoding="utf-8")
+
+
 def archive_previous_output(path: Path) -> Path | None:
     """Move stale experiment output aside without overwriting prior evidence."""
 

@@ -74,7 +74,7 @@ python tests/glm5_2_mindstudio/operator_tuning_benchmark.py \
 ## 4. 输出和导入
 
 ```text
-mindstudio_runs/operator/<npu-name-mode-hash>/
+mindstudio_runs/performance/operator/<npu-name-mode-hash>/
 ├── runtime.log
 ├── run_state.json
 ├── manifest.json

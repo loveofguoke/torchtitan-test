@@ -22,7 +22,12 @@ import subprocess
 import sys
 from typing import Any, Sequence
 
-from tests.glm5_2_common.cli import RunAttempt, reset_output_generation
+from tests.glm5_2_common.cli import (
+    RunAttempt,
+    assert_run_not_active,
+    reset_output_generation,
+    write_experiment_overview,
+)
 from tests.glm5_2_common.naming import config_name
 from tests.glm5_2_common.topology import (
     ParallelTopology,
@@ -34,6 +39,25 @@ from tests.glm5_2_common.topology import (
 
 def repository_root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+def _categorized_run(category: str, relative: Path) -> Path:
+    """Return the performance-category path, adopting its exact legacy run."""
+
+    root = repository_root() / "mindstudio_runs"
+    destination = root / "performance" / category / relative
+    legacy = root / category / relative
+    if legacy.exists() and not destination.exists():
+        assert_run_not_active(legacy)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        legacy.rename(destination)
+        print(f"Adopted matching legacy {category} output:\n  {legacy}\n  -> {destination}")
+    elif legacy.exists() and destination.exists():
+        raise RuntimeError(
+            f"both legacy and categorized {category} outputs exist: "
+            f"{legacy} and {destination}"
+        )
+    return destination
 
 
 def _json_digest(value: Any) -> str:
@@ -198,7 +222,7 @@ def run_operator_cli(argv: Sequence[str] | None = None) -> int:
         "application": args.application,
     }
     identity = config_name(f"npu-{args.name}-{args.mode}", contract)
-    run = repository_root() / "mindstudio_runs" / "operator" / identity
+    run = _categorized_run("operator", Path(identity))
     output = run / "operator_profile"
     if _completed(run, contract) and not args.force:
         print(f"Skip completed msOpProf capture: {run}")
@@ -211,6 +235,12 @@ def run_operator_cli(argv: Sequence[str] | None = None) -> int:
     if run.exists():
         reset_output_generation((run,), active_run_directories=(run,), label="msOpProf")
     output.mkdir(parents=True)
+    write_experiment_overview(
+        run,
+        title="GLM5.2 MindStudio operator tuning",
+        summary={"category": "performance/operator", "contract": contract},
+        entry_command=[sys.executable, *sys.argv],
+    )
     attempt = RunAttempt.start(run, kind="msopprof", context={"name": args.name})
     try:
         _run_logged(command, log=run / "runtime.log", env=os.environ.copy())
@@ -343,7 +373,7 @@ def run_memory_cli(argv: Sequence[str] | None = None) -> int:
             "level": args.level,
         }
         identity = config_name("npu-memory-compare", contract)
-        run = repository_root() / "mindstudio_runs" / "memory" / "compare" / identity
+        run = _categorized_run("memory", Path("compare") / identity)
         output = run / "memory_compare"
         if _completed(run, contract) and not args.force:
             print(f"Skip completed msMemScope comparison: {run}")
@@ -362,6 +392,12 @@ def run_memory_cli(argv: Sequence[str] | None = None) -> int:
         if run.exists():
             reset_output_generation((run,), active_run_directories=(run,), label="msMemScope compare")
         output.mkdir(parents=True)
+        write_experiment_overview(
+            run,
+            title="GLM5.2 MindStudio memory comparison",
+            summary={"category": "performance/memory", "contract": contract},
+            entry_command=[sys.executable, *sys.argv],
+        )
         attempt = RunAttempt.start(run, kind="msmemscope-compare")
         try:
             _run_logged(command, log=run / "runtime.log", env=os.environ.copy())
@@ -395,13 +431,9 @@ def run_memory_cli(argv: Sequence[str] | None = None) -> int:
             f"{args.level}-{args.data_format}"
         )
         identity = config_name(base, contract)
-        run = (
-            repository_root()
-            / "mindstudio_runs"
-            / "memory"
-            / f"{topology.world_size}-card"
-            / topology.slug
-            / identity
+        run = _categorized_run(
+            "memory",
+            Path(f"{topology.world_size}-card") / topology.slug / identity,
         )
         output = run / "memory_profile"
         if _completed(run, contract) and not args.force:
@@ -418,6 +450,12 @@ def run_memory_cli(argv: Sequence[str] | None = None) -> int:
                 (run,), active_run_directories=(run,), label="msMemScope"
             )
         output.mkdir(parents=True)
+        write_experiment_overview(
+            run,
+            title="GLM5.2 MindStudio memory tuning",
+            summary={"category": "performance/memory", "contract": contract},
+            entry_command=[sys.executable, *sys.argv],
+        )
         attempt = RunAttempt.start(
             run, kind="msmemscope", context={"topology": topology.slug}
         )

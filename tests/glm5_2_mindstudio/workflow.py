@@ -23,6 +23,7 @@ from tests.glm5_2_common.cli import (
     archive_previous_output,
     assert_run_not_active,
     reset_output_generation,
+    write_experiment_overview,
 )
 from tests.glm5_2_common.naming import config_digest
 from tests.glm5_2_common.topology import (
@@ -92,6 +93,41 @@ def _paths(
 
 def _fixture_directory(root: Path, config: MindStudioExperimentConfig) -> Path:
     return root / config.fixture_root / config.storage_name
+
+
+def _adopt_legacy_accuracy_storage(
+    root: Path, config: MindStudioExperimentConfig
+) -> None:
+    """Move matching pre-category official outputs under ``accuracy/``.
+
+    The storage name already binds the complete experiment identity.  Moving
+    that exact directory changes only navigation and preserves every captured
+    byte, so historical official runs remain resumable without recollection.
+    """
+
+    for configured_root in (
+        config.fixture_root,
+        config.run_root,
+        config.artifact_root,
+        config.report_root,
+    ):
+        category_root = Path(configured_root)
+        if category_root.name != "accuracy":
+            continue
+        legacy = root / category_root.parent / config.storage_name
+        destination = root / category_root / config.storage_name
+        if not legacy.exists():
+            continue
+        if destination.exists():
+            raise RuntimeError(
+                "both legacy and categorized MindStudio accuracy outputs exist; "
+                f"refusing to mix them: {legacy} and {destination}"
+            )
+        if configured_root == config.run_root:
+            _assert_tree_not_active(legacy)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        legacy.rename(destination)
+        print(f"Adopted matching legacy accuracy output:\n  {legacy}\n  -> {destination}")
 
 
 def _fixture_manifest(root: Path, config: MindStudioExperimentConfig) -> dict[str, Any]:
@@ -1023,6 +1059,7 @@ def capture_official(
     role: Role,
     repeat: int,
     dry_run: bool = False,
+    entry_command: Sequence[str] | None = None,
 ) -> Path:
     if config.workflow == "compile" and role != "candidate":
         raise ValueError(
@@ -1180,6 +1217,24 @@ def capture_official(
     artifact_directory.mkdir(parents=True, exist_ok=True)
     input_contract.mkdir(parents=True, exist_ok=True)
     write_json(config_path, official_config)
+    write_experiment_overview(
+        run_directory,
+        title=f"GLM5.2 MindStudio {config.workflow} capture",
+        summary={
+            "storage_name": config.storage_name,
+            "workflow": config.workflow,
+            "role": role,
+            "device": endpoint.device_type,
+            "topology": asdict(topology),
+            "repeat": repeat,
+            "training": asdict(config.training),
+            "official_tool_config": official_config,
+            "fixture_directory": str(_fixture_directory(root, config).resolve()),
+            "runtime_log": str(runtime_log.resolve()),
+            "official_output": str(official_output.resolve()),
+        },
+        entry_command=entry_command,
+    )
     _write_launch_contract(
         launch_contract,
         command=command,
@@ -2948,6 +3003,34 @@ def run_mindstudio_cli(
         monitor=monitor_config,
         training=training,
     )
+    if not args.dry_run:
+        _adopt_legacy_accuracy_storage(root, config)
+        write_experiment_overview(
+            root / config.run_root / config.storage_name,
+            title=f"GLM5.2 MindStudio {config.workflow} experiment",
+            summary={
+                "storage_name": config.storage_name,
+                "category": "accuracy",
+                "workflow": config.workflow,
+                "training": asdict(config.training),
+                "msprobe_dump": asdict(config.dump),
+                "compile": asdict(config.compile),
+                "reference": {
+                    "device": config.reference.device_type,
+                    "topology": config.reference.topology.name,
+                    "repeats": config.reference.repeats,
+                },
+                "candidate": {
+                    "device": config.candidate.device_type,
+                    "topology": config.candidate.topology.name,
+                    "repeats": config.candidate.repeats,
+                },
+                "fixture_directory": str(
+                    _fixture_directory(root, config).resolve()
+                ),
+            },
+            entry_command=[sys.executable, *sys.argv],
+        )
 
     selected_names = select_topologies(
         available=tuple(registry),
@@ -3018,6 +3101,7 @@ def run_mindstudio_cli(
                 role=role,
                 repeat=args.repeat,
                 dry_run=args.dry_run,
+                entry_command=[sys.executable, *sys.argv],
             )
             print(f"Official artifact: {path}")
         return

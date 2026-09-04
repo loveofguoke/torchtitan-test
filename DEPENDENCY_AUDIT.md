@@ -152,7 +152,12 @@ change:
   run-owned under `trainer_output/profiling/nsys/`. `nsys_artifacts` contains
   only lifecycle/provenance metadata. Historical artifact-owned payloads are
   byte-checked and moved without recollection.
-- msOpProf and msMemScope are independent from system profiling. Preserve their
-  native `OPPROF_*` and memory DB/CSV trees below `mindstudio_runs/operator/`
-  and `mindstudio_runs/memory/`; never rename or synthesize official files.
+- msOpProf and msMemScope are independent from system profiling, but remain
+  performance experiments. Preserve their native `OPPROF_*` and memory DB/CSV
+  trees below `mindstudio_runs/performance/operator/` and
+  `mindstudio_runs/performance/memory/`; never rename or synthesize official
+  files. System profiling lives beside them under `performance/system/`.
+- Every leaf run directory must contain human-readable `README.md` and
+  machine-readable `experiment.json`. Directory names aid scanning and their
+  hash prevents data mixing; neither replaces an explicit experiment overview.
   Tool-specific metrics and hook settings are part of capture identity.

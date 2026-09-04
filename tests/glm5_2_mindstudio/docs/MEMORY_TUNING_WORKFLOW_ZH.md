@@ -91,7 +91,7 @@ python tests/glm5_2_mindstudio/memory_tuning_benchmark.py \
 ## 4. 输出和导入
 
 ```text
-mindstudio_runs/memory/<N-card>/<topology>/<experiment>/
+mindstudio_runs/performance/memory/<N-card>/<topology>/<experiment>/
 ├── runtime.log
 ├── training.log
 ├── run_state.json
@@ -101,7 +101,7 @@ mindstudio_runs/memory/<N-card>/<topology>/<experiment>/
     ├── *.db                        # 导入 Insight
     └── *.csv                       # 文本检查
 
-mindstudio_runs/memory/compare/<experiment>/memory_compare/
+mindstudio_runs/performance/memory/compare/<experiment>/memory_compare/
 └── compare/memory_compare_*.csv
 ```
 

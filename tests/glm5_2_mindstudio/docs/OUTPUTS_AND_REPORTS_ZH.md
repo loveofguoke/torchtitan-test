@@ -33,10 +33,14 @@
 当前已实现并延续现有 fixture/run/artifact/report 语义：
 
 ```text
-mindstudio_fixtures/     # 跨端共享的固定输入与实验契约
-mindstudio_runs/         # 命令、日志、输入契约和运行状态，默认不进 Git
-mindstudio_artifacts/    # 官方 raw + manifest/hash/complete，默认不进 Git
-mindstudio_reports/      # 官方 compare、轻量摘要与中文入口
+mindstudio_fixtures/accuracy/     # 精度流程跨端共享的固定输入
+mindstudio_runs/                  # 原始运行根目录，按 accuracy/performance 分族
+├── accuracy/                     # msProbe/compile/monitor
+└── performance/                  # system/operator/memory
+mindstudio_artifacts/accuracy/    # 精度官方 raw + manifest/hash/complete
+mindstudio_artifacts/performance/system/ # 系统性能轻量状态
+mindstudio_reports/accuracy/      # 精度 compare、摘要与中文入口
+mindstudio_reports/performance/system/ # 系统性能报告
 ```
 
 实验 ID 应简洁但能区分工作流、设备、模式、拓扑和关键训练配置。例如：
@@ -57,7 +61,7 @@ compile-npu-inductor-bf16-random-s1-b64-seq128-seed61-e5f6a7b8
 ## 3. 当前目录树
 
 ```text
-mindstudio_fixtures/<experiment-id>/
+mindstudio_fixtures/accuracy/<experiment-id>/
 ├── fixture.json
 ├── token_plan.pt或fixture记录的实际token文件
 ├── checkpoint/
@@ -65,7 +69,7 @@ mindstudio_fixtures/<experiment-id>/
 ├── seed_generation.log
 └── 其他precision fixture契约文件
 
-mindstudio_runs/<experiment-id>/<topology>/<role>-r1/
+mindstudio_runs/accuracy/<experiment-id>/<topology>/<role>-r1/
 ├── runtime.log
 ├── run_state.json
 ├── resolved_command.json
@@ -74,16 +78,16 @@ mindstudio_runs/<experiment-id>/<topology>/<role>-r1/
 ├── input_contract/
 └── trainer_output/
 
-mindstudio_artifacts/<experiment-id>/<topology>/<role>-r1/
+mindstudio_artifacts/accuracy/<experiment-id>/<topology>/<role>-r1/
 ├── official/                       # 官方工具原样输出
 ├── manifest.json                   # fixture、输入契约、topology、工具链、文件索引
 └── complete.json                   # 只有校验成功后生成
 
-mindstudio_artifacts/<experiment-id>/<topology>/precision_precheck/
+mindstudio_artifacts/accuracy/<experiment-id>/<topology>/precision_precheck/
 ├── reference-r1/stepN/rankN/{official/,manifest.json,complete.json}
 └── candidate-r1/stepN/rankN/{official/,manifest.json,complete.json}
 
-mindstudio_reports/<experiment-id>/
+mindstudio_reports/accuracy/<experiment-id>/
 ├── <experiment-id>.html
 ├── README.md
 └── <topology>/

@@ -34,6 +34,7 @@ from tests.glm5_2_common.cli import (
     RunAttempt,
     assert_run_not_active,
     reset_output_generation,
+    write_experiment_overview,
 )
 from tests.glm5_2_common.device import resolve_device_type
 from tests.glm5_2_common.naming import config_name, slug
@@ -520,7 +521,13 @@ def _adopt_legacy_performance_output(
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, TypeError, ValueError):
         return destination
-    if manifest.get("config") != config.as_dict():
+    saved_config = dict(manifest.get("config", {}))
+    # Storage-category insertion is organizational only.  Normalize legacy
+    # root values before validating the actual experiment contract.
+    for key in ("run_root", "artifact_root", "report_root"):
+        if key in saved_config:
+            saved_config[key] = getattr(config, key)
+    if not _config_is_compatible(saved_config, config):
         return destination
     parent.mkdir(parents=True, exist_ok=True)
     legacy.rename(destination)
@@ -552,6 +559,29 @@ def _write_json(path: Path, value: Any) -> None:
 
 def _scoped_parent(root: Path, configured_root: str, topology: str) -> Path:
     return root / configured_root / card_scope(topology) / topology
+
+
+def _legacy_category_root(root: Path, configured_root: str) -> Path:
+    path = Path(configured_root)
+    while path.name in {
+        "accuracy",
+        "performance",
+        "system",
+        "operator",
+        "memory",
+    }:
+        path = path.parent
+    return root / path
+
+
+def _legacy_scoped_parent(
+    root: Path, configured_root: str, topology: str
+) -> Path:
+    return (
+        _legacy_category_root(root, configured_root)
+        / card_scope(topology)
+        / topology
+    )
 
 
 def _exploration_directory(root: Path, topology: str, run_name: str) -> Path:
@@ -935,14 +965,18 @@ def capture(
         config=config,
         device=device,
         destination_name=run_name,
-        legacy_parent=root / config.run_root,
+        legacy_parent=_legacy_scoped_parent(
+            root, config.run_root, config.topology
+        ),
     )
     artifact_directory = _adopt_legacy_performance_output(
         artifact_parent,
         config=config,
         device=device,
         destination_name=run_name,
-        legacy_parent=root / config.artifact_root,
+        legacy_parent=_legacy_scoped_parent(
+            root, config.artifact_root, config.topology
+        ),
     )
     complete_manifest = artifact_directory / "manifest.json"
 
@@ -1020,6 +1054,21 @@ def capture(
         device=device,
         preset=preset,
         run_directory=run_directory,
+    )
+    write_experiment_overview(
+        run_directory,
+        title="GLM5.2 performance capture",
+        summary={
+            "run_name": run_name,
+            "device": device,
+            "topology": config.topology,
+            "preset": config.preset,
+            "collector": config.collector,
+            "configuration": config.as_dict(),
+            "runtime_log": str(runtime_log.resolve()),
+            "trainer_output": str((run_directory / "trainer_output").resolve()),
+        },
+        entry_command=[sys.executable, *sys.argv],
     )
     capture_kind = "profiler" if config.profiler_enabled else "performance"
     print(

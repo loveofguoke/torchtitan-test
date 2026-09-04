@@ -27,9 +27,9 @@ CONFIG = PerformanceConfig(
     local_batch_size=8,
     global_batch_size=64,
     sequence_length=128,
-    run_root="mindstudio_runs",
-    artifact_root="mindstudio_artifacts",
-    report_root="mindstudio_reports",
+    run_root="mindstudio_runs/performance/system",
+    artifact_root="mindstudio_artifacts/performance/system",
+    report_root="mindstudio_reports/performance/system",
 )
 
 

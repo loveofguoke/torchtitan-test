@@ -225,10 +225,10 @@ class MindStudioExperimentConfig:
     dump: MsProbeDumpConfig = field(default_factory=MsProbeDumpConfig)
     compile: MsProbeCompileConfig = field(default_factory=MsProbeCompileConfig)
     monitor: MsProbeMonitorConfig = field(default_factory=MsProbeMonitorConfig)
-    fixture_root: str = "mindstudio_fixtures"
-    run_root: str = "mindstudio_runs"
-    artifact_root: str = "mindstudio_artifacts"
-    report_root: str = "mindstudio_reports"
+    fixture_root: str = "mindstudio_fixtures/accuracy"
+    run_root: str = "mindstudio_runs/accuracy"
+    artifact_root: str = "mindstudio_artifacts/accuracy"
+    report_root: str = "mindstudio_reports/accuracy"
 
     def __post_init__(self) -> None:
         for name in ("fixture_root", "run_root", "artifact_root", "report_root"):

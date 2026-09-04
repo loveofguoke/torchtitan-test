@@ -926,12 +926,12 @@ python release_artifacts.py download <experiment-id> --overwrite
 
 ```text
 mindstudio_fixtures/<experiment-id>/
-mindstudio_runs/<experiment-id>/<topology>/<role>-r1/
-mindstudio_artifacts/<experiment-id>/<topology>/<role>-r1/
+mindstudio_runs/accuracy/<experiment-id>/<topology>/<role>-r1/
+mindstudio_artifacts/accuracy/<experiment-id>/<topology>/<role>-r1/
 └── official/                 # msProbe 原始输出
-mindstudio_artifacts/<experiment-id>/<topology>/precision_precheck/<role>-r1/
+mindstudio_artifacts/accuracy/<experiment-id>/<topology>/precision_precheck/<role>-r1/
 └── stepN/rankN/official/     # 单端 acc_check/multi_acc_check
-mindstudio_reports/<experiment-id>/<topology>/
+mindstudio_reports/accuracy/<experiment-id>/<topology>/
 ├── official_compare/        # 官方 dump compare 或 compile CSV 汇总
 ├── precision_precheck/compare-r1/ # api_precision_compare + HTML/JSON 索引
 └── graph-visualize-r1/      # tracked .vis.db 索引和 TensorBoard 命令
