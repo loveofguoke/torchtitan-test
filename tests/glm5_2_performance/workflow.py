@@ -353,6 +353,66 @@ def _visible_devices(device: str) -> list[str] | None:
     return [part.strip() for part in value.split(",") if part.strip()]
 
 
+def _device_selection(
+    config: PerformanceConfig, device: str
+) -> dict[str, Any]:
+    """Resolve the physical devices actually consumed by this topology."""
+
+    visible_devices = _visible_devices(device)
+    world_size = performance_topologies()[config.topology].world_size
+    variable = (
+        "ASCEND_RT_VISIBLE_DEVICES" if device == "npu" else "CUDA_VISIBLE_DEVICES"
+    )
+    if visible_devices is None:
+        return {
+            "environment_variable": variable,
+            "configured_visible_devices": None,
+            "selected_physical_devices": None,
+            "rank_device_mapping": None,
+            "is_default_prefix": True,
+        }
+    if len(set(visible_devices)) != len(visible_devices):
+        raise ValueError(
+            "visible devices must not contain duplicate physical device IDs: "
+            + ",".join(visible_devices)
+        )
+    if len(visible_devices) < world_size:
+        raise ValueError(
+            f"topology {config.topology} requires {world_size} devices, but "
+            f"only {len(visible_devices)} were configured: "
+            + ",".join(visible_devices)
+        )
+    selected = visible_devices[:world_size]
+    return {
+        "environment_variable": variable,
+        "configured_visible_devices": visible_devices,
+        "selected_physical_devices": selected,
+        "rank_device_mapping": {
+            f"rank_{rank}": {
+                "logical_device": rank,
+                "physical_device": physical_device,
+            }
+            for rank, physical_device in enumerate(selected)
+        },
+        "is_default_prefix": selected == [str(rank) for rank in range(world_size)],
+    }
+
+
+def _saved_device_selection_is_compatible(
+    saved: Any, current: dict[str, Any]
+) -> bool:
+    if saved is None:
+        # Historical captures did not bind physical devices. Preserve only the
+        # conventional leading-device layout; a non-default card experiment
+        # must always receive a new identity and capture.
+        return bool(current["is_default_prefix"])
+    if isinstance(saved, dict) and saved.get("is_default_prefix") and current.get(
+        "is_default_prefix"
+    ):
+        return True
+    return saved == current
+
+
 def _device_snapshot(device: str) -> dict[str, Any]:
     executable = shutil.which("npu-smi" if device == "npu" else "nvidia-smi")
     if executable is None:
@@ -449,6 +509,10 @@ def _run_name(
         f"l{config.local_batch_size}-b{config.global_batch_size}-"
         f"seq{config.sequence_length}-seed{config.seed}-{preset_label}"
     )
+    device_selection = _device_selection(config, device)
+    selected_devices = device_selection["selected_physical_devices"]
+    if selected_devices is not None and not device_selection["is_default_prefix"]:
+        base += "-dev" + "-".join(selected_devices)
     if config.mixed_precision_reduce != "float32":
         reduce_precision = {
             "bfloat16": "bf16",
@@ -480,6 +544,8 @@ def _run_name(
     if not config.collector_args:
         identity.pop("collector_args", None)
     identity["resolved_device"] = device
+    if selected_devices is not None and not device_selection["is_default_prefix"]:
+        identity["device_selection"] = device_selection
     if (
         config.profiler_enabled
         and config.collector
@@ -528,6 +594,10 @@ def _adopt_legacy_performance_output(
         if key in saved_config:
             saved_config[key] = getattr(config, key)
     if not _config_is_compatible(saved_config, config):
+        return destination
+    if not _saved_device_selection_is_compatible(
+        manifest.get("device_selection"), _device_selection(config, device)
+    ):
         return destination
     parent.mkdir(parents=True, exist_ok=True)
     legacy.rename(destination)
@@ -731,6 +801,7 @@ def _find_matching_capture(
     profiler_environment: dict[str, str],
 ) -> tuple[Path, dict[str, Any]] | None:
     matches = []
+    device_selection = _device_selection(config, device)
     if not artifact_parent.is_dir():
         return None
     for manifest_path in artifact_parent.rglob("manifest.json"):
@@ -746,6 +817,9 @@ def _find_matching_capture(
             and manifest.get("profiler_environment") == profiler_environment
             and isinstance(saved_config, dict)
             and _config_is_compatible(saved_config, config)
+            and _saved_device_selection_is_compatible(
+                manifest.get("device_selection"), device_selection
+            )
         ):
             matches.append((manifest_path.parent, manifest))
     if len(matches) > 1:
@@ -981,6 +1055,7 @@ def capture(
     complete_manifest = artifact_directory / "manifest.json"
 
     run_manifest = run_directory / "manifest.json"
+    device_selection = _device_selection(config, device)
     profiler_environment = (
         preset.environment()
         if config.profiler_enabled
@@ -993,6 +1068,9 @@ def capture(
             not _config_is_compatible(existing.get("config", {}), config)
             or existing.get("profiler_environment") != profiler_environment
             or existing.get("collector_toolchain") != collector_toolchain
+            or not _saved_device_selection_is_compatible(
+                existing.get("device_selection"), device_selection
+            )
         ):
             raise FileExistsError(
                 f"completed capture uses different settings: {artifact_directory}; "
@@ -1026,6 +1104,10 @@ def capture(
             "device": device,
             "topology": config.topology,
             "preset": config.preset,
+            "selected_physical_devices": device_selection[
+                "selected_physical_devices"
+            ],
+            "rank_device_mapping": device_selection["rank_device_mapping"],
         },
     )
     metrics_path = run_directory / "metrics.jsonl"
@@ -1064,6 +1146,7 @@ def capture(
             "topology": config.topology,
             "preset": config.preset,
             "collector": config.collector,
+            "device_selection": device_selection,
             "configuration": config.as_dict(),
             "runtime_log": str(runtime_log.resolve()),
             "trainer_output": str((run_directory / "trainer_output").resolve()),
@@ -1129,6 +1212,7 @@ def capture(
         "run_name": run_name,
         "device": device,
         "visible_devices": _visible_devices(device),
+        "device_selection": device_selection,
         "topology": config.topology,
         "preset": config.preset,
         "collector": config.collector,
@@ -2909,7 +2993,15 @@ def run_profiler_cli(
             "each policy as an independent experiment"
         ),
     )
-    parser.add_argument("--visible-devices")
+    parser.add_argument(
+        "--devices",
+        "--visible-devices",
+        dest="visible_devices",
+        help=(
+            "ordered physical device IDs; the topology consumes the first "
+            "world-size IDs and non-default mappings enter run identity"
+        ),
+    )
     parser.add_argument("--steps", type=int)
     parser.add_argument("--skip-steps", type=int)
     parser.add_argument("--warmup-steps", type=int)

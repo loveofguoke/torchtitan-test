@@ -87,7 +87,7 @@ sequence length 32.
 | `--topology` | One common topology or `all`. | `single` |
 | `--topologies` | Comma-separated subset such as `single,fsdp8,cp8`; mutually exclusive with `--topology`. | unset |
 | `--preset` | `overview`, `comparison`, `standard`, `distributed`, `kernel`, `operator`, `memory`, `flamegraph`, `runtime`, `system`, or the multi-capture meta-option `all`. | `overview` |
-| `--visible-devices` | Override `ASCEND_RT_VISIBLE_DEVICES` for automation. Environment export is preferred. | unset |
+| `--devices` (`--visible-devices`) | Ordered physical device IDs. A non-default mapping enters the directory name, SHA, manifest, and resume check. The default leading-device mapping preserves historical experiment identity. | corresponding environment variable, otherwise unset |
 | `--steps` | Total training optimizer steps. Must reach the full profiler schedule. | `30` |
 | `--skip-steps` | Training steps before Profiler warmup. | `10` |
 | `--warmup-steps` | Profiler warmup steps. | `2` |

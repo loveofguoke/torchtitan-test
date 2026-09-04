@@ -74,6 +74,23 @@ TorchTitan 标准流程默认使用 `torch_npu_profiler`，需要命令行包裹
 
 ## 3. 采集命令
 
+物理设备选择必须可追溯。`--devices` 接受有序物理设备 ID；每个拓扑使用前
+`world_size` 个 ID。非默认卡组进入可读目录名、配置 SHA、manifest 和续跑判定，
+例如 `--devices 6,7 --topology ddp2` 会带有 `dev6-7`。默认前缀卡组保持旧实验
+身份，以便无重采集地继续使用已有结果。`--visible-devices` 是兼容别名。
+
+```bash
+python tests/glm5_2_mindstudio/performance_benchmark.py \
+  --probe --device npu --devices 0,1 --topology ddp2 \
+  --preset distributed --record-shapes \
+  --analysis-tools all --cluster-recipes necessary
+
+python tests/glm5_2_mindstudio/performance_benchmark.py \
+  --probe --device npu --devices 6,7 --topology ddp2 \
+  --preset distributed --record-shapes \
+  --analysis-tools all --cluster-recipes necessary
+```
+
 入口：
 
 ```bash

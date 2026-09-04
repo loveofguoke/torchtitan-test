@@ -707,6 +707,12 @@ capture 的官方 CSV 位于
 PyTorch 训练进程内按 step schedule 采集 PyTorch、CANN 和 NPU 多层证据，并支持
 module、shape、stack、memory 等框架语义。先检查服务器：
 
+物理卡集合也是实验配置。推荐用 `--devices` 显式指定；相同拓扑分别使用
+`--devices 0,1` 和 `--devices 6,7` 时，会生成不同的目录、配置 SHA 和
+completed-capture 身份。默认前缀映射（single 使用 0、ddp2 使用 0,1、八卡使用
+0..7）保持历史目录和 SHA，因此已有默认卡实验无需重跑。实验根目录的
+`experiment.json` 与 `manifest.json` 会记录实际选择和逻辑 rank 到物理卡映射。
+
 ```bash
 python -m tests.glm5_2_mindstudio.toolchain doctor \
   --scope performance-capture

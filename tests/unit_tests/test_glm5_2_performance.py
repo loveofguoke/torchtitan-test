@@ -25,10 +25,12 @@ from tests.glm5_2_performance.dynamic_profile import (
 )
 from tests.glm5_2_performance.workflow import (
     _config_is_compatible,
+    _device_selection,
     _msprof_analyze_executable,
     _msprof_analyze_workers,
     _profiled_rank_count,
     _run_name,
+    _saved_device_selection_is_compatible,
     _safe_distributed_parse_preset,
     _write_suite_report,
 )
@@ -49,6 +51,49 @@ class TestPerformanceConfig(unittest.TestCase):
         self.assertTrue(run_name.startswith("npu-single-bf16-s12-"))
         self.assertNotIn("glm5-probe", run_name)
         self.assertEqual(len(run_name.rsplit("-", 1)[1]), 8)
+
+    def test_nondefault_physical_devices_enter_run_identity(self):
+        config = PerformanceConfig(name="glm5-probe", topology="ddp2")
+        with mock.patch.dict(
+            os.environ,
+            {"ASCEND_RT_VISIBLE_DEVICES": "6,7"},
+            clear=False,
+        ):
+            run_name = _run_name(config, "npu")
+            selection = _device_selection(config, "npu")
+
+        self.assertIn("-dev6-7-", run_name)
+        self.assertEqual(selection["selected_physical_devices"], ["6", "7"])
+        self.assertEqual(
+            selection["rank_device_mapping"]["rank_1"],
+            {"logical_device": 1, "physical_device": "7"},
+        )
+        self.assertFalse(_saved_device_selection_is_compatible(None, selection))
+
+    def test_default_device_prefix_preserves_historical_identity(self):
+        config = PerformanceConfig(name="glm5-probe", topology="ddp2")
+        with mock.patch.dict(
+            os.environ,
+            {"ASCEND_RT_VISIBLE_DEVICES": "0,1,2,3,4,5,6,7"},
+            clear=False,
+        ):
+            run_name = _run_name(config, "npu")
+            selection = _device_selection(config, "npu")
+
+        self.assertNotIn("-dev", run_name)
+        self.assertEqual(selection["selected_physical_devices"], ["0", "1"])
+        self.assertTrue(_saved_device_selection_is_compatible(None, selection))
+
+    def test_device_selection_rejects_insufficient_or_duplicate_devices(self):
+        config = PerformanceConfig(name="glm5-probe", topology="ddp2")
+        for value, message in (("0", "requires 2"), ("0,0", "duplicate")):
+            with self.subTest(value=value), mock.patch.dict(
+                os.environ,
+                {"ASCEND_RT_VISIBLE_DEVICES": value},
+                clear=False,
+            ):
+                with self.assertRaisesRegex(ValueError, message):
+                    _device_selection(config, "npu")
 
     def test_run_name_distinguishes_effective_parse_mode(self):
         config = PerformanceConfig(name="glm5-probe")
