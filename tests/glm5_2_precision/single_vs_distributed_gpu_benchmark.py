@@ -72,6 +72,7 @@ TOPOLOGIES = {
         data_parallel_shard_degree=2,
         pipeline_parallel_degree=2,
         pipeline_parallel_microbatch_size=2,
+        pipeline_parallel_schedule="GPipe",
     ),
     "ddp2-pp4": ParallelTopology(
         "ddp2-pp4-gpipe",
