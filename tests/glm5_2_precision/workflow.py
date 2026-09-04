@@ -31,6 +31,7 @@ from .msprobe_tensorboard import (
     MSPROBE_CONFIG_PATH_ENV,
     MSPROBE_PARAMETER_STATE_ENV,
     MSPROBE_ROUTER_STATE_ENV,
+    MSPROBE_OPTIMIZER_STATE_ENV,
     MsprobeCaptureConfig,
     MsprobeParallelSpec,
     build_tensorboard_assets,
@@ -1061,6 +1062,8 @@ def capture_msprobe_endpoint(
         environment[MSPROBE_PARAMETER_STATE_ENV] = "1"
     if capture_config.router_state:
         environment[MSPROBE_ROUTER_STATE_ENV] = "1"
+    if capture_config.optimizer_state:
+        environment[MSPROBE_OPTIMIZER_STATE_ENV] = "1"
     if config.training.fixed_global_batches:
         from .fixed_batches import FIXED_BATCHES_ENV
 
@@ -1293,6 +1296,11 @@ def run_formal_cli(
         help="save global-step GLM5 router decisions and backward tensors",
     )
     parser.add_argument(
+        "--msprobe-optimizer-state",
+        action="store_true",
+        help="decompose representative first-step AdamW updates",
+    )
+    parser.add_argument(
         "--serve-tensorboard",
         action="store_true",
         help="serve the generated visualization after --visualize-msprobe",
@@ -1414,6 +1422,7 @@ def run_formal_cli(
                 block_backward=args.msprobe_block_backward,
                 parameter_state=args.msprobe_parameter_state,
                 router_state=args.msprobe_router_state,
+                optimizer_state=args.msprobe_optimizer_state,
             ),
             force=args.force,
             resume=args.resume,

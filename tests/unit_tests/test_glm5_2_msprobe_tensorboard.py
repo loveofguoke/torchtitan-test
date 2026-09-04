@@ -12,6 +12,7 @@ from tests.glm5_2_precision.msprobe_tensorboard import (
     MSPROBE_CONFIG_PATH_ENV,
     MsprobeCaptureConfig,
     MsprobeParallelSpec,
+    adamw_update_components,
     build_tensorboard_assets,
     install_trainer_capture,
     tensorboard_command,
@@ -54,6 +55,7 @@ def test_block_boundary_capture_uses_public_debug_tensor_mode(tmp_path: Path) ->
         block_backward=True,
         parameter_state=True,
         router_state=True,
+        optimizer_state=True,
     )
     payload = config.payload(tmp_path / "dump")
 
@@ -64,6 +66,7 @@ def test_block_boundary_capture_uses_public_debug_tensor_mode(tmp_path: Path) ->
     assert "block_backward" not in payload
     assert "parameter_state" not in payload
     assert "router_state" not in payload
+    assert "optimizer_state" not in payload
 
     with pytest.raises(ValueError, match="task=tensor and level=debug"):
         MsprobeCaptureConfig(block_boundaries=True)
@@ -75,6 +78,31 @@ def test_block_boundary_capture_uses_public_debug_tensor_mode(tmp_path: Path) ->
         MsprobeCaptureConfig(parameter_state=True)
     with pytest.raises(ValueError, match="task=tensor and level=debug"):
         MsprobeCaptureConfig(router_state=True)
+    with pytest.raises(ValueError, match="requires parameter-state capture"):
+        MsprobeCaptureConfig(task="tensor", level="debug", optimizer_state=True)
+
+
+def test_adamw_update_components_reconstruct_first_step() -> None:
+    torch = pytest.importorskip("torch")
+    initial = torch.tensor([2.0, -4.0])
+    gradient = torch.tensor([0.25, -0.5])
+    exp_avg = 0.1 * gradient
+    exp_avg_sq = 0.001 * gradient.square()
+
+    adaptive, decay, combined = adamw_update_components(
+        initial,
+        exp_avg,
+        exp_avg_sq,
+        step=1.0,
+        lr=0.01,
+        betas=(0.9, 0.999),
+        eps=1e-8,
+        weight_decay=0.1,
+    )
+
+    torch.testing.assert_close(adaptive, torch.tensor([-0.01, 0.01]))
+    torch.testing.assert_close(decay, torch.tensor([-0.002, 0.004]))
+    torch.testing.assert_close(combined, torch.tensor([-0.012, 0.014]))
 
 
 def test_debug_dump_validation_requires_saved_data(tmp_path: Path) -> None:

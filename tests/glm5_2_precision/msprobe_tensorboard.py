@@ -27,8 +27,39 @@ MSPROBE_BLOCK_GLOBAL_STEP_ENV = "GLM5_MSPROBE_BLOCK_GLOBAL_STEP"
 MSPROBE_BLOCK_BACKWARD_ENV = "GLM5_MSPROBE_BLOCK_BACKWARD"
 MSPROBE_PARAMETER_STATE_ENV = "GLM5_MSPROBE_PARAMETER_STATE"
 MSPROBE_ROUTER_STATE_ENV = "GLM5_MSPROBE_ROUTER_STATE"
+MSPROBE_OPTIMIZER_STATE_ENV = "GLM5_MSPROBE_OPTIMIZER_STATE"
 SCHEMA = "torchtitan.glm5_2.msprobe_tensorboard"
 SCHEMA_VERSION = 2
+
+OPTIMIZER_DIAGNOSTIC_PARAMETERS = (
+    "layers.3.attention.kv_norm.weight",
+    "layers.6.attention.kv_norm.weight",
+    "layers.4.moe.router.gate.weight",
+)
+
+
+def adamw_update_components(
+    initial_parameter: Any,
+    exp_avg: Any,
+    exp_avg_sq: Any,
+    *,
+    step: float,
+    lr: float,
+    betas: tuple[float, float],
+    eps: float,
+    weight_decay: float,
+) -> tuple[Any, Any, Any]:
+    """Reconstruct AdamW's FP32 adaptive, decay, and combined deltas."""
+
+    if step <= 0:
+        raise ValueError("AdamW step must be positive")
+    beta1, beta2 = betas
+    bias_correction1 = 1.0 - beta1**step
+    bias_correction2_sqrt = (1.0 - beta2**step) ** 0.5
+    denominator = exp_avg_sq.float().sqrt() / bias_correction2_sqrt + eps
+    adaptive = -(lr / bias_correction1) * exp_avg.float() / denominator
+    decay = -lr * weight_decay * initial_parameter.float()
+    return adaptive, decay, adaptive + decay
 
 
 @dataclass(frozen=True)
@@ -96,6 +127,7 @@ class MsprobeCaptureConfig:
     block_backward: bool = False
     parameter_state: bool = False
     router_state: bool = False
+    optimizer_state: bool = False
 
     def __post_init__(self) -> None:
         if not self.steps or any(step < 0 for step in self.steps):
@@ -131,6 +163,10 @@ class MsprobeCaptureConfig:
         ):
             raise ValueError(
                 "router-state capture requires msProbe task=tensor and level=debug"
+            )
+        if self.optimizer_state and not self.parameter_state:
+            raise ValueError(
+                "optimizer-state capture requires parameter-state capture"
             )
 
     def payload(self, dump_path: str | Path) -> dict[str, Any]:
@@ -790,6 +826,145 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                     save_backward=False,
                 )
 
+    def optimizer_probe_targets(trainer: Any) -> dict[str, Any]:
+        parameters = named_trainable_parameters(trainer)
+        targets: dict[str, Any] = {}
+        for requested_name in OPTIMIZER_DIAGNOSTIC_PARAMETERS:
+            matches = [
+                (name, parameter)
+                for name, parameter in parameters.items()
+                if name == requested_name or name.endswith(f".{requested_name}")
+            ]
+            if len(matches) != 1:
+                raise RuntimeError(
+                    f"expected one optimizer diagnostic parameter matching "
+                    f"{requested_name!r}, found {[name for name, _ in matches]}"
+                )
+            name, parameter = matches[0]
+            targets[name] = parameter
+        return targets
+
+    def optimizer_group_hyperparameters(
+        trainer: Any,
+        targets: dict[str, Any],
+    ) -> dict[str, dict[str, Any]]:
+        by_parameter: dict[int, tuple[Any, dict[str, Any]]] = {}
+        for optimizer in trainer.optimizers:
+            for group in optimizer.param_groups:
+                for parameter in group["params"]:
+                    if id(parameter) in by_parameter:
+                        raise RuntimeError(
+                            "parameter belongs to multiple optimizer groups"
+                        )
+                    by_parameter[id(parameter)] = (optimizer, group)
+
+        captured: dict[str, dict[str, Any]] = {}
+        for name, parameter in targets.items():
+            if id(parameter) not in by_parameter:
+                raise RuntimeError(f"no optimizer group found for {name}")
+            optimizer, group = by_parameter[id(parameter)]
+            if optimizer.__class__.__name__ != "AdamW":
+                raise RuntimeError(
+                    f"optimizer diagnostic requires AdamW, got "
+                    f"{optimizer.__class__.__name__} for {name}"
+                )
+            if group.get("amsgrad", False) or group.get("maximize", False):
+                raise RuntimeError(
+                    "optimizer diagnostic supports only standard AdamW without "
+                    f"amsgrad/maximize: {name}"
+                )
+            captured[name] = {
+                "optimizer": optimizer,
+                "lr": float(group["lr"]),
+                "betas": tuple(float(value) for value in group["betas"]),
+                "eps": float(group["eps"]),
+                "weight_decay": float(group["weight_decay"]),
+            }
+        return captured
+
+    def save_optimizer_state(
+        trainer: Any,
+        initial_parameters: dict[str, Any],
+        capture: dict[str, Any],
+    ) -> None:
+        import torch
+
+        if not capture.get("clip_called"):
+            raise RuntimeError("optimizer diagnostic did not observe gradient clipping")
+        owns_stage_dump = stage_dump_owner(trainer)
+        targets = capture["targets"]
+        hyperparameters = capture["hyperparameters"]
+
+        if owns_stage_dump:
+            debugger.save(
+                capture["clip_stats"],
+                "optimizer_clip_norm_and_coefficient",
+                save_backward=False,
+            )
+
+        for name, parameter in sorted(targets.items()):
+            debug_name = parameter_debug_name(name)
+            settings = hyperparameters[name]
+            state = settings["optimizer"].state[parameter]
+            if not {"step", "exp_avg", "exp_avg_sq"}.issubset(state):
+                raise RuntimeError(f"AdamW state is incomplete after step for {name}")
+            step_value = logical_tensor(state["step"])
+            step = float(
+                step_value.item() if hasattr(step_value, "item") else step_value
+            )
+            initial = logical_tensor(initial_parameters[name])
+            updated = logical_tensor(parameter)
+            exp_avg = logical_tensor(state["exp_avg"])
+            exp_avg_sq = logical_tensor(state["exp_avg_sq"])
+            adaptive, decay, intended = adamw_update_components(
+                initial,
+                exp_avg,
+                exp_avg_sq,
+                step=step,
+                lr=settings["lr"],
+                betas=settings["betas"],
+                eps=settings["eps"],
+                weight_decay=settings["weight_decay"],
+            )
+            actual = updated.float() - initial.float()
+            single_cast = (
+                (initial.float() + intended).to(dtype=initial.dtype).float()
+                - initial.float()
+            )
+            rounding_residual = actual - intended
+            hparams = torch.tensor(
+                [
+                    step,
+                    settings["lr"],
+                    settings["betas"][0],
+                    settings["betas"][1],
+                    settings["eps"],
+                    settings["weight_decay"],
+                ],
+                dtype=torch.float32,
+                device=updated.device,
+            )
+            values = {
+                "preclip_grad": capture["preclip_grad"][name],
+                "postclip_grad": capture["postclip_grad"][name],
+                "exp_avg": exp_avg,
+                "exp_avg_sq": exp_avg_sq,
+                "adaptive_delta_fp32": adaptive,
+                "decay_delta_fp32": decay,
+                "intended_delta_fp32": intended,
+                "actual_delta_fp32": actual,
+                "single_cast_delta_fp32": single_cast,
+                "rounding_residual_fp32": rounding_residual,
+                "step_hparams": hparams,
+            }
+            if owns_stage_dump:
+                for field, value in values.items():
+                    debugger.save(
+                        value,
+                        f"optimizer_{field}__{debug_name}",
+                        save_backward=False,
+                    )
+
     @wraps(original_train_step)
     def train_step_with_msprobe(self: Any, *args: Any, **kwargs: Any) -> Any:
         if os.environ.get(MSPROBE_BLOCK_BOUNDARIES_ENV) == "1":
@@ -802,6 +977,66 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
         initial_parameters = None
         if os.environ.get(MSPROBE_PARAMETER_STATE_ENV) == "1":
             initial_parameters = snapshot_trainable_parameters(self)
+        optimizer_capture = None
+        distributed_utils = None
+        original_clip_grad_norm = None
+        if os.environ.get(MSPROBE_OPTIMIZER_STATE_ENV) == "1":
+            if initial_parameters is None:
+                raise RuntimeError(
+                    "optimizer-state capture requires parameter-state capture"
+                )
+            from torchtitan.distributed import utils as distributed_utils
+
+            targets = optimizer_probe_targets(self)
+            optimizer_capture = {
+                "targets": targets,
+                "hyperparameters": optimizer_group_hyperparameters(self, targets),
+                "clip_called": False,
+            }
+            original_clip_grad_norm = distributed_utils.clip_grad_norm_
+
+            @wraps(original_clip_grad_norm)
+            def capture_clip_grad_norm(
+                parameters: Any,
+                max_norm: float,
+                *clip_args: Any,
+                **clip_kwargs: Any,
+            ) -> Any:
+                import torch
+
+                if optimizer_capture["clip_called"]:
+                    raise RuntimeError(
+                        "optimizer diagnostic observed multiple clipping calls"
+                    )
+                preclip = {}
+                for name, parameter in targets.items():
+                    if parameter.grad is None:
+                        raise RuntimeError(f"missing pre-clip gradient for {name}")
+                    preclip[name] = logical_tensor(parameter.grad).clone()
+                total_norm = original_clip_grad_norm(
+                    parameters,
+                    max_norm,
+                    *clip_args,
+                    **clip_kwargs,
+                )
+                postclip = {}
+                for name, parameter in targets.items():
+                    if parameter.grad is None:
+                        raise RuntimeError(f"missing post-clip gradient for {name}")
+                    postclip[name] = logical_tensor(parameter.grad).clone()
+                logical_norm = logical_tensor(total_norm).float().reshape(1)
+                coefficient = (float(max_norm) / (logical_norm + 1e-6)).clamp(max=1.0)
+                optimizer_capture.update(
+                    {
+                        "preclip_grad": preclip,
+                        "postclip_grad": postclip,
+                        "clip_stats": torch.cat((logical_norm, coefficient)),
+                        "clip_called": True,
+                    }
+                )
+                return total_norm
+
+            distributed_utils.clip_grad_norm_ = capture_clip_grad_norm
         # PrecisionDebugger explicitly accepts a list/tuple of model parts and
         # prefixes their module names with the local part index.
         debugger.start(model=self.model_parts)
@@ -815,9 +1050,13 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 save_global_step_router_state(self)
             if initial_parameters is not None:
                 save_parameter_state(self, initial_parameters)
+            if optimizer_capture is not None:
+                save_optimizer_state(self, initial_parameters, optimizer_capture)
             return result
         finally:
             try:
+                if distributed_utils is not None:
+                    distributed_utils.clip_grad_norm_ = original_clip_grad_norm
                 debugger.stop()
             finally:
                 debugger.step()
