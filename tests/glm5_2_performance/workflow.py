@@ -1155,6 +1155,17 @@ def _merge_legacy_analysis_tree(
     shutil.rmtree(source)
 
 
+def _remove_nested_cluster_databases(delivery: Path) -> None:
+    """Keep exactly one cluster database in an Insight import tree."""
+
+    canonical_database = delivery / "cluster_analysis.db"
+    if not canonical_database.is_file():
+        return
+    for nested_database in delivery.rglob("cluster_analysis.db"):
+        if nested_database != canonical_database:
+            nested_database.unlink()
+
+
 def _adopt_legacy_cluster_outputs(run_directory: Path) -> Path:
     """Move historical cluster results into the official Insight import root."""
 
@@ -1222,6 +1233,11 @@ def _adopt_legacy_cluster_outputs(run_directory: Path) -> Path:
     legacy_cluster = run_directory / "cluster"
     if legacy_cluster.is_dir() and not any(legacy_cluster.iterdir()):
         legacy_cluster.rmdir()
+    # Older per-recipe output roots can leave additional databases below the
+    # official delivery. MindStudio Insight imports the whole profiler root and
+    # cannot unambiguously select between identically named cluster databases.
+    # Retain recipe CSV/JSON files but discard obsolete nested databases.
+    _remove_nested_cluster_databases(delivery)
     return delivery
 
 
@@ -1483,6 +1499,7 @@ def run_cluster_analysis(
             status_prefix=name,
             analysis_toolchain=analysis_toolchain,
         )
+    _remove_nested_cluster_databases(cluster_delivery)
     return results
 
 
@@ -1682,6 +1699,7 @@ def _run_advanced_cluster_analysis(
             analysis_toolchain=analysis_toolchain,
         )
 
+    _remove_nested_cluster_databases(delivery)
     inventory = {
         "policy": policy,
         "topology": topology.name,

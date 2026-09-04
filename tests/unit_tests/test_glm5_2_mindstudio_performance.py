@@ -77,6 +77,29 @@ class MindStudioPerformanceTest(unittest.TestCase):
             self.assertFalse((run / "free_analysis").exists())
             self.assertTrue((run / "cluster_text.json").is_file())
 
+    def test_legacy_nested_cluster_database_is_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory) / "run"
+            delivery = (
+                run
+                / "trainer_output"
+                / "profiling"
+                / "traces"
+                / "cluster_analysis_output"
+            )
+            nested = delivery / "CommunicationTimeSum"
+            nested.mkdir(parents=True)
+            (delivery / "cluster_analysis.db").write_bytes(b"canonical")
+            (nested / "cluster_analysis.db").write_bytes(b"obsolete")
+            (nested / "cluster_communication_time.csv").write_text(
+                "rank,time\n", encoding="utf-8"
+            )
+
+            _adopt_legacy_cluster_outputs(run)
+
+            self.assertFalse((nested / "cluster_analysis.db").exists())
+            self.assertTrue((nested / "cluster_communication_time.csv").is_file())
+
     def test_run_name_binds_default_profiler_capture_contract(self) -> None:
         config = PerformanceConfig(
             name="identity",
