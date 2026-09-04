@@ -28,6 +28,7 @@ MSPROBE_BLOCK_BACKWARD_ENV = "GLM5_MSPROBE_BLOCK_BACKWARD"
 MSPROBE_PARAMETER_STATE_ENV = "GLM5_MSPROBE_PARAMETER_STATE"
 MSPROBE_ROUTER_STATE_ENV = "GLM5_MSPROBE_ROUTER_STATE"
 MSPROBE_OPTIMIZER_STATE_ENV = "GLM5_MSPROBE_OPTIMIZER_STATE"
+MSPROBE_FINAL_NORM_STATE_ENV = "GLM5_MSPROBE_FINAL_NORM_STATE"
 SCHEMA = "torchtitan.glm5_2.msprobe_tensorboard"
 SCHEMA_VERSION = 2
 
@@ -60,6 +61,24 @@ def adamw_update_components(
     adaptive = -(lr / bias_correction1) * exp_avg.float() / denominator
     decay = -lr * weight_decay * initial_parameter.float()
     return adaptive, decay, adaptive + decay
+
+
+def reconstruct_rmsnorm_weight_gradient(
+    norm_output: Any,
+    grad_output: Any,
+    weight: Any,
+) -> Any:
+    """Reconstruct an RMSNorm weight gradient from its output boundary."""
+
+    if norm_output.shape != grad_output.shape:
+        raise ValueError(
+            "RMSNorm output and output gradient must have identical shapes"
+        )
+    if norm_output.ndim < 1 or tuple(weight.shape) != (norm_output.shape[-1],):
+        raise ValueError("RMSNorm weight must match the output feature dimension")
+    normalized = norm_output.float() / weight.float()
+    reduction_dims = tuple(range(norm_output.ndim - 1))
+    return (normalized * grad_output.float()).sum(dim=reduction_dims)
 
 
 @dataclass(frozen=True)
@@ -128,6 +147,7 @@ class MsprobeCaptureConfig:
     parameter_state: bool = False
     router_state: bool = False
     optimizer_state: bool = False
+    final_norm_state: bool = False
 
     def __post_init__(self) -> None:
         if not self.steps or any(step < 0 for step in self.steps):
@@ -167,6 +187,12 @@ class MsprobeCaptureConfig:
         if self.optimizer_state and not self.parameter_state:
             raise ValueError(
                 "optimizer-state capture requires parameter-state capture"
+            )
+        if self.final_norm_state and (
+            self.task != "tensor" or self.level != "debug"
+        ):
+            raise ValueError(
+                "final-norm-state capture requires msProbe task=tensor and level=debug"
             )
 
     def payload(self, dump_path: str | Path) -> dict[str, Any]:
@@ -511,6 +537,153 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                     f"block_{block_index:02d}_{boundary}",
                     save_backward=False,
                 )
+
+    def install_final_norm_state_hooks(trainer: Any) -> None:
+        instance_marker = "_glm5_msprobe_final_norm_state_handles"
+        if hasattr(trainer, instance_marker):
+            return
+
+        import torch
+
+        handles = []
+        discovered = 0
+        buffers: dict[str, list[Any]] = {"input": [], "output": []}
+        gradient_buffers: dict[int, Any] = {}
+        setattr(trainer, "_glm5_msprobe_final_norm_state_buffers", buffers)
+        setattr(
+            trainer,
+            "_glm5_msprobe_final_norm_state_gradient_buffers",
+            gradient_buffers,
+        )
+
+        for model_part in trainer.model_parts:
+            for module_name, module in model_part.named_modules():
+                if re.search(r"(?:^|\.)norm$", module_name) is None:
+                    continue
+                if not hasattr(module, "weight"):
+                    continue
+                discovered += 1
+
+                def capture_final_norm(
+                    _module: Any,
+                    args: tuple[Any, ...],
+                    output: Any,
+                ) -> None:
+                    if not args:
+                        raise RuntimeError("GLM5 final norm has no positional input")
+                    if not isinstance(output, torch.Tensor) or not output.requires_grad:
+                        raise RuntimeError(
+                            "GLM5 final norm output must be a differentiable tensor"
+                        )
+                    invocation = len(buffers["output"])
+                    buffers["input"].append(logical_tensor(args[0]).clone())
+                    buffers["output"].append(logical_tensor(output).clone())
+
+                    def capture_gradient(gradient: Any, *, call: int = invocation) -> Any:
+                        gradient_buffers[call] = logical_tensor(gradient).clone()
+                        return gradient
+
+                    output.register_hook(capture_gradient)
+
+                handles.append(module.register_forward_hook(capture_final_norm))
+
+        if discovered > 1:
+            raise RuntimeError(f"found {discovered} GLM5 final norms on one stage")
+        if discovered == 0 and getattr(trainer.parallel_dims, "pp", 1) == 1:
+            raise RuntimeError("no GLM5 final norm found for msProbe capture")
+        setattr(trainer, instance_marker, tuple(handles))
+
+    def clear_final_norm_state_buffers(trainer: Any) -> None:
+        getattr(trainer, "_glm5_msprobe_final_norm_state_buffers")["input"].clear()
+        getattr(trainer, "_glm5_msprobe_final_norm_state_buffers")["output"].clear()
+        getattr(
+            trainer,
+            "_glm5_msprobe_final_norm_state_gradient_buffers",
+        ).clear()
+
+    def final_norm_target(trainer: Any) -> dict[str, Any]:
+        matches = {
+            name: parameter
+            for name, parameter in named_trainable_parameters(trainer).items()
+            if name == "norm.weight" or name.endswith(".norm.weight")
+        }
+        if len(matches) > 1:
+            raise RuntimeError(
+                f"found multiple final norm parameters: {sorted(matches)}"
+            )
+        if not matches and getattr(trainer.parallel_dims, "pp", 1) == 1:
+            raise RuntimeError("no final norm parameter found for msProbe capture")
+        return matches
+
+    def save_final_norm_state(trainer: Any, capture: dict[str, Any] | None) -> None:
+        if capture is None:
+            return
+        if not capture.get("clip_called"):
+            raise RuntimeError("final norm diagnostic did not observe gradient clipping")
+
+        buffers = getattr(trainer, "_glm5_msprobe_final_norm_state_buffers")
+        gradient_buffers = getattr(
+            trainer,
+            "_glm5_msprobe_final_norm_state_gradient_buffers",
+        )
+        output_chunks = buffers["output"]
+        if not output_chunks:
+            raise RuntimeError("GLM5 final norm captured no tensors")
+
+        data_parallel_size = (
+            trainer.parallel_dims.dp_replicate * trainer.parallel_dims.dp_shard
+        )
+        expected_local_rows = (
+            trainer.config.training.global_batch_size // data_parallel_size
+        )
+        chunk_rows = output_chunks[0].shape[0]
+        expected_calls = expected_local_rows // chunk_rows
+        extra_calls = len(output_chunks) - expected_calls
+        expected_indexes = range(extra_calls, len(output_chunks))
+        missing = [index for index in expected_indexes if index not in gradient_buffers]
+        if missing:
+            raise RuntimeError(
+                f"GLM5 final norm output gradient is missing calls {missing}"
+            )
+
+        final_input = global_step_tensor(
+            trainer,
+            buffers["input"],
+            allow_leading_extra=True,
+        )
+        final_output = global_step_tensor(
+            trainer,
+            output_chunks,
+            allow_leading_extra=True,
+        )
+        final_grad_output = global_step_tensor(
+            trainer,
+            [gradient_buffers[index] for index in expected_indexes],
+            allow_leading_extra=False,
+        )
+        initial_weight = capture["initial_weight"]
+        reconstructed = reconstruct_rmsnorm_weight_gradient(
+            final_output,
+            final_grad_output,
+            initial_weight,
+        )
+        preclip = next(iter(capture["preclip_grad"].values())).float()
+        postclip = next(iter(capture["postclip_grad"].values())).float()
+
+        if stage_dump_owner(trainer):
+            values = {
+                "final_norm_input": final_input,
+                "final_norm_output": final_output,
+                "final_norm_grad_output": final_grad_output,
+                "final_norm_boundary_reconstructed_grad_fp32": reconstructed,
+                "final_norm_parameter_preclip_grad": preclip,
+                "final_norm_parameter_postclip_grad": postclip,
+                "final_norm_preclip_minus_boundary_reconstructed_fp32": (
+                    preclip - reconstructed
+                ),
+            }
+            for name, value in values.items():
+                debugger.save(value, name, save_backward=False)
 
     def install_router_state_hooks(trainer: Any) -> None:
         instance_marker = "_glm5_msprobe_router_state_handles"
@@ -978,10 +1151,15 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
         if os.environ.get(MSPROBE_ROUTER_STATE_ENV) == "1":
             install_router_state_hooks(self)
             clear_router_state_buffers(self)
+        if os.environ.get(MSPROBE_FINAL_NORM_STATE_ENV) == "1":
+            install_final_norm_state_hooks(self)
+            clear_final_norm_state_buffers(self)
         initial_parameters = None
         if os.environ.get(MSPROBE_PARAMETER_STATE_ENV) == "1":
             initial_parameters = snapshot_trainable_parameters(self)
         optimizer_capture = None
+        final_norm_capture = None
+        clip_captures: list[dict[str, Any]] = []
         distributed_utils = None
         original_clip_grad_norm = None
         if os.environ.get(MSPROBE_OPTIMIZER_STATE_ENV) == "1":
@@ -997,6 +1175,21 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 "hyperparameters": optimizer_group_hyperparameters(self, targets),
                 "clip_called": False,
             }
+            clip_captures.append(optimizer_capture)
+        if os.environ.get(MSPROBE_FINAL_NORM_STATE_ENV) == "1":
+            targets = final_norm_target(self)
+            if targets:
+                final_norm_capture = {
+                    "targets": targets,
+                    "initial_weight": logical_tensor(
+                        next(iter(targets.values()))
+                    ).clone(),
+                    "clip_called": False,
+                }
+                clip_captures.append(final_norm_capture)
+        if clip_captures:
+            from torchtitan.distributed import utils as distributed_utils
+
             original_clip_grad_norm = distributed_utils.clip_grad_norm_
 
             @wraps(original_clip_grad_norm)
@@ -1008,36 +1201,38 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
             ) -> Any:
                 import torch
 
-                if optimizer_capture["clip_called"]:
+                if any(capture["clip_called"] for capture in clip_captures):
                     raise RuntimeError(
-                        "optimizer diagnostic observed multiple clipping calls"
+                        "gradient diagnostic observed multiple clipping calls"
                     )
-                preclip = {}
-                for name, parameter in targets.items():
-                    if parameter.grad is None:
-                        raise RuntimeError(f"missing pre-clip gradient for {name}")
-                    preclip[name] = logical_tensor(parameter.grad).clone()
+                for capture in clip_captures:
+                    preclip = {}
+                    for name, parameter in capture["targets"].items():
+                        if parameter.grad is None:
+                            raise RuntimeError(f"missing pre-clip gradient for {name}")
+                        preclip[name] = logical_tensor(parameter.grad).clone()
+                    capture["preclip_grad"] = preclip
                 total_norm = original_clip_grad_norm(
                     parameters,
                     max_norm,
                     *clip_args,
                     **clip_kwargs,
                 )
-                postclip = {}
-                for name, parameter in targets.items():
-                    if parameter.grad is None:
-                        raise RuntimeError(f"missing post-clip gradient for {name}")
-                    postclip[name] = logical_tensor(parameter.grad).clone()
                 logical_norm = logical_tensor(total_norm).float().reshape(1)
                 coefficient = (float(max_norm) / (logical_norm + 1e-6)).clamp(max=1.0)
-                optimizer_capture.update(
-                    {
-                        "preclip_grad": preclip,
-                        "postclip_grad": postclip,
-                        "clip_stats": torch.cat((logical_norm, coefficient)),
-                        "clip_called": True,
-                    }
-                )
+                for capture in clip_captures:
+                    postclip = {}
+                    for name, parameter in capture["targets"].items():
+                        if parameter.grad is None:
+                            raise RuntimeError(f"missing post-clip gradient for {name}")
+                        postclip[name] = logical_tensor(parameter.grad).clone()
+                    capture.update(
+                        {
+                            "postclip_grad": postclip,
+                            "clip_stats": torch.cat((logical_norm, coefficient)),
+                            "clip_called": True,
+                        }
+                    )
                 return total_norm
 
             distributed_utils.clip_grad_norm_ = capture_clip_grad_norm
@@ -1056,6 +1251,7 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 save_parameter_state(self, initial_parameters)
             if optimizer_capture is not None:
                 save_optimizer_state(self, initial_parameters, optimizer_capture)
+            save_final_norm_state(self, final_norm_capture)
             return result
         finally:
             try:

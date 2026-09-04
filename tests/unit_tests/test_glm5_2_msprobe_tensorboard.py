@@ -15,6 +15,7 @@ from tests.glm5_2_precision.msprobe_tensorboard import (
     adamw_update_components,
     build_tensorboard_assets,
     install_trainer_capture,
+    reconstruct_rmsnorm_weight_gradient,
     tensorboard_command,
     validate_debug_dump_directory,
     write_capture_config,
@@ -56,6 +57,7 @@ def test_block_boundary_capture_uses_public_debug_tensor_mode(tmp_path: Path) ->
         parameter_state=True,
         router_state=True,
         optimizer_state=True,
+        final_norm_state=True,
     )
     payload = config.payload(tmp_path / "dump")
 
@@ -67,6 +69,7 @@ def test_block_boundary_capture_uses_public_debug_tensor_mode(tmp_path: Path) ->
     assert "parameter_state" not in payload
     assert "router_state" not in payload
     assert "optimizer_state" not in payload
+    assert "final_norm_state" not in payload
 
     with pytest.raises(ValueError, match="task=tensor and level=debug"):
         MsprobeCaptureConfig(block_boundaries=True)
@@ -80,6 +83,8 @@ def test_block_boundary_capture_uses_public_debug_tensor_mode(tmp_path: Path) ->
         MsprobeCaptureConfig(router_state=True)
     with pytest.raises(ValueError, match="requires parameter-state capture"):
         MsprobeCaptureConfig(task="tensor", level="debug", optimizer_state=True)
+    with pytest.raises(ValueError, match="task=tensor and level=debug"):
+        MsprobeCaptureConfig(final_norm_state=True)
 
 
 def test_adamw_update_components_reconstruct_first_step() -> None:
@@ -103,6 +108,27 @@ def test_adamw_update_components_reconstruct_first_step() -> None:
     torch.testing.assert_close(adaptive, torch.tensor([-0.01, 0.01]))
     torch.testing.assert_close(decay, torch.tensor([-0.002, 0.004]))
     torch.testing.assert_close(combined, torch.tensor([-0.012, 0.014]))
+
+
+def test_reconstruct_rmsnorm_weight_gradient_from_output_boundary() -> None:
+    torch = pytest.importorskip("torch")
+    normalized = torch.tensor(
+        [[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]
+    )
+    weight = torch.tensor([2.0, 4.0])
+    norm_output = normalized * weight
+    grad_output = torch.tensor(
+        [[[0.5, 1.0], [1.5, 2.0]], [[2.5, 3.0], [3.5, 4.0]]]
+    )
+
+    actual = reconstruct_rmsnorm_weight_gradient(
+        norm_output,
+        grad_output,
+        weight,
+    )
+
+    expected = (normalized * grad_output).sum(dim=(0, 1))
+    torch.testing.assert_close(actual, expected)
 
 
 def test_debug_dump_validation_requires_saved_data(tmp_path: Path) -> None:
