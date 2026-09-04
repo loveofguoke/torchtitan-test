@@ -327,6 +327,7 @@ def test_canonical_eight_card_topologies_are_available() -> None:
     assert TOPOLOGIES["fsdp2-pp4"].pipeline_parallel_schedule == "GPipe"
     assert TOPOLOGIES["ddp2-pp4"].data_parallel_replicate_degree == 2
     assert TOPOLOGIES["ddp2-pp4"].pipeline_parallel_schedule == "GPipe"
+    assert TOPOLOGIES["pp2-fsdp2-mb2"].pipeline_parallel_microbatch_size == 2
 
 
 def _resumable_config(root: Path) -> FormalExperimentConfig:

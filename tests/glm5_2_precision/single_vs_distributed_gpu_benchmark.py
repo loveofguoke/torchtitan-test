@@ -66,6 +66,13 @@ TOPOLOGIES = {
         data_parallel_shard_degree=2,
         pipeline_parallel_degree=2,
     ),
+    "pp2-fsdp2-mb2": ParallelTopology(
+        "pp2-fsdp2-mb2",
+        4,
+        data_parallel_shard_degree=2,
+        pipeline_parallel_degree=2,
+        pipeline_parallel_microbatch_size=2,
+    ),
     "ddp2-pp4": ParallelTopology(
         "ddp2-pp4-gpipe",
         8,
