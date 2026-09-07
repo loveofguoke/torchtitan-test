@@ -33,6 +33,7 @@ from .msprobe_tensorboard import (
     MSPROBE_FINAL_NORM_PRE_REDUCE_SYNC_ENV,
     MSPROBE_FINAL_NORM_SHARDED_GRAD_ALL_REDUCE_ENV,
     MSPROBE_FINAL_NORM_NATIVE_LAST_BACKWARD_SYNC_ENV,
+    MSPROBE_FINAL_NORM_RESET_GROUP_FORWARD_STATE_ENV,
     MSPROBE_FINAL_NORM_STATE_ENV,
     MSPROBE_PARAMETER_STATE_ENV,
     MSPROBE_ROUTER_STATE_ENV,
@@ -1138,6 +1139,8 @@ def capture_msprobe_endpoint(
         environment[MSPROBE_FINAL_NORM_SHARDED_GRAD_ALL_REDUCE_ENV] = "1"
     if capture_config.final_norm_native_last_backward_sync:
         environment[MSPROBE_FINAL_NORM_NATIVE_LAST_BACKWARD_SYNC_ENV] = "1"
+    if capture_config.final_norm_reset_group_forward_state:
+        environment[MSPROBE_FINAL_NORM_RESET_GROUP_FORWARD_STATE_ENV] = "1"
     if config.training.fixed_global_batches:
         from .fixed_batches import FIXED_BATCHES_ENV
 
@@ -1400,6 +1403,11 @@ def run_formal_cli(
         help="use native FSDP sync semantics for the last PP microbatch backward",
     )
     parser.add_argument(
+        "--msprobe-final-norm-reset-group-forward-state",
+        action="store_true",
+        help="reset grouped FSDP forward tracking before the next PP microbatch",
+    )
+    parser.add_argument(
         "--serve-tensorboard",
         action="store_true",
         help="serve the generated visualization after --visualize-msprobe",
@@ -1430,6 +1438,7 @@ def run_formal_cli(
         args.msprobe_final_norm_pre_reduce_sync,
         args.msprobe_final_norm_sharded_grad_all_reduce,
         args.msprobe_final_norm_native_last_backward_sync,
+        args.msprobe_final_norm_reset_group_forward_state,
     )
     if any(msprobe_capture_options) and not args.capture_msprobe:
         parser.error("msProbe capture options require --capture-msprobe")
@@ -1540,6 +1549,9 @@ def run_formal_cli(
                 ),
                 final_norm_native_last_backward_sync=(
                     args.msprobe_final_norm_native_last_backward_sync
+                ),
+                final_norm_reset_group_forward_state=(
+                    args.msprobe_final_norm_reset_group_forward_state
                 ),
             ),
             force=args.force,

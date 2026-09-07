@@ -41,6 +41,9 @@ MSPROBE_FINAL_NORM_SHARDED_GRAD_ALL_REDUCE_ENV = (
 MSPROBE_FINAL_NORM_NATIVE_LAST_BACKWARD_SYNC_ENV = (
     "GLM5_MSPROBE_FINAL_NORM_NATIVE_LAST_BACKWARD_SYNC"
 )
+MSPROBE_FINAL_NORM_RESET_GROUP_FORWARD_STATE_ENV = (
+    "GLM5_MSPROBE_FINAL_NORM_RESET_GROUP_FORWARD_STATE"
+)
 SCHEMA = "torchtitan.glm5_2.msprobe_tensorboard"
 SCHEMA_VERSION = 2
 
@@ -181,6 +184,7 @@ class MsprobeCaptureConfig:
     final_norm_pre_reduce_sync: bool = False
     final_norm_sharded_grad_all_reduce: bool = False
     final_norm_native_last_backward_sync: bool = False
+    final_norm_reset_group_forward_state: bool = False
 
     def __post_init__(self) -> None:
         if not self.steps or any(step < 0 for step in self.steps):
@@ -248,6 +252,14 @@ class MsprobeCaptureConfig:
         ):
             raise ValueError(
                 "final-norm native last-backward sync requires "
+                "reduce-transition capture"
+            )
+        if (
+            self.final_norm_reset_group_forward_state
+            and not self.final_norm_reduce_transition
+        ):
+            raise ValueError(
+                "final-norm group forward-state reset requires "
                 "reduce-transition capture"
             )
 
@@ -853,6 +865,15 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
             )
             debugger.save(
                 torch.tensor(
+                    [float(capture["forced_reset_group_forward_state"])],
+                    dtype=torch.float32,
+                    device=final_output.device,
+                ),
+                "final_norm_forced_reset_group_forward_state",
+                save_backward=False,
+            )
+            debugger.save(
+                torch.tensor(
                     buffers["weight_local_numel"],
                     dtype=torch.float32,
                     device=final_output.device,
@@ -974,6 +995,12 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 ),
                 "forced_native_last_backward_sync": (
                     os.environ.get(MSPROBE_FINAL_NORM_NATIVE_LAST_BACKWARD_SYNC_ENV)
+                    == "1"
+                ),
+                "forced_reset_group_forward_state": (
+                    os.environ.get(
+                        MSPROBE_FINAL_NORM_RESET_GROUP_FORWARD_STATE_ENV
+                    )
                     == "1"
                 ),
                 "fsdp_internal_after_backward": [],
@@ -1296,6 +1323,15 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 _install: Any = install_group_lifecycle_hooks,
                 **forward_kwargs: Any,
             ) -> Any:
+                if (
+                    capture["forced_reset_group_forward_state"]
+                    and group_hook_state["target_group"] is not None
+                ):
+                    owner_state = group_hook_state["owner_state"]
+                    root_state = group_hook_state["root_state"]
+                    owner_state._modules_to_run_forward.clear()
+                    if root_state._state_ctx.iter_forward_root is owner_state:
+                        root_state._state_ctx.iter_forward_root = None
                 record_lifecycle_marker(
                     FSDP_LIFECYCLE_EVENT_CODES["stage_forward_begin"],
                     group_hook_state,
