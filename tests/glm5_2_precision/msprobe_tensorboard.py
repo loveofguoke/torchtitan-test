@@ -38,6 +38,9 @@ MSPROBE_FINAL_NORM_PRE_REDUCE_SYNC_ENV = (
 MSPROBE_FINAL_NORM_SHARDED_GRAD_ALL_REDUCE_ENV = (
     "GLM5_MSPROBE_FINAL_NORM_SHARDED_GRAD_ALL_REDUCE"
 )
+MSPROBE_FINAL_NORM_NATIVE_LAST_BACKWARD_SYNC_ENV = (
+    "GLM5_MSPROBE_FINAL_NORM_NATIVE_LAST_BACKWARD_SYNC"
+)
 SCHEMA = "torchtitan.glm5_2.msprobe_tensorboard"
 SCHEMA_VERSION = 2
 
@@ -160,6 +163,7 @@ class MsprobeCaptureConfig:
     final_norm_reduce_transition: bool = False
     final_norm_pre_reduce_sync: bool = False
     final_norm_sharded_grad_all_reduce: bool = False
+    final_norm_native_last_backward_sync: bool = False
 
     def __post_init__(self) -> None:
         if not self.steps or any(step < 0 for step in self.steps):
@@ -220,6 +224,14 @@ class MsprobeCaptureConfig:
         ):
             raise ValueError(
                 "final-norm sharded-grad all-reduce requires reduce-transition capture"
+            )
+        if (
+            self.final_norm_native_last_backward_sync
+            and not self.final_norm_reduce_transition
+        ):
+            raise ValueError(
+                "final-norm native last-backward sync requires "
+                "reduce-transition capture"
             )
 
     def payload(self, dump_path: str | Path) -> dict[str, Any]:
@@ -795,6 +807,15 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 "final_norm_forced_sharded_grad_all_reduce",
                 save_backward=False,
             )
+            debugger.save(
+                torch.tensor(
+                    [float(capture["forced_native_last_backward_sync"])],
+                    dtype=torch.float32,
+                    device=final_output.device,
+                ),
+                "final_norm_forced_native_last_backward_sync",
+                save_backward=False,
+            )
             internal_boundaries = (
                 *capture["fsdp_internal_after_backward"],
                 capture["fsdp_internal_before_reduce"],
@@ -878,6 +899,10 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 ),
                 "forced_sharded_grad_all_reduce": (
                     os.environ.get(MSPROBE_FINAL_NORM_SHARDED_GRAD_ALL_REDUCE_ENV)
+                    == "1"
+                ),
+                "forced_native_last_backward_sync": (
+                    os.environ.get(MSPROBE_FINAL_NORM_NATIVE_LAST_BACKWARD_SYNC_ENV)
                     == "1"
                 ),
                 "fsdp_internal_after_backward": [],
@@ -996,6 +1021,36 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 group=fsdp_param.mesh_info.shard_process_group,
             )
 
+        def run_backward_with_native_last_sync(
+            stage: Any,
+            original: Any,
+            backward_args: tuple[Any, ...],
+            backward_kwargs: dict[str, Any],
+        ) -> Any:
+            method_names = (
+                "set_is_last_backward",
+                "set_reshard_after_backward",
+                "set_requires_gradient_sync",
+            )
+            originals = {
+                name: getattr(stage.submod, name)
+                for name in method_names
+            }
+            try:
+                for name, setter in originals.items():
+                    def force_true(
+                        *unused_args: Any,
+                        _setter: Any = setter,
+                        **setter_kwargs: Any,
+                    ) -> Any:
+                        return _setter(True, **setter_kwargs)
+
+                    setattr(stage.submod, name, force_true)
+                return original(*backward_args, **backward_kwargs)
+            finally:
+                for name, setter in originals.items():
+                    setattr(stage.submod, name, setter)
+
         for stage in stages:
             original_backward = stage.backward_maybe_with_nosync
             original_reduce = stage.perform_reduce_grad
@@ -1012,7 +1067,15 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                     last_backward = backward_args[2]
                 if last_backward is None:
                     last_backward = False
-                result = _original(*backward_args, **backward_kwargs)
+                if capture["forced_native_last_backward_sync"] and last_backward:
+                    result = run_backward_with_native_last_sync(
+                        _stage,
+                        _original,
+                        backward_args,
+                        backward_kwargs,
+                    )
+                else:
+                    result = _original(*backward_args, **backward_kwargs)
                 capture["after_backward"].append(snapshot_local_gradient())
                 capture["backward_last_flags"].append(float(bool(last_backward)))
                 capture["reduce_enabled_after_backward"].append(

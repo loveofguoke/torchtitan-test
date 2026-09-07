@@ -105,6 +105,13 @@ def test_block_boundary_capture_uses_public_debug_tensor_mode(tmp_path: Path) ->
             final_norm_state=True,
             final_norm_sharded_grad_all_reduce=True,
         )
+    with pytest.raises(ValueError, match="requires reduce-transition capture"):
+        MsprobeCaptureConfig(
+            task="tensor",
+            level="debug",
+            final_norm_state=True,
+            final_norm_native_last_backward_sync=True,
+        )
     transition = MsprobeCaptureConfig(
         task="tensor",
         level="debug",
@@ -112,10 +119,12 @@ def test_block_boundary_capture_uses_public_debug_tensor_mode(tmp_path: Path) ->
         final_norm_reduce_transition=True,
         final_norm_pre_reduce_sync=True,
         final_norm_sharded_grad_all_reduce=True,
+        final_norm_native_last_backward_sync=True,
     )
     assert transition.final_norm_reduce_transition
     assert transition.final_norm_pre_reduce_sync
     assert transition.final_norm_sharded_grad_all_reduce
+    assert transition.final_norm_native_last_backward_sync
 
 
 def test_adamw_update_components_reconstruct_first_step() -> None:
