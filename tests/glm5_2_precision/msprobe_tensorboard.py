@@ -775,6 +775,29 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 "final_norm_forced_pre_reduce_sync",
                 save_backward=False,
             )
+            internal_boundaries = (
+                *capture["fsdp_internal_after_backward"],
+                capture["fsdp_internal_before_reduce"],
+                capture["fsdp_internal_after_reduce"],
+            )
+            for source in ("unsharded_accumulated", "unsharded_direct"):
+                source_values = [boundary[source] for boundary in internal_boundaries]
+                debugger.save(
+                    torch.tensor(
+                        [float(value is not None) for value in source_values],
+                        dtype=torch.float32,
+                        device=final_output.device,
+                    ),
+                    f"final_norm_fsdp_{source}_presence",
+                    save_backward=False,
+                )
+                for index, value in enumerate(source_values):
+                    if value is not None:
+                        debugger.save(
+                            value.float(),
+                            f"final_norm_fsdp_{source}_{index}",
+                            save_backward=False,
+                        )
             for microbatch, index in enumerate(expected_indexes):
                 reconstructed_microbatch = reconstruct_rmsnorm_weight_gradient(
                     output_chunks[index],
@@ -833,29 +856,34 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 "forced_pre_reduce_sync": (
                     os.environ.get(MSPROBE_FINAL_NORM_PRE_REDUCE_SYNC_ENV) == "1"
                 ),
+                "fsdp_internal_after_backward": [],
+                "fsdp_internal_before_reduce": None,
+                "fsdp_internal_after_reduce": None,
             }
         )
         originals = []
 
-        def snapshot_local_gradient() -> Any | None:
+        def snapshot_tensor(value: Any | None) -> Any | None:
             import torch
 
-            gradient = parameter.grad
-            if gradient is None:
+            if value is None:
                 return None
             try:
                 from torch.distributed.tensor import DTensor
             except ImportError:  # pragma: no cover - older PyTorch compatibility
                 DTensor = ()
-            if isinstance(gradient, DTensor):
-                gradient = gradient.to_local()
-            if type(gradient).__name__ == "AsyncCollectiveTensor":
+            if isinstance(value, DTensor):
+                value = value.to_local()
+            if type(value).__name__ == "AsyncCollectiveTensor":
                 from torch.distributed._functional_collectives import wait_tensor
 
-                gradient = wait_tensor(gradient)
-            if not isinstance(gradient, torch.Tensor):
+                value = wait_tensor(value)
+            if not isinstance(value, torch.Tensor):
                 raise RuntimeError("final norm rank-local gradient is not a tensor")
-            return gradient.detach().clone()
+            return value.detach().clone()
+
+        def snapshot_local_gradient() -> Any | None:
+            return snapshot_tensor(parameter.grad)
 
         def fsdp_reduce_enabled(stage: Any) -> bool:
             from torch.distributed.fsdp import fully_shard
@@ -872,6 +900,52 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                     f"{sorted(values)}"
                 )
             return values.pop()
+
+        def find_target_fsdp_param(stage: Any) -> Any:
+            from torch.distributed.fsdp import fully_shard
+
+            distributed_state = fully_shard.state(stage.submod)
+            fsdp_params = [
+                fsdp_param
+                for state in distributed_state._state_ctx.all_states
+                for group in state._fsdp_param_groups
+                for fsdp_param in group.fsdp_params
+            ]
+            identity_matches = [
+                fsdp_param
+                for fsdp_param in fsdp_params
+                if fsdp_param.sharded_param is parameter
+            ]
+            if len(identity_matches) == 1:
+                return identity_matches[0]
+            target_name = next(iter(capture["targets"]))
+            name_matches = [
+                fsdp_param
+                for fsdp_param in fsdp_params
+                if fsdp_param._param_fqn == target_name
+                or (
+                    fsdp_param._param_fqn is not None
+                    and target_name.endswith(fsdp_param._param_fqn)
+                )
+            ]
+            if len(name_matches) != 1:
+                raise RuntimeError(
+                    "could not uniquely resolve final norm FSDP parameter: "
+                    f"identity={len(identity_matches)}, name={len(name_matches)}"
+                )
+            return name_matches[0]
+
+        def snapshot_fsdp_internal(stage: Any) -> dict[str, Any | None]:
+            fsdp_param = find_target_fsdp_param(stage)
+            unsharded_param = getattr(fsdp_param, "_unsharded_param", None)
+            return {
+                "unsharded_accumulated": snapshot_tensor(
+                    fsdp_param.unsharded_accumulated_grad
+                ),
+                "unsharded_direct": snapshot_tensor(
+                    None if unsharded_param is None else unsharded_param.grad
+                ),
+            }
 
         for stage in stages:
             original_backward = stage.backward_maybe_with_nosync
@@ -895,6 +969,9 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 capture["reduce_enabled_after_backward"].append(
                     float(fsdp_reduce_enabled(_stage))
                 )
+                capture["fsdp_internal_after_backward"].append(
+                    snapshot_fsdp_internal(_stage)
+                )
                 return result
 
             @wraps(original_reduce)
@@ -911,6 +988,9 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 capture["reduce_enabled_before_reduce"] = float(
                     fsdp_reduce_enabled(_stage)
                 )
+                capture["fsdp_internal_before_reduce"] = snapshot_fsdp_internal(
+                    _stage
+                )
                 if capture["forced_pre_reduce_sync"]:
                     import torch
 
@@ -919,6 +999,9 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 capture["after_reduce"] = snapshot_local_gradient()
                 capture["reduce_enabled_after_reduce"] = float(
                     fsdp_reduce_enabled(_stage)
+                )
+                capture["fsdp_internal_after_reduce"] = snapshot_fsdp_internal(
+                    _stage
                 )
                 return result
 
