@@ -79,6 +79,30 @@ second microbatch's computation. All three observed final-norm invocations
 occur outside an autograd graph task, so the 128-element call is not activation
 checkpoint backward recomputation.
 
+The enclosing-state trace identifies why the target pre-forward hook is
+skipped. TorchTitan places `model.norm` and `model.lm_head` in one grouped FSDP
+unit, but `ChunkedLossWrapper` sets `_skip_lm_head=True`: the stage model
+forward runs the norm and returns, then the loss wrapper invokes the LM head
+separately. PyTorch's grouped FSDP forward hooks keep the group open until both
+members have run. At the second `STAGE F begin`, the owner and group training
+states are already `IDLE` and the parameter is `SHARDED`/128, but
+`iter_forward_root` still points to the grouped owner. At `FINAL NORM begin`,
+the root state changes to `FORWARD` while the group itself remains `IDLE`; no
+target-group pre-forward or unshard event is issued. The delayed grouped hook
+therefore spans pipeline schedule actions instead of enclosing one coherent
+forward.
+
+A test-only state-reset ablation closes this causal chain. Immediately before
+the affected stage forward, the probe clears the grouped unit's stale
+`_modules_to_run_forward` tracking and its matching `iter_forward_root`, then
+allows the standard FSDP hooks to run. The three observed final-norm weight
+sizes become `[256, 256, 256]` (initialization probe plus two real
+microbatches), both microbatch contributions enter
+`unsharded_accumulated_grad`, and the final parameter gradient aligns with the
+single-card reconstruction: cosine 0.9999991, L2 residual 1.44015e-4, and
+maximum absolute residual 3.8838e-5. This is mechanism validation, not a
+production fix.
+
 Three diagnostic ablations further constrain the mechanism:
 
 - Synchronizing the NPU immediately before `perform_reduce_grad()` produces a
@@ -95,10 +119,9 @@ Three diagnostic ablations further constrain the mechanism:
 
 - It is not established that the defect is NPU-specific.
 - It is not established that the defect is backend-independent.
-- It is not yet established which enclosing FSDP state's training-state
-  transition causes the target parameter group's pre-forward materialization
-  to occur after the second stage forward, or whether the same lifecycle occurs
-  on GPU.
+- It is not yet established whether the same grouped-FSDP lifecycle occurs on
+  GPU. The tested NPU mechanism is confirmed, but backend attribution remains
+  unresolved.
 - The exact FSDP2-PP2 mechanism above must not yet be generalized to the DDP+PP
   result without an equivalent parameter-lifecycle trace.
 - MindStudio's native result column reports these saved tensors as `pass`; the

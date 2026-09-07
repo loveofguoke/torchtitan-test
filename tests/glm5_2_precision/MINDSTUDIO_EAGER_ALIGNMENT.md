@@ -542,13 +542,29 @@ occurs before the final norm executes. Its all-gather and transition back to
 is a normal forward, not an activation-checkpoint recomputation inside an
 autograd backward graph task.
 
+The enclosing FSDP-state trace resolves the missing-rematerialization cause.
+TorchTitan groups `model.norm` and `model.lm_head` into one FSDP unit, while
+`ChunkedLossWrapper` sets `_skip_lm_head=True`, runs the stage model through
+the norm, and invokes the LM head later outside that stage forward. PyTorch's
+grouped forward hooks wait for both members before closing the group. At the
+second `STAGE F begin`, the owner/group states are `IDLE` and the parameter is
+`SHARDED`/128, but `iter_forward_root` still names the grouped owner. The final
+norm then executes without a target-group pre-forward/unshard because grouped
+forward tracking has crossed pipeline schedule actions.
+
+A test-only reset of the stale grouped-module tracking immediately before that
+forward makes all three observed final-norm weight sizes `[256, 256, 256]`.
+The second microbatch is then accumulated into
+`unsharded_accumulated_grad`, and the post-reduction parameter gradient matches
+the single-card boundary reconstruction within the normal BF16 residual:
+cosine 0.9999991, L2 1.44015e-4, and maximum absolute error 3.8838e-5. This
+controlled ablation confirms the causal chain but is not a production fix.
+
 A device synchronization immediately before reduction and native FSDP sync on
 the final microbatch both leave the divergent tensor bitwise unchanged. A
 direct all-reduce of the already sharded gradients is also invalid because the
-two ranks' local tensors represent different parameter coordinates. The
-remaining implementation question is why the second forward is not
-rematerialized to an unsharded weight. Backend attribution remains unresolved
-until the matched GPU trace is available.
+two ranks' local tensors represent different parameter coordinates. Backend
+attribution remains unresolved until the matched GPU trace is available.
 
 In this runtime, both TorchTitan DDP replication and FSDP sharding are
 composable `FSDPModule` variants inside the pipeline stage. PyTorch's
