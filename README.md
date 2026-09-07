@@ -279,6 +279,7 @@ Release CLI parameters:
 | `upload --content` | `analysis` keeps processed results and compact evidence; `full` preserves every matched file for lossless resume/re-analysis. | `full` |
 | `download <experiment>` | Download, verify, and restore one release archive. | required download action |
 | `download --backend` | `gh` or trusted-network `wget`. | `gh` |
+| `download --insecure` | Explicitly disable TLS certificate verification for wget only. | disabled |
 | `download --destination PATH` | Root below which repository-relative paths are restored. | current directory |
 | `download --overwrite` | Permit archive files to replace existing local files. | disabled |
 
@@ -304,7 +305,10 @@ backends also verify the downloaded archive against its release SHA-256 asset,
 extract it into the original repository-relative directories, and remove the
 temporary archive and checksum file automatically. Certificate failures must
 be fixed through the machine trust store or proxy configuration, not by
-silently disabling verification.
+silently disabling verification. If temporarily accepting this risk in a trusted
+network, use `download <experiment-id> --backend wget --insecure`. This applies
+only to that command; SHA-256 validation remains enabled but does not replace
+TLS server authentication.
 
 The download refuses to replace existing files by default. Add `--overwrite`
 only when the local copies are intentionally being refreshed. Use

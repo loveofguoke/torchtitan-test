@@ -17,6 +17,30 @@ from release_artifacts import (
 
 
 class TestReleaseArtifacts(unittest.TestCase):
+    def test_wget_insecure_is_explicit(self) -> None:
+        from release_artifacts import build_parser, download_assets_with_wget, download
+
+        args = build_parser().parse_args([
+            "download", "experiment", "--backend", "wget", "--insecure",
+        ])
+        self.assertTrue(args.insecure)
+        with (
+            mock.patch("release_artifacts.shutil.which", return_value="wget"),
+            mock.patch("release_artifacts.subprocess.run") as run,
+        ):
+            download_assets_with_wget(
+                repository="owner/repo", experiment="experiment",
+                archive_name="experiment.tar.gz",
+                checksum_name="experiment.tar.gz.sha256",
+                download_dir=Path("."), insecure=args.insecure,
+            )
+        self.assertEqual(run.call_count, 2)
+        for call in run.call_args_list:
+            self.assertIn("--no-check-certificate", call.args[0])
+        args.backend = "gh"
+        with self.assertRaisesRegex(ValueError, "requires --backend wget"):
+            download(args)
+
     def test_nsys_analysis_archive_reads_run_owned_official_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

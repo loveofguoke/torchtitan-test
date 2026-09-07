@@ -111,7 +111,7 @@ def run_gh(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, check=check, text=True)
 
 
-def run_wget(url: str, output_path: Path) -> None:
+def run_wget(url: str, output_path: Path, *, insecure: bool = False) -> None:
     """Download a public release asset with TLS certificate verification."""
     if shutil.which("wget") is None:
         raise RuntimeError("'wget' was not found")
@@ -121,6 +121,8 @@ def run_wget(url: str, output_path: Path) -> None:
         str(output_path),
         url,
     ]
+    if insecure:
+        command.insert(1, "--no-check-certificate")
     print("+", " ".join(command), flush=True)
     subprocess.run(command, check=True)
 
@@ -494,6 +496,7 @@ def download_assets_with_wget(
     archive_name: str,
     checksum_name: str,
     download_dir: Path,
+    insecure: bool = False,
 ) -> None:
     owner, repository_name = validate_repository(repository)
     release_url = (
@@ -501,17 +504,21 @@ def download_assets_with_wget(
         f"{quote(repository_name, safe='')}/releases/download/"
         f"{quote(experiment, safe='')}"
     )
-    print(
-        "WARNING: wget backend disables TLS certificate verification.",
-        file=sys.stderr,
-        flush=True,
-    )
+    if insecure:
+        print(
+            "WARNING: --insecure disables TLS certificate verification.",
+            file=sys.stderr,
+            flush=True,
+        )
     for asset_name in (archive_name, checksum_name):
         asset_url = f"{release_url}/{quote(asset_name, safe='')}"
-        run_wget(asset_url, download_dir / asset_name)
+        run_wget(asset_url, download_dir / asset_name, insecure=insecure)
 
 
 def download(args: argparse.Namespace) -> None:
+    insecure = getattr(args, "insecure", False)
+    if insecure and args.backend != "wget":
+        raise ValueError("--insecure requires --backend wget")
     destination = args.destination.resolve()
     destination.mkdir(parents=True, exist_ok=True)
     experiment = validate_experiment_name(args.experiment)
@@ -531,6 +538,7 @@ def download(args: argparse.Namespace) -> None:
             archive_name=archive_name,
             checksum_name=checksum_name,
             download_dir=download_dir,
+            **({"insecure": insecure} if args.backend == "wget" else {}),
         )
         archive_path = download_dir / archive_name
         checksum_path = download_dir / checksum_name
@@ -604,9 +612,13 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("gh", "wget"),
         default="gh",
         help=(
-            "release download backend (default: gh); wget disables TLS "
-            "certificate verification"
+            "release download backend (default: gh); TLS verification enabled by default"
         ),
+    )
+    download_parser.add_argument(
+        "--insecure",
+        action="store_true",
+        help="wget only: explicitly disable TLS certificate verification",
     )
     download_parser.add_argument(
         "--destination",
