@@ -22,6 +22,23 @@ from tests.glm5_2_common.execution import TrainingFeature
 GraphMode = Literal["eager", "inductor", "npugraphs"]
 
 
+def npu_codegen_environment(backend: str | None) -> dict[str, str]:
+    """Translate the experiment name to TorchNPU's installed loader names."""
+    if backend is None:
+        return {}
+    if backend not in ("dvm", "ascend-triton"):
+        raise ValueError(f"unsupported NPU codegen backend: {backend}")
+    return {"TORCHINDUCTOR_NPU_BACKEND": "dvm" if backend == "dvm" else "default"}
+
+
+def add_npu_codegen_argument(parser) -> None:
+    parser.add_argument(
+        "--npu-codegen", choices=("dvm", "ascend-triton"), default=None,
+        help="NPU Inductor codegen backend; omitted preserves existing policy. "
+             "Does not enable whole-model compilation by itself.",
+    )
+
+
 def validate_graph_training_args(
     *,
     device_type: str,
@@ -47,10 +64,17 @@ class GraphFeatureConfig:
     mode: GraphMode = "eager"
     components: tuple[str, ...] = ("model",)
     diagnostics: bool = False
+    npu_codegen: str | None = None
 
     def feature(self, *, device_type: str) -> TrainingFeature:
+        codegen_env = npu_codegen_environment(self.npu_codegen)
+        if codegen_env and device_type != "npu":
+            raise ValueError("--npu-codegen requires an NPU endpoint")
         if self.mode == "eager":
-            return TrainingFeature(name="graph:eager", metadata={"mode": "eager"})
+            return TrainingFeature(
+                name="graph:eager", environment=codegen_env,
+                metadata={"mode": "eager", **({"npu_codegen": self.npu_codegen} if codegen_env else {})},
+            )
         validate_graph_training_args(
             device_type=device_type,
             arguments=("--compile.enable",),
@@ -72,8 +96,9 @@ class GraphFeatureConfig:
                 f"--compile.components={','.join(self.components)}",
                 f"--compile.backend={self.mode}",
             ),
-            environment=environment,
-            metadata={"mode": self.mode, "components": list(self.components)},
+            environment={**environment, **codegen_env},
+            metadata={"mode": self.mode, "components": list(self.components),
+                      **({"npu_codegen": self.npu_codegen} if codegen_env else {})},
         )
 
 

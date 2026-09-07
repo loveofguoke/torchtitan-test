@@ -372,3 +372,6 @@ Compiler cache is not an experiment report. The bounded diagnostics output
 listed above is deliberately stored under the ignored run directory and linked
 from the report; unrelated ambient `torch_compile_debug` output should remain
 outside the repository.
+# NPU codegen selection
+
+共享 DVM/Ascend Triton 参数、环境与命令见 [NPU_CODEGEN.md](NPU_CODEGEN.md)。

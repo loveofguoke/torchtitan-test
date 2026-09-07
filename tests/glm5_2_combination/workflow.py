@@ -575,6 +575,8 @@ def run_combination_cli(
     parser.add_argument("--data-device", choices=("cuda", "npu"))
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--require-all", action="store_true")
+    from tests.glm5_2_graph.config import add_npu_codegen_argument
+    add_npu_codegen_argument(parser)
     args = parser.parse_args()
     selected = select_topologies(
         available=topology_names,
@@ -613,10 +615,10 @@ def run_combination_cli(
     selection = CombinationSelection(
         objectives=objectives,
         reference_graph=GraphFeatureConfig(
-            args.reference_graph, components, args.compiler_diagnostics
+            args.reference_graph, components, args.compiler_diagnostics, args.npu_codegen
         ),
         candidate_graph=GraphFeatureConfig(
-            args.candidate_graph, components, args.compiler_diagnostics
+            args.candidate_graph, components, args.compiler_diagnostics, args.npu_codegen
         ),
         profiler=profiler,
         performance_skip_steps=args.performance_skip_steps,

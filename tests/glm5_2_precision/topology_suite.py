@@ -329,6 +329,8 @@ def run_topology_suite_cli(
     parser.add_argument("--data-device", choices=("cuda", "npu"))
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--require-all", action="store_true")
+    from tests.glm5_2_graph.config import add_npu_codegen_argument, npu_codegen_environment
+    add_npu_codegen_argument(parser)
     args = parser.parse_args()
     selected = select_topologies(
         available=topology_names,
@@ -349,6 +351,15 @@ def run_topology_suite_cli(
         return
 
     base = self_consistency_device_config(base, args.device)
+    if args.npu_codegen:
+        def select_codegen(endpoint):
+            if endpoint.device_type != "npu":
+                return endpoint
+            return replace(endpoint, environment={
+                **endpoint.environment, **npu_codegen_environment(args.npu_codegen),
+            })
+        base = replace(base, reference=select_codegen(base.reference),
+                       candidate=select_codegen(base.candidate))
 
     role = "candidate" if args.capture_all else args.capture
     environment_role = role if role is not None else None

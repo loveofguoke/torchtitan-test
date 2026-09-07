@@ -332,6 +332,8 @@ def main() -> int:
         help="enable graph-break, recompile, and dynamic-shape diagnostics",
     )
     parser.add_argument("--force", action="store_true")
+    from tests.glm5_2_graph.config import add_npu_codegen_argument
+    add_npu_codegen_argument(parser)
     args = parser.parse_args()
 
     if args.steps < 1:
@@ -342,6 +344,7 @@ def main() -> int:
         mode=args.graph,
         components=("model", "loss") if args.compile_loss else ("model",),
         diagnostics=args.compiler_diagnostics,
+        npu_codegen=args.npu_codegen,
     )
     graph.feature(device_type="npu" if device == "npu" else "cuda")
     _check_runtime_dependencies()
@@ -373,6 +376,8 @@ def main() -> int:
         suite_name += f"-{graph.mode}-{'-'.join(graph.components)}"
         if graph.diagnostics:
             suite_name += "-diag"
+    if graph.npu_codegen:
+        suite_name += f"-{graph.npu_codegen}"
     root = _root()
     suite_root = root / "smoke_runs" / suite_name
     if args.force:

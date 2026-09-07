@@ -2840,6 +2840,8 @@ def run_mindstudio_cli(
     )
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    from tests.glm5_2_graph.config import add_npu_codegen_argument, npu_codegen_environment
+    add_npu_codegen_argument(parser)
     args = parser.parse_args()
 
     if (
@@ -3045,6 +3047,15 @@ def run_mindstudio_cli(
         monitor=monitor_config,
         training=training,
     )
+    if args.npu_codegen:
+        def select_codegen(endpoint):
+            if endpoint.device_type != "npu":
+                return endpoint
+            return replace(endpoint, environment={
+                **endpoint.environment, **npu_codegen_environment(args.npu_codegen),
+            })
+        config = replace(config, reference=select_codegen(config.reference),
+                         candidate=select_codegen(config.candidate))
     root = _root(script_path)
     if not args.dry_run:
         _adopt_legacy_accuracy_storage(root, config)

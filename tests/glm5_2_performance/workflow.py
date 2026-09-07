@@ -3196,6 +3196,8 @@ def run_profiler_cli(
         default=[],
         help="append a raw TorchTitan CLI argument",
     )
+    from tests.glm5_2_graph.config import add_npu_codegen_argument, npu_codegen_environment
+    add_npu_codegen_argument(parser)
     args = parser.parse_args()
 
     compare_ranks: tuple[int, int] | None = None
@@ -3233,6 +3235,7 @@ def run_profiler_cli(
         config,
         **{key: value for key, value in overrides.items() if value is not None},
         extra_args=config.extra_args + tuple(args.extra_train_arg),
+        environment={**config.environment, **npu_codegen_environment(args.npu_codegen)},
     )
     if effective.profiler_enabled:
         # Reject registered-but-unverified collectors before ``--force`` can

@@ -1255,7 +1255,12 @@ def main() -> int:
         help="seconds allowed for accelerator/process cleanup after an abrupt exit",
     )
     parser.add_argument("--force", action="store_true")
+    from tests.glm5_2_graph.config import add_npu_codegen_argument, npu_codegen_environment
+    add_npu_codegen_argument(parser)
     args = parser.parse_args()
+    codegen_environment = npu_codegen_environment(args.npu_codegen)
+    if args.npu_codegen:
+        args.run_tag = f"{args.run_tag or ''}-{args.npu_codegen}".strip("-")
     if not 0 < args.split_step < args.total_steps:
         raise ValueError("split-step must be between zero and total-steps")
     if args.failure_timeout <= 0 or args.restart_delay < 0:
@@ -1271,6 +1276,8 @@ def main() -> int:
 
     root = Path(__file__).resolve().parents[2]
     device, visible_env, visible_devices = _device_from_environment(args.device)
+    if args.npu_codegen and device != "npu":
+        parser.error("--npu-codegen requires NPU")
     validate_graph_training_args(
         device_type=device,
         arguments=args.extra_train_arg,
@@ -1339,6 +1346,7 @@ def main() -> int:
         visible_devices=visible_devices,
         topology=topology,
         repeats=1,
+        environment=codegen_environment,
     )
     suite_name, run_name = checkpoint_output_names(
         device=device,

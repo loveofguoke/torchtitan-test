@@ -19,6 +19,13 @@ artifact checksums. Git cleanliness is diagnostic, not a pass/fail condition.
 
 ## Shared-module impact map
 
+The shared `--npu-codegen` selector is defined in `glm5_2_graph/config.py`.
+Audit smoke, combination, performance (including MindStudio), MindStudio
+accuracy, precision topology suites, and checkpoint CLI when changing it.
+Explicit codegen belongs in endpoint/feature environment and experiment
+identity; never switch DVM/Triton through an unrecorded ambient variable.
+See `tests/glm5_2_graph/NPU_CODEGEN.md` for loader names and validation scope.
+
 | Changed module | Required consumers to inspect |
 |---|---|
 | `glm5_2_common.topology` | precision, performance, checkpoint, stability, smoke, graph, combination, MindStudio official validation |
