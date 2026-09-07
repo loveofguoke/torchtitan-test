@@ -144,6 +144,48 @@ def test_npu_router_uses_out_of_place_routing_scatter() -> None:
     assert routing_map[..., 0].sum() == 2
 
 
+def test_npu_moe_forward_supports_token_first_tensors() -> None:
+    expert_ids = torch.tensor([[0, 1], [1, 2], [2, 3]])
+    scores = torch.arange(12, dtype=torch.float32).reshape(3, 4)
+    topk_scores = scores.gather(-1, expert_ids)
+    seen = {}
+
+    class Router:
+        def __call__(self, value, expert_bias):
+            seen["router_input"] = value
+            seen["expert_bias"] = expert_bias
+            return topk_scores, expert_ids, scores
+
+    class RoutedExperts:
+        def __call__(self, value, routed_scores, routed_ids, counts):
+            seen["counts"] = counts
+            assert routed_scores is topk_scores
+            assert routed_ids is expert_ids
+            return value * 2
+
+    class SharedExperts:
+        def __call__(self, value):
+            return torch.ones_like(value)
+
+    moe = SimpleNamespace(
+        router=Router(),
+        routed_experts=RoutedExperts(),
+        shared_experts=SharedExperts(),
+        expert_bias_E=None,
+        tokens_per_expert_E=torch.zeros(4),
+        training=True,
+    )
+    value = torch.randn(3, 5)
+
+    actual = _npu_moe_forward(moe, value)
+
+    assert seen["router_input"] is value
+    assert seen["expert_bias"] is None
+    assert torch.equal(seen["counts"], torch.tensor([1, 2, 2, 1]))
+    assert torch.equal(moe.tokens_per_expert_E, seen["counts"].float())
+    assert torch.equal(actual, value * 2 + 1)
+
+
 def test_npu_router_group_limiting_matches_base_semantics() -> None:
     router = SimpleNamespace(
         num_limited_groups=1,
