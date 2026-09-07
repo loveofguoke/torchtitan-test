@@ -11,6 +11,11 @@ For the separate MindStudio/msProbe eager operator diagnostic, see
 uses one complete logical step and must not be interpreted through this
 package's historical multi-step training-curve criteria.
 
+The open DP+PP multi-microbatch final-norm gradient observation is tracked in
+[FINAL_NORM_DP_PP_MULTI_MICROBATCH.md](FINAL_NORM_DP_PP_MULTI_MICROBATCH.md).
+Its backend attribution is unresolved and GPU validation is deferred; it must
+not be described as an established NPU-specific defect.
+
 The two suites are intentionally independent. They share TorchTitan model and
 data assets, and a formal report can link sampled exploratory reports through
 `exploratory_reports`, but exploratory trace results never decide the formal

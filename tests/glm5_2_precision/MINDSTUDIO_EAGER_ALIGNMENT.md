@@ -470,6 +470,14 @@ deep-pipeline fixture.
 
 ### Final RMSNorm gradient localization
 
+> **Issue marker — `GLM5-DIST-FINAL-NORM-MULTIMB`: OPEN; backend attribution
+> UNRESOLVED; GPU validation DEFERRED.** The divergence is confirmed on the
+> tested NPU runtime, but it is not established whether the cause is
+> NPU-specific or backend-independent. Do not cite this section as proof of an
+> NPU-specific defect. See
+> [FINAL_NORM_DP_PP_MULTI_MICROBATCH.md](FINAL_NORM_DP_PP_MULTI_MICROBATCH.md)
+> for the bounded claim and deferred validation criteria.
+
 A focused public `PrecisionDebugger.save()` probe captures seven tensors at
 the final RMSNorm boundary: input, output, output gradient, an FP32 weight
 gradient reconstructed as `sum((output / weight) * grad_output)`, the real
@@ -519,11 +527,13 @@ In this runtime, both TorchTitan DDP replication and FSDP sharding are
 composable `FSDPModule` variants inside the pipeline stage. PyTorch's
 `backward_maybe_with_nosync()` disables gradient synchronization for every
 microbatch, and `perform_reduce_grad()` later enables it and manually invokes
-the FSDP parameter-group `post_backward()` hooks. The controlled results
-localize the defect to that multi-microbatch accumulation-to-`REDUCE_GRAD`
-transition on NPU. Loss normalization is not responsible: `scale_grads=False`
-is consistent with the globally normalized summed loss, and the independently
-reconstructed boundary gradient matches the single-card reference.
+the FSDP parameter-group `post_backward()` hooks. The controlled NPU results
+localize the first observed divergence to that multi-microbatch
+accumulation-to-`REDUCE_GRAD` transition. They do not establish which backend
+or shared implementation is responsible. Loss normalization is not
+responsible for the observed NPU signature: `scale_grads=False` is consistent
+with the globally normalized summed loss, and the independently reconstructed
+boundary gradient matches the single-card reference.
 
 This localization adds test diagnostics and topology controls only. Turbo and
 TorchTitan production code remain unchanged. Before choosing a production
@@ -532,6 +542,11 @@ runtime; an NPU-only result belongs in the Turbo pipeline adaptation, while a
 backend-independent result should be addressed upstream.
 
 ### GPU reproduction of the final-norm localization
+
+> **Deferred status:** this matched GPU experiment has not completed. The most
+> recent attempt stopped before fixture checkpoint creation because the
+> container had no CUDA device exposure. That infrastructure failure is not a
+> GPU numerical result and leaves backend attribution unresolved.
 
 Use `single_vs_distributed_gpu_eager_benchmark.py`, not the historical
 1000-step GPU training-curve entry. The GPU entry has the same eager one-step
