@@ -1185,6 +1185,8 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 _group_hook_state["target_fsdp_param"] = target_fsdp_param
 
                 for method_name, event_code in FSDP_LIFECYCLE_EVENT_CODES.items():
+                    if event_code >= 10:
+                        continue
                     original_group_method = getattr(target_group, method_name)
 
                     @wraps(original_group_method)
