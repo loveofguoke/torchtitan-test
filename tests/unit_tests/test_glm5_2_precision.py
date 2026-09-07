@@ -27,6 +27,7 @@ from tests.glm5_2_precision.standards import (
     evaluate_migration_pair,
 )
 from tests.glm5_2_precision.workflow import (
+    _base_training_args,
     FormalExperimentConfig,
     FormalTrainingConfig,
     ParallelTopology,
@@ -178,6 +179,68 @@ def test_fixed_global_batches_are_identical_across_dp_degrees(
             torch.cat([batch[1] for batch in single_batches]),
             torch.cat([batch[1] for batch in distributed_batches]),
         )
+
+
+def test_fixed_global_batch_loader_can_flatten_token_batches(tmp_path: Path) -> None:
+    sequence_length = 3
+    base = torch.arange(12, dtype=torch.int64).reshape(4, sequence_length)
+    path = tmp_path / "fixed.safetensors"
+    save_file(
+        {"input": base, "positions": base + 100, "labels": base + 200},
+        path,
+        metadata={
+            "steps": "1",
+            "global_batch_size": "4",
+            "sequence_length": str(sequence_length),
+        },
+    )
+
+    loader = FixedGlobalBatchDataLoader(
+        path,
+        dp_world_size=2,
+        dp_rank=0,
+        local_batch_size=2,
+        sequence_length=sequence_length,
+        flatten_tokens=True,
+    )
+    inputs, labels = next(iter(loader))
+
+    assert inputs["input"].shape == (6,)
+    assert inputs["positions"].shape == (6,)
+    assert labels.shape == (6,)
+    assert torch.equal(inputs["input"], base[:2].flatten())
+
+
+def test_token_training_args_preserve_sample_based_contract(tmp_path: Path) -> None:
+    training = FormalTrainingConfig(
+        steps=1,
+        local_batch_size=2,
+        global_batch_size=4,
+        sequence_length=128,
+    )
+    topology = ParallelTopology(
+        "pp2-fsdp2",
+        4,
+        data_parallel_shard_degree=2,
+        pipeline_parallel_degree=2,
+        pipeline_parallel_microbatch_size=1,
+    )
+
+    args = _base_training_args(
+        training,
+        dump_folder=tmp_path,
+        topology=topology,
+        token_training_api=True,
+    )
+    topology_args = topology.command_args(
+        token_training_api=True,
+        local_batch_size=training.local_batch_size,
+    )
+
+    assert "--training.num_tokens_per_microbatch_per_dp_rank=128" in args
+    assert "--training.num_tokens_per_train_step=512" in args
+    assert "--training.max_context_length=128" in args
+    assert "--parallelism.num_pp_microbatches=2" in topology_args
 
 
 def test_compare_writes_html_and_json_report(tmp_path: Path) -> None:

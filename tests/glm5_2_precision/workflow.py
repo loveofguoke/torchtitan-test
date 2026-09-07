@@ -111,7 +111,12 @@ class ParallelTopology:
             * self.data_parallel_shard_degree
         )
 
-    def command_args(self) -> list[str]:
+    def command_args(
+        self,
+        *,
+        token_training_api: bool = False,
+        local_batch_size: int | None = None,
+    ) -> list[str]:
         args = [
             "--parallelism.data_parallel_replicate_degree="
             f"{self.data_parallel_replicate_degree}",
@@ -124,14 +129,24 @@ class ParallelTopology:
         if self.tensor_parallel_degree > 1:
             args.append("--parallelism.no-enable-sequence-parallel")
         if self.pipeline_parallel_degree > 1:
-            args.extend(
-                [
-                    "--parallelism.pipeline_parallel_schedule="
-                    f"{self.pipeline_parallel_schedule}",
-                    "--parallelism.pipeline_parallel_microbatch_size="
-                    f"{self.pipeline_parallel_microbatch_size}",
-                ]
+            args.append(
+                "--parallelism.pipeline_parallel_schedule="
+                f"{self.pipeline_parallel_schedule}"
             )
+            if token_training_api:
+                if local_batch_size is None:
+                    raise ValueError(
+                        "local_batch_size is required for token-based PP arguments"
+                    )
+                args.append(
+                    "--parallelism.num_pp_microbatches="
+                    f"{local_batch_size // self.pipeline_parallel_microbatch_size}"
+                )
+            else:
+                args.append(
+                    "--parallelism.pipeline_parallel_microbatch_size="
+                    f"{self.pipeline_parallel_microbatch_size}"
+                )
         args.extend(self.extra_args)
         return args
 
@@ -570,17 +585,28 @@ def _validate_capture_for_resume(
         )
 
 
+def _uses_token_training_api() -> bool:
+    """Detect the current TorchTitan token-count training contract lazily."""
+
+    try:
+        from torchtitan.config import TrainingConfig
+    except (ImportError, RuntimeError):
+        return False
+    return "num_tokens_per_microbatch_per_dp_rank" in getattr(
+        TrainingConfig, "__dataclass_fields__", {}
+    )
+
+
 def _base_training_args(
     config: FormalTrainingConfig,
     *,
     dump_folder: Path,
+    topology: ParallelTopology,
+    token_training_api: bool,
 ) -> list[str]:
     args = [
         f"--dump_folder={dump_folder}",
         f"--training.steps={config.steps}",
-        f"--training.local_batch_size={config.local_batch_size}",
-        f"--training.global_batch_size={config.global_batch_size}",
-        f"--training.seq_len={config.sequence_length}",
         f"--training.dtype={config.training_dtype}",
         f"--training.mixed_precision_param={config.mixed_precision_param}",
         f"--training.mixed_precision_reduce={config.mixed_precision_reduce}",
@@ -590,6 +616,25 @@ def _base_training_args(
         "--metrics.disable_color_printing",
         "--metrics.save_tb_folder=tensorboard",
     ]
+    if token_training_api:
+        pp_microbatch_size = (
+            topology.pipeline_parallel_microbatch_size
+            if topology.pipeline_parallel_degree > 1
+            else config.local_batch_size
+        )
+        args[2:2] = [
+            "--training.num_tokens_per_microbatch_per_dp_rank="
+            f"{pp_microbatch_size * config.sequence_length}",
+            "--training.num_tokens_per_train_step="
+            f"{config.global_batch_size * config.sequence_length}",
+            f"--training.max_context_length={config.sequence_length}",
+        ]
+    else:
+        args[2:2] = [
+            f"--training.local_batch_size={config.local_batch_size}",
+            f"--training.global_batch_size={config.global_batch_size}",
+            f"--training.seq_len={config.sequence_length}",
+        ]
     if config.deterministic:
         args.append("--debug.deterministic")
     args.extend(config.extra_args)
@@ -634,6 +679,7 @@ def _torchrun_command(
         raise ValueError(
             "multi-node capture requires a shared host:port rendezvous_endpoint"
         )
+    token_training_api = _uses_token_training_api()
     metrics_rank = (
         0
         if endpoint.topology.pipeline_parallel_degree == 1
@@ -663,8 +709,16 @@ def _torchrun_command(
         config.training.module,
         "--config",
         config.training.config,
-        *_base_training_args(config.training, dump_folder=dump_folder),
-        *endpoint.topology.command_args(),
+        *_base_training_args(
+            config.training,
+            dump_folder=dump_folder,
+            topology=endpoint.topology,
+            token_training_api=token_training_api,
+        ),
+        *endpoint.topology.command_args(
+            token_training_api=token_training_api,
+            local_batch_size=config.training.local_batch_size,
+        ),
         "--checkpoint.enable",
         "--checkpoint.load_only",
         f"--checkpoint.initial_load_path={checkpoint_path}",
@@ -790,7 +844,12 @@ def prepare_fixture(
                 config.training.module,
                 "--config",
                 config.training.config,
-                *_base_training_args(config.training, dump_folder=output),
+                *_base_training_args(
+                    config.training,
+                    dump_folder=output,
+                    topology=endpoint.topology,
+                    token_training_api=_uses_token_training_api(),
+                ),
                 "--parallelism.data_parallel_replicate_degree=1",
                 "--parallelism.data_parallel_shard_degree=1",
                 "--parallelism.tensor_parallel_degree=1",

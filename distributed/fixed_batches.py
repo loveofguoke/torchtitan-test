@@ -74,6 +74,7 @@ class FixedGlobalBatchDataLoader:
         dp_rank: int,
         local_batch_size: int,
         sequence_length: int,
+        flatten_tokens: bool = False,
     ) -> None:
         with safe_open(str(path), framework="pt", device="cpu") as handle:
             metadata = handle.metadata()
@@ -108,6 +109,7 @@ class FixedGlobalBatchDataLoader:
         self.dp_world_size = dp_world_size
         self.dp_rank = dp_rank
         self.local_batch_size = local_batch_size
+        self.flatten_tokens = flatten_tokens
         self.num_waves = self.global_batch_size // rows_per_wave
         self.cursor = 0
 
@@ -122,13 +124,14 @@ class FixedGlobalBatchDataLoader:
             )
             stop = start + self.local_batch_size
             self.cursor += 1
-            yield (
-                {
-                    "input": self.tensors["input"][start:stop],
-                    "positions": self.tensors["positions"][start:stop],
-                },
-                self.tensors["labels"][start:stop],
-            )
+            inputs = self.tensors["input"][start:stop]
+            positions = self.tensors["positions"][start:stop]
+            labels = self.tensors["labels"][start:stop]
+            if self.flatten_tokens:
+                inputs = inputs.flatten()
+                positions = positions.flatten()
+                labels = labels.flatten()
+            yield ({"input": inputs, "positions": positions}, labels)
 
     def state_dict(self) -> dict[str, int]:
         return {
@@ -146,6 +149,11 @@ class FixedGlobalBatchDataLoader:
             raise ValueError("fixed batch dataloader DP rank changed on resume")
         self.cursor = state_dict["cursor"]
 
+    def close(self) -> None:
+        """Match both the legacy and current TorchTitan dataloader contracts."""
+
+        return None
+
 
 def install_fixed_batch_dataloader() -> None:
     """Replace the GLM text dataloader when a fixed batch path is configured."""
@@ -154,11 +162,9 @@ def install_fixed_batch_dataloader() -> None:
     if not configured_path:
         return
 
-    from torchtitan.hf_datasets.text_datasets import HuggingFaceTextDataLoader
-
     path = Path(configured_path)
 
-    def build_fixed(_config, **kwargs):
+    def build_legacy_fixed(_config, **kwargs):
         return FixedGlobalBatchDataLoader(
             path,
             dp_world_size=kwargs["dp_world_size"],
@@ -167,4 +173,28 @@ def install_fixed_batch_dataloader() -> None:
             sequence_length=kwargs["seq_len"],
         )
 
-    HuggingFaceTextDataLoader.Config.build = build_fixed
+    try:
+        from torchtitan.hf_datasets.text_datasets import HuggingFaceTextDataLoader
+    except ImportError:
+        from torchtitan.components.data.loader import GrainDataLoader
+
+        def build_token_fixed(_config, **kwargs):
+            sequence_length = int(kwargs["max_context_length"])
+            num_tokens = int(kwargs["num_tokens_per_batch"])
+            if num_tokens % sequence_length:
+                raise ValueError(
+                    "fixed token batch must contain complete sequences: "
+                    f"{num_tokens} % {sequence_length} != 0"
+                )
+            return FixedGlobalBatchDataLoader(
+                path,
+                dp_world_size=kwargs["dp_world_size"],
+                dp_rank=kwargs["dp_rank"],
+                local_batch_size=num_tokens // sequence_length,
+                sequence_length=sequence_length,
+                flatten_tokens=True,
+            )
+
+        GrainDataLoader.Config.build = build_token_fixed
+    else:
+        HuggingFaceTextDataLoader.Config.build = build_legacy_fixed
