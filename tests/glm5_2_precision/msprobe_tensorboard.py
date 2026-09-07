@@ -35,6 +35,9 @@ MSPROBE_FINAL_NORM_REDUCE_TRANSITION_ENV = (
 MSPROBE_FINAL_NORM_PRE_REDUCE_SYNC_ENV = (
     "GLM5_MSPROBE_FINAL_NORM_PRE_REDUCE_SYNC"
 )
+MSPROBE_FINAL_NORM_SHARDED_GRAD_ALL_REDUCE_ENV = (
+    "GLM5_MSPROBE_FINAL_NORM_SHARDED_GRAD_ALL_REDUCE"
+)
 SCHEMA = "torchtitan.glm5_2.msprobe_tensorboard"
 SCHEMA_VERSION = 2
 
@@ -156,6 +159,7 @@ class MsprobeCaptureConfig:
     final_norm_state: bool = False
     final_norm_reduce_transition: bool = False
     final_norm_pre_reduce_sync: bool = False
+    final_norm_sharded_grad_all_reduce: bool = False
 
     def __post_init__(self) -> None:
         if not self.steps or any(step < 0 for step in self.steps):
@@ -209,6 +213,13 @@ class MsprobeCaptureConfig:
         if self.final_norm_pre_reduce_sync and not self.final_norm_reduce_transition:
             raise ValueError(
                 "final-norm pre-reduce sync requires reduce-transition capture"
+            )
+        if (
+            self.final_norm_sharded_grad_all_reduce
+            and not self.final_norm_reduce_transition
+        ):
+            raise ValueError(
+                "final-norm sharded-grad all-reduce requires reduce-transition capture"
             )
 
     def payload(self, dump_path: str | Path) -> dict[str, Any]:
@@ -775,6 +786,15 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 "final_norm_forced_pre_reduce_sync",
                 save_backward=False,
             )
+            debugger.save(
+                torch.tensor(
+                    [float(capture["forced_sharded_grad_all_reduce"])],
+                    dtype=torch.float32,
+                    device=final_output.device,
+                ),
+                "final_norm_forced_sharded_grad_all_reduce",
+                save_backward=False,
+            )
             internal_boundaries = (
                 *capture["fsdp_internal_after_backward"],
                 capture["fsdp_internal_before_reduce"],
@@ -855,6 +875,10 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 "reduce_enabled_after_reduce": None,
                 "forced_pre_reduce_sync": (
                     os.environ.get(MSPROBE_FINAL_NORM_PRE_REDUCE_SYNC_ENV) == "1"
+                ),
+                "forced_sharded_grad_all_reduce": (
+                    os.environ.get(MSPROBE_FINAL_NORM_SHARDED_GRAD_ALL_REDUCE_ENV)
+                    == "1"
                 ),
                 "fsdp_internal_after_backward": [],
                 "fsdp_internal_before_reduce": None,
@@ -947,6 +971,31 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 ),
             }
 
+        def all_reduce_sharded_gradient(stage: Any) -> None:
+            import torch
+            import torch.distributed as dist
+
+            gradient = parameter.grad
+            if gradient is None:
+                raise RuntimeError("no sharded final norm gradient to all-reduce")
+            try:
+                from torch.distributed.tensor import DTensor
+            except ImportError:  # pragma: no cover - older PyTorch compatibility
+                DTensor = ()
+            local_gradient = gradient.to_local() if isinstance(gradient, DTensor) else gradient
+            if type(local_gradient).__name__ == "AsyncCollectiveTensor":
+                from torch.distributed._functional_collectives import wait_tensor
+
+                local_gradient = wait_tensor(local_gradient)
+            if not isinstance(local_gradient, torch.Tensor):
+                raise RuntimeError("sharded final norm gradient is not a tensor")
+            fsdp_param = find_target_fsdp_param(stage)
+            dist.all_reduce(
+                local_gradient,
+                op=dist.ReduceOp.SUM,
+                group=fsdp_param.mesh_info.shard_process_group,
+            )
+
         for stage in stages:
             original_backward = stage.backward_maybe_with_nosync
             original_reduce = stage.perform_reduce_grad
@@ -995,6 +1044,8 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                     import torch
 
                     torch.accelerator.synchronize()
+                if capture["forced_sharded_grad_all_reduce"]:
+                    all_reduce_sharded_gradient(_stage)
                 result = _original(*reduce_args, **reduce_kwargs)
                 capture["after_reduce"] = snapshot_local_gradient()
                 capture["reduce_enabled_after_reduce"] = float(
