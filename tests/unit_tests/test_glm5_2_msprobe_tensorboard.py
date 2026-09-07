@@ -119,6 +119,13 @@ def test_block_boundary_capture_uses_public_debug_tensor_mode(tmp_path: Path) ->
             final_norm_state=True,
             final_norm_reset_group_forward_state=True,
         )
+    with pytest.raises(ValueError, match="requires reduce-transition capture"):
+        MsprobeCaptureConfig(
+            task="tensor",
+            level="debug",
+            final_norm_state=True,
+            final_norm_ungroup_fsdp_unit=True,
+        )
     transition = MsprobeCaptureConfig(
         task="tensor",
         level="debug",
@@ -128,12 +135,86 @@ def test_block_boundary_capture_uses_public_debug_tensor_mode(tmp_path: Path) ->
         final_norm_sharded_grad_all_reduce=True,
         final_norm_native_last_backward_sync=True,
         final_norm_reset_group_forward_state=True,
+        final_norm_ungroup_fsdp_unit=True,
     )
     assert transition.final_norm_reduce_transition
     assert transition.final_norm_pre_reduce_sync
     assert transition.final_norm_sharded_grad_all_reduce
     assert transition.final_norm_native_last_backward_sync
     assert transition.final_norm_reset_group_forward_state
+    assert transition.final_norm_ungroup_fsdp_unit
+
+
+def test_final_norm_fsdp_ungroup_ablation_splits_only_target_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    norm = object()
+    lm_head = object()
+    other = object()
+    calls: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+
+    class FakeModel:
+        enable_weight_tying = False
+
+        def __init__(self) -> None:
+            self.norm = norm
+            self.lm_head = lm_head
+
+    fsdp_module = ModuleType("torchtitan.distributed.fsdp")
+
+    def fully_shard(
+        module: object,
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        calls.append((module, args, kwargs))
+        return module
+
+    fsdp_module.fully_shard = fully_shard  # type: ignore[attr-defined]
+    parallelize_module = ModuleType("torchtitan.models.glm5.parallelize")
+
+    def apply_fsdp_to_decoder(model: FakeModel) -> str:
+        fsdp_module.fully_shard(  # type: ignore[attr-defined]
+            [model.norm, model.lm_head], mesh="dp"
+        )
+        fsdp_module.fully_shard(other, mesh="dp")  # type: ignore[attr-defined]
+        return "applied"
+
+    parallelize_module.apply_fsdp_to_decoder = (  # type: ignore[attr-defined]
+        apply_fsdp_to_decoder
+    )
+    torchtitan_package = ModuleType("torchtitan")
+    torchtitan_package.__path__ = []  # type: ignore[attr-defined]
+    distributed_package = ModuleType("torchtitan.distributed")
+    distributed_package.__path__ = []  # type: ignore[attr-defined]
+    models_package = ModuleType("torchtitan.models")
+    models_package.__path__ = []  # type: ignore[attr-defined]
+    glm5_package = ModuleType("torchtitan.models.glm5")
+    glm5_package.__path__ = []  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "torchtitan", torchtitan_package)
+    monkeypatch.setitem(sys.modules, "torchtitan.distributed", distributed_package)
+    monkeypatch.setitem(sys.modules, "torchtitan.distributed.fsdp", fsdp_module)
+    monkeypatch.setitem(sys.modules, "torchtitan.models", models_package)
+    monkeypatch.setitem(sys.modules, "torchtitan.models.glm5", glm5_package)
+    monkeypatch.setitem(
+        sys.modules,
+        "torchtitan.models.glm5.parallelize",
+        parallelize_module,
+    )
+    monkeypatch.setenv(
+        msprobe_tensorboard.MSPROBE_FINAL_NORM_UNGROUP_FSDP_UNIT_ENV,
+        "1",
+    )
+
+    assert msprobe_tensorboard.install_final_norm_ungroup_fsdp_ablation()
+    assert parallelize_module.apply_fsdp_to_decoder(FakeModel()) == "applied"  # type: ignore[attr-defined]
+    assert [(call[0], call[2]) for call in calls] == [
+        (norm, {"mesh": "dp"}),
+        (lm_head, {"mesh": "dp"}),
+        (other, {"mesh": "dp"}),
+    ]
+    assert fsdp_module.fully_shard is fully_shard  # type: ignore[attr-defined]
+    assert not msprobe_tensorboard.install_final_norm_ungroup_fsdp_ablation()
 
 
 def test_adamw_update_components_reconstruct_first_step() -> None:

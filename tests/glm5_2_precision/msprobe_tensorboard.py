@@ -44,6 +44,9 @@ MSPROBE_FINAL_NORM_NATIVE_LAST_BACKWARD_SYNC_ENV = (
 MSPROBE_FINAL_NORM_RESET_GROUP_FORWARD_STATE_ENV = (
     "GLM5_MSPROBE_FINAL_NORM_RESET_GROUP_FORWARD_STATE"
 )
+MSPROBE_FINAL_NORM_UNGROUP_FSDP_UNIT_ENV = (
+    "GLM5_MSPROBE_FINAL_NORM_UNGROUP_FSDP_UNIT"
+)
 SCHEMA = "torchtitan.glm5_2.msprobe_tensorboard"
 SCHEMA_VERSION = 2
 
@@ -185,6 +188,7 @@ class MsprobeCaptureConfig:
     final_norm_sharded_grad_all_reduce: bool = False
     final_norm_native_last_backward_sync: bool = False
     final_norm_reset_group_forward_state: bool = False
+    final_norm_ungroup_fsdp_unit: bool = False
 
     def __post_init__(self) -> None:
         if not self.steps or any(step < 0 for step in self.steps):
@@ -262,6 +266,14 @@ class MsprobeCaptureConfig:
                 "final-norm group forward-state reset requires "
                 "reduce-transition capture"
             )
+        if (
+            self.final_norm_ungroup_fsdp_unit
+            and not self.final_norm_reduce_transition
+        ):
+            raise ValueError(
+                "final-norm FSDP-unit ungrouping requires "
+                "reduce-transition capture"
+            )
 
     def payload(self, dump_path: str | Path) -> dict[str, Any]:
         task_options: dict[str, Any] = {
@@ -296,6 +308,84 @@ def write_capture_config(
         encoding="utf-8",
     )
     return destination
+
+
+def install_final_norm_ungroup_fsdp_ablation() -> bool:
+    """Split the diagnostic run's final norm and LM head FSDP units.
+
+    TorchTitan normally passes ``[model.norm, model.lm_head]`` to one grouped
+    ``fully_shard`` call. This test-only patch preserves every other argument
+    and call while replacing that one call with two independent units. It is
+    installed before model construction and never mutates FSDP runtime state.
+    """
+
+    if os.environ.get(MSPROBE_FINAL_NORM_UNGROUP_FSDP_UNIT_ENV) != "1":
+        return False
+
+    import torchtitan.distributed.fsdp as fsdp_module
+    import torchtitan.models.glm5.parallelize as glm5_parallelize
+
+    marker = "_glm5_msprobe_ungroup_final_norm_fsdp"
+    if hasattr(glm5_parallelize, marker):
+        return False
+
+    original_apply = glm5_parallelize.apply_fsdp_to_decoder
+
+    @wraps(original_apply)
+    def apply_with_ungrouped_final_norm(model: Any, *args: Any, **kwargs: Any) -> Any:
+        original_fully_shard = fsdp_module.fully_shard
+        split_count = 0
+
+        @wraps(original_fully_shard)
+        def fully_shard_with_split(
+            module_or_modules: Any,
+            *shard_args: Any,
+            **shard_kwargs: Any,
+        ) -> Any:
+            nonlocal split_count
+            expected_group = (
+                not model.enable_weight_tying
+                and model.norm is not None
+                and model.lm_head is not None
+                and isinstance(module_or_modules, (list, tuple))
+                and len(module_or_modules) == 2
+                and module_or_modules[0] is model.norm
+                and module_or_modules[1] is model.lm_head
+            )
+            if not expected_group:
+                return original_fully_shard(
+                    module_or_modules,
+                    *shard_args,
+                    **shard_kwargs,
+                )
+            split_count += 1
+            original_fully_shard(model.norm, *shard_args, **shard_kwargs)
+            return original_fully_shard(
+                model.lm_head,
+                *shard_args,
+                **shard_kwargs,
+            )
+
+        fsdp_module.fully_shard = fully_shard_with_split
+        try:
+            result = original_apply(model, *args, **kwargs)
+        finally:
+            fsdp_module.fully_shard = original_fully_shard
+        if (
+            not model.enable_weight_tying
+            and model.norm is not None
+            and model.lm_head is not None
+            and split_count != 1
+        ):
+            raise RuntimeError(
+                "expected exactly one grouped final norm/LM head FSDP call, "
+                f"observed {split_count}"
+            )
+        return result
+
+    setattr(glm5_parallelize, marker, original_apply)
+    glm5_parallelize.apply_fsdp_to_decoder = apply_with_ungrouped_final_norm
+    return True
 
 
 def install_trainer_capture(config_path: str | Path | None = None) -> Any:
@@ -874,6 +964,15 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
             )
             debugger.save(
                 torch.tensor(
+                    [float(capture["ungrouped_fsdp_unit"])],
+                    dtype=torch.float32,
+                    device=final_output.device,
+                ),
+                "final_norm_ungrouped_fsdp_unit",
+                save_backward=False,
+            )
+            debugger.save(
+                torch.tensor(
                     buffers["weight_local_numel"],
                     dtype=torch.float32,
                     device=final_output.device,
@@ -1001,6 +1100,10 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                     os.environ.get(
                         MSPROBE_FINAL_NORM_RESET_GROUP_FORWARD_STATE_ENV
                     )
+                    == "1"
+                ),
+                "ungrouped_fsdp_unit": (
+                    os.environ.get(MSPROBE_FINAL_NORM_UNGROUP_FSDP_UNIT_ENV)
                     == "1"
                 ),
                 "fsdp_internal_after_backward": [],
