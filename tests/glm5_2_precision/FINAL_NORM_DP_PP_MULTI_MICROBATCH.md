@@ -51,15 +51,45 @@ aligned per-microbatch backward tensors
 
 In the inspected runtime, this corresponds to the transition from pipeline
 stage `backward_maybe_with_nosync()` to `perform_reduce_grad()`. This identifies
-where the observed value first changes; it does not yet identify the faulty
-backend or prove the exact implementation defect.
+where the observed value first changes.
+
+For the FSDP2-PP2, global-batch-4 case, the immediate mechanism is now
+confirmed. Ignoring one initialization probe call, the two real final-norm
+forwards see local weight sizes 256 and 128 respectively. The first microbatch
+therefore uses the complete unsharded weight, while the second uses only the
+local FSDP shard. The first microbatch's complete gradient is saved in
+`unsharded_accumulated_grad`; that buffer remains bitwise unchanged after the
+second backward. The second microbatch instead appears only as the local
+128-element `parameter.grad` shard. At the final reduction, each output shard
+contains the globally reduced first-microbatch contribution plus only its own
+rank's second-microbatch contribution.
+
+The matched one-microbatch control has one real final-norm forward with local
+weight size 256 and remains aligned with the single-card reconstruction
+(cosine 0.9999991, L2 residual 1.49864e-4). The two-microbatch case has cosine
+0.9749982 and L2 residual 3.12679e-2.
+
+Three diagnostic ablations further constrain the mechanism:
+
+- Synchronizing the NPU immediately before `perform_reduce_grad()` produces a
+  bitwise-identical divergent gradient, excluding a simple unfinished-kernel
+  race before reduction.
+- Enabling native FSDP synchronization for `last_backward=True` is too late:
+  the second forward has already used the sharded parameter, and the final
+  gradient remains bitwise identical.
+- Directly all-reducing the existing local shards is invalid because ranks own
+  different parameter coordinates; it worsens the final-norm L2 residual to
+  3.81001e-2 and is not a fix.
 
 ## What is not established
 
 - It is not established that the defect is NPU-specific.
 - It is not established that the defect is backend-independent.
-- It is not established whether a microbatch contribution is overwritten,
-  incorrectly accumulated, incorrectly scaled, or incorrectly reduced.
+- It is not yet established why the second FSDP2-PP2 final-norm forward is not
+  rematerialized to the complete parameter, or whether the same parameter
+  lifecycle occurs on GPU.
+- The exact FSDP2-PP2 mechanism above must not yet be generalized to the DDP+PP
+  result without an equivalent parameter-lifecycle trace.
 - MindStudio's native result column reports these saved tensors as `pass`; the
   stricter investigation is based on the non-unit cosine and material gradient
   norm discrepancy.

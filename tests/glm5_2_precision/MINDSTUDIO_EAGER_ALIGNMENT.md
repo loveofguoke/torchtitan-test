@@ -523,6 +523,25 @@ multiple microbatches. The first divergent boundary is the data-parallel
 parameter gradient produced after the per-microbatch backward tensors have
 already aligned and before clipping begins.
 
+The follow-up FSDP2-PP2 transition probe resolves the immediate gradient
+lifecycle. Excluding one initialization probe forward, the two-microbatch case
+observes final-norm `weight` local element counts `[256, 128]`, while the
+one-microbatch control observes `[256]`. In the failing case, the first complete
+microbatch gradient is moved into `unsharded_accumulated_grad`. That buffer is
+bitwise unchanged after the second backward; the second contribution exists
+only in the local 128-element sharded `parameter.grad`. This explains the
+post-reduction tensor exactly: the first microbatch is reduced across both DP
+ranks, but each final shard contains only its owning rank's second-microbatch
+contribution.
+
+A device synchronization immediately before reduction and native FSDP sync on
+the final microbatch both leave the divergent tensor bitwise unchanged. A
+direct all-reduce of the already sharded gradients is also invalid because the
+two ranks' local tensors represent different parameter coordinates. The
+remaining implementation question is why the second forward is not
+rematerialized to an unsharded weight. Backend attribution remains unresolved
+until the matched GPU trace is available.
+
 In this runtime, both TorchTitan DDP replication and FSDP sharding are
 composable `FSDPModule` variants inside the pipeline stage. PyTorch's
 `backward_maybe_with_nosync()` disables gradient synchronization for every
