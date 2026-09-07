@@ -206,12 +206,12 @@ python tests/glm5_2_mindstudio/migration_benchmark.py \
 
 ## 4. GPU/NPU 模块与 API 精度迁移
 
-跨服务器比较保留完整来源记录，但不要求 Python 安装路径、console script、
-安装 RECORD、报告工作区和 Git commit 字符串完全相同。比较时使用本地 Git
-历史核对运行相关文件内容；缺少历史时不能证明等价，仍保留严格检查。
-旧 manifest 不会被改写，fixture generation 和文件完整性检查不变。
-实际 msProbe 包内容或运行代码不同仍会拦截，此时查看报告目录中的
-`toolchain_compatibility_diff.json`，先审阅差异再决定是否重采。
+`--compare` 的跨服务器工具链与项目版本兼容性暂由人工管理，不再因
+msProbe 包 SHA、Git commit 或运行文件 SHA 不同阻止官方比较。
+完整来源信息仍写入报告目录的 `toolchain_compatibility_diff.json`，
+标记为 `manual_review`，不是兼容性或精度通过结论。
+旧 manifest 不会被改写，fixture generation、输入契约和文件完整性检查不变。
+本策略不改变 capture 的缓存复用规则；复用已有两端采集时直接运行 `--compare`。
 
 在跨设备实验前，可以先在 GPU 服务器验证 msProbe 采集和官方 compare 闭环：
 

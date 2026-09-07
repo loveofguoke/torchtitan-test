@@ -2377,42 +2377,26 @@ def compare_official(
                 "official capture predates toolchain-bound artifacts; "
                 f"recapture it: {artifact}"
             )
-        capture_compatibility[selected_role] = _portable_capture_compatibility(compatibility, root)
+        capture_compatibility[selected_role] = compatibility
         artifact_inputs[selected_role] = {
             "manifest_sha256": sha256_file(artifact / "manifest.json"),
             "complete_sha256": sha256_file(artifact / "complete.json"),
             "toolchain_compatibility": compatibility,
         }
-    if (
-        "reference" in capture_compatibility
-        and capture_compatibility["reference"]
-        != capture_compatibility["candidate"]
-    ):
-        diagnostic = report_directory / "toolchain_compatibility_diff.json"
-        write_json(diagnostic, capture_compatibility)
-        raise MindStudioArtifactError(
-            "reference and candidate captures used incompatible msProbe "
-            "toolchains or runtime source content; inspect differences before deciding whether "
-            f"recapture is necessary: {diagnostic}"
-        )
     comparison_toolchain = _accuracy_toolchain_metadata("compare")
     comparison_toolchain_identity = _comparison_toolchain_identity(
         comparison_toolchain
     )
-    comparison_msprobe_compatibility = _portable_capture_compatibility(
-        _msprobe_toolchain_compatibility(comparison_toolchain_identity), root
-    )
-    for selected_role, compatibility in capture_compatibility.items():
-        capture_msprobe_compatibility = {
-            key: value
-            for key, value in compatibility.items()
-            if key != "project_sources"
-        }
-        if capture_msprobe_compatibility != comparison_msprobe_compatibility:
-            raise MindStudioArtifactError(
-                "compare-side msProbe toolchain is incompatible with the "
-                f"{selected_role} capture"
-            )
+    # Cross-host version compatibility is manually managed. Provenance is not
+    # a numerical verdict and must not prevent the official comparator running.
+    diagnostic = report_directory / "toolchain_compatibility_diff.json"
+    if not dry_run:
+        write_json(diagnostic, {
+            "policy": "manual_review",
+            "captures": capture_compatibility,
+            "compare": _msprobe_toolchain_compatibility(comparison_toolchain_identity),
+        })
+        print(f"Toolchain provenance (manual review, non-blocking): {diagnostic}", flush=True)
     comparison_identity = {
         "workflow": config.workflow,
         "topology": asdict(topology),

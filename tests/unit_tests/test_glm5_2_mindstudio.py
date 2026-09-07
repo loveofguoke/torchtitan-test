@@ -1502,7 +1502,7 @@ class TestMindStudioLifecycle(unittest.TestCase):
                 manifest["toolchain_compatibility"]["msprobe_version"],
             )
 
-    def test_compare_rejects_incompatible_capture_toolchains(self) -> None:
+    def test_compare_allows_manually_managed_capture_toolchains(self) -> None:
         config = _experiment()
         topology = config.candidate.topology
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1514,9 +1514,9 @@ class TestMindStudioLifecycle(unittest.TestCase):
             manifest["toolchain_compatibility"]["msprobe_version"] = "9.9.9"
             write_json(manifest_path, manifest)
 
-            with self.assertRaisesRegex(
-                RuntimeError,
-                "incompatible msProbe toolchains",
+            with (
+                redirect_stdout(io.StringIO()),
+                patch("tests.glm5_2_mindstudio.msprobe_adapter._msprobe_executable", return_value="msprobe"),
             ):
                 compare_official(
                     root,
@@ -1530,6 +1530,7 @@ class TestMindStudioLifecycle(unittest.TestCase):
                     tensor_log=False,
                     xlsx=False,
                     force=False,
+                    dry_run=True,
                 )
 
     def test_compare_refuses_an_active_attempt(self) -> None:
