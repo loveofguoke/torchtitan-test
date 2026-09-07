@@ -57,6 +57,14 @@ FSDP_LIFECYCLE_EVENT_CODES = {
     "post_forward": 4,
     "pre_backward": 5,
     "post_backward": 6,
+    "stage_forward_begin": 10,
+    "stage_forward_end": 11,
+    "stage_backward_begin": 12,
+    "stage_backward_end": 13,
+    "reduce_begin": 14,
+    "reduce_end": 15,
+    "final_norm_begin": 20,
+    "final_norm_end": 21,
 }
 
 
@@ -1143,7 +1151,28 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
             group_hook_state: dict[str, Any] = {
                 "target_group": None,
                 "originals": {},
+                "module_handles": [],
+                "target_fsdp_param": None,
             }
+
+            def record_lifecycle_marker(
+                event_code: int,
+                state: dict[str, Any],
+            ) -> None:
+                fsdp_param = state["target_fsdp_param"]
+                if fsdp_param is None:
+                    return
+                sharded_state = sharded_state_code(fsdp_param)
+                local_numel = registered_parameter_local_numel(fsdp_param)
+                capture["fsdp_lifecycle_events"].append(
+                    [
+                        float(event_code),
+                        sharded_state,
+                        sharded_state,
+                        local_numel,
+                        local_numel,
+                    ]
+                )
 
             def install_group_lifecycle_hooks(
                 stage: Any,
@@ -1153,6 +1182,7 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                     return
                 target_group, target_fsdp_param = find_target_fsdp_group(stage)
                 _group_hook_state["target_group"] = target_group
+                _group_hook_state["target_fsdp_param"] = target_fsdp_param
 
                 for method_name, event_code in FSDP_LIFECYCLE_EVENT_CODES.items():
                     original_group_method = getattr(target_group, method_name)
@@ -1184,6 +1214,24 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                     )
                     setattr(target_group, method_name, group_method_with_capture)
 
+                target_module = target_fsdp_param._module_info.module
+                _group_hook_state["module_handles"].append(
+                    target_module.register_forward_pre_hook(
+                        lambda *_args: record_lifecycle_marker(
+                            FSDP_LIFECYCLE_EVENT_CODES["final_norm_begin"],
+                            _group_hook_state,
+                        )
+                    )
+                )
+                _group_hook_state["module_handles"].append(
+                    target_module.register_forward_hook(
+                        lambda *_args: record_lifecycle_marker(
+                            FSDP_LIFECYCLE_EVENT_CODES["final_norm_end"],
+                            _group_hook_state,
+                        )
+                    )
+                )
+
             @wraps(original_forward)
             def forward_with_capture(
                 *forward_args: Any,
@@ -1192,8 +1240,16 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 _install: Any = install_group_lifecycle_hooks,
                 **forward_kwargs: Any,
             ) -> Any:
+                record_lifecycle_marker(
+                    FSDP_LIFECYCLE_EVENT_CODES["stage_forward_begin"],
+                    group_hook_state,
+                )
                 result = _original(*forward_args, **forward_kwargs)
                 _install(_stage)
+                record_lifecycle_marker(
+                    FSDP_LIFECYCLE_EVENT_CODES["stage_forward_end"],
+                    group_hook_state,
+                )
                 return result
 
             @wraps(original_backward)
@@ -1208,6 +1264,10 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                     last_backward = backward_args[2]
                 if last_backward is None:
                     last_backward = False
+                record_lifecycle_marker(
+                    FSDP_LIFECYCLE_EVENT_CODES["stage_backward_begin"],
+                    group_hook_state,
+                )
                 if capture["forced_native_last_backward_sync"] and last_backward:
                     result = run_backward_with_native_last_sync(
                         _stage,
@@ -1225,6 +1285,10 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 capture["fsdp_internal_after_backward"].append(
                     snapshot_fsdp_internal(_stage)
                 )
+                record_lifecycle_marker(
+                    FSDP_LIFECYCLE_EVENT_CODES["stage_backward_end"],
+                    group_hook_state,
+                )
                 return result
 
             @wraps(original_reduce)
@@ -1236,6 +1300,10 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
             ) -> Any:
                 if capture["reduce_called"]:
                     raise RuntimeError("final norm transition observed multiple reductions")
+                record_lifecycle_marker(
+                    FSDP_LIFECYCLE_EVENT_CODES["reduce_begin"],
+                    group_hook_state,
+                )
                 capture["reduce_called"] = True
                 capture["before_reduce"] = snapshot_local_gradient()
                 capture["reduce_enabled_before_reduce"] = float(
@@ -1257,6 +1325,10 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 )
                 capture["fsdp_internal_after_reduce"] = snapshot_fsdp_internal(
                     _stage
+                )
+                record_lifecycle_marker(
+                    FSDP_LIFECYCLE_EVENT_CODES["reduce_end"],
+                    group_hook_state,
                 )
                 return result
 
@@ -1290,6 +1362,8 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                         "originals"
                     ].items():
                         setattr(target_group, method_name, original_group_method)
+                    for handle in group_hook_state["module_handles"]:
+                        handle.remove()
 
         return restore
 
