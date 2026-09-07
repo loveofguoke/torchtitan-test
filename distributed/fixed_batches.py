@@ -27,18 +27,55 @@ def materialize_fixed_batches(
     """Tokenize once at DP degree one and save exact global input tensors."""
 
     from torchtitan.components.tokenizer import HuggingFaceTokenizer
-    from torchtitan.hf_datasets.text_datasets import HuggingFaceTextDataset
+    from torchtitan.hf_datasets import text_datasets
 
     tokenizer = HuggingFaceTokenizer.Config().build(tokenizer_path=str(tokenizer_path))
-    dataset = HuggingFaceTextDataset(
-        dataset_name="c4_test",
-        dataset_path=str(dataset_path),
-        tokenizer=tokenizer,
-        seq_len=sequence_length,
-        dp_rank=0,
-        dp_world_size=1,
-        infinite=True,
-    )
+    legacy_dataset = getattr(text_datasets, "HuggingFaceTextDataset", None)
+    if legacy_dataset is not None:
+        dataset = legacy_dataset(
+            dataset_name="c4_test",
+            dataset_path=str(dataset_path),
+            tokenizer=tokenizer,
+            seq_len=sequence_length,
+            dp_rank=0,
+            dp_world_size=1,
+            infinite=True,
+        )
+    else:
+        # Newer TorchTitan releases replaced HuggingFaceTextDataset with the
+        # Grain data stack. Build its unshuffled, infinite c4_test stream
+        # through public configuration objects. The resulting fixture is
+        # still materialized once at DP degree one and replayed unchanged by
+        # every topology.
+        from dataclasses import replace
+
+        from torchtitan.components.data import (
+            ConcatThenSplitPackingConfig,
+            GrainDataLoader,
+        )
+        from torchtitan.components.data.sources import HuggingFaceRandomAccessSource
+
+        data_file = (
+            dataset_path / "data.json" if dataset_path.is_dir() else dataset_path
+        )
+        source = HuggingFaceRandomAccessSource.Config(
+            path="json",
+            split="train",
+            load_dataset_kwargs={"data_files": str(data_file)},
+        )
+        dataset_config = replace(text_datasets.DATASETS["c4_test"], source=source)
+        dataset = GrainDataLoader(
+            GrainDataLoader.Config(
+                dataset=ConcatThenSplitPackingConfig(dataset=dataset_config),
+                shuffle=False,
+                repeat=True,
+            ),
+            dp_world_size=1,
+            dp_rank=0,
+            tokenizer=tokenizer,
+            max_context_length=sequence_length,
+            num_tokens_per_batch=sequence_length,
+        )
     num_rows = steps * global_batch_size
     tensors = {
         key: torch.empty((num_rows, sequence_length), dtype=torch.int64)
