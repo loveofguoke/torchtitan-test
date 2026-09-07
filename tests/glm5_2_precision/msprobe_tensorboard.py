@@ -50,6 +50,15 @@ OPTIMIZER_DIAGNOSTIC_PARAMETERS = (
     "layers.4.moe.router.gate.weight",
 )
 
+FSDP_LIFECYCLE_EVENT_CODES = {
+    "pre_forward": 1,
+    "unshard": 2,
+    "wait_for_unshard": 3,
+    "post_forward": 4,
+    "pre_backward": 5,
+    "post_backward": 6,
+}
+
 
 def adamw_update_components(
     initial_parameter: Any,
@@ -859,6 +868,15 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                             f"final_norm_fsdp_{source}_{index}",
                             save_backward=False,
                         )
+            debugger.save(
+                torch.tensor(
+                    capture["fsdp_lifecycle_events"],
+                    dtype=torch.float32,
+                    device=final_output.device,
+                ),
+                "final_norm_fsdp_lifecycle_events",
+                save_backward=False,
+            )
             for microbatch, index in enumerate(expected_indexes):
                 reconstructed_microbatch = reconstruct_rmsnorm_weight_gradient(
                     output_chunks[index],
@@ -928,6 +946,7 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 "fsdp_internal_after_backward": [],
                 "fsdp_internal_before_reduce": None,
                 "fsdp_internal_after_reduce": None,
+                "fsdp_lifecycle_events": [],
             }
         )
         originals = []
@@ -1004,6 +1023,36 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 )
             return name_matches[0]
 
+        def find_target_fsdp_group(stage: Any) -> tuple[Any, Any]:
+            from torch.distributed.fsdp import fully_shard
+
+            fsdp_param = find_target_fsdp_param(stage)
+            distributed_state = fully_shard.state(stage.submod)
+            matches = [
+                group
+                for state in distributed_state._state_ctx.all_states
+                for group in state._fsdp_param_groups
+                if fsdp_param in group.fsdp_params
+            ]
+            if len(matches) != 1:
+                raise RuntimeError(
+                    "could not uniquely resolve final norm FSDP parameter group: "
+                    f"{len(matches)}"
+                )
+            return matches[0], fsdp_param
+
+        def sharded_state_code(fsdp_param: Any) -> float:
+            return float(fsdp_param.sharded_state.value)
+
+        def registered_parameter_local_numel(fsdp_param: Any) -> float:
+            current = getattr(
+                fsdp_param._module_info.module,
+                fsdp_param._module_info.param_name,
+            )
+            if type(current).__name__ == "DTensor":
+                current = current.to_local()
+            return float(current.numel())
+
         def snapshot_fsdp_internal(stage: Any) -> dict[str, Any | None]:
             fsdp_param = find_target_fsdp_param(stage)
             unsharded_param = getattr(fsdp_param, "_unsharded_param", None)
@@ -1074,6 +1123,36 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
         for stage in stages:
             original_backward = stage.backward_maybe_with_nosync
             original_reduce = stage.perform_reduce_grad
+            target_group, target_fsdp_param = find_target_fsdp_group(stage)
+            group_originals = {}
+
+            for method_name, event_code in FSDP_LIFECYCLE_EVENT_CODES.items():
+                original_group_method = getattr(target_group, method_name)
+
+                @wraps(original_group_method)
+                def group_method_with_capture(
+                    *method_args: Any,
+                    _original_group_method: Any = original_group_method,
+                    _event_code: int = event_code,
+                    _fsdp_param: Any = target_fsdp_param,
+                    **method_kwargs: Any,
+                ) -> Any:
+                    before_state = sharded_state_code(_fsdp_param)
+                    before_numel = registered_parameter_local_numel(_fsdp_param)
+                    result = _original_group_method(*method_args, **method_kwargs)
+                    capture["fsdp_lifecycle_events"].append(
+                        [
+                            float(_event_code),
+                            before_state,
+                            sharded_state_code(_fsdp_param),
+                            before_numel,
+                            registered_parameter_local_numel(_fsdp_param),
+                        ]
+                    )
+                    return result
+
+                group_originals[method_name] = original_group_method
+                setattr(target_group, method_name, group_method_with_capture)
 
             @wraps(original_backward)
             def backward_with_capture(
@@ -1141,12 +1220,22 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
 
             stage.backward_maybe_with_nosync = backward_with_capture
             stage.perform_reduce_grad = reduce_with_capture
-            originals.append((stage, original_backward, original_reduce))
+            originals.append(
+                (stage, original_backward, original_reduce, target_group, group_originals)
+            )
 
         def restore() -> None:
-            for stage, original_backward, original_reduce in originals:
+            for (
+                stage,
+                original_backward,
+                original_reduce,
+                target_group,
+                group_originals,
+            ) in originals:
                 stage.backward_maybe_with_nosync = original_backward
                 stage.perform_reduce_grad = original_reduce
+                for method_name, original_group_method in group_originals.items():
+                    setattr(target_group, method_name, original_group_method)
 
         return restore
 
