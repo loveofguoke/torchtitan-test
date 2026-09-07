@@ -624,6 +624,7 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
             "input": [],
             "output": [],
             "weight_local_numel": [],
+            "is_backward_recompute": [],
         }
         gradient_buffers: dict[int, Any] = {}
         setattr(trainer, "_glm5_msprobe_final_norm_state_buffers", buffers)
@@ -659,6 +660,9 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                     if type(weight).__name__ == "DTensor":
                         weight = weight.to_local()
                     buffers["weight_local_numel"].append(weight.numel())
+                    buffers["is_backward_recompute"].append(
+                        float(torch._C._current_graph_task_id() != -1)
+                    )
 
                     def capture_gradient(gradient: Any, *, call: int = invocation) -> Any:
                         gradient_buffers[call] = logical_tensor(gradient).clone()
@@ -679,6 +683,9 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
         getattr(trainer, "_glm5_msprobe_final_norm_state_buffers")["output"].clear()
         getattr(trainer, "_glm5_msprobe_final_norm_state_buffers")[
             "weight_local_numel"
+        ].clear()
+        getattr(trainer, "_glm5_msprobe_final_norm_state_buffers")[
+            "is_backward_recompute"
         ].clear()
         getattr(
             trainer,
@@ -843,6 +850,15 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                     device=final_output.device,
                 ),
                 "final_norm_forward_weight_local_numel",
+                save_backward=False,
+            )
+            debugger.save(
+                torch.tensor(
+                    buffers["is_backward_recompute"],
+                    dtype=torch.float32,
+                    device=final_output.device,
+                ),
+                "final_norm_forward_is_backward_recompute",
                 save_backward=False,
             )
             internal_boundaries = (
