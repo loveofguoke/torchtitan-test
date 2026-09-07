@@ -32,6 +32,9 @@ MSPROBE_FINAL_NORM_STATE_ENV = "GLM5_MSPROBE_FINAL_NORM_STATE"
 MSPROBE_FINAL_NORM_REDUCE_TRANSITION_ENV = (
     "GLM5_MSPROBE_FINAL_NORM_REDUCE_TRANSITION"
 )
+MSPROBE_FINAL_NORM_PRE_REDUCE_SYNC_ENV = (
+    "GLM5_MSPROBE_FINAL_NORM_PRE_REDUCE_SYNC"
+)
 SCHEMA = "torchtitan.glm5_2.msprobe_tensorboard"
 SCHEMA_VERSION = 2
 
@@ -152,6 +155,7 @@ class MsprobeCaptureConfig:
     optimizer_state: bool = False
     final_norm_state: bool = False
     final_norm_reduce_transition: bool = False
+    final_norm_pre_reduce_sync: bool = False
 
     def __post_init__(self) -> None:
         if not self.steps or any(step < 0 for step in self.steps):
@@ -201,6 +205,10 @@ class MsprobeCaptureConfig:
         if self.final_norm_reduce_transition and not self.final_norm_state:
             raise ValueError(
                 "final-norm reduce-transition capture requires final-norm capture"
+            )
+        if self.final_norm_pre_reduce_sync and not self.final_norm_reduce_transition:
+            raise ValueError(
+                "final-norm pre-reduce sync requires reduce-transition capture"
             )
 
     def payload(self, dump_path: str | Path) -> dict[str, Any]:
@@ -736,6 +744,37 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 "final_norm_rank_local_grad_presence",
                 save_backward=False,
             )
+            debugger.save(
+                torch.tensor(
+                    capture["backward_last_flags"],
+                    dtype=torch.float32,
+                    device=final_output.device,
+                ),
+                "final_norm_pipeline_last_backward_flags",
+                save_backward=False,
+            )
+            debugger.save(
+                torch.tensor(
+                    [
+                        *capture["reduce_enabled_after_backward"],
+                        capture["reduce_enabled_before_reduce"],
+                        capture["reduce_enabled_after_reduce"],
+                    ],
+                    dtype=torch.float32,
+                    device=final_output.device,
+                ),
+                "final_norm_fsdp_reduce_enabled",
+                save_backward=False,
+            )
+            debugger.save(
+                torch.tensor(
+                    [float(capture["forced_pre_reduce_sync"])],
+                    dtype=torch.float32,
+                    device=final_output.device,
+                ),
+                "final_norm_forced_pre_reduce_sync",
+                save_backward=False,
+            )
             for microbatch, index in enumerate(expected_indexes):
                 reconstructed_microbatch = reconstruct_rmsnorm_weight_gradient(
                     output_chunks[index],
@@ -787,6 +826,13 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 "before_reduce": None,
                 "after_reduce": None,
                 "reduce_called": False,
+                "backward_last_flags": [],
+                "reduce_enabled_after_backward": [],
+                "reduce_enabled_before_reduce": None,
+                "reduce_enabled_after_reduce": None,
+                "forced_pre_reduce_sync": (
+                    os.environ.get(MSPROBE_FINAL_NORM_PRE_REDUCE_SYNC_ENV) == "1"
+                ),
             }
         )
         originals = []
@@ -811,6 +857,22 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 raise RuntimeError("final norm rank-local gradient is not a tensor")
             return gradient.detach().clone()
 
+        def fsdp_reduce_enabled(stage: Any) -> bool:
+            from torch.distributed.fsdp import fully_shard
+
+            distributed_state = fully_shard.state(stage.submod)
+            values = {
+                bool(group.reduce_grads)
+                for state in distributed_state._state_ctx.all_states
+                for group in state._fsdp_param_groups
+            }
+            if len(values) != 1:
+                raise RuntimeError(
+                    "FSDP parameter groups disagree on reduce_grads: "
+                    f"{sorted(values)}"
+                )
+            return values.pop()
+
         for stage in stages:
             original_backward = stage.backward_maybe_with_nosync
             original_reduce = stage.perform_reduce_grad
@@ -819,24 +881,45 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
             def backward_with_capture(
                 *backward_args: Any,
                 _original: Any = original_backward,
+                _stage: Any = stage,
                 **backward_kwargs: Any,
             ) -> Any:
+                last_backward = backward_kwargs.get("last_backward")
+                if last_backward is None and len(backward_args) >= 3:
+                    last_backward = backward_args[2]
+                if last_backward is None:
+                    last_backward = False
                 result = _original(*backward_args, **backward_kwargs)
                 capture["after_backward"].append(snapshot_local_gradient())
+                capture["backward_last_flags"].append(float(bool(last_backward)))
+                capture["reduce_enabled_after_backward"].append(
+                    float(fsdp_reduce_enabled(_stage))
+                )
                 return result
 
             @wraps(original_reduce)
             def reduce_with_capture(
                 *reduce_args: Any,
                 _original: Any = original_reduce,
+                _stage: Any = stage,
                 **reduce_kwargs: Any,
             ) -> Any:
                 if capture["reduce_called"]:
                     raise RuntimeError("final norm transition observed multiple reductions")
                 capture["reduce_called"] = True
                 capture["before_reduce"] = snapshot_local_gradient()
+                capture["reduce_enabled_before_reduce"] = float(
+                    fsdp_reduce_enabled(_stage)
+                )
+                if capture["forced_pre_reduce_sync"]:
+                    import torch
+
+                    torch.accelerator.synchronize()
                 result = _original(*reduce_args, **reduce_kwargs)
                 capture["after_reduce"] = snapshot_local_gradient()
+                capture["reduce_enabled_after_reduce"] = float(
+                    fsdp_reduce_enabled(_stage)
+                )
                 return result
 
             stage.backward_maybe_with_nosync = backward_with_capture

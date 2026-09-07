@@ -30,6 +30,7 @@ from .msprobe_tensorboard import (
     MSPROBE_BLOCK_GLOBAL_STEP_ENV,
     MSPROBE_CONFIG_PATH_ENV,
     MSPROBE_FINAL_NORM_REDUCE_TRANSITION_ENV,
+    MSPROBE_FINAL_NORM_PRE_REDUCE_SYNC_ENV,
     MSPROBE_FINAL_NORM_STATE_ENV,
     MSPROBE_PARAMETER_STATE_ENV,
     MSPROBE_ROUTER_STATE_ENV,
@@ -1129,6 +1130,8 @@ def capture_msprobe_endpoint(
         environment[MSPROBE_FINAL_NORM_STATE_ENV] = "1"
     if capture_config.final_norm_reduce_transition:
         environment[MSPROBE_FINAL_NORM_REDUCE_TRANSITION_ENV] = "1"
+    if capture_config.final_norm_pre_reduce_sync:
+        environment[MSPROBE_FINAL_NORM_PRE_REDUCE_SYNC_ENV] = "1"
     if config.training.fixed_global_batches:
         from .fixed_batches import FIXED_BATCHES_ENV
 
@@ -1376,6 +1379,11 @@ def run_formal_cli(
         help="capture rank-local final norm gradients around PP REDUCE_GRAD",
     )
     parser.add_argument(
+        "--msprobe-final-norm-pre-reduce-sync",
+        action="store_true",
+        help="force device synchronization before PP REDUCE_GRAD for diagnosis",
+    )
+    parser.add_argument(
         "--serve-tensorboard",
         action="store_true",
         help="serve the generated visualization after --visualize-msprobe",
@@ -1403,6 +1411,7 @@ def run_formal_cli(
         args.msprobe_optimizer_state,
         args.msprobe_final_norm_state,
         args.msprobe_final_norm_reduce_transition,
+        args.msprobe_final_norm_pre_reduce_sync,
     )
     if any(msprobe_capture_options) and not args.capture_msprobe:
         parser.error("msProbe capture options require --capture-msprobe")
@@ -1504,6 +1513,9 @@ def run_formal_cli(
                 final_norm_state=args.msprobe_final_norm_state,
                 final_norm_reduce_transition=(
                     args.msprobe_final_norm_reduce_transition
+                ),
+                final_norm_pre_reduce_sync=(
+                    args.msprobe_final_norm_pre_reduce_sync
                 ),
             ),
             force=args.force,
