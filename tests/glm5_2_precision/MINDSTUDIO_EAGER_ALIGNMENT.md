@@ -560,6 +560,29 @@ the single-card boundary reconstruction within the normal BF16 residual:
 cosine 0.9999991, L2 1.44015e-4, and maximum absolute error 3.8838e-5. This
 controlled ablation confirms the causal chain but is not a production fix.
 
+The follow-up structural ablation removes the grouped unit instead of resetting
+its state: the test path replaces the one
+`fully_shard([model.norm, model.lm_head], ...)` call with two independent
+`fully_shard` calls and leaves all other FSDP wrapping unchanged. Its markers
+show `ungrouped_fsdp_unit=1`, `forced_reset_group_forward_state=0`, and
+final-norm local weight sizes `[256, 256, 256]`. Loss and pre-clip global
+gradient norm match the single-card run at 8.21366 and 1.5566 respectively.
+
+Native `msprobe compare -m auto` reports all 244 stage-0 rows and all 291
+stage-1 rows as `pass`. Of these, 508 rows cover all 127 parameters across
+gradient presence, optimizer-consumed post-clip gradient, one-step update, and
+updated parameter; 20 additional stage-1 rows are candidate-only lifecycle
+diagnostics and therefore have unsupported pairwise indicators. Across the
+concatenated logical parameter tensors, post-clip gradient cosine is
+0.9999979854, one-step update cosine is 0.9998117490, and updated-parameter
+cosine is 0.9999999958. The corresponding L2 residuals are 2.10921e-3,
+6.20892e-2, and 6.20892e-2. The lowest individual update cosine, 0.9967207,
+is the known first-step AdamW sign amplification of near-zero BF16 gradient
+differences; every update remains a MindStudio `pass`. The final-norm pre-clip
+gradient has cosine 0.9999987 and L2 residual 1.76637e-4, while its boundary
+reconstruction is bitwise identical. This structural result favors separate
+norm and LM-head FSDP units over an internal-state reset for a production fix.
+
 A device synchronization immediately before reduction and native FSDP sync on
 the final microbatch both leave the divergent tensor bitwise unchanged. A
 direct all-reduce of the already sharded gradients is also invalid because the

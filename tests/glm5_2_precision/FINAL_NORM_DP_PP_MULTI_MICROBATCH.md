@@ -103,6 +103,39 @@ single-card reconstruction: cosine 0.9999991, L2 residual 1.44015e-4, and
 maximum absolute residual 3.8838e-5. This is mechanism validation, not a
 production fix.
 
+A stronger structural ablation replaces the single grouped
+`fully_shard([model.norm, model.lm_head], ...)` call with independent
+`fully_shard(model.norm, ...)` and `fully_shard(model.lm_head, ...)` calls.
+It does not clear or otherwise mutate any FSDP runtime state. The capture
+confirms `ungrouped_fsdp_unit=1`, `forced_reset_group_forward_state=0`, and
+final-norm local weight sizes `[256, 256, 256]`. The second-microbatch change
+in `unsharded_accumulated_grad` matches its boundary reconstruction on the two
+final-stage DP ranks with cosines 0.9999975 and 0.9999973. The candidate and
+single-card runs also report the same loss 8.21366 and pre-clip global gradient
+norm 1.5566.
+
+The structural run captures all 127 trainable parameters, split across the two
+pipeline stage owners, and compares them with native `msprobe compare -m auto`.
+All 508 parameter-state rows pass: gradient presence, optimizer-consumed
+post-clip gradient, one-step parameter update, and updated parameter for every
+parameter. Concatenating the 127 logical tensors gives:
+
+| Tensor family | Cosine | L2 residual | Maximum absolute residual |
+| --- | ---: | ---: | ---: |
+| Post-clip parameter gradient | 0.9999979854 | 2.10921e-3 | 1.99124e-4 |
+| One-step parameter update | 0.9998117490 | 6.20892e-2 | 1.59578e-3 |
+| Updated parameter | 0.9999999958 | 6.20892e-2 | 1.59578e-3 |
+
+The one-step update is compatible but not bitwise identical. Its lowest
+per-parameter cosine is 0.9967207, the already documented first-step AdamW
+sign-amplification behavior for near-zero BF16 gradient differences; every
+update row remains a native MindStudio `pass`. The final-norm pre-clip gradient
+itself has cosine 0.9999987, L2 residual 1.76637e-4, and maximum absolute
+residual 4.57764e-5, while its boundary reconstruction is bitwise identical to
+the single-card reference. This establishes independent norm/LM-head FSDP
+units as the preferred production-fix shape over an internal-state reset,
+subject to the still-deferred GPU attribution check.
+
 Three diagnostic ablations further constrain the mechanism:
 
 - Synchronizing the NPU immediately before `perform_reduce_grad()` produces a
