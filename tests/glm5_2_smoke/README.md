@@ -132,6 +132,25 @@ defined centrally in `tests/glm5_2_common/topology.py`.
 
 ## Result contents and acceptance
 
+The suite root contains `README.md` (a topology result table with relative log
+links) and `summary.json` (full selected-member records). They are refreshed
+after each member, including failures. The existing fail-fast behavior remains:
+members not reached are `not_run`, not passed. Run the same command without
+`--force` to resume. The summary describes the latest invocation's selection,
+not every historical topology under the directory.
+
+New manifests record UTC start/end timestamps, monotonic elapsed seconds,
+exported device visibility, and launch errors/return codes. Elapsed time includes
+process startup and compilation and is not steady-state training performance.
+Reused runs retain their original timestamps; historical manifests lacking time
+fields display `unknown` and do not require recollection. The visibility list
+is the exported device pool, not an independently verified rank-to-card map.
+
+For a short eager gate use `--device gpu --graph eager --topology all --steps 2`
+or the same arguments with `--device npu`. Existing graph selection semantics
+are unchanged. Smoke success is not proof of full-graph compilation or numerical
+alignment; use the dedicated tooling for those claims.
+
 Smoke is a launch/run-through gate, not a numerical comparison report. Each
 topology directory contains the complete `runtime.log`, TorchTitan
 `trainer_output`, and `manifest.json`. The manifest records the exact command,

@@ -14,12 +14,13 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -41,6 +42,27 @@ from tests.glm5_2_graph.config import GraphFeatureConfig  # noqa: E402
 
 def _root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+def _write_suite_report(suite_root: Path, results: dict[str, Any]) -> None:
+    """Persist the selected invocation, including members not reached yet."""
+    suite_root.mkdir(parents=True, exist_ok=True)
+    payload = {"updated_at": datetime.now(timezone.utc).isoformat(), "results": results}
+    (suite_root / "summary.json").write_text(
+        json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+    )
+    lines = ["# Smoke run-through report", "",
+             "Wall time includes process startup and compilation; this is not a performance benchmark.", "",
+             "| Topology | Status | Started (UTC) | Finished (UTC) | Seconds | Log |",
+             "|---|---|---|---|---|---|"]
+    for name, record in results.items():
+        lines.append(
+            f"| {name} | {record['status']} | {record.get('started_at', 'unknown')} | "
+            f"{record.get('finished_at', 'unknown')} | {record.get('elapsed_seconds', 'unknown')} | "
+            f"[runtime.log]({name}/runtime.log) |"
+        )
+    lines.extend(["", "Full contracts, commands, device visibility and errors: [summary.json](summary.json).", ""])
+    (suite_root / "README.md").write_text("\n".join(lines), encoding="utf-8")
 
 
 def _check_runtime_dependencies() -> None:
@@ -235,7 +257,25 @@ def _run_topology(
         f"world_size={topology.world_size}"
     )
     print(f"Runtime log: {runtime_log}")
-    result = subprocess.run(command, cwd=root, env=environment, check=False)
+    started_at = datetime.now(timezone.utc).isoformat()
+    started_clock = time.perf_counter()
+    try:
+        result = subprocess.run(command, cwd=root, env=environment, check=False)
+    except (OSError, KeyboardInterrupt) as error:
+        record = {
+            "status": "interrupted" if isinstance(error, KeyboardInterrupt) else "failed",
+            "contract": contract, "command": command,
+            "started_at": started_at,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "elapsed_seconds": time.perf_counter() - started_clock,
+            "visible_devices": visible_devices,
+            "error": repr(error), "attempt_id": attempt.attempt_id,
+        }
+        (run_directory / "manifest.json").write_text(
+            json.dumps(record, indent=2) + "\n", encoding="utf-8"
+        )
+        attempt.update("failed")
+        raise
     record = {
         "status": "passed" if result.returncode == 0 else "failed",
         "return_code": result.returncode,
@@ -243,6 +283,11 @@ def _run_topology(
         "command": command,
         "runtime_log": str(runtime_log),
         "attempt_id": attempt.attempt_id,
+        "started_at": started_at,
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+        "elapsed_seconds": time.perf_counter() - started_clock,
+        "visible_devices": visible_devices,
+        "error": None if result.returncode == 0 else f"Training exited with code {result.returncode}; see runtime.log",
     }
     (run_directory / "manifest.json").write_text(
         json.dumps(record, indent=2, sort_keys=True) + "\n",
@@ -340,23 +385,35 @@ def main() -> int:
             ],
             label="smoke suite",
         )
+    results = {topologies[name].slug: {"status": "not_run"} for name in selected}
+    _write_suite_report(suite_root, results)
+    print(f"Smoke report: {suite_root / 'README.md'}")
     for name in selected:
-        _run_topology(
-            root=root,
-            suite_root=suite_root,
-            device=device,
-            visible_devices=visible_devices,
-            topology=topologies[name],
-            steps=args.steps,
-            local_batch_size=args.local_batch_size,
-            global_batch_size=args.global_batch_size,
-            sequence_length=args.sequence_length,
-            seed=args.seed,
-            module=args.module,
-            config=args.config,
-            graph=graph,
-            force=False,
-        )
+        slug = topologies[name].slug
+        try:
+            _run_topology(
+                root=root,
+                suite_root=suite_root,
+                device=device,
+                visible_devices=visible_devices,
+                topology=topologies[name],
+                steps=args.steps,
+                local_batch_size=args.local_batch_size,
+                global_batch_size=args.global_batch_size,
+                sequence_length=args.sequence_length,
+                seed=args.seed,
+                module=args.module,
+                config=args.config,
+                graph=graph,
+                force=False,
+            )
+        finally:
+            manifest = suite_root / slug / "manifest.json"
+            if manifest.is_file():
+                results[slug] = json.loads(manifest.read_text(encoding="utf-8"))
+            else:
+                results[slug] = {"status": "incomplete"}
+            _write_suite_report(suite_root, results)
     print(f"Smoke suite passed: {suite_root}")
     return 0
 

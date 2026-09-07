@@ -60,8 +60,25 @@ def test_smoke_disables_trainer_cuda_graphs(
     )
 
     assert len(commands) == 1
+    manifest = json.loads((tmp_path / "smoke_runs/pp8/manifest.json").read_text())
+    assert manifest["elapsed_seconds"] >= 0
+    assert manifest["started_at"] <= manifest["finished_at"]
+    assert manifest["visible_devices"] == "0,1,2,3,4,5,6,7"
     assert "--training.disable_cuda_graphs" in commands[0]
     assert "--parallelism.num_pp_microbatches=8" in commands[0]
+
+
+def test_suite_report_preserves_historical_unknown_time(tmp_path) -> None:
+    from tests.glm5_2_smoke.train_smoke import _write_suite_report
+
+    results = {"single": {"status": "passed"}, "tp2": {"status": "not_run"}}
+    _write_suite_report(tmp_path, results)
+    payload = json.loads((tmp_path / "summary.json").read_text())
+    assert payload["results"] == results
+    report = (tmp_path / "README.md").read_text()
+    assert "unknown" in report
+    assert "not_run" in report
+    assert "single/runtime.log" in report
 
 
 def test_npu_smoke_can_compile_each_topology(
