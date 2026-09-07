@@ -29,6 +29,7 @@ from .msprobe_tensorboard import (
     MSPROBE_BLOCK_BOUNDARIES_ENV,
     MSPROBE_BLOCK_GLOBAL_STEP_ENV,
     MSPROBE_CONFIG_PATH_ENV,
+    MSPROBE_FINAL_NORM_REDUCE_TRANSITION_ENV,
     MSPROBE_FINAL_NORM_STATE_ENV,
     MSPROBE_PARAMETER_STATE_ENV,
     MSPROBE_ROUTER_STATE_ENV,
@@ -1126,6 +1127,8 @@ def capture_msprobe_endpoint(
         environment[MSPROBE_OPTIMIZER_STATE_ENV] = "1"
     if capture_config.final_norm_state:
         environment[MSPROBE_FINAL_NORM_STATE_ENV] = "1"
+    if capture_config.final_norm_reduce_transition:
+        environment[MSPROBE_FINAL_NORM_REDUCE_TRANSITION_ENV] = "1"
     if config.training.fixed_global_batches:
         from .fixed_batches import FIXED_BATCHES_ENV
 
@@ -1368,6 +1371,11 @@ def run_formal_cli(
         help="capture the final RMSNorm boundary and pre/post-clip weight gradient",
     )
     parser.add_argument(
+        "--msprobe-final-norm-reduce-transition",
+        action="store_true",
+        help="capture rank-local final norm gradients around PP REDUCE_GRAD",
+    )
+    parser.add_argument(
         "--serve-tensorboard",
         action="store_true",
         help="serve the generated visualization after --visualize-msprobe",
@@ -1394,6 +1402,7 @@ def run_formal_cli(
         args.msprobe_router_state,
         args.msprobe_optimizer_state,
         args.msprobe_final_norm_state,
+        args.msprobe_final_norm_reduce_transition,
     )
     if any(msprobe_capture_options) and not args.capture_msprobe:
         parser.error("msProbe capture options require --capture-msprobe")
@@ -1493,6 +1502,9 @@ def run_formal_cli(
                 router_state=args.msprobe_router_state,
                 optimizer_state=args.msprobe_optimizer_state,
                 final_norm_state=args.msprobe_final_norm_state,
+                final_norm_reduce_transition=(
+                    args.msprobe_final_norm_reduce_transition
+                ),
             ),
             force=args.force,
             resume=args.resume,

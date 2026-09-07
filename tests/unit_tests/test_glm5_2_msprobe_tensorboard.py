@@ -85,6 +85,19 @@ def test_block_boundary_capture_uses_public_debug_tensor_mode(tmp_path: Path) ->
         MsprobeCaptureConfig(task="tensor", level="debug", optimizer_state=True)
     with pytest.raises(ValueError, match="task=tensor and level=debug"):
         MsprobeCaptureConfig(final_norm_state=True)
+    with pytest.raises(ValueError, match="requires final-norm capture"):
+        MsprobeCaptureConfig(
+            task="tensor",
+            level="debug",
+            final_norm_reduce_transition=True,
+        )
+    transition = MsprobeCaptureConfig(
+        task="tensor",
+        level="debug",
+        final_norm_state=True,
+        final_norm_reduce_transition=True,
+    )
+    assert transition.final_norm_reduce_transition
 
 
 def test_adamw_update_components_reconstruct_first_step() -> None:

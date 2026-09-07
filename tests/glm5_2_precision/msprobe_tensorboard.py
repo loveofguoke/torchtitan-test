@@ -29,6 +29,9 @@ MSPROBE_PARAMETER_STATE_ENV = "GLM5_MSPROBE_PARAMETER_STATE"
 MSPROBE_ROUTER_STATE_ENV = "GLM5_MSPROBE_ROUTER_STATE"
 MSPROBE_OPTIMIZER_STATE_ENV = "GLM5_MSPROBE_OPTIMIZER_STATE"
 MSPROBE_FINAL_NORM_STATE_ENV = "GLM5_MSPROBE_FINAL_NORM_STATE"
+MSPROBE_FINAL_NORM_REDUCE_TRANSITION_ENV = (
+    "GLM5_MSPROBE_FINAL_NORM_REDUCE_TRANSITION"
+)
 SCHEMA = "torchtitan.glm5_2.msprobe_tensorboard"
 SCHEMA_VERSION = 2
 
@@ -148,6 +151,7 @@ class MsprobeCaptureConfig:
     router_state: bool = False
     optimizer_state: bool = False
     final_norm_state: bool = False
+    final_norm_reduce_transition: bool = False
 
     def __post_init__(self) -> None:
         if not self.steps or any(step < 0 for step in self.steps):
@@ -193,6 +197,10 @@ class MsprobeCaptureConfig:
         ):
             raise ValueError(
                 "final-norm-state capture requires msProbe task=tensor and level=debug"
+            )
+        if self.final_norm_reduce_transition and not self.final_norm_state:
+            raise ValueError(
+                "final-norm reduce-transition capture requires final-norm capture"
             )
 
     def payload(self, dump_path: str | Path) -> dict[str, Any]:
@@ -423,6 +431,35 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
         stage_width = data_parallel_size * parallel_dims.cp * parallel_dims.tp
         return not dist.is_initialized() or dist.get_rank() % stage_width == 0
 
+    def expected_local_step_rows(trainer: Any) -> int:
+        """Return leading rows in one logical step across config versions."""
+
+        data_parallel_size = (
+            trainer.parallel_dims.dp_replicate * trainer.parallel_dims.dp_shard
+        )
+        training = trainer.config.training
+        token_value = getattr(training, "num_tokens_per_train_step", None)
+        if token_value is not None:
+            tokens = int(token_value)
+            if tokens <= 0 or tokens % data_parallel_size:
+                raise RuntimeError(
+                    "invalid token-based global step for boundary capture: "
+                    f"num_tokens_per_train_step={tokens}, "
+                    f"data_parallel_size={data_parallel_size}"
+                )
+            return tokens // data_parallel_size
+        legacy_value = getattr(training, "global_batch_size", None)
+        if legacy_value is not None:
+            samples = int(legacy_value)
+            if samples <= 0 or samples % data_parallel_size:
+                raise RuntimeError(
+                    "invalid sample-based global step for boundary capture: "
+                    f"global_batch_size={samples}, "
+                    f"data_parallel_size={data_parallel_size}"
+                )
+            return samples // data_parallel_size
+        raise RuntimeError("training config has no global-step size")
+
     def global_step_tensor(
         trainer: Any,
         chunks: list[Any],
@@ -440,9 +477,7 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
         if any(tuple(chunk.shape) != first_shape for chunk in chunks):
             raise RuntimeError("block boundary has inconsistent chunks")
         local_step = torch.cat(chunks, dim=0).contiguous()
-        expected_local_rows = (
-            trainer.config.training.global_batch_size // data_parallel_size
-        )
+        expected_local_rows = expected_local_step_rows(trainer)
         if local_step.shape[0] < expected_local_rows:
             raise RuntimeError(
                 f"captured {local_step.shape[0]} rows, expected {expected_local_rows}"
@@ -509,9 +544,7 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
         data_parallel_size = (
             trainer.parallel_dims.dp_replicate * trainer.parallel_dims.dp_shard
         )
-        expected_local_rows = (
-            trainer.config.training.global_batch_size // data_parallel_size
-        )
+        expected_local_rows = expected_local_step_rows(trainer)
 
         for (block_index, boundary), captured in sorted(gradient_buffers.items()):
             forward_boundary = "input" if boundary == "grad_input" else "output"
@@ -616,6 +649,8 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
         return matches
 
     def save_final_norm_state(trainer: Any, capture: dict[str, Any] | None) -> None:
+        import torch
+
         if capture is None:
             return
         if not capture.get("clip_called"):
@@ -633,9 +668,7 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
         data_parallel_size = (
             trainer.parallel_dims.dp_replicate * trainer.parallel_dims.dp_shard
         )
-        expected_local_rows = (
-            trainer.config.training.global_batch_size // data_parallel_size
-        )
+        expected_local_rows = expected_local_step_rows(trainer)
         chunk_rows = output_chunks[0].shape[0]
         expected_calls = expected_local_rows // chunk_rows
         extra_calls = len(output_chunks) - expected_calls
@@ -670,6 +703,51 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
         preclip = next(iter(capture["preclip_grad"].values())).float()
         postclip = next(iter(capture["postclip_grad"].values())).float()
 
+        if capture.get("reduce_transition"):
+            for index, gradient in enumerate(capture["after_backward"]):
+                if gradient is not None:
+                    debugger.save(
+                        gradient.float(),
+                        f"final_norm_rank_local_grad_after_backward_{index}",
+                        save_backward=False,
+                    )
+            for boundary in ("before_reduce", "after_reduce"):
+                gradient = capture.get(boundary)
+                if gradient is not None:
+                    debugger.save(
+                        gradient.float(),
+                        f"final_norm_rank_local_grad_{boundary}",
+                        save_backward=False,
+                    )
+            presence = torch.tensor(
+                [
+                    float(gradient is not None)
+                    for gradient in (
+                        *capture["after_backward"],
+                        capture.get("before_reduce"),
+                        capture.get("after_reduce"),
+                    )
+                ],
+                dtype=torch.float32,
+                device=final_output.device,
+            )
+            debugger.save(
+                presence,
+                "final_norm_rank_local_grad_presence",
+                save_backward=False,
+            )
+            for microbatch, index in enumerate(expected_indexes):
+                reconstructed_microbatch = reconstruct_rmsnorm_weight_gradient(
+                    output_chunks[index],
+                    gradient_buffers[index],
+                    initial_weight,
+                )
+                debugger.save(
+                    reconstructed_microbatch,
+                    f"final_norm_boundary_reconstructed_grad_fp32_microbatch_{microbatch}",
+                    save_backward=False,
+                )
+
         if stage_dump_owner(trainer):
             values = {
                 "final_norm_input": final_input,
@@ -684,6 +762,93 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
             }
             for name, value in values.items():
                 debugger.save(value, name, save_backward=False)
+
+    def install_final_norm_reduce_transition_hooks(
+        trainer: Any,
+        capture: dict[str, Any] | None,
+    ) -> Any:
+        """Snapshot the rank-local final-norm gradient around PP reduction."""
+
+        if capture is None:
+            return None
+        schedule = trainer.pp_schedule
+        stages = getattr(schedule, "_stages", None)
+        if stages is None:
+            stage = getattr(schedule, "_stage", None)
+            stages = [] if stage is None else [stage]
+        if not stages:
+            raise RuntimeError("pipeline schedule exposes no stage for transition probe")
+
+        parameter = next(iter(capture["targets"].values()))
+        capture.update(
+            {
+                "reduce_transition": True,
+                "after_backward": [],
+                "before_reduce": None,
+                "after_reduce": None,
+                "reduce_called": False,
+            }
+        )
+        originals = []
+
+        def snapshot_local_gradient() -> Any | None:
+            import torch
+
+            gradient = parameter.grad
+            if gradient is None:
+                return None
+            try:
+                from torch.distributed.tensor import DTensor
+            except ImportError:  # pragma: no cover - older PyTorch compatibility
+                DTensor = ()
+            if isinstance(gradient, DTensor):
+                gradient = gradient.to_local()
+            if type(gradient).__name__ == "AsyncCollectiveTensor":
+                from torch.distributed._functional_collectives import wait_tensor
+
+                gradient = wait_tensor(gradient)
+            if not isinstance(gradient, torch.Tensor):
+                raise RuntimeError("final norm rank-local gradient is not a tensor")
+            return gradient.detach().clone()
+
+        for stage in stages:
+            original_backward = stage.backward_maybe_with_nosync
+            original_reduce = stage.perform_reduce_grad
+
+            @wraps(original_backward)
+            def backward_with_capture(
+                *backward_args: Any,
+                _original: Any = original_backward,
+                **backward_kwargs: Any,
+            ) -> Any:
+                result = _original(*backward_args, **backward_kwargs)
+                capture["after_backward"].append(snapshot_local_gradient())
+                return result
+
+            @wraps(original_reduce)
+            def reduce_with_capture(
+                *reduce_args: Any,
+                _original: Any = original_reduce,
+                **reduce_kwargs: Any,
+            ) -> Any:
+                if capture["reduce_called"]:
+                    raise RuntimeError("final norm transition observed multiple reductions")
+                capture["reduce_called"] = True
+                capture["before_reduce"] = snapshot_local_gradient()
+                result = _original(*reduce_args, **reduce_kwargs)
+                capture["after_reduce"] = snapshot_local_gradient()
+                return result
+
+            stage.backward_maybe_with_nosync = backward_with_capture
+            stage.perform_reduce_grad = reduce_with_capture
+            originals.append((stage, original_backward, original_reduce))
+
+        def restore() -> None:
+            for stage, original_backward, original_reduce in originals:
+                stage.backward_maybe_with_nosync = original_backward
+                stage.perform_reduce_grad = original_reduce
+
+        return restore
 
     def install_router_state_hooks(trainer: Any) -> None:
         instance_marker = "_glm5_msprobe_router_state_handles"
@@ -887,9 +1052,7 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
         data_parallel_size = (
             trainer.parallel_dims.dp_replicate * trainer.parallel_dims.dp_shard
         )
-        expected_local_rows = (
-            trainer.config.training.global_batch_size // data_parallel_size
-        )
+        expected_local_rows = expected_local_step_rows(trainer)
 
         for (layer, field), chunks in sorted(buffers.items()):
             if not chunks:
@@ -1159,6 +1322,7 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
             initial_parameters = snapshot_trainable_parameters(self)
         optimizer_capture = None
         final_norm_capture = None
+        restore_reduce_transition = None
         clip_captures: list[dict[str, Any]] = []
         distributed_utils = None
         original_clip_grad_norm = None
@@ -1187,6 +1351,16 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                     "clip_called": False,
                 }
                 clip_captures.append(final_norm_capture)
+                if (
+                    os.environ.get(MSPROBE_FINAL_NORM_REDUCE_TRANSITION_ENV)
+                    == "1"
+                ):
+                    restore_reduce_transition = (
+                        install_final_norm_reduce_transition_hooks(
+                            self,
+                            final_norm_capture,
+                        )
+                    )
         if clip_captures:
             from torchtitan.distributed import utils as distributed_utils
 
@@ -1257,6 +1431,8 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
             try:
                 if distributed_utils is not None:
                     distributed_utils.clip_grad_norm_ = original_clip_grad_norm
+                if restore_reduce_transition is not None:
+                    restore_reduce_transition()
                 debugger.stop()
             finally:
                 debugger.step()
