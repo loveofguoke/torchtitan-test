@@ -534,6 +534,14 @@ post-reduction tensor exactly: the first microbatch is reduced across both DP
 ranks, but each final shard contains only its owning rank's second-microbatch
 contribution.
 
+The action-ordered trace is identical across the two final-stage ranks. The
+second stage forward begins with the final-norm parameter in `SHARDED` state
+with 128 local elements, and no target-group pre-forward or unshard event
+occurs before the final norm executes. Its all-gather and transition back to
+`UNSHARDED`/256 occur only after that stage forward returns. The affected call
+is a normal forward, not an activation-checkpoint recomputation inside an
+autograd backward graph task.
+
 A device synchronization immediately before reduction and native FSDP sync on
 the final microbatch both leave the divergent tensor bitwise unchanged. A
 direct all-reduce of the already sharded gradients is also invalid because the

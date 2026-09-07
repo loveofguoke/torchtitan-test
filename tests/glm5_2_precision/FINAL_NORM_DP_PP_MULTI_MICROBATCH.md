@@ -69,6 +69,16 @@ weight size 256 and remains aligned with the single-card reconstruction
 (cosine 0.9999991, L2 residual 1.49864e-4). The two-microbatch case has cosine
 0.9749982 and L2 residual 3.12679e-2.
 
+The ordered FSDP lifecycle trace is identical on both final-stage ranks. At
+the second `STAGE F begin`, the final-norm parameter is already `SHARDED` with
+128 local elements. No target-group `pre_forward`, `unshard`, or
+`wait_for_unshard` event occurs before `FINAL NORM begin`; the final norm runs
+and returns with that shard. The `SHARDED -> UNSHARDED` transition occurs only
+after the stage forward has returned, making the all-gather too late for the
+second microbatch's computation. All three observed final-norm invocations
+occur outside an autograd graph task, so the 128-element call is not activation
+checkpoint backward recomputation.
+
 Three diagnostic ablations further constrain the mechanism:
 
 - Synchronizing the NPU immediately before `perform_reduce_grad()` produces a
@@ -85,9 +95,10 @@ Three diagnostic ablations further constrain the mechanism:
 
 - It is not established that the defect is NPU-specific.
 - It is not established that the defect is backend-independent.
-- It is not yet established why the second FSDP2-PP2 final-norm forward is not
-  rematerialized to the complete parameter, or whether the same parameter
-  lifecycle occurs on GPU.
+- It is not yet established which enclosing FSDP state's training-state
+  transition causes the target parameter group's pre-forward materialization
+  to occur after the second stage forward, or whether the same lifecycle occurs
+  on GPU.
 - The exact FSDP2-PP2 mechanism above must not yet be generalized to the DDP+PP
   result without an equivalent parameter-lifecycle trace.
 - MindStudio's native result column reports these saved tensors as `pass`; the
