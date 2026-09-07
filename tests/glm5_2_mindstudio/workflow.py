@@ -415,6 +415,61 @@ def _msprobe_toolchain_compatibility(
     }
 
 
+def _portable_capture_compatibility(value: dict[str, Any], root: Path) -> dict[str, Any]:
+    """Normalize provenance without changing historical capture manifests.
+
+    Installed package contents remain mandatory evidence. Console launchers and
+    RECORD include installation-specific paths and are not numerical contracts.
+    Git revisions are compared by runtime file content, not repository history.
+    """
+    result = json.loads(json.dumps(value))
+    for key in ("msprobe_executable_sha256", "lock_sha256", "profile_name"):
+        result.pop(key, None)
+    installed = result.get("installed_msprobe")
+    if isinstance(installed, dict):
+        installed.pop("console_scripts", None)
+        installed.pop("record", None)
+    for source in (result.get("msprobe_source"),):
+        if isinstance(source, dict):
+            for key in ("official_url", "selected_ref", "tag", "locked_version"):
+                source.pop(key, None)
+    projects = result.get("project_sources", {})
+    for name, source in projects.items():
+        if not isinstance(source, dict):
+            continue
+        repository = root if name == "torchtitan_test" else root.parent / "torchtitan"
+        prefix = "tests/" if name == "torchtitan_test" else "torchtitan/"
+        def relevant(path: str) -> bool:
+            return (
+                path.startswith(prefix)
+                and path.endswith((".py", ".json", ".toml", ".yaml", ".yml"))
+                and not any(part in path.split("/") for part in (
+                    "unit_tests", "reports", "runs", "explorations", "docs",
+                ))
+            )
+        try:
+            commit = source.get("commit")
+            if not commit or not all(c in "0123456789abcdef" for c in commit):
+                continue
+            entries = subprocess.run(
+                ["git", "-C", str(repository), "ls-tree", "-r", str(commit), "--", prefix],
+                check=True, capture_output=True, text=True,
+            ).stdout.splitlines()
+            runtime = [line for line in entries if "\t" in line and relevant(line.split("\t", 1)[1])]
+            if not runtime:
+                continue
+            status = str(source.get("status") or "")
+            dirty_runtime = any(relevant(line[3:]) for line in status.splitlines())
+            projects[name] = {
+                "runtime_tree_sha256": hashlib.sha256("\n".join(runtime).encode()).hexdigest(),
+                "dirty_runtime": source.get("dirty_tree_sha256") if dirty_runtime else None,
+            }
+        except (OSError, subprocess.CalledProcessError):
+            # Missing Git history cannot prove equivalence; keep strict evidence.
+            continue
+    return result
+
+
 def _capture_toolchain_compatibility(
     identity: dict[str, Any],
 ) -> dict[str, Any]:
@@ -2322,7 +2377,7 @@ def compare_official(
                 "official capture predates toolchain-bound artifacts; "
                 f"recapture it: {artifact}"
             )
-        capture_compatibility[selected_role] = compatibility
+        capture_compatibility[selected_role] = _portable_capture_compatibility(compatibility, root)
         artifact_inputs[selected_role] = {
             "manifest_sha256": sha256_file(artifact / "manifest.json"),
             "complete_sha256": sha256_file(artifact / "complete.json"),
@@ -2333,16 +2388,19 @@ def compare_official(
         and capture_compatibility["reference"]
         != capture_compatibility["candidate"]
     ):
+        diagnostic = report_directory / "toolchain_compatibility_diff.json"
+        write_json(diagnostic, capture_compatibility)
         raise MindStudioArtifactError(
             "reference and candidate captures used incompatible msProbe "
-            "toolchains; install the same pinned source revision and recapture"
+            "toolchains or runtime source content; inspect differences before deciding whether "
+            f"recapture is necessary: {diagnostic}"
         )
     comparison_toolchain = _accuracy_toolchain_metadata("compare")
     comparison_toolchain_identity = _comparison_toolchain_identity(
         comparison_toolchain
     )
-    comparison_msprobe_compatibility = _msprobe_toolchain_compatibility(
-        comparison_toolchain_identity
+    comparison_msprobe_compatibility = _portable_capture_compatibility(
+        _msprobe_toolchain_compatibility(comparison_toolchain_identity), root
     )
     for selected_role, compatibility in capture_compatibility.items():
         capture_msprobe_compatibility = {

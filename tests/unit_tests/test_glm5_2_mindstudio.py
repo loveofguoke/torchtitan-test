@@ -988,6 +988,39 @@ class TestMindStudioReport(unittest.TestCase):
 
 
 class TestMindStudioLifecycle(unittest.TestCase):
+    def test_portable_compatibility_ignores_install_paths_not_package_code(self):
+        from tests.glm5_2_mindstudio.workflow import _portable_capture_compatibility
+        a = {"msprobe_executable_sha256": "a", "installed_msprobe": {
+            "record": {"sha256": "a"}, "console_scripts": [{"sha256": "a"}],
+            "package_tree": {"sha256": "code"},
+        }}
+        b = json.loads(json.dumps(a))
+        b["msprobe_executable_sha256"] = "b"
+        b["installed_msprobe"]["record"] = {"sha256": "b"}
+        b["installed_msprobe"]["console_scripts"] = []
+        normalize = lambda value: _portable_capture_compatibility(value, Path("."))
+        self.assertEqual(normalize(a), normalize(b))
+        b["installed_msprobe"]["package_tree"]["sha256"] = "different code"
+        self.assertNotEqual(normalize(a), normalize(b))
+        self.assertIn("record", a["installed_msprobe"])
+
+    def test_portable_compatibility_uses_runtime_content_not_report_status(self):
+        from tests.glm5_2_mindstudio.workflow import _portable_capture_compatibility
+        a = {"project_sources": {"torchtitan_test": {
+            "commit": "a" * 40, "status": "?? mindstudio_reports/",
+            "dirty_tree_sha256": "a",
+        }}}
+        b = {"project_sources": {"torchtitan_test": {
+            "commit": "b" * 40, "status": " M tests/glm5_2_performance/explorations/reports/x.json",
+            "dirty_tree_sha256": "b",
+        }}}
+        with patch("tests.glm5_2_mindstudio.workflow.subprocess.run") as run:
+            run.return_value.stdout = "100644 blob abc\ttests/glm5_2_mindstudio/capture_training.py\n"
+            normalize = lambda value: _portable_capture_compatibility(value, Path("."))
+            self.assertEqual(normalize(a), normalize(b))
+            b["project_sources"]["torchtitan_test"]["status"] = " M tests/glm5_2_mindstudio/capture_training.py"
+            self.assertNotEqual(normalize(a), normalize(b))
+
     def setUp(self) -> None:
         self._toolchain_patch = patch(
             "tests.glm5_2_mindstudio.workflow._accuracy_toolchain_metadata",
