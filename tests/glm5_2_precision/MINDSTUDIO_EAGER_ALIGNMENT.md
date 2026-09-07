@@ -530,3 +530,96 @@ TorchTitan production code remain unchanged. Before choosing a production
 fix, the same microbatch crossing should be run on the matching GPU/PyTorch
 runtime; an NPU-only result belongs in the Turbo pipeline adaptation, while a
 backend-independent result should be addressed upstream.
+
+### GPU reproduction of the final-norm localization
+
+Use `single_vs_distributed_gpu_eager_benchmark.py`, not the historical
+1000-step GPU training-curve entry. The GPU entry has the same eager one-step
+contract as the NPU localization: seed 61, fixed global batches, local batch 2,
+sequence length 128, FP32 training with BF16 mixed-precision parameters, the
+seven public `PrecisionDebugger.save()` final-norm probes, and native
+`msprobe compare -m auto`.
+
+The minimum decisive run needs four GPUs and crosses the number of pipeline
+microbatches while keeping the model, input, optimizer step, and FSDP2-PP2
+composition fixed:
+
+| Case | Global batch | Outer accumulation | PP microbatches per schedule | Topology key |
+| --- | ---: | ---: | ---: | --- |
+| A | 4 | 1 | 2 | `pp2-fsdp2` |
+| B | 4 | 1 | 1 | `pp2-fsdp2-mb2` |
+| C | 16 | 4 | 1 | `pp2-fsdp2-mb2` |
+
+Cases A and B share the `gpu-final-norm-gb4` fixture and single-card capture.
+Case C uses a separate `gpu-final-norm-gb16` fixture because the global batch
+is part of the experiment contract. For every capture, pass
+`--msprobe-task tensor --msprobe-level debug --msprobe-final-norm-state`.
+
+From the `torchtitan-test` checkout, run cases A and B as follows (the entry
+invokes `torchrun`; do not wrap these commands in another launcher):
+
+```bash
+export GLM5_GPU_EAGER_GLOBAL_BATCH_SIZE=4
+export GLM5_GPU_EAGER_SHARED_REFERENCE_GROUP=gpu-final-norm-gb4
+ENTRY=tests/glm5_2_precision/single_vs_distributed_gpu_eager_benchmark.py
+
+python "$ENTRY" --data --resume \
+  --reference-topology single --candidate-topology pp2-fsdp2 \
+  --reference-visible-devices 0 --candidate-visible-devices 0,1,2,3
+
+python "$ENTRY" --capture-msprobe reference --repeat 1 --resume \
+  --reference-topology single --candidate-topology pp2-fsdp2 \
+  --reference-visible-devices 0 --candidate-visible-devices 0,1,2,3 \
+  --msprobe-task tensor --msprobe-level debug --msprobe-final-norm-state
+
+python "$ENTRY" --capture-msprobe candidate --repeat 1 --resume \
+  --reference-topology single --candidate-topology pp2-fsdp2 \
+  --reference-visible-devices 0 --candidate-visible-devices 0,1,2,3 \
+  --msprobe-task tensor --msprobe-level debug --msprobe-final-norm-state
+
+python "$ENTRY" --capture-msprobe candidate --repeat 1 --resume \
+  --reference-topology single --candidate-topology pp2-fsdp2-mb2 \
+  --reference-visible-devices 0 --candidate-visible-devices 0,1,2,3 \
+  --msprobe-task tensor --msprobe-level debug --msprobe-final-norm-state
+```
+
+Run case C in a new shell or after replacing the two environment values:
+
+```bash
+export GLM5_GPU_EAGER_GLOBAL_BATCH_SIZE=16
+export GLM5_GPU_EAGER_SHARED_REFERENCE_GROUP=gpu-final-norm-gb16
+ENTRY=tests/glm5_2_precision/single_vs_distributed_gpu_eager_benchmark.py
+
+python "$ENTRY" --data --resume \
+  --reference-topology single --candidate-topology pp2-fsdp2-mb2 \
+  --reference-visible-devices 0 --candidate-visible-devices 0,1,2,3
+
+python "$ENTRY" --capture-msprobe reference --repeat 1 --resume \
+  --reference-topology single --candidate-topology pp2-fsdp2-mb2 \
+  --reference-visible-devices 0 --candidate-visible-devices 0,1,2,3 \
+  --msprobe-task tensor --msprobe-level debug --msprobe-final-norm-state
+
+python "$ENTRY" --capture-msprobe candidate --repeat 1 --resume \
+  --reference-topology single --candidate-topology pp2-fsdp2-mb2 \
+  --reference-visible-devices 0 --candidate-visible-devices 0,1,2,3 \
+  --msprobe-task tensor --msprobe-level debug --msprobe-final-norm-state
+```
+
+After capture, compare the only `debug.json` under the reference
+`msprobe_dump/step0` with the only one under each candidate
+`msprobe_dump/step0`:
+
+```bash
+msprobe compare -m auto \
+  -gp /path/to/reference/msprobe_dump/step0/rank0/debug.json \
+  -tp /path/to/candidate/msprobe_dump/step0/rankN/debug.json \
+  -o /path/to/report-directory
+```
+
+The decision is based on
+`final_norm_parameter_preclip_grad`: if case A is exactly aligned on GPU while
+the matched NPU case remains at cosine 0.975016, the defect is NPU-specific.
+Cases B and C are controls and should remain exactly aligned. Also inspect the
+boundary reconstruction: it must agree with the single-card reference in all
+three cases, otherwise the run has diverged before the DP synchronization
+boundary and is not the same failure signature.

@@ -331,6 +331,25 @@ def test_canonical_eight_card_topologies_are_available() -> None:
     assert TOPOLOGIES["pp2-fsdp2-mb2"].pipeline_parallel_schedule == "GPipe"
 
 
+def test_gpu_eager_entry_matches_final_norm_localization_contract() -> None:
+    from tests.glm5_2_precision.single_vs_distributed_gpu_eager_benchmark import (
+        CONFIG,
+    )
+
+    assert CONFIG.reference.device_type == "cuda"
+    assert CONFIG.candidate.device_type == "cuda"
+    assert CONFIG.training.steps == 1
+    assert CONFIG.training.local_batch_size == 2
+    assert CONFIG.training.global_batch_size == 16
+    assert CONFIG.training.sequence_length == 128
+    assert CONFIG.training.seed == 61
+    assert CONFIG.training.training_dtype == "float32"
+    assert CONFIG.training.mixed_precision_param == "bfloat16"
+    assert CONFIG.training.fixed_global_batches
+    assert CONFIG.fixture_root == "gpu_eager_msprobe_fixtures"
+    assert CONFIG.run_root == "gpu_eager_msprobe_runs"
+
+
 def _resumable_config(root: Path) -> FormalExperimentConfig:
     (root / "data").mkdir()
     (root / "data" / "sample.txt").write_text("data\n", encoding="utf-8")
