@@ -611,7 +611,11 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
 
         handles = []
         discovered = 0
-        buffers: dict[str, list[Any]] = {"input": [], "output": []}
+        buffers: dict[str, list[Any]] = {
+            "input": [],
+            "output": [],
+            "weight_local_numel": [],
+        }
         gradient_buffers: dict[int, Any] = {}
         setattr(trainer, "_glm5_msprobe_final_norm_state_buffers", buffers)
         setattr(
@@ -642,6 +646,10 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                     invocation = len(buffers["output"])
                     buffers["input"].append(logical_tensor(args[0]).clone())
                     buffers["output"].append(logical_tensor(output).clone())
+                    weight = _module.weight
+                    if type(weight).__name__ == "DTensor":
+                        weight = weight.to_local()
+                    buffers["weight_local_numel"].append(weight.numel())
 
                     def capture_gradient(gradient: Any, *, call: int = invocation) -> Any:
                         gradient_buffers[call] = logical_tensor(gradient).clone()
@@ -660,6 +668,9 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
     def clear_final_norm_state_buffers(trainer: Any) -> None:
         getattr(trainer, "_glm5_msprobe_final_norm_state_buffers")["input"].clear()
         getattr(trainer, "_glm5_msprobe_final_norm_state_buffers")["output"].clear()
+        getattr(trainer, "_glm5_msprobe_final_norm_state_buffers")[
+            "weight_local_numel"
+        ].clear()
         getattr(
             trainer,
             "_glm5_msprobe_final_norm_state_gradient_buffers",
@@ -814,6 +825,15 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                     device=final_output.device,
                 ),
                 "final_norm_forced_native_last_backward_sync",
+                save_backward=False,
+            )
+            debugger.save(
+                torch.tensor(
+                    buffers["weight_local_numel"],
+                    dtype=torch.float32,
+                    device=final_output.device,
+                ),
+                "final_norm_forward_weight_local_numel",
                 save_backward=False,
             )
             internal_boundaries = (
