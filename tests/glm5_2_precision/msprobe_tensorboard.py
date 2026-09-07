@@ -1121,38 +1121,64 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                     setattr(stage.submod, name, setter)
 
         for stage in stages:
+            original_forward = stage.forward_maybe_with_nosync
             original_backward = stage.backward_maybe_with_nosync
             original_reduce = stage.perform_reduce_grad
-            target_group, target_fsdp_param = find_target_fsdp_group(stage)
-            group_originals = {}
+            group_hook_state: dict[str, Any] = {
+                "target_group": None,
+                "originals": {},
+            }
 
-            for method_name, event_code in FSDP_LIFECYCLE_EVENT_CODES.items():
-                original_group_method = getattr(target_group, method_name)
+            def install_group_lifecycle_hooks(
+                stage: Any,
+                _group_hook_state: dict[str, Any] = group_hook_state,
+            ) -> None:
+                if _group_hook_state["target_group"] is not None:
+                    return
+                target_group, target_fsdp_param = find_target_fsdp_group(stage)
+                _group_hook_state["target_group"] = target_group
 
-                @wraps(original_group_method)
-                def group_method_with_capture(
-                    *method_args: Any,
-                    _original_group_method: Any = original_group_method,
-                    _event_code: int = event_code,
-                    _fsdp_param: Any = target_fsdp_param,
-                    **method_kwargs: Any,
-                ) -> Any:
-                    before_state = sharded_state_code(_fsdp_param)
-                    before_numel = registered_parameter_local_numel(_fsdp_param)
-                    result = _original_group_method(*method_args, **method_kwargs)
-                    capture["fsdp_lifecycle_events"].append(
-                        [
-                            float(_event_code),
-                            before_state,
-                            sharded_state_code(_fsdp_param),
-                            before_numel,
-                            registered_parameter_local_numel(_fsdp_param),
-                        ]
+                for method_name, event_code in FSDP_LIFECYCLE_EVENT_CODES.items():
+                    original_group_method = getattr(target_group, method_name)
+
+                    @wraps(original_group_method)
+                    def group_method_with_capture(
+                        *method_args: Any,
+                        _original_group_method: Any = original_group_method,
+                        _event_code: int = event_code,
+                        _fsdp_param: Any = target_fsdp_param,
+                        **method_kwargs: Any,
+                    ) -> Any:
+                        before_state = sharded_state_code(_fsdp_param)
+                        before_numel = registered_parameter_local_numel(_fsdp_param)
+                        result = _original_group_method(*method_args, **method_kwargs)
+                        capture["fsdp_lifecycle_events"].append(
+                            [
+                                float(_event_code),
+                                before_state,
+                                sharded_state_code(_fsdp_param),
+                                before_numel,
+                                registered_parameter_local_numel(_fsdp_param),
+                            ]
+                        )
+                        return result
+
+                    _group_hook_state["originals"][method_name] = (
+                        original_group_method
                     )
-                    return result
+                    setattr(target_group, method_name, group_method_with_capture)
 
-                group_originals[method_name] = original_group_method
-                setattr(target_group, method_name, group_method_with_capture)
+            @wraps(original_forward)
+            def forward_with_capture(
+                *forward_args: Any,
+                _original: Any = original_forward,
+                _stage: Any = stage,
+                _install: Any = install_group_lifecycle_hooks,
+                **forward_kwargs: Any,
+            ) -> Any:
+                result = _original(*forward_args, **forward_kwargs)
+                _install(_stage)
+                return result
 
             @wraps(original_backward)
             def backward_with_capture(
@@ -1218,24 +1244,36 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 )
                 return result
 
+            stage.forward_maybe_with_nosync = forward_with_capture
             stage.backward_maybe_with_nosync = backward_with_capture
             stage.perform_reduce_grad = reduce_with_capture
             originals.append(
-                (stage, original_backward, original_reduce, target_group, group_originals)
+                (
+                    stage,
+                    original_forward,
+                    original_backward,
+                    original_reduce,
+                    group_hook_state,
+                )
             )
 
         def restore() -> None:
             for (
                 stage,
+                original_forward,
                 original_backward,
                 original_reduce,
-                target_group,
-                group_originals,
+                group_hook_state,
             ) in originals:
+                stage.forward_maybe_with_nosync = original_forward
                 stage.backward_maybe_with_nosync = original_backward
                 stage.perform_reduce_grad = original_reduce
-                for method_name, original_group_method in group_originals.items():
-                    setattr(target_group, method_name, original_group_method)
+                target_group = group_hook_state["target_group"]
+                if target_group is not None:
+                    for method_name, original_group_method in group_hook_state[
+                        "originals"
+                    ].items():
+                        setattr(target_group, method_name, original_group_method)
 
         return restore
 
