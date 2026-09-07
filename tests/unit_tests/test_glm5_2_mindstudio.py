@@ -1004,6 +1004,35 @@ class TestMindStudioLifecycle(unittest.TestCase):
         self._execution_patch.stop()
         self._toolchain_patch.stop()
 
+    def test_data_cli_resolves_root_before_storage_adoption(self) -> None:
+        config = _experiment()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            script = root / "tests" / "glm5_2_mindstudio" / "benchmark.py"
+            script.parent.mkdir(parents=True)
+            with (
+                patch.dict(os.environ, {"ASCEND_RT_VISIBLE_DEVICES": "7"}, clear=True),
+                patch.object(sys, "argv", [
+                    str(script), "--data", "--topology", "single",
+                    "--dump-task", "statistics", "--level", "mix",
+                    "--dump-steps", "0,1", "--repeat", "1",
+                ]),
+                patch(
+                    "tests.glm5_2_mindstudio.workflow._adopt_legacy_accuracy_storage"
+                ) as adopt,
+                patch(
+                    "tests.glm5_2_mindstudio.workflow.prepare_shared_fixture",
+                    return_value=root / "fixture",
+                ) as prepare,
+                redirect_stdout(io.StringIO()),
+            ):
+                run_mindstudio_cli(config, str(script))
+            self.assertEqual(adopt.call_args.args[0], root)
+            self.assertEqual(prepare.call_args.args[0], root)
+            overview = root / config.run_root / adopt.call_args.args[1].storage_name
+            self.assertTrue((overview / "README.md").is_file())
+            self.assertTrue((overview / "experiment.json").is_file())
+
     def test_force_dry_run_cli_actions_are_read_only(self) -> None:
         config = _experiment()
         with tempfile.TemporaryDirectory() as temporary_directory:

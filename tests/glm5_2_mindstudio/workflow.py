@@ -3003,6 +3003,7 @@ def run_mindstudio_cli(
         monitor=monitor_config,
         training=training,
     )
+    root = _root(script_path)
     if not args.dry_run:
         _adopt_legacy_accuracy_storage(root, config)
         write_experiment_overview(
@@ -3039,8 +3040,6 @@ def run_mindstudio_cli(
         default=("single",),
     )
     selected = tuple(registry[name] for name in selected_names)
-    root = _root(script_path)
-
     if args.data:
         endpoint = _data_endpoint(config, args.data_device)
         if args.dry_run:
