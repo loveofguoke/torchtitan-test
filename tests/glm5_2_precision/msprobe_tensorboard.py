@@ -901,6 +901,15 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 "final_norm_fsdp_lifecycle_events",
                 save_backward=False,
             )
+            debugger.save(
+                torch.tensor(
+                    capture["fsdp_context_events"],
+                    dtype=torch.float32,
+                    device=final_output.device,
+                ),
+                "final_norm_fsdp_context_events",
+                save_backward=False,
+            )
             for microbatch, index in enumerate(expected_indexes):
                 reconstructed_microbatch = reconstruct_rmsnorm_weight_gradient(
                     output_chunks[index],
@@ -971,6 +980,7 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 "fsdp_internal_before_reduce": None,
                 "fsdp_internal_after_reduce": None,
                 "fsdp_lifecycle_events": [],
+                "fsdp_context_events": [],
             }
         )
         originals = []
@@ -1153,6 +1163,8 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 "originals": {},
                 "module_handles": [],
                 "target_fsdp_param": None,
+                "root_state": None,
+                "owner_state": None,
             }
 
             def record_lifecycle_marker(
@@ -1173,6 +1185,33 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                         local_numel,
                     ]
                 )
+                root_state = state["root_state"]
+                owner_state = state["owner_state"]
+                target_group = state["target_group"]
+                state_context = root_state._state_ctx
+                iter_forward_root = state_context.iter_forward_root
+                iter_forward_root_role = (
+                    0.0
+                    if iter_forward_root is None
+                    else 1.0
+                    if iter_forward_root is root_state
+                    else 2.0
+                    if iter_forward_root is owner_state
+                    else 3.0
+                )
+                capture["fsdp_context_events"].append(
+                    [
+                        float(event_code),
+                        float(root_state._training_state.value),
+                        float(owner_state._training_state.value),
+                        float(target_group._training_state.value),
+                        sharded_state,
+                        local_numel,
+                        iter_forward_root_role,
+                        float(state_context.is_last_backward),
+                        float(state_context.post_backward_final_callback_queued),
+                    ]
+                )
 
             def install_group_lifecycle_hooks(
                 stage: Any,
@@ -1183,6 +1222,21 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 target_group, target_fsdp_param = find_target_fsdp_group(stage)
                 _group_hook_state["target_group"] = target_group
                 _group_hook_state["target_fsdp_param"] = target_fsdp_param
+                from torch.distributed.fsdp import fully_shard
+
+                root_state = fully_shard.state(stage.submod)
+                owner_matches = [
+                    state
+                    for state in root_state._state_ctx.all_states
+                    if target_group in state._fsdp_param_groups
+                ]
+                if len(owner_matches) != 1:
+                    raise RuntimeError(
+                        "could not uniquely resolve final norm FSDP owner state: "
+                        f"{len(owner_matches)}"
+                    )
+                _group_hook_state["root_state"] = root_state
+                _group_hook_state["owner_state"] = owner_matches[0]
 
                 for method_name, event_code in FSDP_LIFECYCLE_EVENT_CODES.items():
                     if event_code >= 10:
