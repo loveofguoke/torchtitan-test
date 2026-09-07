@@ -136,6 +136,46 @@ the single-card reference. This establishes independent norm/LM-head FSDP
 units as the preferred production-fix shape over an internal-state reset,
 subject to the still-deferred GPU attribution check.
 
+## PP4 replicated and sharded DP structural validation
+
+The independent norm/LM-head unit ablation was repeated on the previously
+divergent DDP2-PP4 and FSDP2-PP4 cases. Both use the same seed-61,
+global-batch-16 fixed fixture, outer accumulation 4, GPipe, and two
+microbatches per pipeline schedule. Thus the comparison crosses pipeline depth
+and separately exercises replicated and sharded data parallelism without
+changing the input or optimizer step.
+
+| Structural PP4 case | Loss | Global pre-clip grad norm | MindStudio rows | Final-norm pre-clip cosine |
+| --- | ---: | ---: | ---: | ---: |
+| DDP2-PP4 | 8.14223862 | 1.40195525 | 518/518 pass | 0.9999995317 |
+| FSDP2-PP4 | 8.14223862 | 1.40195525 | 518/518 pass | 0.9999995317 |
+
+The four native `msprobe compare -m auto` stage reports contain 116, 192,
+128, and 82 rows. All 508 parameter-state rows pass and cover all 127
+parameters across gradient presence, optimizer-consumed post-clip gradient,
+one-step update, and updated parameter. Concatenating each logical tensor
+family gives the same result for DDP2-PP4 and FSDP2-PP4:
+
+| Tensor family | Cosine | L2 residual | Maximum absolute residual |
+| --- | ---: | ---: | ---: |
+| Post-clip parameter gradient | 0.9999990563 | 1.37386e-3 | 1.13346e-4 |
+| One-step parameter update | 0.9997472272 | 7.19929e-2 | 1.59825e-3 |
+| Updated parameter | 0.9999999952 | 7.19929e-2 | 1.59825e-3 |
+
+The final-norm pre-clip gradient has candidate/reference norms
+0.10011485/0.10011815, L2 residual 9.69441e-5, and maximum absolute residual
+3.43323e-5. Both final-stage DP ranks report `ungrouped_fsdp_unit=1`, and all
+nine observed calls (one initialization probe plus eight training forwards)
+use the complete 256-element final-norm weight. DDP2-PP4 and FSDP2-PP4 are
+also bitwise identical across all 381 parameter gradient/update/updated-value
+tensors, the real final-norm pre-clip gradient, and its boundary
+reconstruction.
+
+This result shows that removing the erroneous grouped unit covers PP4 and both
+replicated and sharded DP paths. The issue remains open until the production
+change and its regression coverage are landed, and backend attribution remains
+unresolved until the matched GPU experiment runs.
+
 Three diagnostic ablations further constrain the mechanism:
 
 - Synchronizing the NPU immediately before `perform_reduce_grad()` produces a

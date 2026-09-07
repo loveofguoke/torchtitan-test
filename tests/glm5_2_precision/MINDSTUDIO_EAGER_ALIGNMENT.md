@@ -634,6 +634,44 @@ gradient has cosine 0.9999987 and L2 residual 1.76637e-4, while its boundary
 reconstruction is bitwise identical. This structural result favors separate
 norm and LM-head FSDP units over an internal-state reset for a production fix.
 
+The same structural ablation was then repeated on the two previously divergent
+eight-card PP4 cases, using the shared seed-61, global-batch-16 fixture. Both
+cases use GPipe with outer accumulation 4 and two microbatches in each
+pipeline schedule; only the data-parallel path changes between DDP replication
+and FSDP sharding. The candidate replaces the grouped norm/LM-head unit with
+independent units and does not reset any internal FSDP state.
+
+| Structural PP4 case | Loss | Global pre-clip grad norm | Native stage reports | Parameter-state rows |
+| --- | ---: | ---: | ---: | ---: |
+| DDP2-PP4 | 8.14223862 | 1.40195525 | 518/518 pass | 508/508 pass |
+| FSDP2-PP4 | 8.14223862 | 1.40195525 | 518/518 pass | 508/508 pass |
+
+For each case the four stage-owner reports contain 116, 192, 128, and 82
+rows. The 508 parameter-state rows cover gradient presence, post-clip
+optimizer-consumed gradient, one-step update, and updated value for all 127
+parameters. The remaining ten stage-3 rows are final-norm diagnostics; three
+new lifecycle markers are candidate-only and consequently have unsupported
+pairwise indicators, while the native result column still reports `pass`.
+
+The concatenated PP4 parameter tensors have post-clip gradient cosine
+0.9999990563 with L2 residual 1.37386e-3, update cosine 0.9997472272 with L2
+residual 7.19929e-2, and updated-parameter cosine 0.9999999952 with the same L2
+residual. The lowest individual update cosine is 0.9773005 and retains the
+known first-step AdamW sign-amplification signature; every update row passes
+MindStudio. The final-norm pre-clip gradient recovers from the original
+0.992461/0.992340 gap to cosine 0.9999995317, with candidate/reference norms
+0.10011485/0.10011815, L2 residual 9.69441e-5, and maximum absolute residual
+3.43323e-5.
+
+Both final-stage DP ranks record `ungrouped_fsdp_unit=1`; all nine observed
+final-norm forwards (one initialization probe and eight training forwards)
+see the complete 256-element weight. Moreover, the DDP2-PP4 and FSDP2-PP4
+candidates are bitwise identical across all 381 parameter tensors, the real
+final-norm pre-clip gradient, and its boundary reconstruction. This extends the
+structural mechanism validation from PP2 to PP4 and covers both replicated and
+sharded DP paths. It does not by itself resolve GPU/backend attribution or
+constitute a production-code fix.
+
 A device synchronization immediately before reduction and native FSDP sync on
 the final microbatch both leave the divergent tensor bitwise unchanged. A
 direct all-reduce of the already sharded gradients is also invalid because the

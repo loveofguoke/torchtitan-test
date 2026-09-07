@@ -120,13 +120,19 @@ def test_block_boundary_capture_uses_public_debug_tensor_mode(tmp_path: Path) ->
             final_norm_state=True,
             final_norm_reset_group_forward_state=True,
         )
-    with pytest.raises(ValueError, match="requires reduce-transition capture"):
+    with pytest.raises(ValueError, match="requires final-norm capture"):
         MsprobeCaptureConfig(
             task="tensor",
             level="debug",
-            final_norm_state=True,
             final_norm_ungroup_fsdp_unit=True,
         )
+    ungroup = MsprobeCaptureConfig(
+        task="tensor",
+        level="debug",
+        final_norm_state=True,
+        final_norm_ungroup_fsdp_unit=True,
+    )
+    assert ungroup.final_norm_ungroup_fsdp_unit
     transition = MsprobeCaptureConfig(
         task="tensor",
         level="debug",

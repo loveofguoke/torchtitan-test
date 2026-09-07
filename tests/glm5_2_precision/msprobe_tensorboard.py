@@ -266,13 +266,10 @@ class MsprobeCaptureConfig:
                 "final-norm group forward-state reset requires "
                 "reduce-transition capture"
             )
-        if (
-            self.final_norm_ungroup_fsdp_unit
-            and not self.final_norm_reduce_transition
-        ):
+        if self.final_norm_ungroup_fsdp_unit and not self.final_norm_state:
             raise ValueError(
                 "final-norm FSDP-unit ungrouping requires "
-                "reduce-transition capture"
+                "final-norm capture"
             )
 
     def payload(self, dump_path: str | Path) -> dict[str, Any]:
@@ -962,33 +959,6 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 "final_norm_forced_reset_group_forward_state",
                 save_backward=False,
             )
-            debugger.save(
-                torch.tensor(
-                    [float(capture["ungrouped_fsdp_unit"])],
-                    dtype=torch.float32,
-                    device=final_output.device,
-                ),
-                "final_norm_ungrouped_fsdp_unit",
-                save_backward=False,
-            )
-            debugger.save(
-                torch.tensor(
-                    buffers["weight_local_numel"],
-                    dtype=torch.float32,
-                    device=final_output.device,
-                ),
-                "final_norm_forward_weight_local_numel",
-                save_backward=False,
-            )
-            debugger.save(
-                torch.tensor(
-                    buffers["is_backward_recompute"],
-                    dtype=torch.float32,
-                    device=final_output.device,
-                ),
-                "final_norm_forward_is_backward_recompute",
-                save_backward=False,
-            )
             internal_boundaries = (
                 *capture["fsdp_internal_after_backward"],
                 capture["fsdp_internal_before_reduce"],
@@ -1041,6 +1011,34 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                     f"final_norm_boundary_reconstructed_grad_fp32_microbatch_{microbatch}",
                     save_backward=False,
                 )
+
+        debugger.save(
+            torch.tensor(
+                [float(capture["ungrouped_fsdp_unit"])],
+                dtype=torch.float32,
+                device=final_output.device,
+            ),
+            "final_norm_ungrouped_fsdp_unit",
+            save_backward=False,
+        )
+        debugger.save(
+            torch.tensor(
+                buffers["weight_local_numel"],
+                dtype=torch.float32,
+                device=final_output.device,
+            ),
+            "final_norm_forward_weight_local_numel",
+            save_backward=False,
+        )
+        debugger.save(
+            torch.tensor(
+                buffers["is_backward_recompute"],
+                dtype=torch.float32,
+                device=final_output.device,
+            ),
+            "final_norm_forward_is_backward_recompute",
+            save_backward=False,
+        )
 
         if stage_dump_owner(trainer):
             values = {
@@ -2061,6 +2059,10 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                         next(iter(targets.values()))
                     ).clone(),
                     "clip_called": False,
+                    "ungrouped_fsdp_unit": (
+                        os.environ.get(MSPROBE_FINAL_NORM_UNGROUP_FSDP_UNIT_ENV)
+                        == "1"
+                    ),
                 }
                 clip_captures.append(final_norm_capture)
                 if (
