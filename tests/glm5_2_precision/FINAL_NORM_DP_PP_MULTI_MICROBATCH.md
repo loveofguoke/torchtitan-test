@@ -176,6 +176,38 @@ replicated and sharded DP paths. The issue remains open until the production
 change and its regression coverage are landed, and backend attribution remains
 unresolved until the matched GPU experiment runs.
 
+## TP-composed structural validation
+
+The final uncovered matrix row, FSDP2-TP2-PP2, was repeated with independent
+norm and LM-head FSDP units. It uses the same seed-61, global-batch-16 fixed
+fixture, outer accumulation 4, and two microbatches per 1F1B schedule. The
+two stage-owner reports contain 244 and 274 rows, all `pass`; 508 rows cover
+gradient presence, post-clip gradient, update, and updated value for all 127
+parameters.
+
+| Metric | Structural result |
+| --- | ---: |
+| Loss | 8.14235306 |
+| Global pre-clip gradient norm | 1.40190768 |
+| Final-norm pre-clip cosine | 0.9999982582 |
+| Final-norm candidate/reference norm | 0.10011943 / 0.10011815 |
+| Final-norm L2 / maximum absolute residual | 1.86870e-4 / 6.14673e-5 |
+
+The original matrix's `norm.weight` gradient cosine was 0.992356. After the
+split, the concatenated logical parameter-gradient cosine is 0.9999813810,
+the one-step update cosine is 0.9948072954, and the updated-parameter cosine is
+0.9999999006. Their L2 residuals are 6.10228e-3, 3.26305e-1, and 3.26305e-1.
+The minimum individual update cosine of 0.9104859 retains the already confirmed
+TP first-step AdamW sign-amplification signature; every native comparison row
+passes.
+
+All four final-stage ranks report `ungrouped_fsdp_unit=1`. Every rank observes
+nine final-norm calls, and every call uses the complete 256-element weight.
+This closes the structural coverage gap: the correction now works with TP in
+addition to PP2/PP4 and replicated/sharded DP. It remains a test-only ablation
+until the production change is landed, and GPU/backend attribution is still
+unresolved.
+
 Three diagnostic ablations further constrain the mechanism:
 
 - Synchronizing the NPU immediately before `perform_reduce_grad()` produces a

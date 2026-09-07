@@ -672,6 +672,27 @@ structural mechanism validation from PP2 to PP4 and covers both replicated and
 sharded DP paths. It does not by itself resolve GPU/backend attribution or
 constitute a production-code fix.
 
+The remaining TP-composed case was then repeated with the same split:
+FSDP2-TP2-PP2, seed 61, global batch 16, outer accumulation 4, and two
+microbatches per 1F1B schedule. Native comparison reports 244/244 stage-0 rows
+and 274/274 stage-1 rows as `pass`; 508 rows again cover all 127 parameter
+states. The run reports loss 8.14235306 and global pre-clip gradient norm
+1.40190768. Its final-norm pre-clip gradient has cosine 0.9999982582,
+candidate/reference norms 0.10011943/0.10011815, L2 residual 1.86870e-4, and
+maximum absolute residual 6.14673e-5. This replaces the original matrix's
+0.992356 `norm.weight` gradient anomaly with the normal TP residual range.
+
+Across the concatenated logical tensors, post-clip parameter-gradient cosine
+is 0.9999813810, one-step update cosine is 0.9948072954, and updated-parameter
+cosine is 0.9999999006. Their L2 residuals are respectively 6.10228e-3,
+3.26305e-1, and 3.26305e-1. The minimum individual parameter-gradient cosine
+is 0.9982208; the minimum update cosine of 0.9104859 is the already confirmed
+TP first-step AdamW sign amplification, while every MindStudio row passes.
+All four final-stage ranks record `ungrouped_fsdp_unit=1`, and all nine
+observed final-norm forwards on every rank use the complete 256-element
+weight. The structural correction therefore composes with TP as well as both
+replicated and sharded DP paths.
+
 A device synchronization immediately before reduction and native FSDP sync on
 the final microbatch both leave the divergent tensor bitwise unchanged. A
 direct all-reduce of the already sharded gradients is also invalid because the
