@@ -472,10 +472,35 @@ def _msprobe_run_directory(
     role: str,
     endpoint: TrainingEndpoint,
     repeat: int,
+    capture_config: MsprobeCaptureConfig | None = None,
 ) -> Path:
-    return Path(
+    base = Path(
         str(_run_directory(root, config, role, endpoint, repeat)) + "-msprobe"
     )
+    if capture_config is None:
+        return base
+    if (
+        capture_config.task,
+        capture_config.level,
+    ) != ("statistics", "mix"):
+        return Path(
+            str(base)
+            + f"-{_slug(capture_config.task)}-{_slug(capture_config.level)}"
+        )
+    # Older framework revisions placed every capture profile at ``-msprobe``.
+    # Preserve a completed legacy tensor/debug diagnosis instead of replacing
+    # it when statistics/mix visualization is requested later.
+    legacy_manifest = base / "msprobe_capture.json"
+    if legacy_manifest.is_file():
+        legacy_capture = json.loads(
+            legacy_manifest.read_text(encoding="utf-8")
+        ).get("msprobe", {})
+        if (
+            legacy_capture.get("task"),
+            legacy_capture.get("level"),
+        ) != ("statistics", "mix"):
+            return Path(str(base) + "-statistics-mix")
+    return base
 
 
 def _msprobe_visualization_directory(
@@ -1066,7 +1091,7 @@ def capture_msprobe_endpoint(
         (fixture_directory / "fixture.json").read_text(encoding="utf-8")
     )
     run_directory = _msprobe_run_directory(
-        root, config, role, endpoint, repeat
+        root, config, role, endpoint, repeat, capture_config
     )
     dump_path = run_directory / "msprobe_dump"
     manifest_path = run_directory / "msprobe_capture.json"
@@ -1222,10 +1247,10 @@ def build_msprobe_visualization(
     if config.reference.num_nodes != 1 or config.candidate.num_nodes != 1:
         raise ValueError("msProbe TensorBoard visualization requires single-node runs")
     reference_run = _msprobe_run_directory(
-        root, config, "reference", config.reference, repeat
+        root, config, "reference", config.reference, repeat, MsprobeCaptureConfig()
     )
     candidate_run = _msprobe_run_directory(
-        root, config, "candidate", config.candidate, repeat
+        root, config, "candidate", config.candidate, repeat, MsprobeCaptureConfig()
     )
 
     def parallel_spec(topology: ParallelTopology) -> MsprobeParallelSpec:

@@ -48,7 +48,7 @@ MSPROBE_FINAL_NORM_UNGROUP_FSDP_UNIT_ENV = (
     "GLM5_MSPROBE_FINAL_NORM_UNGROUP_FSDP_UNIT"
 )
 SCHEMA = "torchtitan.glm5_2.msprobe_tensorboard"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 OPTIMIZER_DIAGNOSTIC_PARAMETERS = (
     "layers.3.attention.kv_norm.weight",
@@ -2252,6 +2252,42 @@ def _move_single_trend_database(source: Path, destination: Path) -> None:
     shutil.rmtree(source)
 
 
+def _move_single_graph_database(source: Path, destination: Path) -> None:
+    matches = list(source.glob("*.vis.db"))
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"expected one .vis.db from msprobe graph_visualize in {source}, "
+            f"got {matches}"
+        )
+    shutil.move(str(matches[0]), destination)
+    shutil.rmtree(source)
+
+
+def _parallel_graph_command(
+    *,
+    executable: str,
+    target: Path,
+    output: Path,
+    parallel: MsprobeParallelSpec,
+) -> list[str]:
+    return [
+        executable,
+        "graph_visualize",
+        "-tp",
+        str(target),
+        "-o",
+        str(output),
+        "--rank_size",
+        str(parallel.rank_size),
+        "--tp",
+        str(parallel.tensor_parallel),
+        "--pp",
+        str(parallel.pipeline_parallel),
+        "--vpp",
+        str(parallel.virtual_pipeline_parallel),
+    ]
+
+
 def build_tensorboard_assets(
     *,
     reference_dump: str | Path,
@@ -2263,13 +2299,12 @@ def build_tensorboard_assets(
     resume: bool = False,
     msprobe_executable: str | Path | None = None,
 ) -> Path:
-    """Build an official cross-partition msProbe graph comparison and trends."""
+    """Build all official msProbe graph and trend assets supported by a pair."""
 
     if force and resume:
         raise ValueError("force and resume are mutually exclusive")
     reference = validate_dump_directory(reference_dump).resolve()
     candidate = validate_dump_directory(candidate_dump).resolve()
-    validate_parallel_merge_pair(reference_parallel, candidate_parallel)
     reference_leaves = _dump_leaf_directories(reference)
     candidate_leaves = _dump_leaf_directories(candidate)
     reference_steps = {path.parent for path in reference_leaves}
@@ -2292,7 +2327,9 @@ def build_tensorboard_assets(
             if manifest_path.is_file() and all(path.is_file() for path in expected):
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 completed = (
-                    manifest.get("reference_dump") == str(reference)
+                    manifest.get("schema") == SCHEMA
+                    and manifest.get("schema_version") == SCHEMA_VERSION
+                    and manifest.get("reference_dump") == str(reference)
                     and manifest.get("candidate_dump") == str(candidate)
                     and bool(list(destination.glob("*.vis.db")))
                 )
@@ -2310,30 +2347,96 @@ def build_tensorboard_assets(
     executable = _resolve_executable("msprobe", msprobe_executable)
     commands: list[list[str]] = []
 
-    graph_command = [
-        executable,
-        "graph_visualize",
-        "-tp",
-        str(graph_candidate),
-        "-gp",
-        str(graph_reference),
-        "-o",
-        str(destination),
-        "--rank_size",
-        str(candidate_parallel.rank_size),
-        str(reference_parallel.rank_size),
-        "--tp",
-        str(candidate_parallel.tensor_parallel),
-        str(reference_parallel.tensor_parallel),
-        "--pp",
-        str(candidate_parallel.pipeline_parallel),
-        str(reference_parallel.pipeline_parallel),
-        "--vpp",
-        str(candidate_parallel.virtual_pipeline_parallel),
-        str(reference_parallel.virtual_pipeline_parallel),
-    ]
-    _run(graph_command)
-    commands.append(graph_command)
+    graph_mode: str
+    graph_reason: str | None = None
+    has_expert_parallel = (
+        reference_parallel.expert_parallel != 1
+        or candidate_parallel.expert_parallel != 1
+    )
+    has_incomplete_rank_set = (
+        len(reference_leaves) != reference_parallel.rank_size
+        or len(candidate_leaves) != candidate_parallel.rank_size
+    )
+    if has_expert_parallel or has_incomplete_rank_set:
+        # msProbe 26.1 does not merge EP graphs.  Building each rank through the
+        # same official CLI keeps every topology visualizable without claiming
+        # that an unsupported distributed merge is meaningful.
+        graph_mode = "msprobe_per_rank_standalone"
+        if has_expert_parallel:
+            graph_reason = "msProbe graph merging does not support Expert Parallelism"
+        else:
+            graph_reason = (
+                "msProbe graph merging requires a complete dump for every rank"
+            )
+        for label, leaves in (
+            ("reference", reference_leaves),
+            ("candidate", candidate_leaves),
+        ):
+            for leaf in leaves:
+                scratch = destination / f".{label}-{leaf.name}-graph"
+                command = [
+                    executable,
+                    "graph_visualize",
+                    "-tp",
+                    str(leaf),
+                    "-o",
+                    str(scratch),
+                ]
+                _run(command)
+                commands.append(command)
+                _move_single_graph_database(
+                    scratch, destination / f"{label}-{leaf.name}.vis.db"
+                )
+    elif reference_parallel.data_parallel != candidate_parallel.data_parallel:
+        # The official cross-partition comparator requires equal DP degrees.
+        # Build one standalone visualization database per endpoint instead.
+        graph_mode = "msprobe_parallel_merge_standalone"
+        graph_reason = (
+            "msProbe merged-graph comparison requires identical Data Parallelism"
+        )
+        for label, graph_path, parallel in (
+            ("reference", graph_reference, reference_parallel),
+            ("candidate", graph_candidate, candidate_parallel),
+        ):
+            scratch = destination / f".{label}-graph"
+            command = _parallel_graph_command(
+                executable=executable,
+                target=graph_path,
+                output=scratch,
+                parallel=parallel,
+            )
+            _run(command)
+            commands.append(command)
+            _move_single_graph_database(
+                scratch, destination / f"{label}.vis.db"
+            )
+    else:
+        validate_parallel_merge_pair(reference_parallel, candidate_parallel)
+        graph_mode = "msprobe_parallel_merge_compare"
+        graph_command = [
+            executable,
+            "graph_visualize",
+            "-tp",
+            str(graph_candidate),
+            "-gp",
+            str(graph_reference),
+            "-o",
+            str(destination),
+            "--rank_size",
+            str(candidate_parallel.rank_size),
+            str(reference_parallel.rank_size),
+            "--tp",
+            str(candidate_parallel.tensor_parallel),
+            str(reference_parallel.tensor_parallel),
+            "--pp",
+            str(candidate_parallel.pipeline_parallel),
+            str(reference_parallel.pipeline_parallel),
+            "--vpp",
+            str(candidate_parallel.virtual_pipeline_parallel),
+            str(reference_parallel.virtual_pipeline_parallel),
+        ]
+        _run(graph_command)
+        commands.append(graph_command)
 
     for label, dump_path in (("reference", reference), ("candidate", candidate)):
         scratch = destination / f".{label}-data2db"
@@ -2371,7 +2474,8 @@ def build_tensorboard_assets(
         "assets": sorted(path.name for path in destination.glob("*.db")),
         "commands": commands,
         "comparison": {
-            "kind": "msprobe_parallel_merge",
+            "kind": graph_mode,
+            "fallback_reason": graph_reason,
             "task": "statistics",
             "level": "mix",
             "steps": [0],

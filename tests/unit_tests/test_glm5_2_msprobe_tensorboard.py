@@ -22,12 +22,13 @@ from tests.glm5_2_precision.msprobe_tensorboard import (
 )
 
 
-def _dump(directory: Path) -> Path:
-    rank = directory / "step0" / "rank0"
-    rank.mkdir(parents=True)
-    (rank / "dump.json").write_text("{}\n", encoding="utf-8")
-    (rank / "construct.json").write_text("{}\n", encoding="utf-8")
-    (rank / "stack.json").write_text("{}\n", encoding="utf-8")
+def _dump(directory: Path, rank_size: int = 1) -> Path:
+    for rank_index in range(rank_size):
+        rank = directory / "step0" / f"rank{rank_index}"
+        rank.mkdir(parents=True)
+        (rank / "dump.json").write_text("{}\n", encoding="utf-8")
+        (rank / "construct.json").write_text("{}\n", encoding="utf-8")
+        (rank / "stack.json").write_text("{}\n", encoding="utf-8")
     return directory
 
 
@@ -397,22 +398,106 @@ def test_build_tensorboard_assets_runs_official_msprobe_commands(
     manifest = json.loads(
         (output / "msprobe_tensorboard.json").read_text(encoding="utf-8")
     )
+    assert manifest["schema_version"] == 3
     assert manifest["tensorboard"]["tabs"] == [
         "GRAPH_ASCEND",
         "TREND ANALYZER",
     ]
-    assert manifest["comparison"]["kind"] == "msprobe_parallel_merge"
+    assert manifest["comparison"]["kind"] == "msprobe_parallel_merge_compare"
 
 
-def test_parallel_merge_rejects_single_vs_data_parallel(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="identical Data Parallelism"):
-        build_tensorboard_assets(
-            reference_dump=_dump(tmp_path / "reference"),
-            candidate_dump=_dump(tmp_path / "candidate"),
-            output=tmp_path / "tensorboard",
-            reference_parallel=MsprobeParallelSpec(rank_size=1),
-            candidate_parallel=MsprobeParallelSpec(rank_size=4, data_parallel=4),
-        )
+def test_data_parallel_mismatch_builds_standalone_merged_graphs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reference = _dump(tmp_path / "reference")
+    candidate = _dump(tmp_path / "candidate", rank_size=4)
+    executable = tmp_path / "msprobe"
+    executable.write_text("", encoding="utf-8")
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str]) -> None:
+        commands.append(command)
+        if command[1] == "graph_visualize":
+            output = Path(command[command.index("-o") + 1])
+            output.mkdir(parents=True, exist_ok=True)
+            (output / "build.vis.db").write_bytes(b"graph")
+        else:
+            output = Path(command[command.index("--db") + 1])
+            output.mkdir(parents=True, exist_ok=True)
+            (output / "dump.trend.db").write_bytes(b"trend")
+
+    monkeypatch.setattr(msprobe_tensorboard, "_run", fake_run)
+    output = build_tensorboard_assets(
+        reference_dump=reference,
+        candidate_dump=candidate,
+        output=tmp_path / "tensorboard",
+        reference_parallel=MsprobeParallelSpec(rank_size=1),
+        candidate_parallel=MsprobeParallelSpec(rank_size=4, data_parallel=4),
+        msprobe_executable=executable,
+    )
+
+    assert (output / "reference.vis.db").is_file()
+    assert (output / "candidate.vis.db").is_file()
+    graph_commands = [
+        command for command in commands if command[1] == "graph_visualize"
+    ]
+    assert len(graph_commands) == 2
+    assert all("-gp" not in command for command in graph_commands)
+    assert graph_commands[0][graph_commands[0].index("--rank_size") + 1] == "1"
+    assert graph_commands[1][graph_commands[1].index("--rank_size") + 1] == "4"
+    manifest = json.loads(
+        (output / "msprobe_tensorboard.json").read_text(encoding="utf-8")
+    )
+    assert manifest["comparison"]["kind"] == "msprobe_parallel_merge_standalone"
+    assert (
+        "identical Data Parallelism"
+        in manifest["comparison"]["fallback_reason"]
+    )
+
+
+def test_expert_parallel_builds_every_rank_as_standalone_graph(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reference = _dump(tmp_path / "reference")
+    candidate = _dump(tmp_path / "candidate", rank_size=4)
+    executable = tmp_path / "msprobe"
+    executable.write_text("", encoding="utf-8")
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str]) -> None:
+        commands.append(command)
+        if command[1] == "graph_visualize":
+            output = Path(command[command.index("-o") + 1])
+            output.mkdir(parents=True, exist_ok=True)
+            (output / "build.vis.db").write_bytes(b"graph")
+        else:
+            output = Path(command[command.index("--db") + 1])
+            output.mkdir(parents=True, exist_ok=True)
+            (output / "dump.trend.db").write_bytes(b"trend")
+
+    monkeypatch.setattr(msprobe_tensorboard, "_run", fake_run)
+    output = build_tensorboard_assets(
+        reference_dump=reference,
+        candidate_dump=candidate,
+        output=tmp_path / "tensorboard",
+        reference_parallel=MsprobeParallelSpec(rank_size=1),
+        candidate_parallel=MsprobeParallelSpec(
+            rank_size=4, data_parallel=4, expert_parallel=4
+        ),
+        msprobe_executable=executable,
+    )
+
+    graph_commands = [
+        command for command in commands if command[1] == "graph_visualize"
+    ]
+    assert len(graph_commands) == 5
+    assert all("--rank_size" not in command for command in graph_commands)
+    assert len(list(output.glob("*.vis.db"))) == 5
+    manifest = json.loads(
+        (output / "msprobe_tensorboard.json").read_text(encoding="utf-8")
+    )
+    assert manifest["comparison"]["kind"] == "msprobe_per_rank_standalone"
+    assert "Expert Parallelism" in manifest["comparison"]["fallback_reason"]
 
 
 def test_tensorboard_command_is_local_by_default(tmp_path: Path) -> None:
@@ -487,3 +572,34 @@ def test_msprobe_capture_is_separate_from_formal_artifacts(
     assert result.name.endswith("-msprobe")
     assert (result / "msprobe_capture.json").is_file()
     assert not (tmp_path / config.artifact_root).exists()
+
+    debug_directory = workflow._msprobe_run_directory(
+        tmp_path,
+        config,
+        "reference",
+        endpoint,
+        1,
+        MsprobeCaptureConfig(task="tensor", level="debug"),
+    )
+    assert debug_directory.name.endswith("-msprobe-tensor-debug")
+    assert debug_directory != result
+
+    legacy_directory = workflow._msprobe_run_directory(
+        tmp_path, config, "candidate", endpoint, 1
+    )
+    legacy_directory.mkdir(parents=True)
+    (legacy_directory / "msprobe_capture.json").write_text(
+        json.dumps({"msprobe": {"task": "tensor", "level": "debug"}}),
+        encoding="utf-8",
+    )
+    migrated_statistics_directory = workflow._msprobe_run_directory(
+        tmp_path,
+        config,
+        "candidate",
+        endpoint,
+        1,
+        MsprobeCaptureConfig(),
+    )
+    assert migrated_statistics_directory.name.endswith(
+        "-msprobe-statistics-mix"
+    )

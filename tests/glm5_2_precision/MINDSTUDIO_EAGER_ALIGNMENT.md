@@ -28,13 +28,64 @@ Official references:
 | Reference versus candidate | Native msProbe route | Claim allowed |
 | --- | --- | --- |
 | Same rank layout | `msprobe compare` | Real-tensor accuracy when task is `tensor` |
-| Single versus TP/PP/VPP, with identical DP | `msprobe graph_visualize` | Statistics-level compatibility diagnostic |
-| Single versus DDP/FSDP/HSDP | None for whole-network cross-layout merge | Not a supported cross-topology claim because DP differs |
-| Any comparison involving CP or EP | None in graph merge | Not supported |
+| Single versus TP/PP/VPP, with identical DP | One merged `msprobe graph_visualize` comparison | Statistics-level compatibility diagnostic |
+| Single versus DDP/FSDP/HSDP | One standalone visualization database per side plus two trend databases | Both runs can be inspected, but no cross-layout merged-graph precision claim because DP differs |
+| Any comparison involving EP | One standalone graph per rank plus two trend databases | Every rank can be inspected, but graph merging and cross-layout merged-graph comparison are not supported |
+| Any comparison involving CP | Per-rank visualization only after CP metadata is represented by the test topology | No graph-merge claim |
 
 The 26.1 graph-merging documentation names Megatron and MindSpeed-LLM as the
 validated frameworks. A successful TorchTitan invocation does not by itself
 establish that every TorchTitan parallel operator was merged correctly.
+
+## Visualization contract shared by the test framework
+
+All formal precision entries call `run_formal_cli`, so they expose the same
+three-stage visualization workflow:
+
+1. Capture the reference with `--capture-msprobe reference` using the default
+   `task=statistics`, `level=mix` settings.
+2. Capture the candidate with `--capture-msprobe candidate` using the same
+   settings.
+3. Run `--visualize-msprobe`. The framework calls the package-provided
+   `msprobe graph_visualize` and `msprobe data2db` commands and prints the
+   package-provided TensorBoard launch command.
+
+The output directory always contains `reference.trend.db`,
+`candidate.trend.db`, at least one `.vis.db`, and
+`msprobe_tensorboard.json`. Open that directory with TensorBoard and use the
+`GRAPH_ASCEND` and `TREND ANALYZER` tabs. The selected graph strategy is
+recorded in `comparison.kind`:
+
+- `msprobe_parallel_merge_compare`: equal DP degree and no EP; the two sides
+  are merged and compared by msProbe.
+- `msprobe_parallel_merge_standalone`: unequal DP degree; each side is merged
+  into its own visualization database because msProbe forbids the paired merge
+  comparison. A DP side may contain multiple graph pages in that database.
+- `msprobe_per_rank_standalone`: EP is present; each rank is built separately
+  because msProbe does not support EP graph merging. This mode is also used
+  when a capture intentionally contains only a subset of ranks, since a merged
+  graph requires a complete rank set.
+
+Visualization capture is intentionally separate from tensor/debug diagnosis.
+The default statistics/mix run keeps the `-msprobe` suffix consumed by
+`--visualize-msprobe`; a tensor/debug run uses `-msprobe-tensor-debug`. This
+prevents a final-norm or parameter-state diagnosis from replacing the
+statistics/mix hierarchy required by `graph_visualize`.
+
+For example, after the common fixture has been prepared:
+
+```bash
+python "$ENTRY" --capture-msprobe reference --repeat 1 --resume [topology/device options]
+python "$ENTRY" --capture-msprobe candidate --repeat 1 --resume [topology/device options]
+python "$ENTRY" --visualize-msprobe --repeat 1 --resume [topology/device options]
+```
+
+Add `--serve-tensorboard` to the last command to launch it immediately. By
+default TensorBoard binds locally; use `--tensorboard-bind-all` only on a
+trusted network. These visualization artifacts are diagnostics and must not be
+used as the formal eager precision result because the hooks can add
+synchronization and because standalone fallback graphs do not compare values
+across different layouts.
 
 ## Current single versus TP4 run
 
