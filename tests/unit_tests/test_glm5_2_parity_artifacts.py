@@ -314,6 +314,21 @@ def test_token_first_discrete_results_use_fixture_batch_coordinates() -> None:
     assert "Batch 1, query position 1" in result.detail
 
 
+def test_discrete_scalar_vector_mismatch_reports_shape_without_crashing() -> None:
+    recorder = glm5_parity.ParityRecorder(glm5_parity.BF16)
+
+    result = recorder.discrete(
+        scope="end-to-end",
+        component="expert_load",
+        layer=1,
+        actual=torch.tensor(512),
+        expected=torch.tensor([61, 71, 57, 79, 32, 86, 82, 44]),
+    )
+
+    assert not result.passed
+    assert result.detail == "shape () != (8,)"
+
+
 @pytest.mark.parametrize("component", ["indexer", "router"])
 def test_bf16_topk_cutoff_difference_is_boundary_pass(
     component: str,
@@ -875,10 +890,19 @@ def test_routed_expert_load_supports_token_first_and_legacy_batches() -> None:
         [[True, False, True], [False, True, True]],
     )
     legacy_batches = token_first.reshape(1, 2, 3)
+    token_first_topk = torch.tensor(
+        [
+            [[True, False, False], [False, False, True]],
+            [[False, True, False], [False, False, True]],
+        ]
+    )
 
     expected = torch.tensor([1, 1, 2])
     assert torch.equal(glm5_parity._routed_expert_load(token_first), expected)
     assert torch.equal(glm5_parity._routed_expert_load(legacy_batches), expected)
+    assert torch.equal(
+        glm5_parity._routed_expert_load(token_first_topk), expected
+    )
 
 
 def test_titan_routed_expert_replay_uses_token_first_inputs() -> None:

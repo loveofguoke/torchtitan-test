@@ -1746,6 +1746,7 @@ class ParityRecorder:
         expected_cpu = self._cpu(expected)
         if (
             actual_cpu.ndim + 1 == expected_cpu.ndim
+            and actual_cpu.ndim >= 1
             and actual_cpu.shape[0] == expected_cpu.shape[0] * expected_cpu.shape[1]
             and actual_cpu.shape[1:] == expected_cpu.shape[2:]
         ):
@@ -1754,6 +1755,7 @@ class ParityRecorder:
             )
         elif (
             expected_cpu.ndim + 1 == actual_cpu.ndim
+            and expected_cpu.ndim >= 1
             and expected_cpu.shape[0] == actual_cpu.shape[0] * actual_cpu.shape[1]
             and expected_cpu.shape[1:] == actual_cpu.shape[2:]
         ):
@@ -1908,6 +1910,7 @@ class ParityRecorder:
                 expected_cpu = fold_token_first(expected_cpu)
         if (
             actual_cpu.ndim + 1 == expected_cpu.ndim
+            and actual_cpu.ndim >= 1
             and actual_cpu.shape[0] == expected_cpu.shape[0] * expected_cpu.shape[1]
             and actual_cpu.shape[1:] == expected_cpu.shape[2:]
         ):
@@ -1916,6 +1919,7 @@ class ParityRecorder:
             )
         elif (
             expected_cpu.ndim + 1 == actual_cpu.ndim
+            and expected_cpu.ndim >= 1
             and expected_cpu.shape[0] == actual_cpu.shape[0] * actual_cpu.shape[1]
             and expected_cpu.shape[1:] == actual_cpu.shape[2:]
         ):
@@ -3631,10 +3635,16 @@ class EndpointTrace:
                         trace.router_weights[label][layer_index] = (
                             weights.detach().cpu()
                         )
-                        trace.expert_load[label][layer_index] = F.one_hot(
-                            indices,
-                            num_classes=_module.num_experts,
-                        ).sum(dim=(0, 1, 2)).detach().cpu()
+                        trace.expert_load[label][layer_index] = (
+                            _routed_expert_load(
+                                F.one_hot(
+                                    indices,
+                                    num_classes=_module.num_experts,
+                                )
+                            )
+                            .detach()
+                            .cpu()
+                        )
 
                     handles.append(layer.mlp.gate.register_forward_hook(capture_hf_router))
                 elif getattr(layer, "moe_enabled", False):
@@ -3671,10 +3681,16 @@ class EndpointTrace:
                         trace.router_scores[label][layer_index] = (
                             scores_for_choice.detach().cpu()
                         )
-                        trace.expert_load[label][layer_index] = F.one_hot(
-                            indices,
-                            num_classes=_module.num_experts,
-                        ).sum(dim=(0, 1, 2)).detach().cpu()
+                        trace.expert_load[label][layer_index] = (
+                            _routed_expert_load(
+                                F.one_hot(
+                                    indices,
+                                    num_classes=_module.num_experts,
+                                )
+                            )
+                            .detach()
+                            .cpu()
+                        )
 
                     handles.append(layer.moe.router.register_forward_hook(capture_titan_router))
         try:
@@ -7489,10 +7505,9 @@ class Glm5ParitySuite(
             weights = weights.reshape(*hidden_states.shape[:2], -1)
             return routed, weights, indices, expert_load
 
-        expert_load = F.one_hot(
-            indices,
-            num_classes=num_experts,
-        ).sum(dim=(0, 1, 2))
+        expert_load = _routed_expert_load(
+            F.one_hot(indices, num_classes=num_experts)
+        )
         return routed, weights, indices, expert_load
 
     def _record_common_input_moe_replay(
