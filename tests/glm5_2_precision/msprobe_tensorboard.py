@@ -394,6 +394,10 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
     path = Path(value).resolve()
     if not path.is_file():
         raise FileNotFoundError(path)
+    config_payload = json.loads(path.read_text(encoding="utf-8"))
+    selected_steps = frozenset(config_payload.get("step", ()))
+    if any(not isinstance(step, int) or step < 0 for step in selected_steps):
+        raise ValueError("msProbe config step values must be non-negative integers")
 
     try:
         from msprobe.pytorch import PrecisionDebugger
@@ -2017,18 +2021,31 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
 
     @wraps(original_train_step)
     def train_step_with_msprobe(self: Any, *args: Any, **kwargs: Any) -> Any:
+        # TorchTitan increments ``self.step`` before train_step, while msProbe
+        # names the first captured iteration step0. An empty selection means
+        # every step, matching msProbe's native configuration semantics.
+        current_step = int(getattr(self, "step", 1)) - 1
+        capture_custom_state = not selected_steps or current_step in selected_steps
         if os.environ.get(MSPROBE_BLOCK_BOUNDARIES_ENV) == "1":
-            install_block_boundary_hooks(self)
-            if os.environ.get(MSPROBE_BLOCK_GLOBAL_STEP_ENV) == "1":
+            if capture_custom_state:
+                install_block_boundary_hooks(self)
+            if hasattr(self, "_glm5_msprobe_block_boundary_buffers"):
                 clear_block_boundary_buffers(self)
         if os.environ.get(MSPROBE_ROUTER_STATE_ENV) == "1":
-            install_router_state_hooks(self)
-            clear_router_state_buffers(self)
+            if capture_custom_state:
+                install_router_state_hooks(self)
+            if hasattr(self, "_glm5_msprobe_router_state_buffers"):
+                clear_router_state_buffers(self)
         if os.environ.get(MSPROBE_FINAL_NORM_STATE_ENV) == "1":
-            install_final_norm_state_hooks(self)
-            clear_final_norm_state_buffers(self)
+            if capture_custom_state:
+                install_final_norm_state_hooks(self)
+            if hasattr(self, "_glm5_msprobe_final_norm_state_buffers"):
+                clear_final_norm_state_buffers(self)
         initial_parameters = None
-        if os.environ.get(MSPROBE_PARAMETER_STATE_ENV) == "1":
+        if (
+            capture_custom_state
+            and os.environ.get(MSPROBE_PARAMETER_STATE_ENV) == "1"
+        ):
             initial_parameters = snapshot_trainable_parameters(self)
         optimizer_capture = None
         final_norm_capture = None
@@ -2036,7 +2053,10 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
         clip_captures: list[dict[str, Any]] = []
         distributed_utils = None
         original_clip_grad_norm = None
-        if os.environ.get(MSPROBE_OPTIMIZER_STATE_ENV) == "1":
+        if (
+            capture_custom_state
+            and os.environ.get(MSPROBE_OPTIMIZER_STATE_ENV) == "1"
+        ):
             if initial_parameters is None:
                 raise RuntimeError(
                     "optimizer-state capture requires parameter-state capture"
@@ -2050,7 +2070,10 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                 "clip_called": False,
             }
             clip_captures.append(optimizer_capture)
-        if os.environ.get(MSPROBE_FINAL_NORM_STATE_ENV) == "1":
+        if (
+            capture_custom_state
+            and os.environ.get(MSPROBE_FINAL_NORM_STATE_ENV) == "1"
+        ):
             targets = final_norm_target(self)
             if targets:
                 final_norm_capture = {
@@ -2129,11 +2152,20 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
         debugger.start(model=self.model_parts)
         try:
             result = original_train_step(self, *args, **kwargs)
-            if os.environ.get(MSPROBE_BLOCK_GLOBAL_STEP_ENV) == "1":
+            if (
+                capture_custom_state
+                and os.environ.get(MSPROBE_BLOCK_GLOBAL_STEP_ENV) == "1"
+            ):
                 save_global_step_boundaries(self)
-            if os.environ.get(MSPROBE_BLOCK_BACKWARD_ENV) == "1":
+            if (
+                capture_custom_state
+                and os.environ.get(MSPROBE_BLOCK_BACKWARD_ENV) == "1"
+            ):
                 save_global_step_gradients(self)
-            if os.environ.get(MSPROBE_ROUTER_STATE_ENV) == "1":
+            if (
+                capture_custom_state
+                and os.environ.get(MSPROBE_ROUTER_STATE_ENV) == "1"
+            ):
                 save_global_step_router_state(self)
             if initial_parameters is not None:
                 save_parameter_state(self, initial_parameters)

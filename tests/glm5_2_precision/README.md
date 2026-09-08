@@ -202,6 +202,21 @@ The msProbe path is deliberately separate from formal `--capture` runs.
 `PrecisionDebugger` hooks can add device synchronization, so these diagnostic
 runs must not be used for formal loss/gradient gates or throughput claims.
 
+For a real-tensor acceptance decision, capture both endpoints with identical
+`task=tensor`, `level=debug`, selected-step, and logical-boundary options, then
+run `--compare-msprobe` with those same options. The comparison action invokes
+native `msprobe compare -m auto` once for every owning candidate rank, applies
+the documented cosine/max-absolute rule as a backstop for native versions that
+leave standalone debug results initialized to `pass`, and fails on missing,
+unexpected, duplicated, structurally inconsistent, or unsupported tensors.
+The JSON and Markdown summaries are written under
+`<report_root>/<scenario>/<topology>/msprobe_native/repeat-N/`.
+
+When EP shares the TP/FSDP mesh, the framework records and excludes `_tp_sum`
+diagnostics automatically because TP all-reduce is not a valid global logical
+reconstruction in that layout. No other exclusion is implicit. Additional
+documented exclusions require an explicit `--msprobe-exclude-pattern`.
+
 Install a `mindstudio-probe` build containing both the `tb_graph_ascend` and
 `trend_analyzer` modules. Prepare the normal shared fixture first, then capture
 the reference and candidate. The default captures zero-based step 0 on every

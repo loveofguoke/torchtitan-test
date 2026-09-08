@@ -1322,6 +1322,11 @@ def run_formal_cli(
         choices=("reference", "candidate"),
         help="capture one endpoint with diagnostic msProbe hooks",
     )
+    actions.add_argument(
+        "--compare-msprobe",
+        action="store_true",
+        help="run native msProbe tensor comparison with a coverage gate",
+    )
     actions.add_argument("--compare", action="store_true", help="generate report")
     actions.add_argument(
         "--visualize-msprobe",
@@ -1442,6 +1447,20 @@ def run_formal_cli(
         help="shard final norm and LM head as independent FSDP units",
     )
     parser.add_argument(
+        "--msprobe-executable",
+        default="msprobe",
+        help="native msProbe executable used by --compare-msprobe",
+    )
+    parser.add_argument(
+        "--msprobe-exclude-pattern",
+        action="append",
+        default=[],
+        help=(
+            "regular expression for a documented, semantically invalid tensor; "
+            "repeat as needed"
+        ),
+    )
+    parser.add_argument(
         "--serve-tensorboard",
         action="store_true",
         help="serve the generated visualization after --visualize-msprobe",
@@ -1475,8 +1494,16 @@ def run_formal_cli(
         args.msprobe_final_norm_reset_group_forward_state,
         args.msprobe_final_norm_ungroup_fsdp_unit,
     )
-    if any(msprobe_capture_options) and not args.capture_msprobe:
-        parser.error("msProbe capture options require --capture-msprobe")
+    if any(msprobe_capture_options) and not (
+        args.capture_msprobe or args.compare_msprobe
+    ):
+        parser.error(
+            "msProbe capture options require --capture-msprobe or --compare-msprobe"
+        )
+    if args.msprobe_exclude_pattern and not args.compare_msprobe:
+        parser.error("--msprobe-exclude-pattern requires --compare-msprobe")
+    if args.msprobe_executable != "msprobe" and not args.compare_msprobe:
+        parser.error("--msprobe-executable requires --compare-msprobe")
     if (
         args.serve_tensorboard
         or args.tensorboard_bind_all
@@ -1536,6 +1563,41 @@ def run_formal_cli(
         training=training,
     )
     root = _root(script_path)
+    capture_config = None
+    if args.capture_msprobe or args.compare_msprobe:
+        steps = tuple(sorted(set(args.msprobe_step or (0,))))
+        ranks = tuple(sorted(set(args.msprobe_rank or ())))
+        capture_config = MsprobeCaptureConfig(
+            steps=steps,
+            ranks=ranks,
+            task=args.msprobe_task,
+            level=args.msprobe_level,
+            block_boundaries=args.msprobe_block_boundaries,
+            block_global_step=args.msprobe_block_global_step,
+            block_backward=args.msprobe_block_backward,
+            parameter_state=args.msprobe_parameter_state,
+            router_state=args.msprobe_router_state,
+            optimizer_state=args.msprobe_optimizer_state,
+            final_norm_state=args.msprobe_final_norm_state,
+            final_norm_reduce_transition=(
+                args.msprobe_final_norm_reduce_transition
+            ),
+            final_norm_pre_reduce_sync=(
+                args.msprobe_final_norm_pre_reduce_sync
+            ),
+            final_norm_sharded_grad_all_reduce=(
+                args.msprobe_final_norm_sharded_grad_all_reduce
+            ),
+            final_norm_native_last_backward_sync=(
+                args.msprobe_final_norm_native_last_backward_sync
+            ),
+            final_norm_reset_group_forward_state=(
+                args.msprobe_final_norm_reset_group_forward_state
+            ),
+            final_norm_ungroup_fsdp_unit=(
+                args.msprobe_final_norm_ungroup_fsdp_unit
+            ),
+        )
 
     if args.data:
         path = prepare_fixture(root, config, force=args.force, resume=args.resume)
@@ -1554,48 +1616,62 @@ def run_formal_cli(
         else:
             print(f"Captured artifact: {path}")
     elif args.capture_msprobe:
-        steps = tuple(sorted(set(args.msprobe_step or (0,))))
-        ranks = tuple(sorted(set(args.msprobe_rank or ())))
+        assert capture_config is not None
         path = capture_msprobe_endpoint(
             root,
             config,
             role=args.capture_msprobe,
             repeat=args.repeat,
-            capture_config=MsprobeCaptureConfig(
-                steps=steps,
-                ranks=ranks,
-                task=args.msprobe_task,
-                level=args.msprobe_level,
-                block_boundaries=args.msprobe_block_boundaries,
-                block_global_step=args.msprobe_block_global_step,
-                block_backward=args.msprobe_block_backward,
-                parameter_state=args.msprobe_parameter_state,
-                router_state=args.msprobe_router_state,
-                optimizer_state=args.msprobe_optimizer_state,
-                final_norm_state=args.msprobe_final_norm_state,
-                final_norm_reduce_transition=(
-                    args.msprobe_final_norm_reduce_transition
-                ),
-                final_norm_pre_reduce_sync=(
-                    args.msprobe_final_norm_pre_reduce_sync
-                ),
-                final_norm_sharded_grad_all_reduce=(
-                    args.msprobe_final_norm_sharded_grad_all_reduce
-                ),
-                final_norm_native_last_backward_sync=(
-                    args.msprobe_final_norm_native_last_backward_sync
-                ),
-                final_norm_reset_group_forward_state=(
-                    args.msprobe_final_norm_reset_group_forward_state
-                ),
-                final_norm_ungroup_fsdp_unit=(
-                    args.msprobe_final_norm_ungroup_fsdp_unit
-                ),
-            ),
+            capture_config=capture_config,
             force=args.force,
             resume=args.resume,
         )
         print(f"Captured msProbe diagnostics: {path}")
+    elif args.compare_msprobe:
+        assert capture_config is not None
+        from .msprobe_compare import compare_msprobe_captures
+
+        comparison_directory = root / config.report_root / config.scenario_name
+        if config.report_subdirectory:
+            comparison_directory /= config.report_subdirectory
+        comparison_directory /= f"msprobe_native/repeat-{args.repeat}"
+        exclude_patterns = list(args.msprobe_exclude_pattern)
+        if (
+            config.candidate.topology.expert_parallel_degree > 1
+            and not any(pattern == "_tp_sum" for pattern in exclude_patterns)
+        ):
+            exclude_patterns.append("_tp_sum")
+        path = compare_msprobe_captures(
+            reference_run=_msprobe_run_directory(
+                root,
+                config,
+                "reference",
+                config.reference,
+                args.repeat,
+                capture_config,
+            ),
+            candidate_run=_msprobe_run_directory(
+                root,
+                config,
+                "candidate",
+                config.candidate,
+                args.repeat,
+                capture_config,
+            ),
+            output_directory=comparison_directory,
+            repeat=args.repeat,
+            capture_config=capture_config,
+            exclude_patterns=exclude_patterns,
+            executable=args.msprobe_executable,
+            force=args.force,
+            resume=args.resume,
+        )
+        summary = json.loads(path.read_text(encoding="utf-8"))
+        print(
+            "Native msProbe result: "
+            f"{'PASS' if summary['passed'] else 'FAIL'}"
+        )
+        print(f"Native msProbe summary: {path}")
     elif args.visualize_msprobe:
         path = build_msprobe_visualization(
             root,
