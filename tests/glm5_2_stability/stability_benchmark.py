@@ -34,6 +34,7 @@ from tests.glm5_2_common.cli import (
     RunAttempt,
     archive_previous_output,
     assert_run_not_active,
+    print_runtime_log,
     reset_output_generation,
     run_all_topologies,
 )
@@ -855,6 +856,7 @@ def main() -> int:
         report=str(report_path),
     )
     print(f"Stability status: {status}\nReport: {report_path}", flush=True)
+    print_runtime_log(runtime_log)
     return 0 if status == "PASS" else 2 if status == "INSUFFICIENT_DURATION" else 1
 
 

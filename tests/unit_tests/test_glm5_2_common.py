@@ -7,11 +7,22 @@ from pathlib import Path
 import pytest
 
 from tests.glm5_2_common.cli import (
+    LoggedProcessError,
+    RunAttempt,
     replace_topology,
     reset_output_generation,
-    RunAttempt,
     write_experiment_overview,
 )
+
+
+def test_logged_process_error_ends_with_absolute_runtime_log(
+    tmp_path: Path,
+) -> None:
+    log_path = tmp_path / "run" / "runtime.log"
+
+    error = LoggedProcessError(7, ["trainer", "--run"], log_path=log_path)
+
+    assert str(error).endswith(f"runtime log: {log_path.resolve()}")
 
 
 def test_experiment_overview_is_human_and_machine_readable(tmp_path: Path) -> None:

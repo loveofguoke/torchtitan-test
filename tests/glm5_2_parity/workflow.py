@@ -27,6 +27,7 @@ from typing import Any
 from tests.glm5_2_parity.model_config import config_snapshot, load_model_config, model_dimensions
 
 from tests.glm5_2_common.cli import (
+    LoggedProcessError,
     RunAttempt,
     archive_previous_output,
     assert_run_not_active,
@@ -420,7 +421,7 @@ def _run_test(
             log_file.flush()
         return_code = process.wait()
     if return_code:
-        raise subprocess.CalledProcessError(return_code, command)
+        raise LoggedProcessError(return_code, command, log_path=log_path)
 
 
 def _print_configuration(

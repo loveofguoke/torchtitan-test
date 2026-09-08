@@ -24,6 +24,28 @@ from typing import Any, Sequence
 import uuid
 
 
+class LoggedProcessError(subprocess.CalledProcessError):
+    """A failed subprocess whose final exception line identifies its log."""
+
+    def __init__(
+        self,
+        returncode: int,
+        cmd: Sequence[str],
+        *,
+        log_path: Path,
+    ) -> None:
+        super().__init__(returncode, list(cmd))
+        self.log_path = log_path.resolve()
+
+    def __str__(self) -> str:
+        return f"{super().__str__().rstrip('.')}; runtime log: {self.log_path}"
+
+
+def print_runtime_log(log_path: Path) -> None:
+    """Print the absolute log location at a process-stage boundary."""
+    print(f"Runtime log: {log_path.resolve()}", flush=True)
+
+
 def write_experiment_overview(
     directory: Path,
     *,

@@ -31,8 +31,10 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from tests.glm5_2_common.cli import (
+    LoggedProcessError,
     RunAttempt,
     assert_run_not_active,
+    print_runtime_log,
     reset_output_generation,
     write_experiment_overview,
 )
@@ -986,8 +988,9 @@ def _run_process(
             print(line, end="")
             log.write(line)
         return_code = process.wait()
+    print_runtime_log(log_path)
     if return_code:
-        raise subprocess.CalledProcessError(return_code, list(command))
+        raise LoggedProcessError(return_code, command, log_path=log_path)
 
 
 def _recover_partial_run(run_directory: Path) -> Path:
@@ -1453,9 +1456,13 @@ def _run_msprof_analyze(
         "stderr": result.stderr,
         "analysis_toolchain": analysis_toolchain,
     }
-    _write_json(status_path or (run_directory / f"{name}.json"), status)
+    analysis_log = status_path or (run_directory / f"{name}.json")
+    _write_json(analysis_log, status)
+    print_runtime_log(analysis_log)
     if result.returncode:
-        raise subprocess.CalledProcessError(result.returncode, command)
+        raise LoggedProcessError(
+            result.returncode, command, log_path=analysis_log
+        )
     return status
 
 

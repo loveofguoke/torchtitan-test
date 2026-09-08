@@ -13,7 +13,12 @@ import subprocess
 import sys
 from typing import Any
 
-from tests.glm5_2_common.cli import RunAttempt, reset_output_generation
+from tests.glm5_2_common.cli import (
+    LoggedProcessError,
+    RunAttempt,
+    print_runtime_log,
+    reset_output_generation,
+)
 from tests.glm5_2_common.naming import config_name
 from tests.glm5_2_common.topology import (
     ParallelTopology,
@@ -62,8 +67,9 @@ def _run_logged(
             print(line, end="")
             stream.write(line)
         return_code = process.wait()
+    print_runtime_log(log)
     if return_code:
-        raise subprocess.CalledProcessError(return_code, command)
+        raise LoggedProcessError(return_code, command, log_path=log)
 
 
 def _nsys_version(nsys: str) -> str:
@@ -365,11 +371,13 @@ def _analyze(
         )
         print(f"Nsight Systems statistic log: {stats_log}")
         if result.returncode:
-            raise subprocess.CalledProcessError(
-                result.returncode, command, result.stdout, result.stderr
+            print_runtime_log(stats_log)
+            raise LoggedProcessError(
+                result.returncode, command, log_path=stats_log
             )
         output.write_text(result.stdout, encoding="utf-8")
         print(f"Nsight Systems statistic: {output}")
+        print_runtime_log(stats_log)
     manifest["analysis_status"] = "completed"
     manifest["sqlite"] = str(sqlite_path)
     manifest["statistics"] = [str(path) for path in expected]

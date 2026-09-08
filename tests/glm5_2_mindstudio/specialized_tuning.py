@@ -23,8 +23,10 @@ import sys
 from typing import Any, Sequence
 
 from tests.glm5_2_common.cli import (
+    LoggedProcessError,
     RunAttempt,
     assert_run_not_active,
+    print_runtime_log,
     reset_output_generation,
     write_experiment_overview,
 )
@@ -88,8 +90,9 @@ def _run_logged(command: Sequence[str], *, log: Path, env: dict[str, str]) -> No
             print(line, end="")
             stream.write(line)
         return_code = process.wait()
+    print_runtime_log(log)
     if return_code:
-        raise subprocess.CalledProcessError(return_code, normalized)
+        raise LoggedProcessError(return_code, normalized, log_path=log)
 
 
 def _tool_version(executable: str) -> str:

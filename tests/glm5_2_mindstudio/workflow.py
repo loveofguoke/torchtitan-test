@@ -19,9 +19,11 @@ from pathlib import Path
 from typing import Any, Literal, Sequence
 
 from tests.glm5_2_common.cli import (
+    LoggedProcessError,
     RunAttempt,
     archive_previous_output,
     assert_run_not_active,
+    print_runtime_log,
     reset_output_generation,
     write_experiment_overview,
 )
@@ -649,7 +651,9 @@ def _run_process(
         lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
         if lines:
             print("\n".join(lines[-80:]), file=sys.stderr)
-        raise subprocess.CalledProcessError(process.returncode, list(command))
+        print_runtime_log(log_path)
+        raise LoggedProcessError(process.returncode, command, log_path=log_path)
+    print_runtime_log(log_path)
 
 
 def _write_launch_contract(

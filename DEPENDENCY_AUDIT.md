@@ -94,8 +94,10 @@ changes recorded by the combination submission-readiness report.
 - An active recorded orchestrator PID blocks both retry and force deletion.
 - Finalizing an already completed training run must preserve the original
   training attempt identity in its artifact metadata.
-- Every subprocess stage prints and records its exact log path and resolved
-  command.
+- Every subprocess stage records its resolved command and exact log path. It
+  prints the absolute log path again after successful completion; a nonzero
+  subprocess exception includes that path in its final exception line so long
+  tracebacks cannot hide the log location.
 
 ## Required change procedure
 

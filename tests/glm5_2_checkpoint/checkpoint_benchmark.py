@@ -36,9 +36,11 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tests.glm5_2_common.cli import (
+    LoggedProcessError,
     RunAttempt,
     archive_previous_output,
     assert_run_not_active,
+    print_runtime_log,
     reset_output_generation,
 )
 from tests.glm5_2_common.device import resolve_accelerator
@@ -454,7 +456,8 @@ def _run_process(
                 f"fault-injected training exited successfully; see {log_path}"
             )
     elif return_code:
-        raise subprocess.CalledProcessError(return_code, command)
+        print_runtime_log(log_path)
+        raise LoggedProcessError(return_code, command, log_path=log_path)
     if cleanup["group_remaining"]:
         raise RuntimeError(
             "training process group still exists after TERM/KILL cleanup; "
@@ -465,6 +468,7 @@ def _run_process(
             "training worker processes still exist after token-scoped "
             f"TERM/KILL cleanup: {cleanup['token_remaining']}; see {log_path}"
         )
+    print_runtime_log(log_path)
     return {
         "return_code": return_code,
         "launcher_signal": signal_sent,

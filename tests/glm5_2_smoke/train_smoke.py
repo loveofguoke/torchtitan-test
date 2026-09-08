@@ -26,8 +26,10 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tests.glm5_2_common.cli import (  # noqa: E402
+    LoggedProcessError,
     RunAttempt,
     assert_run_not_active,
+    print_runtime_log,
     reset_output_generation,
 )
 from tests.glm5_2_common.topology import (  # noqa: E402
@@ -275,6 +277,7 @@ def _run_topology(
             json.dumps(record, indent=2) + "\n", encoding="utf-8"
         )
         attempt.update("failed")
+        print_runtime_log(runtime_log)
         raise
     record = {
         "status": "passed" if result.returncode == 0 else "failed",
@@ -298,8 +301,12 @@ def _run_topology(
         return_code=result.returncode,
     )
     if result.returncode:
-        raise subprocess.CalledProcessError(result.returncode, command)
+        print_runtime_log(runtime_log)
+        raise LoggedProcessError(
+            result.returncode, command, log_path=runtime_log
+        )
     print(f"Passed smoke topology {topology.name}: {run_directory}")
+    print_runtime_log(runtime_log)
     return run_directory
 
 

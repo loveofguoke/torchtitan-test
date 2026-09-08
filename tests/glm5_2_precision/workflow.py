@@ -34,9 +34,11 @@ import uuid
 from typing import Any, Literal, Sequence
 
 from tests.glm5_2_common.cli import (
+    LoggedProcessError,
     archive_previous_output,
     assert_run_not_active,
     process_is_running,
+    print_runtime_log,
     reset_output_generation,
 )
 from tests.glm5_2_common.naming import config_name, slug
@@ -946,6 +948,7 @@ def _run_process(
             text=True,
             check=False,
         )
+    print_runtime_log(log_path)
     if process.returncode:
         print(f"Process failed; runtime log: {log_path}", file=sys.stderr)
         try:
@@ -955,7 +958,7 @@ def _run_process(
         if lines:
             print("Last 80 log lines:", file=sys.stderr)
             print("\n".join(lines[-80:]), file=sys.stderr)
-        raise subprocess.CalledProcessError(process.returncode, list(command))
+        raise LoggedProcessError(process.returncode, command, log_path=log_path)
 
 
 def prepare_fixture(
