@@ -12,6 +12,9 @@ from torchtitanturbo.distributed.fsdp import (
     _cast_mixed_gradients_for_reduce,
     _patch_distributed_set_timeout,
 )
+from torchtitanturbo.models.glm5.final_norm_fsdp import (
+    apply_patch as apply_glm5_final_norm_fsdp_patch,
+)
 from torchtitanturbo.models.glm5.patch import (
     _fix_tp_only_routed_expert_grad_layout,
     apply_patch as apply_glm5_patch,
@@ -251,6 +254,67 @@ def test_glm5_uses_npu_safe_rmsnorm_after_turbo_patch() -> None:
     assert moe.MoE.forward is _npu_moe_forward
 
 
+def test_glm5_final_norm_and_lm_head_use_independent_fsdp_units() -> None:
+    import torchtitan.distributed.fsdp as fsdp
+    import torchtitan.models.glm5.parallelize as glm5_parallelize
+
+    calls = []
+    norm = object()
+    lm_head = object()
+
+    def fake_fully_shard(module_or_modules, *args, **kwargs):
+        calls.append((module_or_modules, args, kwargs))
+        return module_or_modules
+
+    def fake_apply(model, *args, **kwargs):
+        return fsdp.fully_shard(
+            [model.norm, model.lm_head],
+            "dp-mesh",
+            reshard_after_forward=False,
+        )
+
+    with (
+        patch.object(fsdp, "fully_shard", fake_fully_shard),
+        patch.object(glm5_parallelize, "apply_fsdp_to_decoder", fake_apply),
+    ):
+        apply_glm5_final_norm_fsdp_patch()
+        wrapped = glm5_parallelize.apply_fsdp_to_decoder
+        model = SimpleNamespace(
+            enable_weight_tying=False,
+            norm=norm,
+            lm_head=lm_head,
+        )
+
+        assert wrapped(model) is lm_head
+        assert calls == [
+            (
+                norm,
+                ("dp-mesh",),
+                {"reshard_after_forward": False},
+            ),
+            (
+                lm_head,
+                ("dp-mesh",),
+                {"reshard_after_forward": False},
+            ),
+        ]
+        assert fsdp.fully_shard is fake_fully_shard
+
+        calls.clear()
+        model.enable_weight_tying = True
+        wrapped(model)
+        assert calls == [
+            (
+                [norm, lm_head],
+                ("dp-mesh",),
+                {"reshard_after_forward": False},
+            )
+        ]
+
+        apply_glm5_final_norm_fsdp_patch()
+        assert glm5_parallelize.apply_fsdp_to_decoder is wrapped
+
+
 def test_tp_only_routed_expert_gradients_are_partial_on_tp() -> None:
     routing_counts = SpmdLayout(
         {
@@ -259,7 +323,7 @@ def test_tp_only_routed_expert_gradients_are_partial_on_tp() -> None:
             MeshAxisName.TP: spmd.R,
         }
     )
-    replicated_activation = dense_activation_placement(tp=spmd.R)
+    replicated_activation = dense_activation_placement(tp=spmd.R, cp=spmd.R)
     routed_cfg = ShardingConfig(
         in_src_shardings={
             "x_BLD": replicated_activation,
@@ -273,7 +337,7 @@ def test_tp_only_routed_expert_gradients_are_partial_on_tp() -> None:
             "topk_expert_ids_BLK": replicated_activation,
             "num_local_tokens_per_expert_E": routing_counts,
         },
-        out_src_shardings=dense_activation_placement(tp=spmd.P),
+        out_src_shardings=dense_activation_placement(tp=spmd.P, cp=spmd.R),
         local_map=LocalMapConfig(in_grad_placements=None),
     )
     moe_cfg = SimpleNamespace(
@@ -284,9 +348,9 @@ def test_tp_only_routed_expert_gradients_are_partial_on_tp() -> None:
 
     assert routed_cfg.local_map is not None
     assert routed_cfg.local_map.in_grad_placements == (
-        dense_activation_placement(tp=spmd.P),
-        dense_activation_placement(tp=spmd.P),
-        dense_activation_placement(tp=spmd.P),
+        dense_activation_placement(tp=spmd.P, cp=spmd.R),
+        dense_activation_placement(tp=spmd.P, cp=spmd.R),
+        dense_activation_placement(tp=spmd.P, cp=spmd.R),
         routing_counts,
     )
 
