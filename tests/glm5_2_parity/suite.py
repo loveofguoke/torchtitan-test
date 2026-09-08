@@ -4545,8 +4545,8 @@ class _ParityRouterPrecision:
         titan_model.init_states()
         titan_model.bfloat16()
         router = titan_model.layers["1"].moe.router
-        hidden_states = torch.randn(
-            1, 16, model_size.dim, dtype=torch.bfloat16
+        hidden_states_TD = torch.randn(
+            16, model_size.dim, dtype=torch.bfloat16
         )
         calls = 0
 
@@ -4557,13 +4557,13 @@ class _ParityRouterPrecision:
         hook = router.gate.register_forward_hook(count_gate_calls)
         try:
             _, _, scores = router(
-                hidden_states,
+                hidden_states_TD,
                 titan_model.layers["1"].moe.expert_bias_E,
             )
         finally:
             hook.remove()
 
-        expected_scores = torch.sigmoid(router.gate(hidden_states))
+        expected_scores = torch.sigmoid(router.gate(hidden_states_TD))
         self.assertEqual(calls, 1)
         torch.testing.assert_close(scores, expected_scores, rtol=0, atol=0)
 
@@ -4575,7 +4575,7 @@ class _ParityRouterPrecision:
             score_func="sigmoid",
         ).build()
         router.bfloat16()
-        hidden_states = torch.randn(1, 2, 3, dtype=torch.bfloat16)
+        hidden_states_TD = torch.randn(2, 3, dtype=torch.bfloat16)
         calls = 0
 
         def count_gate_calls(*_args) -> None:
@@ -4584,11 +4584,11 @@ class _ParityRouterPrecision:
 
         hook = router.gate.register_forward_hook(count_gate_calls)
         try:
-            _, _, scores = router(hidden_states)
+            _, _, scores = router(hidden_states_TD)
         finally:
             hook.remove()
         expected_scores = torch.sigmoid(
-            router.gate(hidden_states)
+            router.gate(hidden_states_TD)
         )
         self.assertEqual(calls, 1)
         torch.testing.assert_close(scores, expected_scores, rtol=0, atol=0)
@@ -7471,19 +7471,22 @@ class Glm5ParitySuite(
             num_experts = mlp.experts.num_experts
         else:
             moe = model.layers[str(layer_index)].moe
+            hidden_states_TD = hidden_states.flatten(0, 1)
             weights, indices, scores = moe.router(
-                hidden_states, moe.expert_bias_E
+                hidden_states_TD, moe.expert_bias_E
             )
             routing_map = torch.zeros_like(scores, dtype=torch.bool).scatter_(
                 -1, indices, True
             )
             expert_load = _routed_expert_load(routing_map)
             routed = moe.routed_experts(
-                hidden_states,
+                hidden_states_TD,
                 weights,
                 indices,
                 expert_load,
-            )
+            ).reshape_as(hidden_states)
+            indices = indices.reshape(*hidden_states.shape[:2], -1)
+            weights = weights.reshape(*hidden_states.shape[:2], -1)
             return routed, weights, indices, expert_load
 
         expert_load = F.one_hot(

@@ -4,6 +4,7 @@
 """CPU regression tests for portable GLM-5.2 numerical parity artifacts."""
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -878,6 +879,54 @@ def test_routed_expert_load_supports_token_first_and_legacy_batches() -> None:
     expected = torch.tensor([1, 1, 2])
     assert torch.equal(glm5_parity._routed_expert_load(token_first), expected)
     assert torch.equal(glm5_parity._routed_expert_load(legacy_batches), expected)
+
+
+def test_titan_routed_expert_replay_uses_token_first_inputs() -> None:
+    hidden_states = torch.arange(24, dtype=torch.float32).reshape(2, 3, 4)
+    observed_shapes: dict[str, tuple[int, ...]] = {}
+
+    class Router:
+        def __call__(self, x_TD, expert_bias_E):
+            observed_shapes["router"] = tuple(x_TD.shape)
+            indices = torch.tensor([[0, 1]], dtype=torch.int64).expand(6, 2)
+            weights = torch.full((6, 2), 0.5)
+            scores = torch.ones((6, 2))
+            return weights, indices, scores
+
+    class RoutedExperts:
+        def __call__(self, x_TD, weights_TK, indices_TK, expert_load_E):
+            observed_shapes["routed_experts"] = tuple(x_TD.shape)
+            assert tuple(weights_TK.shape) == (6, 2)
+            assert tuple(indices_TK.shape) == (6, 2)
+            assert torch.equal(expert_load_E, torch.tensor([6, 6]))
+            return x_TD
+
+    moe = SimpleNamespace(
+        router=Router(),
+        routed_experts=RoutedExperts(),
+        expert_bias_E=None,
+    )
+    model = SimpleNamespace(layers={"0": SimpleNamespace(moe=moe)})
+    endpoint = SimpleNamespace(
+        implementation="titan",
+        precision=SimpleNamespace(dtype=torch.float32),
+    )
+    suite = object.__new__(glm5_parity.TestGlm5Parity)
+    suite.device = torch.device("cpu")
+    suite._model = lambda _configured_endpoint: model
+
+    routed, weights, indices, expert_load = suite._run_routed_experts_on_input(
+        endpoint, 0, hidden_states
+    )
+
+    assert observed_shapes == {
+        "router": (6, 4),
+        "routed_experts": (6, 4),
+    }
+    assert tuple(routed.shape) == (2, 3, 4)
+    assert tuple(weights.shape) == (2, 3, 2)
+    assert tuple(indices.shape) == (2, 3, 2)
+    assert torch.equal(expert_load, torch.tensor([6, 6]))
 
 
 def test_offline_score_diagnostics_prefer_captured_scores(
