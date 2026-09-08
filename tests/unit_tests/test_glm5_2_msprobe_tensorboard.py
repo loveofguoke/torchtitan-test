@@ -6,6 +6,7 @@ import sys
 from types import ModuleType
 
 import pytest
+import torch
 
 from tests.glm5_2_precision import msprobe_tensorboard
 from tests.glm5_2_precision.msprobe_tensorboard import (
@@ -150,6 +151,32 @@ def test_block_boundary_capture_uses_public_debug_tensor_mode(tmp_path: Path) ->
     assert transition.final_norm_native_last_backward_sync
     assert transition.final_norm_reset_group_forward_state
     assert transition.final_norm_ungroup_fsdp_unit
+
+
+def test_block_boundary_extracts_hidden_state_from_glm5_tuple_output() -> None:
+    block_input = torch.randn(2, 3, 4, requires_grad=True)
+    hidden_states = torch.randn(2, 3, 4, requires_grad=True)
+    topk_indices = torch.zeros(2, 3, 2, dtype=torch.int32)
+
+    actual_input, actual_output = msprobe_tensorboard._block_boundary_tensors(
+        (block_input,),
+        (hidden_states, topk_indices),
+        block_index=3,
+    )
+
+    assert actual_input is block_input
+    assert actual_output is hidden_states
+
+
+def test_block_boundary_rejects_tuple_without_hidden_state_tensor() -> None:
+    block_input = torch.randn(2, 3, 4)
+
+    with pytest.raises(RuntimeError, match="hidden-state output is not a tensor"):
+        msprobe_tensorboard._block_boundary_tensors(
+            (block_input,),
+            ("not-a-tensor",),
+            block_index=3,
+        )
 
 
 def test_final_norm_fsdp_ungroup_ablation_splits_only_target_group(

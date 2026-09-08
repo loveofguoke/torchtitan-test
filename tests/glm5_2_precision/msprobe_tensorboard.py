@@ -116,6 +116,40 @@ def reconstruct_rmsnorm_weight_gradient(
     return (normalized * grad_output.float()).sum(dim=reduction_dims)
 
 
+def _block_boundary_tensors(
+    args: tuple[Any, ...],
+    output: Any,
+    *,
+    block_index: int,
+) -> tuple[Any, Any]:
+    """Return the input and hidden-state tensors for a GLM5 block call.
+
+    Some GLM5 implementations return ``(hidden_states, topk_indices)`` from a
+    transformer block so the decoder can reuse the auxiliary routing/indexing
+    result.  The block boundary is the hidden-state edge; router state is
+    captured separately by the router hooks.
+    """
+
+    import torch
+
+    if not args:
+        raise RuntimeError(f"GLM5 block {block_index} has no positional input")
+    block_input = args[0]
+    if not isinstance(block_input, torch.Tensor):
+        raise RuntimeError(f"GLM5 block {block_index} input is not a tensor")
+
+    block_output = output
+    if isinstance(output, (tuple, list)):
+        if not output:
+            raise RuntimeError(f"GLM5 block {block_index} returned an empty output")
+        block_output = output[0]
+    if not isinstance(block_output, torch.Tensor):
+        raise RuntimeError(
+            f"GLM5 block {block_index} hidden-state output is not a tensor"
+        )
+    return block_input, block_output
+
+
 @dataclass(frozen=True)
 class MsprobeParallelSpec:
     """Parallel metadata consumed by msProbe's graph-merging interface."""
@@ -502,10 +536,13 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
                     *,
                     index: int = block_index,
                 ) -> None:
-                    if not args:
-                        raise RuntimeError(f"GLM5 block {index} has no positional input")
-                    block_input = logical_tensor(args[0])
-                    block_output = logical_tensor(output)
+                    raw_block_input, raw_block_output = _block_boundary_tensors(
+                        args,
+                        output,
+                        block_index=index,
+                    )
+                    block_input = logical_tensor(raw_block_input)
+                    block_output = logical_tensor(raw_block_output)
                     if os.environ.get(MSPROBE_BLOCK_GLOBAL_STEP_ENV) == "1":
                         input_chunks = buffers.setdefault((index, "input"), [])
                         invocation = len(input_chunks)
@@ -544,8 +581,8 @@ def install_trainer_capture(config_path: str | Path | None = None) -> Any:
 
                                 value.register_hook(capture_gradient)
 
-                            register_gradient(args[0], "grad_input")
-                            register_gradient(output, "grad_output")
+                            register_gradient(raw_block_input, "grad_input")
+                            register_gradient(raw_block_output, "grad_output")
                     elif not dist.is_initialized() or dist.get_rank() == 0:
                         debugger.save(
                             block_input,
