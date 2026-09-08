@@ -116,8 +116,20 @@ def test_topology_validates_rank_product() -> None:
     )
     assert "--parallelism.data_parallel_shard_degree=2" in topology.command_args()
     assert "--parallelism.tensor_parallel_degree=4" in topology.command_args()
+    assert "--parallelism.no-enable-sequence-parallel" not in topology.command_args()
     with pytest.raises(ValueError, match="dense ranks"):
         ParallelTopology("invalid", 8, data_parallel_shard_degree=2)
+
+
+def test_topology_can_explicitly_disable_sequence_parallel() -> None:
+    topology = ParallelTopology(
+        "tp8-no-sp",
+        8,
+        tensor_parallel_degree=8,
+        enable_sequence_parallel=False,
+    )
+
+    assert "--parallelism.no-enable-sequence-parallel" in topology.command_args()
 
 
 def test_fixed_global_batches_are_identical_across_dp_degrees(

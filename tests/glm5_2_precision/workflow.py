@@ -70,6 +70,7 @@ class ParallelTopology:
     tensor_parallel_degree: int = 1
     pipeline_parallel_degree: int = 1
     expert_parallel_degree: int = 1
+    enable_sequence_parallel: bool = True
     pipeline_parallel_schedule: str = "1F1B"
     pipeline_parallel_microbatch_size: int = 1
     extra_args: tuple[str, ...] = ()
@@ -132,7 +133,7 @@ class ParallelTopology:
             f"--parallelism.pipeline_parallel_degree={self.pipeline_parallel_degree}",
             f"--parallelism.expert_parallel_degree={self.expert_parallel_degree}",
         ]
-        if self.tensor_parallel_degree > 1:
+        if self.tensor_parallel_degree > 1 and not self.enable_sequence_parallel:
             args.append("--parallelism.no-enable-sequence-parallel")
         if self.pipeline_parallel_degree > 1:
             args.append(
