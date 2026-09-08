@@ -3,15 +3,18 @@
 ## Status marker
 
 - Issue ID: `GLM5-DIST-FINAL-NORM-MULTIMB`
-- Status: **OPEN**
-- Backend attribution: **UNRESOLVED**
-- GPU validation: **DEFERRED**
+- Status: **RESOLVED BY STRUCTURAL TURBO FIX**
+- Backend attribution: **CURRENT NPU SOFTWARE PATH**
+- GPU validation: **COMPLETED**
 - Scope: eager mode only; `torch.compile` is excluded
 
-Do not describe this issue as an NPU-specific defect. The divergence is
-confirmed on the tested NPU runtime, but there is no valid matched GPU result
-for the decisive DP+PP microbatch crossing. It may be NPU-specific or it may be
-a backend-independent PyTorch/TorchTitan behavior.
+The matched four-GPU eager experiment does not reproduce the NPU failure:
+the original grouped unit keeps the complete 256-element final-norm weight and
+its real pre-clip gradient passes MindStudio comparison. The defect is therefore
+classified as specific to the current NPU software execution path, not as a
+backend-independent TorchTitan pipeline defect. This attribution does not by
+itself identify whether the owning component is TorchTitanTurbo, `torch_npu`,
+or the NPU FSDP/DTensor runtime, and it is not a claim about NPU hardware.
 
 ## Confirmed observation
 
@@ -133,8 +136,7 @@ update row remains a native MindStudio `pass`. The final-norm pre-clip gradient
 itself has cosine 0.9999987, L2 residual 1.76637e-4, and maximum absolute
 residual 4.57764e-5, while its boundary reconstruction is bitwise identical to
 the single-card reference. This establishes independent norm/LM-head FSDP
-units as the preferred production-fix shape over an internal-state reset,
-subject to the still-deferred GPU attribution check.
+units as the preferred production-fix shape over an internal-state reset.
 
 ## PP4 replicated and sharded DP structural validation
 
@@ -172,9 +174,7 @@ tensors, the real final-norm pre-clip gradient, and its boundary
 reconstruction.
 
 This result shows that removing the erroneous grouped unit covers PP4 and both
-replicated and sharded DP paths. The issue remains open until the production
-change and its regression coverage are landed, and backend attribution remains
-unresolved until the matched GPU experiment runs.
+replicated and sharded DP paths.
 
 ## TP-composed structural validation
 
@@ -204,9 +204,8 @@ passes.
 All four final-stage ranks report `ungrouped_fsdp_unit=1`. Every rank observes
 nine final-norm calls, and every call uses the complete 256-element weight.
 This closes the structural coverage gap: the correction now works with TP in
-addition to PP2/PP4 and replicated/sharded DP. It remains a test-only ablation
-until the production change is landed, and GPU/backend attribution is still
-unresolved.
+addition to PP2/PP4 and replicated/sharded DP. This validated structure is now
+implemented by the Turbo GLM-5 patch.
 
 Three diagnostic ablations further constrain the mechanism:
 
@@ -220,38 +219,45 @@ Three diagnostic ablations further constrain the mechanism:
   different parameter coordinates; it worsens the final-norm L2 residual to
   3.81001e-2 and is not a fix.
 
-## What is not established
+## Completed GPU attribution
 
-- It is not established that the defect is NPU-specific.
-- It is not established that the defect is backend-independent.
-- It is not yet established whether the same grouped-FSDP lifecycle occurs on
-  GPU. The tested NPU mechanism is confirmed, but backend attribution remains
-  unresolved.
-- The exact FSDP2-PP2 mechanism above must not yet be generalized to the DDP+PP
-  result without an equivalent parameter-lifecycle trace.
-- MindStudio's native result column reports these saved tensors as `pass`; the
-  stricter investigation is based on the non-unit cosine and material gradient
-  norm discrepancy.
+The decisive GPU run used four NVIDIA H20 devices, eager mode, seed 61, global
+batch 4, sequence length 128, FP32 training with BF16 parameters, one training
+step, and the original grouped norm/LM-head unit. It compared the same two
+pipeline-microbatch crossing with a one-microbatch-per-schedule control.
 
-Earlier GPU distributed runs do not close this question. The matching
-PP2-FSDP2 run did not complete, and the successful historical GPU runs did not
-capture the final-norm boundary reconstruction and real pre-clip gradient.
+| GPU case | PP microbatches per schedule | Pre-clip cosine | L2 residual | Maximum absolute residual |
+| --- | ---: | ---: | ---: | ---: |
+| FSDP2-PP2 crossing | 2 | 0.999999 | 1.82044e-4 | 5.34058e-5 |
+| FSDP2-PP2 control | 1 | 1.000000 | 0 | 0 |
 
-## Deferred validation
+All GPU final-norm forward observations use the complete 256-element weight.
+The diagnostic count vector has shape three on the pipeline candidate and two
+on the single-card reference because the pipeline invokes one additional
+forward probe; this cardinality mismatch is not a sharded-weight signature.
+The NPU failure's decisive 128-element forward and cosine 0.975016 are absent.
 
-When GPU execution is resumed, run the matched eager, one-step, fixed-fixture
-crossing:
+## Turbo production-fix validation
 
-1. FSDP2-PP2, global batch 4, two PP microbatches per schedule.
-2. FSDP2-PP2, global batch 4, one PP microbatch per schedule.
-3. FSDP2-PP2, global batch 16, outer accumulation 4, one PP microbatch per
-   schedule.
+Turbo now intercepts the GLM-5 decoder FSDP wrapping and replaces only the
+untied `[model.norm, model.lm_head]` grouped unit with two independent units.
+It preserves the original mesh, mixed-precision, reshard, and offload arguments,
+and leaves weight-tied models on the upstream grouping path. No internal FSDP
+state is reset.
 
-Only after those results are available should the attribution be changed:
+The production path was rerun on NPU without the test-only ungroup switch. The
+two MindStudio stage reports contain 244 and 274 rows. All 508 parameter-state
+rows pass; the only two non-pass rows are diagnostic call-count vectors with
+pipeline/single-card shapes three/two. Every candidate final-norm call uses 256
+elements. The real final-norm pre-clip gradient has cosine 0.9999986814, L2
+residual 1.75572e-4, and maximum absolute residual 4.57764e-5.
 
-- GPU aligned and NPU divergent: classify as NPU-specific and fix in Turbo.
-- GPU divergent with the same signature: classify as backend-independent and
-  address the PyTorch/TorchTitan path.
+| Tensor family | Cosine | L2 residual | Maximum absolute residual |
+| --- | ---: | ---: | ---: |
+| Post-clip parameter gradient | 0.9999972832 | 2.33100e-3 | 9.81919e-5 |
+| One-step parameter update | 0.9994062768 | 1.10351e-1 | 1.59822e-3 |
+| Updated parameter | 0.9999999886 | 1.10351e-1 | 1.59822e-3 |
 
-Until then, retain the labels **OPEN**, **BACKEND ATTRIBUTION UNRESOLVED**, and
-**GPU VALIDATION DEFERRED**.
+The remaining scope boundary is component ownership inside the NPU software
+stack. The evidence supports a Turbo workaround, but does not isolate the
+underlying implementation defect to `torch_npu` versus NPU FSDP/DTensor.

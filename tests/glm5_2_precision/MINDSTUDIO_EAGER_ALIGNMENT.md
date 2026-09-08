@@ -521,13 +521,12 @@ deep-pipeline fixture.
 
 ### Final RMSNorm gradient localization
 
-> **Issue marker — `GLM5-DIST-FINAL-NORM-MULTIMB`: OPEN; backend attribution
-> UNRESOLVED; GPU validation DEFERRED.** The divergence is confirmed on the
-> tested NPU runtime, but it is not established whether the cause is
-> NPU-specific or backend-independent. Do not cite this section as proof of an
-> NPU-specific defect. See
+> **Issue marker — `GLM5-DIST-FINAL-NORM-MULTIMB`: RESOLVED BY STRUCTURAL
+> TURBO FIX; current NPU software path; GPU validation COMPLETED.** The matched
+> GPU crossing keeps the complete final-norm weight and does not reproduce the
+> material NPU gradient divergence. See
 > [FINAL_NORM_DP_PP_MULTI_MICROBATCH.md](FINAL_NORM_DP_PP_MULTI_MICROBATCH.md)
-> for the bounded claim and deferred validation criteria.
+> for the complete mechanism, attribution, and production-fix evidence.
 
 A focused public `PrecisionDebugger.save()` probe captures seven tensors at
 the final RMSNorm boundary: input, output, output gradient, an FP32 weight
@@ -669,8 +668,8 @@ see the complete 256-element weight. Moreover, the DDP2-PP4 and FSDP2-PP4
 candidates are bitwise identical across all 381 parameter tensors, the real
 final-norm pre-clip gradient, and its boundary reconstruction. This extends the
 structural mechanism validation from PP2 to PP4 and covers both replicated and
-sharded DP paths. It does not by itself resolve GPU/backend attribution or
-constitute a production-code fix.
+sharded DP paths. The matched GPU result below supplies backend attribution,
+and the same structure is now implemented in the Turbo GLM-5 patch.
 
 The remaining TP-composed case was then repeated with the same split:
 FSDP2-TP2-PP2, seed 61, global batch 16, outer accumulation 4, and two
@@ -696,8 +695,7 @@ replicated and sharded DP paths.
 A device synchronization immediately before reduction and native FSDP sync on
 the final microbatch both leave the divergent tensor bitwise unchanged. A
 direct all-reduce of the already sharded gradients is also invalid because the
-two ranks' local tensors represent different parameter coordinates. Backend
-attribution remains unresolved until the matched GPU trace is available.
+two ranks' local tensors represent different parameter coordinates.
 
 In this runtime, both TorchTitan DDP replication and FSDP sharding are
 composable `FSDPModule` variants inside the pipeline stage. PyTorch's
@@ -705,24 +703,51 @@ composable `FSDPModule` variants inside the pipeline stage. PyTorch's
 microbatch, and `perform_reduce_grad()` later enables it and manually invokes
 the FSDP parameter-group `post_backward()` hooks. The controlled NPU results
 localize the first observed divergence to that multi-microbatch
-accumulation-to-`REDUCE_GRAD` transition. They do not establish which backend
-or shared implementation is responsible. Loss normalization is not
+accumulation-to-`REDUCE_GRAD` transition. Loss normalization is not
 responsible for the observed NPU signature: `scale_grads=False` is consistent
 with the globally normalized summed loss, and the independently reconstructed
 boundary gradient matches the single-card reference.
 
-This localization adds test diagnostics and topology controls only. Turbo and
-TorchTitan production code remain unchanged. Before choosing a production
-fix, the same microbatch crossing should be run on the matching GPU/PyTorch
-runtime; an NPU-only result belongs in the Turbo pipeline adaptation, while a
-backend-independent result should be addressed upstream.
+The matched GPU experiment below attributes the failure to the current NPU
+software path. The validated independent-unit structure is implemented in the
+Turbo GLM-5 patch; TorchTitan production code remains unchanged.
+
+### Turbo production-fix closure
+
+The NPU FSDP2-PP2 crossing was rerun after enabling the Turbo implementation,
+without the test-only ungroup or internal-state-reset switches. Turbo replaces
+only the untied `[model.norm, model.lm_head]` grouped `fully_shard` call with
+independent norm and LM-head calls and preserves the original FSDP arguments.
+Weight-tied models retain the upstream grouping path.
+
+The stage reports contain 244 and 274 rows. All 508 parameter-state rows pass;
+the only two non-pass rows are the expected pipeline/single-card call-count
+vectors with shapes three/two. Every final-norm call uses the complete
+256-element weight. The real pre-clip final-norm gradient has cosine
+0.9999986814, L2 residual 1.75572e-4, and maximum absolute residual 4.57764e-5.
+Across all 127 logical parameters, post-clip gradient, one-step update, and
+updated-parameter cosines are respectively 0.9999972832, 0.9994062768, and
+0.9999999886. This closes the production repair for the tested eager scope.
 
 ### GPU reproduction of the final-norm localization
 
-> **Deferred status:** this matched GPU experiment has not completed. The most
-> recent attempt stopped before fixture checkpoint creation because the
-> container had no CUDA device exposure. That infrastructure failure is not a
-> GPU numerical result and leaves backend attribution unresolved.
+> **Completed:** the matched four-H20 experiment ran both the two-microbatch
+> crossing and its one-microbatch-per-schedule control. GPU does not reproduce
+> the NPU sharded-weight lifecycle or material gradient divergence.
+
+| GPU case | PP microbatches per schedule | Final-norm pre-clip cosine | L2 residual | Maximum absolute residual |
+| --- | ---: | ---: | ---: | ---: |
+| FSDP2-PP2 crossing | 2 | 0.999999 | 1.82044e-4 | 5.34058e-5 |
+| FSDP2-PP2 control | 1 | 1.000000 | 0 | 0 |
+
+Every GPU final-norm observation sees the complete 256-element weight. The
+pipeline candidate records three calls while the single-card reference records
+two, so the diagnostic count vector itself has unmatched shape; all three GPU
+candidate values are 256. The NPU failure's 128-element second-microbatch
+weight and cosine 0.975016 are absent. This classifies the defect as specific
+to the current NPU software path rather than backend-independent behavior. It
+does not attribute the underlying implementation defect to NPU hardware or to
+one specific component within `torch_npu` and NPU FSDP/DTensor.
 
 Use `single_vs_distributed_gpu_eager_benchmark.py`, not the historical
 1000-step GPU training-curve entry. The GPU entry has the same eager one-step
@@ -731,7 +756,7 @@ sequence length 128, FP32 training with BF16 mixed-precision parameters, the
 seven public `PrecisionDebugger.save()` final-norm probes, and native
 `msprobe compare -m auto`.
 
-The minimum decisive run needs four GPUs and crosses the number of pipeline
+The decisive run uses four GPUs and crosses the number of pipeline
 microbatches while keeping the model, input, optimizer step, and FSDP2-PP2
 composition fixed:
 
@@ -807,10 +832,8 @@ msprobe compare -m auto \
   -o /path/to/report-directory
 ```
 
-The decision is based on
-`final_norm_parameter_preclip_grad`: if case A is exactly aligned on GPU while
-the matched NPU case remains at cosine 0.975016, the defect is NPU-specific.
-Cases B and C are controls and should remain exactly aligned. Also inspect the
-boundary reconstruction: it must agree with the single-card reference in all
-three cases, otherwise the run has diverged before the DP synchronization
-boundary and is not the same failure signature.
+The decision is based on `final_norm_parameter_preclip_grad`. Case A passes on
+GPU at cosine 0.999999 while the matched original NPU case is 0.975016; case B
+is bitwise aligned. The observed classification is therefore the current NPU
+software path. Case C remains an optional larger-outer-accumulation control,
+not a prerequisite for this attribution.
