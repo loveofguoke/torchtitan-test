@@ -6,6 +6,10 @@ locate a numerical divergence. This suite decides whether a long-running
 training process is accurate and stable enough for migration or distributed
 self-consistency.
 
+For MindStudio-aligned offline reassessment of existing pure-DDP artifacts,
+including PASS/FAIL/INCONCLUSIVE handling and sustained-drift checks, see
+[DDP_LONG_V2.md](DDP_LONG_V2.md). This V2 profile does not require retraining.
+
 For the separate MindStudio/msProbe eager operator diagnostic, see
 [MINDSTUDIO_EAGER_ALIGNMENT.md](MINDSTUDIO_EAGER_ALIGNMENT.md). That workflow
 uses one complete logical step and must not be interpreted through this
