@@ -19,6 +19,7 @@ DEFAULT_REPOSITORY = "loveofguoke/torchtitan-test"
 EXPERIMENT_ROOTS = (
     "parity_fixtures",
     "parity_artifacts",
+    "parity_runs",
     "parity_reports",
     "precision_fixtures",
     "precision_artifacts",
@@ -69,7 +70,9 @@ ANALYSIS_RUN_FILES = {
     "artifacts.json",
     "capture_state.json",
     "command_history.jsonl",
+    "command.txt",
     "complete.json",
+    "experiment.json",
     "input_contract.json",
     "invocation.json",
     "manifest.json",

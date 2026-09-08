@@ -113,6 +113,14 @@ fixture, so old and new generations cannot be mixed. Captures additionally
 validate the exact fixture digest, test plan, scenario configuration, and suite
 version. Source commits and dirty-worktree metadata remain diagnostic only.
 
+Paired execution stores runtime evidence directly under
+`parity_runs/<scenario-id>/`. Offline execution has independently resumable
+stages and therefore uses `parity_runs/<scenario-id>/<stage>/`. Every leaf has
+`README.md`, the exact invocation in `command.txt`, resolved configuration in
+`experiment.json`, lifecycle state, and complete stdout/stderr in
+`runtime.log`. Reports remain under `parity_reports/`; raw runtime evidence is
+never nested inside the report tree.
+
 Artifacts contain a versioned JSON manifest, exact fixture tensors, module
 activation and gradient traces, discrete routing selections, logits, loss,
 canonical parameters, and canonical gradients. Tensor data is stored in

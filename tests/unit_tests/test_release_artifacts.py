@@ -86,6 +86,7 @@ class TestReleaseArtifacts(unittest.TestCase):
         expected = {
             "parity_fixtures",
             "parity_artifacts",
+            "parity_runs",
             "parity_reports",
             "precision_fixtures",
             "precision_artifacts",

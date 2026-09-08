@@ -27,6 +27,9 @@ Do not reintroduce model-size defaults in scenario files. See
 `tests/glm5_2_common/MODEL_CONFIG_AUDIT.md` for the other experiment consumers.
 Run `test_parity_cli_config` and `test_glm5_2_parity_workflow` after changes;
 configuration overrides must reach subprocess environment and generation identity.
+Paired parity runtime evidence lives at `parity_runs/<scenario-id>/`; offline
+stages live at `parity_runs/<scenario-id>/<stage>/`. Reports remain under
+`parity_reports/`. Release discovery must include both roots.
 
 HSDP presets `hsdp2x4` and `hsdp4x2` are defined only in the common topology
 registry (replicate groups x shards per group). All registry-based eight-card

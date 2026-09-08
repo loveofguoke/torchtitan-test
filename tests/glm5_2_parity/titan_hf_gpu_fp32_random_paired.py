@@ -32,7 +32,7 @@ CONFIG = PairedParityConfig(
     titan_routed_expert_compute="fp32",
     model=ParityModelConfig(),
     report_root="parity_reports",
-    log_root="parity_reports/logs",
+    run_root="parity_runs",
     report_name="titan_vs_hf_gpu_fp32_paired.html",
 )
 

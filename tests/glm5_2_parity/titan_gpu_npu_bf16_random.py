@@ -46,7 +46,7 @@ CONFIG = OfflineParityConfig(
     fixture_root="parity_fixtures",
     artifact_root="parity_artifacts",
     report_root="parity_reports",
-    log_root="parity_reports/logs",
+    run_root="parity_runs",
     fixture_name="fixture",
     report_name="gpu_vs_npu_bf16_offline.html",
 )

@@ -17,7 +17,9 @@ from tests.glm5_2_parity.workflow import (
     _config_digest,
     OfflineEndpointConfig,
     OfflineParityConfig,
+    PairedParityConfig,
     run_offline_cli,
+    run_paired_cli,
 )
 
 
@@ -87,7 +89,7 @@ class TestParityWorkflowRerun(unittest.TestCase):
                 root / config.fixture_root / scenario,
                 root / config.artifact_root / scenario,
                 root / config.report_root / scenario,
-                root / config.log_root / scenario,
+                root / config.run_root / scenario,
             )
             for stale in stale_paths:
                 stale.mkdir(parents=True)
@@ -117,6 +119,33 @@ class TestParityWorkflowRerun(unittest.TestCase):
             self.assertTrue((fixture / "new-generation").is_file())
             self.assertFalse(
                 any((path / "old-generation").exists() for path in stale_paths)
+            )
+
+    def test_paired_run_uses_dedicated_runtime_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config = PairedParityConfig()
+
+            with (
+                patch(
+                    "tests.glm5_2_parity.workflow._repo_root",
+                    return_value=root,
+                ),
+                patch(
+                    "tests.glm5_2_parity.workflow._run_parity_stage"
+                ) as run_stage,
+                patch("sys.argv", ["scenario.py", "--run"]),
+            ):
+                run_paired_cli(config, "scenario.py")
+
+            kwargs = run_stage.call_args.kwargs
+            self.assertEqual(
+                kwargs["log_path"],
+                root / config.run_root / "scenario" / "runtime.log",
+            )
+            self.assertEqual(
+                kwargs["expected_output"],
+                root / config.report_root / "scenario" / config.report_name,
             )
 
     def test_completed_fixture_is_reused_without_force(self) -> None:

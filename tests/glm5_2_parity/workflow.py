@@ -17,6 +17,7 @@ import argparse
 import hashlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 from dataclasses import asdict, dataclass, field, replace
@@ -94,7 +95,7 @@ class CommonParityConfig:
     titan_routed_expert_compute: str = "model"
     model: ParityModelConfig = field(default_factory=ParityModelConfig)
     report_root: str = "parity_reports"
-    log_root: str = "parity_reports/logs"
+    run_root: str = "parity_runs"
 
 
 @dataclass(frozen=True)
@@ -305,10 +306,10 @@ def _run_parity_stage(
     attempt.update("completed")
 
 
-def _assert_parity_states_not_active(log_directory: Path) -> None:
+def _assert_parity_states_not_active(run_directory: Path) -> None:
     for stage in ("data", "actual_capture", "expected_capture", "compare", "run"):
         assert_run_not_active(
-            log_directory,
+            run_directory if stage == "run" else run_directory / stage,
             state_name=_state_name(stage),
         )
 
@@ -363,9 +364,36 @@ def _run_test(
 ) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     configuration = json.loads(environment["GLM5_PARITY_SCENARIO_CONFIG_JSON"])
-    configuration["command"] = [sys.executable, *sys.argv]
+    invocation = [sys.executable, *sys.argv]
+    configuration["command"] = invocation
+    configuration["runtime_log"] = str(log_path)
     (log_path.parent / "experiment.json").write_text(
         json.dumps(configuration, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    (log_path.parent / "command.txt").write_text(
+        (
+            subprocess.list2cmdline(invocation)
+            if os.name == "nt"
+            else shlex.join(invocation)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (log_path.parent / "README.md").write_text(
+        "\n".join(
+            (
+                f"# GLM-5 parity run: {configuration['scenario_id']}",
+                "",
+                "This directory contains the execution evidence for one parity "
+                "scenario and configuration.",
+                "",
+                "- `command.txt`: exact user-facing command.",
+                "- `experiment.json`: resolved experiment configuration.",
+                f"- `{log_path.name}`: complete pytest stdout and stderr.",
+                "",
+            )
+        ),
+        encoding="utf-8",
     )
     command = [sys.executable, "-m", "pytest", TEST_TARGET, "-s"]
     print(f"command: {' '.join(command)}")
@@ -524,12 +552,13 @@ def run_offline_cli(
         scenario_id,
         config.report_name,
     )
-    log = _path(
+    run_directory = _path(
         root,
-        config.log_root,
+        config.run_root,
         scenario_id,
-        f"{arguments.stage}.log",
     )
+    stage_run_directory = run_directory / arguments.stage
+    log = stage_run_directory / "runtime.log"
     paths = {
         "fixture": fixture,
         "actual_artifact": actual_artifact,
@@ -542,23 +571,21 @@ def run_offline_cli(
         return
 
     scenario_config_digest = _config_digest(config, scenario_id)
-    log_directory = log.parent
     if arguments.force:
-        _assert_parity_states_not_active(log_directory)
+        _assert_parity_states_not_active(run_directory)
         if arguments.stage == "data":
             reset_output_generation(
                 (
                     fixture.parent,
                     actual_artifact.parent,
                     report.parent,
-                    log_directory,
+                    run_directory,
                 ),
                 label="parity scenario",
             )
         else:
             selected_outputs: list[Path] = [
-                log,
-                log_directory / _state_name(arguments.stage),
+                stage_run_directory,
             ]
             if arguments.stage == "actual_capture":
                 selected_outputs.extend((actual_artifact, report))
@@ -758,12 +785,12 @@ def run_paired_cli(
         scenario_id,
         config.report_name,
     )
-    log = _path(
+    run_directory = _path(
         root,
-        config.log_root,
+        config.run_root,
         scenario_id,
-        f"{arguments.stage}.log",
     )
+    log = run_directory / "runtime.log"
     paths = {"report": report, "log": log}
     if arguments.stage == "print_config":
         _print_configuration(config, scenario_id, paths)
@@ -771,9 +798,9 @@ def run_paired_cli(
 
     scenario_config_digest = _config_digest(config, scenario_id)
     if arguments.force:
-        assert_run_not_active(log.parent, state_name=_state_name("run"))
+        assert_run_not_active(run_directory, state_name=_state_name("run"))
         reset_output_generation(
-            (report, log, log.parent / _state_name("run")),
+            (report, run_directory),
             label="paired parity",
         )
 
