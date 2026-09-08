@@ -2,10 +2,12 @@
 # All rights reserved.
 
 import hashlib
+import io
 import json
 from pathlib import Path
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from tests.glm5_2_parity.contracts import (
@@ -15,6 +17,7 @@ from tests.glm5_2_parity.contracts import (
 )
 from tests.glm5_2_parity.workflow import (
     _config_digest,
+    _run_parity_stage,
     OfflineEndpointConfig,
     OfflineParityConfig,
     PairedParityConfig,
@@ -147,6 +150,56 @@ class TestParityWorkflowRerun(unittest.TestCase):
                 kwargs["expected_output"],
                 root / config.report_root / "scenario" / config.report_name,
             )
+
+    def test_parity_stage_finishes_with_runtime_log_on_success_and_failure(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            environment = {"test": "value"}
+
+            for index, error in enumerate((None, RuntimeError("failed"))):
+                log_path = root / f"run-{index}" / "runtime.log"
+                expected_output = root / f"report-{index}.html"
+
+                def successful_run(**_kwargs) -> None:
+                    expected_output.write_text("report", encoding="utf-8")
+
+                output = io.StringIO()
+                side_effect = successful_run if error is None else error
+                with (
+                    patch(
+                        "tests.glm5_2_parity.workflow._run_test",
+                        side_effect=side_effect,
+                    ),
+                    redirect_stdout(output),
+                ):
+                    if error is None:
+                        _run_parity_stage(
+                            root=root,
+                            environment=environment,
+                            log_path=log_path,
+                            stage="run",
+                            scenario_id="scenario",
+                            scenario_config_digest="digest",
+                            expected_output=expected_output,
+                        )
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "failed"):
+                            _run_parity_stage(
+                                root=root,
+                                environment=environment,
+                                log_path=log_path,
+                                stage="run",
+                                scenario_id="scenario",
+                                scenario_config_digest="digest",
+                                expected_output=expected_output,
+                            )
+
+                self.assertEqual(
+                    output.getvalue().strip().splitlines()[-1],
+                    f"Runtime log: {log_path.resolve()}",
+                )
 
     def test_completed_fixture_is_reused_without_force(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

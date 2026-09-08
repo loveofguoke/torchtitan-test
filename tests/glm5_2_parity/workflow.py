@@ -297,13 +297,16 @@ def _run_parity_stage(
     except BaseException as error:
         attempt.update("failed", error=repr(error))
         raise
-    if not expected_output.exists():
-        error = RuntimeError(
-            f"parity stage {stage!r} did not create {expected_output}"
-        )
-        attempt.update("failed", error=repr(error))
-        raise error
-    attempt.update("completed")
+    else:
+        if not expected_output.exists():
+            error = RuntimeError(
+                f"parity stage {stage!r} did not create {expected_output}"
+            )
+            attempt.update("failed", error=repr(error))
+            raise error
+        attempt.update("completed")
+    finally:
+        print(f"Runtime log: {log_path.resolve()}", flush=True)
 
 
 def _assert_parity_states_not_active(run_directory: Path) -> None:
