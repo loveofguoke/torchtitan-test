@@ -19,6 +19,11 @@ artifact checksums. Git cleanliness is diagnostic, not a pass/fail condition.
 
 ## Shared-module impact map
 
+HSDP presets `hsdp2x4` and `hsdp4x2` are defined only in the common topology
+registry (replicate groups x shards per group). All registry-based eight-card
+suites include them. Keep existing member identities unchanged when extending
+the registry; test mesh degrees, token budgets and shared consumer selection.
+
 The shared `--npu-codegen` selector is defined in `glm5_2_graph/config.py`.
 Audit smoke, combination, performance (including MindStudio), MindStudio
 accuracy, precision topology suites, and checkpoint CLI when changing it.

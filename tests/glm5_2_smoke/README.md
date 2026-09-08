@@ -62,6 +62,33 @@ python tests/glm5_2_smoke/train_smoke.py \
   --topologies ddp8,fsdp8,tp8
 ```
 
+### HSDP smoke coverage
+
+HSDP combines replicated groups with parameter sharding inside each group.
+`hsdp2x4` means `dp_replicate=2, dp_shard=4`; `hsdp4x2` means
+`dp_replicate=4, dp_shard=2`. Both use eight devices, DP degree eight,
+and TP/CP/PP/EP degree one. With local batch eight and global batch 64,
+both require one gradient accumulation step. These are FSDP2 layouts, not
+a separate model implementation or an FSDP1 backend.
+
+The shared registry exposes both layouts to smoke, precision, checkpoint,
+stability, graph/combination, MindStudio and performance consumers. Their
+eight-device `all` selections now include these additional runs. Existing
+topology identities are unchanged; no `--force` is needed merely to add HSDP.
+
+```bash
+# GPU: run only the newly added members after the previous all smoke.
+python tests/glm5_2_smoke/train_smoke.py \
+  --device gpu --graph eager --topologies hsdp2x4,hsdp4x2 --steps 2
+
+# NPU: run after the single-device FlexAttention compatibility issue is fixed.
+python tests/glm5_2_smoke/train_smoke.py \
+  --device npu --graph eager --topologies hsdp2x4,hsdp4x2 --steps 2
+```
+
+The normal suite report includes each HSDP member's status, elapsed time and
+runtime log. Registration is not evidence of successful device execution.
+
 ## NPU graph-mode smoke tests
 
 The same topology selector can add the shared graph execution feature. Compiled

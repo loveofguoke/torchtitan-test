@@ -210,6 +210,17 @@ def standard_topologies() -> dict[str, ParallelTopology]:
             "ddp8", 8, data_parallel_replicate_degree=8
         ),
         "fsdp8": ParallelTopology("fsdp8", 8, data_parallel_shard_degree=8),
+        # HSDP names encode replicate groups x shards per group.
+        "hsdp2x4": ParallelTopology(
+            "hsdp2x4", 8,
+            data_parallel_replicate_degree=2,
+            data_parallel_shard_degree=4,
+        ),
+        "hsdp4x2": ParallelTopology(
+            "hsdp4x2", 8,
+            data_parallel_replicate_degree=4,
+            data_parallel_shard_degree=2,
+        ),
         "tp8": ParallelTopology("tp8", 8, tensor_parallel_degree=8),
         "cp8": ParallelTopology("cp8", 8, context_parallel_degree=8),
         "pp8": ParallelTopology("pp8", 8, pipeline_parallel_degree=8),
