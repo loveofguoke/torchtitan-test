@@ -19,6 +19,15 @@ artifact checksums. Git cleanliness is diagnostic, not a pass/fail condition.
 
 ## Shared-module impact map
 
+Parity CLI configuration is shared by paired/offline entry points in
+`glm5_2_parity/workflow.py`. `model_config.py` reads the selected TorchTitan GLM
+factory; `ParityModelConfig` contains optional overrides, not copied debug sizes.
+Direct pytest `ParityModelSize` also resolves missing fields from that factory.
+Do not reintroduce model-size defaults in scenario files. See
+`tests/glm5_2_common/MODEL_CONFIG_AUDIT.md` for the other experiment consumers.
+Run `test_parity_cli_config` and `test_glm5_2_parity_workflow` after changes;
+configuration overrides must reach subprocess environment and generation identity.
+
 HSDP presets `hsdp2x4` and `hsdp4x2` are defined only in the common topology
 registry (replicate groups x shards per group). All registry-based eight-card
 suites include them. Keep existing member identities unchanged when extending

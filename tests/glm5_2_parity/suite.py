@@ -313,8 +313,8 @@ class ParityDataFactory:
         batch_size: int = 2,
         sequence_length: int = 16,
         seed: int = 41,
-        vocab_size: int = 2048,
-        hidden_size: int = 256,
+        vocab_size: int,
+        hidden_size: int,
         data_case: str = "random",
         make_tokens: bool = False,
     ) -> ParityBatch:
@@ -470,32 +470,45 @@ class ParityModelPair:
 class ParityModelSize:
     """One size definition shared by HF and TorchTitan parity models."""
 
-    # Balanced single-A100 profile. Core head/indexer geometry follows the
-    # published GLM-5.2 config, while width and expert count are reduced.
-    vocab_size: int = 154880
-    dim: int = 2048 # 6144
-    num_layers: int = 11 # 78
-    num_dense_layers: int = 1 # 3
-    num_attention_heads: int = 32 # 64
-    q_lora_rank: int = 768 # 2044
-    kv_lora_rank: int = 192 # 512
-    qk_nope_head_dim: int = 192
-    qk_rope_head_dim: int = 64
-    v_head_dim: int = 256
-    dense_hidden_dim: int = 4096 # 12288
-    moe_hidden_dim: int = 768 # 2048
-    num_experts: int = 32 # 256
-    num_shared_experts: int = 1
-    router_top_k: int = 8
-    router_num_expert_groups: int = 1
-    router_num_limited_groups: int = 1
-    router_route_scale: float = 2.5
-    index_num_heads: int = 32
-    index_head_dim: int = 128
-    index_top_k: int = 2048
-    max_position_embeddings: int = 1048576
-    rope_theta: float = 8_000_000.0
-    rope_cache_max_seq_len: int = 128
+    # Missing dimensions are read from the selected native configuration.
+    vocab_size: int | None = None
+    dim: int | None = None
+    num_layers: int | None = None
+    num_dense_layers: int | None = None
+    num_attention_heads: int | None = None
+    q_lora_rank: int | None = None
+    kv_lora_rank: int | None = None
+    qk_nope_head_dim: int | None = None
+    qk_rope_head_dim: int | None = None
+    v_head_dim: int | None = None
+    dense_hidden_dim: int | None = None
+    moe_hidden_dim: int | None = None
+    num_experts: int | None = None
+    num_shared_experts: int | None = None
+    router_top_k: int | None = None
+    router_num_expert_groups: int | None = None
+    router_num_limited_groups: int | None = None
+    router_route_scale: float | None = None
+    index_num_heads: int | None = None
+    index_head_dim: int | None = None
+    index_top_k: int | None = None
+    max_position_embeddings: int | None = None
+    rope_theta: float | None = None
+    rope_cache_max_seq_len: int | None = None
+
+    def __post_init__(self):
+        from tests.glm5_2_parity.model_config import (
+            SIZE_ALIASES, load_model_config, model_dimensions,
+        )
+        from dataclasses import fields
+
+        if all(getattr(self, field.name) is not None for field in fields(self)):
+            return
+        native = load_model_config(os.environ.get("GLM5_PARITY_MODEL_CONFIG", "debugmodel"))
+        for name, value in model_dimensions(native).items():
+            target = SIZE_ALIASES.get(name, name)
+            if getattr(self, target) is None:
+                object.__setattr__(self, target, value)
 
     @classmethod
     def router_unit_profile(cls) -> "ParityModelSize":
@@ -666,6 +679,9 @@ class ParityModelSize:
 
 def _hf_config(model_size: ParityModelSize) -> Any:
     assert GlmMoeDsaConfig is not None
+    base = glm5_configs[os.environ.get("GLM5_PARITY_MODEL_CONFIG", "debugmodel")]()
+    if base.index_sources:
+        raise ValueError("HF parity does not map cross-layer index sharing; select an independent-indexer configuration.")
     return GlmMoeDsaConfig(
         vocab_size=model_size.vocab_size,
         hidden_size=model_size.dim,
@@ -685,17 +701,17 @@ def _hf_config(model_size: ParityModelSize) -> Any:
         n_group=model_size.router_num_expert_groups,
         topk_group=model_size.router_num_limited_groups,
         num_experts_per_tok=model_size.router_top_k,
-        norm_topk_prob=True,
+        norm_topk_prob=next(layer.moe.router.route_norm for layer in base.layers if layer.moe is not None),
         max_position_embeddings=model_size.max_position_embeddings,
-        rms_norm_eps=1e-5,
-        attention_dropout=0.0,
+        rms_norm_eps=base.norm.eps,
+        attention_dropout=base.layers[0].attention.inner_attention.attention_dropout,
         index_topk=model_size.index_top_k,
         index_head_dim=model_size.index_head_dim,
         index_n_heads=model_size.index_num_heads,
         first_k_dense_replace=model_size.num_dense_layers,
         indexer_types=["full"] * model_size.num_layers,
         rope_parameters={
-            "rope_type": "default",
+            "rope_type": "default" if base.layers[0].attention.rope.scaling == "none" else base.layers[0].attention.rope.scaling,
             "rope_theta": model_size.rope_theta,
         },
         use_cache=False,
@@ -704,7 +720,22 @@ def _hf_config(model_size: ParityModelSize) -> Any:
 
 
 def _titan_config(model_size: ParityModelSize) -> Any:
-    base = glm5_configs["debugmodel"]()
+    from tests.glm5_2_parity.model_config import SIZE_ALIASES, model_dimensions
+
+    base = glm5_configs[os.environ.get("GLM5_PARITY_MODEL_CONFIG", "debugmodel")]()
+    dimensions = model_dimensions(base)
+    if all(getattr(model_size, SIZE_ALIASES.get(name, name)) == value
+           for name, value in dimensions.items()
+           if name not in {"rope_cache_max_seq_len", "max_position_embeddings", "rope_theta"}):
+        # Keep the native layers and every non-dimensional setting intact.
+        for layer in base.layers:
+            layer.attention.rope = replace(layer.attention.rope,
+                max_context_length=model_size.rope_cache_max_seq_len,
+                theta=model_size.rope_theta)
+            layer.attention.indexer.rope = replace(layer.attention.indexer.rope,
+                max_context_length=model_size.rope_cache_max_seq_len,
+                theta=model_size.rope_theta)
+        return base
     rope = replace(
         base.layers[0].attention.rope,
         dim=model_size.qk_rope_head_dim,
@@ -747,7 +778,7 @@ def _titan_config(model_size: ParityModelSize) -> Any:
             index_n_heads=model_size.index_num_heads,
             index_head_dim=model_size.index_head_dim,
             index_topk=model_size.index_top_k,
-            attention_dropout=0.0,
+            attention_dropout=base.layers[0].attention.inner_attention.attention_dropout,
             rope=rope,
         ),
     )
@@ -4700,7 +4731,7 @@ class Glm5ParitySuite(
     DATA_SEED = int(os.environ.get("GLM5_PARITY_DATA_SEED", "61"))
     MODEL_SEED = int(os.environ.get("GLM5_PARITY_MODEL_SEED", "61"))
     BATCH_SIZE = int(os.environ.get("GLM5_PARITY_BATCH_SIZE", "2"))
-    SEQUENCE_LENGTH = int(os.environ.get("GLM5_PARITY_SEQUENCE_LENGTH", "16"))
+    SEQUENCE_LENGTH = int(os.environ.get("GLM5_PARITY_SEQUENCE_LENGTH", "128"))
     COMPONENT_EXECUTION = os.environ.get(
         "GLM5_PARITY_COMPONENT_EXECUTION", "independent"
     )

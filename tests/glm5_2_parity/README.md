@@ -32,12 +32,77 @@ Offline scenario files expose one required stage at a time:
 | `--force` | Start a new generation for the selected stage. With `--data`, remove the fixture and every dependent capture/report/log first; with capture or compare, remove only that stage and stale report output. | disabled |
 
 Paired scenarios expose `--run` and `--print-config`; `--run` constructs both
-endpoints in one process and immediately reports. There are intentionally no
-CLI overrides for precision, data case, layers, components, model size, seeds,
-endpoint, or device. Those values live in the copied scenario file's `CONFIG`
-block so its filename and configuration digest identify one reproducible
-experiment. The current scenario values are therefore the defaults and the
-only values for that file.
+endpoints in one process and runs independent component checks plus end-to-end
+forward/loss/backward checks (an early exception can stop the suite).
+All scenarios load `torchtitan.models.glm5.glm5_configs["debugmodel"]()` at run
+time. They do not maintain a copy of its dimensions. Without structural
+overrides, TorchTitan uses that native Config and its layers directly; HF
+dimensions are projected from the same Config. Updating the installed
+TorchTitan debug configuration therefore updates the next parity experiment.
+`--model-config` selects another registered GLM flavor (not another model family).
+HF parity currently requires independent indexers; cross-layer sharing is
+rejected explicitly rather than silently disabled.
+CLI overrides are supported in both paired and offline mode. Use identical
+configuration flags for all stages of an offline experiment.
+
+| Parameter | Meaning and default |
+|---|---|
+| `--model-config` | Native `glm5_configs` key, default `debugmodel`; e.g. `dsa_debugmodel` |
+| `--batch-size`, `--sequence-length` | Input batch 2, sequence 128; the explicitly named `seqlen64` scenario retains 64 |
+| `--data-seed`, `--model-seed` | Both 61 |
+| `--data-case` | `random` (default), `zeros`, `ones`, `extreme`, `alternating` |
+| `--layers` | Layers selected for comparison, `all` or comma-separated indices; not model depth |
+| `--components` | `all` or comma-separated component names (e.g. `indexer,router,attention,block`) |
+| `--component-execution` | `independent` (default) or `sequential` |
+| `--num-layers`, `--dense-layers` | Model depth 8, initial dense layers 1 |
+| `--dim`, `--vocab-size`, `--attention-heads` | 256, 2048, 8 |
+| `--q-lora-rank`, `--kv-lora-rank` | 128, 64 |
+| `--qk-nope-head-dim`, `--qk-rope-head-dim`, `--v-head-dim` | 32, 32, 64 |
+| `--dense-hidden-dim`, `--moe-hidden-dim` | 1024, 256 |
+| `--experts`, `--shared-experts`, `--router-top-k` | 8, 1, 2 |
+| `--expert-groups`, `--limited-groups`, `--route-scale` | 1, 1, 2.5 |
+| `--index-heads`, `--index-head-dim`, `--index-top-k` | 4, 64, 8 |
+| `--rope-theta` | 1000000 |
+| `--rope-cache-max-seq-len`, `--max-position-embeddings` | 128; automatically extended to the requested sequence length unless explicitly overridden |
+| `--device`, `--visible-device` | Paired only: `cuda` (or `npu`), physical card 7 |
+| `--actual-visible-device`, `--expected-visible-device` | Offline: override each endpoint's physical card; scenario defaults shown by `--help` |
+| `--actual-endpoint`, `--expected-endpoint` | Paired: endpoint and dtype, defaults `titan:fp32`, `hf:fp32` |
+| `--hf-routed-expert-compute`, `--titan-routed-expert-compute` | Expert compute policy; scenario-specific `model` or `fp32`, shown by `--help` |
+
+The numeric model values above describe the current debug factory for reading
+convenience, **not constants in the experiment**. Unspecified model options
+inherit the selected factory; `--help` identifies these inherited fields and
+`--print-config` resolves their current values. Explicit structural overrides
+use TorchTitan's GLM layer builder; they are optional custom-size experiments.
+Sequence length, batch size and seeds remain experiment inputs, not model sizes.
+
+Output roots/names also accept their kebab-case CONFIG field names, e.g.
+`--report-root`. `--help` lists every option and its scenario default;
+`--print-config` shows the complete resolved configuration and output paths.
+The resolved configuration (including a native Config snapshot) determines the
+scenario suffix, so changing the factory, a model setting or CLI configuration
+cannot reuse another configuration's outputs. Explicitly passing an inherited
+value has the same identity as omitting it. Old fixed-size results remain in
+their old directories. The log directory's `experiment.json` records the native
+snapshot, effective dimensions and launch command.
+
+GPU Titan/HF, component and end-to-end checks in one command:
+
+```bash
+python tests/glm5_2_parity/titan_hf_gpu_fp32_random_paired.py --run
+
+# Select a registered model configuration, without copying its dimensions.
+python tests/glm5_2_parity/titan_hf_gpu_fp32_random_paired.py --run \
+  --model-config dsa_debugmodel
+
+# Longer sparse test: sequence length exceeds index top-k (8).
+python tests/glm5_2_parity/titan_hf_gpu_fp32_random_paired.py --run \
+  --visible-device 0 --sequence-length 256
+
+# Inspect the exact configuration without running a model.
+python tests/glm5_2_parity/titan_hf_gpu_fp32_random_paired.py --print-config \
+  --visible-device 0 --sequence-length 256
+```
 
 Parity follows the same generation-safe rerun contract as the formal suites.
 Use `--force` once to start a new selected generation. If that command is
@@ -136,9 +201,9 @@ The paired scenario keeps all editable settings in one file:
 python tests/glm5_2_parity/titan_hf_gpu_fp32_random_paired.py --run
 ```
 
-Copy and rename that file to define another paired experiment. The filename is
-the scenario ID and therefore controls the default report and log directory.
-Only edit its `CONFIG` block.
+Use CLI overrides for another model size or sequence length. Copying and
+renaming the file is optional, for a permanently named scenario with different
+defaults in its `CONFIG` block.
 
 ## Offline GPU/NPU comparison
 
@@ -184,8 +249,8 @@ Copy the NPU capture beside the GPU capture and generate the report on CPU:
 python tests/glm5_2_parity/titan_gpu_npu_fp32_random.py --compare
 ```
 
-Copy and rename the scenario file for BF16 or another data case, then edit only
-its `CONFIG` block. BF16 uses the same exact FP32 fixture state and performs the
+Use the BF16 scenario for BF16 and `--data-case` for another data case.
+BF16 uses the same exact FP32 fixture state and performs the
 BF16 cast on CPU before moving tensors to GPU or NPU.
 
 ## Offline Titan/HF validation on GPU

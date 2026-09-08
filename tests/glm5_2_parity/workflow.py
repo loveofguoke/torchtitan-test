@@ -19,9 +19,11 @@ import json
 import os
 import subprocess
 import sys
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
+
+from tests.glm5_2_parity.model_config import config_snapshot, load_model_config, model_dimensions
 
 from tests.glm5_2_common.cli import (
     RunAttempt,
@@ -44,30 +46,30 @@ TEST_TARGET = (
 
 @dataclass(frozen=True)
 class ParityModelConfig:
-    vocab_size: int = 154880
-    dim: int = 2048
-    layers: int = 11
-    dense_layers: int = 1
-    attention_heads: int = 32
-    q_lora_rank: int = 768
-    kv_lora_rank: int = 192
-    qk_nope_head_dim: int = 192
-    qk_rope_head_dim: int = 64
-    v_head_dim: int = 256
-    dense_hidden_dim: int = 4096
-    moe_hidden_dim: int = 768
-    experts: int = 32
-    shared_experts: int = 1
-    router_top_k: int = 8
-    expert_groups: int = 1
-    limited_groups: int = 1
-    route_scale: float = 2.5
-    index_heads: int = 32
-    index_head_dim: int = 128
-    index_top_k: int = 2048
-    max_position_embeddings: int = 1048576
-    rope_theta: float = 8_000_000.0
-    rope_cache_max_seq_len: int = 128
+    vocab_size: int | None = None
+    dim: int | None = None
+    layers: int | None = None
+    dense_layers: int | None = None
+    attention_heads: int | None = None
+    q_lora_rank: int | None = None
+    kv_lora_rank: int | None = None
+    qk_nope_head_dim: int | None = None
+    qk_rope_head_dim: int | None = None
+    v_head_dim: int | None = None
+    dense_hidden_dim: int | None = None
+    moe_hidden_dim: int | None = None
+    experts: int | None = None
+    shared_experts: int | None = None
+    router_top_k: int | None = None
+    expert_groups: int | None = None
+    limited_groups: int | None = None
+    route_scale: float | None = None
+    index_heads: int | None = None
+    index_head_dim: int | None = None
+    index_top_k: int | None = None
+    max_position_embeddings: int | None = None
+    rope_theta: float | None = None
+    rope_cache_max_seq_len: int | None = None
 
     def environment(self) -> dict[str, str]:
         return {
@@ -78,11 +80,13 @@ class ParityModelConfig:
 
 @dataclass(frozen=True)
 class CommonParityConfig:
+    model_config: str = "debugmodel"
+    native_model_config: dict = field(default_factory=dict)
     data_case: str = "random"
     data_seed: int = 61
     model_seed: int = 61
     batch_size: int = 2
-    sequence_length: int = 16
+    sequence_length: int = 128
     layers: str = "all"
     components: str = "all"
     component_execution: str = "independent"
@@ -120,6 +124,58 @@ class PairedParityConfig(CommonParityConfig):
     device: str = "cuda"
     visible_device: str = "7"
     report_name: str = "paired.html"
+
+
+def _add_config_arguments(parser: argparse.ArgumentParser, config: CommonParityConfig) -> None:
+    """Expose the same effective configuration in paired and offline runs."""
+    group = parser.add_argument_group("experiment configuration")
+    for name, value in asdict(config).items():
+        if isinstance(value, (str, int, float)):
+            group.add_argument(
+                "--" + name.replace("_", "-"), dest=name, type=type(value),
+                default=argparse.SUPPRESS, help=f"Override {name}; default: {value}",
+            )
+    group = parser.add_argument_group("model dimensions (GLM debug defaults)")
+    for name, value in asdict(config.model).items():
+        option = "--num-layers" if name == "layers" else "--" + name.replace("_", "-")
+        group.add_argument(
+            option, dest="model_" + name,
+            type=float if name in {"route_scale", "rope_theta"} else int,
+            default=argparse.SUPPRESS,
+            help=f"Override model {name}; default: selected TorchTitan configuration",
+        )
+    if isinstance(config, OfflineParityConfig):
+        for role in ("actual", "expected"):
+            group.add_argument(
+                f"--{role}-visible-device", default=argparse.SUPPRESS,
+                help=f"Physical device for {role}; default: {getattr(config, role).visible_device}",
+            )
+
+
+def _apply_config_arguments(config: CommonParityConfig, arguments: argparse.Namespace):
+    values = vars(arguments)
+    updates = {name: values[name] for name in asdict(config) if name in values}
+    native = load_model_config(updates.get("model_config", config.model_config))
+    updates["native_model_config"] = config_snapshot(native)
+    defaults = model_dimensions(native)
+    defaults.update({name: value for name, value in asdict(config.model).items() if value is not None})
+    model = ParityModelConfig(**defaults)
+    model_updates = {
+        name: values["model_" + name]
+        for name in asdict(config.model) if "model_" + name in values
+    }
+    # A longer test sequence also needs a sufficiently long RoPE cache.
+    sequence_length = updates.get("sequence_length", config.sequence_length)
+    for name in ("rope_cache_max_seq_len", "max_position_embeddings"):
+        if name not in model_updates:
+            model_updates[name] = max(getattr(model, name), sequence_length)
+    updates["model"] = replace(model, **model_updates)
+    if isinstance(config, OfflineParityConfig):
+        for role in ("actual", "expected"):
+            key = role + "_visible_device"
+            if key in values:
+                updates[role] = replace(getattr(config, role), visible_device=values[key])
+    return replace(config, **updates)
 
 
 def _repo_root() -> Path:
@@ -272,6 +328,7 @@ def _common_environment(
     environment.update(
         {
             "GLM5_PARITY_SCENARIO_ID": scenario_id,
+            "GLM5_PARITY_MODEL_CONFIG": config.model_config,
             "GLM5_PARITY_SCENARIO_CONFIG_DIGEST": _config_digest(
                 config, scenario_id
             ),
@@ -305,6 +362,11 @@ def _run_test(
     log_path: Path,
 ) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    configuration = json.loads(environment["GLM5_PARITY_SCENARIO_CONFIG_JSON"])
+    configuration["command"] = [sys.executable, *sys.argv]
+    (log_path.parent / "experiment.json").write_text(
+        json.dumps(configuration, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
     command = [sys.executable, "-m", "pytest", TEST_TARGET, "-s"]
     print(f"command: {' '.join(command)}")
     print(f"log: {log_path}")
@@ -429,10 +491,15 @@ def run_offline_cli(
             "removes every dependent capture and report"
         ),
     )
+    _add_config_arguments(parser, config)
     arguments = parser.parse_args()
+    original_config = config
+    config = _apply_config_arguments(config, arguments)
 
     root = _repo_root()
     scenario_id = _scenario_id(script_path)
+    if config != original_config:
+        scenario_id += "-" + _config_digest(config, scenario_id)[:10]
     fixture = _path(
         root,
         config.fixture_root,
@@ -676,10 +743,15 @@ def run_paired_cli(
         action="store_true",
         help="remove the previous paired report and log before rerunning",
     )
+    _add_config_arguments(parser, config)
     arguments = parser.parse_args()
+    original_config = config
+    config = _apply_config_arguments(config, arguments)
 
     root = _repo_root()
     scenario_id = _scenario_id(script_path)
+    if config != original_config:
+        scenario_id += "-" + _config_digest(config, scenario_id)[:10]
     report = _path(
         root,
         config.report_root,

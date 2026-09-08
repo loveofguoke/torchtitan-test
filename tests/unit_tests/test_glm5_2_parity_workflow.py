@@ -72,6 +72,12 @@ def _config() -> OfflineParityConfig:
 
 
 class TestParityWorkflowRerun(unittest.TestCase):
+    def setUp(self):
+        resolver = patch("tests.glm5_2_parity.workflow._apply_config_arguments",
+                         side_effect=lambda config, arguments: config)
+        resolver.start()
+        self.addCleanup(resolver.stop)
+
     def test_force_data_resets_every_dependent_output(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

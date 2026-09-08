@@ -1,5 +1,7 @@
 # Shared experiment primitives
 
+模型配置的来源与各实验检查结果：[模型配置审计](MODEL_CONFIG_AUDIT.md)。
+
 `glm5_2_common` is dependency-free with respect to individual experiments. It
 owns canonical accelerator selection, topology definitions, topology selection,
 and conflict-checked execution feature composition.
