@@ -492,7 +492,6 @@ def _capture_is_complete(
     *,
     experiment_digest: str,
     fixture_generation_id: str,
-    toolchain_identity: dict[str, Any],
 ) -> bool:
     if not artifact_is_complete(
         artifact_directory,
@@ -507,11 +506,12 @@ def _capture_is_complete(
     except (OSError, TypeError, ValueError):
         return False
     input_contract = manifest.get("input_contract")
-    return (
-        manifest.get("toolchain_identity") == toolchain_identity
-        and isinstance(input_contract, dict)
-        and input_contract.get("valid") is True
-    )
+    # Toolchain and source identities are immutable provenance of the process
+    # that produced this capture. A later checkout or package update must not
+    # silently turn a complete historical capture into an incomplete member
+    # and recapture it without --force. The experiment/fixture identities,
+    # validated input contract, and indexed official files define reuse.
+    return isinstance(input_contract, dict) and input_contract.get("valid") is True
 
 
 def _comparison_is_current(path: Path, digest: str) -> bool:
@@ -1138,6 +1138,13 @@ def capture_official(
     run_directory, artifact_directory, report_directory = _paths(
         root, config, topology, role, repeat
     )
+    if not dry_run and _capture_is_complete(
+        artifact_directory,
+        experiment_digest=digest,
+        fixture_generation_id=generation,
+    ):
+        print(f"Skip completed official capture: {artifact_directory}", flush=True)
+        return artifact_directory
     toolchain: dict[str, Any] | None = None
     toolchain_identity: dict[str, Any] | None = None
     toolchain_compatibility: dict[str, Any] | None = None
@@ -1150,14 +1157,6 @@ def capture_official(
         toolchain_compatibility = _capture_toolchain_compatibility(
             toolchain_identity
         )
-    if not dry_run and _capture_is_complete(
-        artifact_directory,
-        experiment_digest=digest,
-        fixture_generation_id=generation,
-        toolchain_identity=toolchain_identity,
-    ):
-        print(f"Skip completed official capture: {artifact_directory}", flush=True)
-        return artifact_directory
     official_output = artifact_directory / "official"
     input_contract = run_directory / "input_contract"
     runtime_log = run_directory / "runtime.log"

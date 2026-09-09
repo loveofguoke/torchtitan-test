@@ -479,10 +479,13 @@ topology/step/rank，要求成对 result/details CSV，并把两份源数据复�
 后续写。源路径与 SHA-256 进入 operation identity；默认续跑不会自动猜测任意旧
 CSV。
 
-当前 capture identity 绑定 lock、resolved manifest、实际安装树/CLI 与相关工具源码
-身份。升级 msProbe 或采集器后，旧 capture 不会被静默复用；需要显式 `--force`
-建立新 generation。msprof-analyze 属于独立离线分析身份，只升级 analyzer 时保留
-capture、清理并重跑 analysis，不能把旧 analyzer 输出混进新报告。
+capture manifest 会记录 lock、resolved manifest、实际安装树/CLI 与相关工具源码
+身份，但这些字段是该次采集的不可变 provenance，不参与“当前环境下是否完成”的
+判定。升级 msProbe、TorchTitan 或测试仓后，不加 `--force` 仍会跳过已经完整落盘的
+旧 capture，绝不能因为当前环境变化而静默归档并重采。若需要用新工具重新建立证据，
+必须显式 `--force` 建立新 generation，或使用新的实验 identity。msprof-analyze 属于
+独立离线分析身份；只升级 analyzer 时保留 capture，只重跑明确选择的 analysis，不能
+把旧 analyzer 输出混进新报告。
 
 ### 10.3 原子提交
 

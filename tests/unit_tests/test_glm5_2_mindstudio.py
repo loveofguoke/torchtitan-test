@@ -1412,7 +1412,7 @@ class TestMindStudioLifecycle(unittest.TestCase):
 
     @patch("tests.glm5_2_mindstudio.workflow._fixture_manifest")
     @patch("tests.glm5_2_mindstudio.workflow.resolve_fixture_inputs")
-    def test_capture_cache_is_invalidated_by_msprobe_build(
+    def test_completed_capture_is_not_recollected_after_msprobe_build_changes(
         self,
         resolve_inputs,
         fixture_manifest,
@@ -1441,10 +1441,6 @@ class TestMindStudioLifecycle(unittest.TestCase):
                 root / "fixture" / "tokens.json",
             )
             metadata_a = _test_toolchain_metadata()
-            metadata_b = _test_toolchain_metadata(
-                version="1.2.4",
-                commit="commit-b",
-            )
             input_contract = {
                 "valid": True,
                 "validated_global_ranks": [0],
@@ -1453,7 +1449,7 @@ class TestMindStudioLifecycle(unittest.TestCase):
             with (
                 patch(
                     "tests.glm5_2_mindstudio.workflow._accuracy_toolchain_metadata",
-                    side_effect=(metadata_a, metadata_a, metadata_b),
+                    return_value=metadata_a,
                 ),
                 patch(
                     "tests.glm5_2_mindstudio.workflow._run_process",
@@ -1475,6 +1471,17 @@ class TestMindStudioLifecycle(unittest.TestCase):
                     role="candidate",
                     repeat=1,
                 )
+
+            # A complete member must be reusable even if the current checkout
+            # can no longer resolve or import the capture toolchain. The saved
+            # identity describes the historical capture; it is not a trigger
+            # for an implicit new generation.
+            with patch(
+                "tests.glm5_2_mindstudio.workflow._accuracy_toolchain_metadata",
+                side_effect=AssertionError(
+                    "completed capture probed current toolchain"
+                ),
+            ):
                 capture_official(
                     root,
                     config,
@@ -1493,12 +1500,12 @@ class TestMindStudioLifecycle(unittest.TestCase):
             manifest = json.loads(
                 (artifact / "manifest.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(2, run.call_count)
-            self.assertEqual(2, load_plan.call_count)
-            self.assertEqual(2, validate_contract.call_count)
+            self.assertEqual(1, run.call_count)
+            self.assertEqual(1, load_plan.call_count)
+            self.assertEqual(1, validate_contract.call_count)
             self.assertEqual(input_contract, manifest["input_contract"])
             self.assertEqual(
-                "1.2.4",
+                "1.2.3",
                 manifest["toolchain_compatibility"]["msprobe_version"],
             )
 

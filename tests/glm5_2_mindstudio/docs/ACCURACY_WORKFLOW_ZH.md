@@ -793,8 +793,11 @@ msProbe capture 只运行少量目标 step，因为它要保存模块/API 数据
 
 ### 11.3 工具改变必须改变证据
 
-正式实验升级 msProbe revision 后，应锁定新 commit 并建立新 generation。即使
-训练配置不变，工具 schema、支持 API、Result 判定或输出列也可能变化。
+正式实验升级 msProbe revision 后，若要得到新工具版本的证据，应锁定新 commit，
+并显式使用 `--force` 建立新 generation（或使用新的实验 identity）。即使训练配置
+不变，工具 schema、支持 API、Result 判定或输出列也可能变化。当前工具版本和源码
+身份只作为旧 capture 的 provenance 保存；它们发生变化时，不加 `--force` 不会把
+已经完成的历史 capture 静默判成失败并重新采集。
 
 ## 12. 已知限制
 
