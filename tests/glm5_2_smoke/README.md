@@ -55,6 +55,30 @@ python tests/glm5_2_smoke/train_smoke.py \
   --device npu --topology all
 ```
 
+For the CP8 FlexAttention backward investigation, select TorchNPU's two
+lowering paths explicitly. This does not enable whole-model compilation:
+FlexAttention still invokes its internal compile while `--graph eager` keeps
+the surrounding GLM model eager.
+
+```bash
+# Control: reproduce TorchNPU's default mask-out path.
+python tests/glm5_2_smoke/train_smoke.py \
+  --device npu --topology cp8 --graph eager \
+  --npu-codegen ascend-triton \
+  --npu-flexattention-mask-mode mask-out --steps 2 --force
+
+# Root-cause A/B: bypass the mask-out metadata and persistent dK/dV path.
+python tests/glm5_2_smoke/train_smoke.py \
+  --device npu --topology cp8 --graph eager \
+  --npu-codegen ascend-triton \
+  --npu-flexattention-mask-mode mask-in --steps 2 --force
+```
+
+Both choices have distinct suite identities and manifests. A mask-in pass
+paired with a mask-out failure localizes the defect to TorchNPU's mask-out
+lowering/kernel family. It does not alone distinguish saved LSE, compact
+backward metadata, dQ, and dK/dV corruption.
+
 Either backend can run a focused subset:
 
 ```bash
@@ -160,6 +184,7 @@ interrupted, rerun without `--force` to continue from its incomplete member.
 | `--graph` | Execution mode: `eager`, `inductor`, or `npugraphs`. Compiled choices are NPU-only. | `eager` |
 | `--compile-loss` | Compile both `model` and `loss`; without it only `model` is compiled. NPUGraph currently rejects this option. | disabled |
 | `--compiler-diagnostics` | Set the shared compiler diagnostic environment for graph breaks, recompiles, and dynamic-shape events. | disabled |
+| `--npu-flexattention-mask-mode` | Select TorchNPU `mask-in` or `mask-out` FlexAttention lowering, including internally compiled FlexAttention under `--graph eager`. | unset |
 | `--force` | Remove and rerun completed topology output. Without it, completed runs are skipped and incomplete runs are archived before retry. | disabled |
 
 Use either `--topology` or `--topologies`, not both. The available names are
