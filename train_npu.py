@@ -14,6 +14,7 @@ def _install_nonfinite_gradient_diagnostics() -> None:
 
     import torch
     import torch.distributed as dist
+    from pathlib import Path
 
     from torchtitan.distributed import utils as dist_utils
     from torchtitan.models.glm5 import parallelize as glm5_parallelize
@@ -23,8 +24,94 @@ def _install_nonfinite_gradient_diagnostics() -> None:
     original_clip_grad_norm = dist_utils.clip_grad_norm_
     original_trainer_init = Trainer.__init__
     original_flex_cp_allgather = glm5_parallelize.flex_cp_allgather
+    original_glm5_flex_forward = Glm5FlexAttention.forward
     parameter_names: dict[int, str] = {}
     cp_gather_index = 0
+    flex_capture_index = 0
+
+    def cpu_clone(tensor):
+        return tensor.detach().to(device="cpu", copy=True)
+
+    def glm5_flex_forward_with_capture(
+        self,
+        q_QNH,
+        k_KNH,
+        v_KNV,
+        attention_masks,
+        topk_indices_QS,
+        *,
+        scale=None,
+    ):
+        nonlocal flex_capture_index
+        output_QNV = original_glm5_flex_forward(
+            self,
+            q_QNH,
+            k_KNH,
+            v_KNV,
+            attention_masks,
+            topk_indices_QS,
+            scale=scale,
+        )
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        target_rank = int(os.environ.get("TORCHTITAN_NONFINITE_CAPTURE_RANK", "6"))
+        target_layer = os.environ.get(
+            "TORCHTITAN_NONFINITE_CAPTURE_LAYER",
+            "layers.6.attention.inner_attention",
+        )
+        module_fqn = getattr(self, "_nonfinite_diagnostic_fqn", "unknown")
+        if rank != target_rank or target_layer not in module_fqn:
+            return output_QNV
+
+        capture_index = flex_capture_index
+        flex_capture_index += 1
+        configured_root = os.environ.get("TORCHTITAN_NONFINITE_DUMP_DIR")
+        if configured_root:
+            dump_root = Path(configured_root)
+        else:
+            runtime_log = Path(os.environ["TORCHTITAN_RUN_LOG"])
+            dump_root = runtime_log.parent / "nonfinite_replay"
+        capture_directory = dump_root / f"rank{rank}" / f"call{capture_index:03d}"
+        capture_directory.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "schema_version": 1,
+                "rank": rank,
+                "module_fqn": module_fqn,
+                "call_index": capture_index,
+                "q_QNH": cpu_clone(q_QNH),
+                "k_KNH": cpu_clone(k_KNH),
+                "v_KNV": cpu_clone(v_KNV),
+                "attention_masks": cpu_clone(attention_masks),
+                "topk_indices_QS": cpu_clone(topk_indices_QS),
+                "output_QNV": cpu_clone(output_QNV),
+                "scale": scale,
+                "block_size": self.block_size,
+                "lse": None,
+                "lse_note": (
+                    "The GLM FlexAttention API does not expose its internal backward "
+                    "LSE. Recompute it from the captured inputs during standalone replay."
+                ),
+            },
+            capture_directory / "forward.pt",
+        )
+
+        def save_grad_output(gradient_QNV):
+            torch.save(
+                {"grad_output_QNV": cpu_clone(gradient_QNV)},
+                capture_directory / "backward.pt",
+            )
+            print(
+                f"[nonfinite-replay-capture] rank={rank} fqn={module_fqn} "
+                f"call={capture_index} path={capture_directory}",
+                flush=True,
+            )
+            return gradient_QNV
+
+        if output_QNV.requires_grad:
+            output_QNV.register_hook(save_grad_output)
+        return output_QNV
+
+    Glm5FlexAttention.forward = glm5_flex_forward_with_capture
 
     def register_tensor_diagnostic(tensor, tag):
         if not tensor.requires_grad:
@@ -81,6 +168,7 @@ def _install_nonfinite_gradient_diagnostics() -> None:
                 if not isinstance(module, Glm5FlexAttention):
                     continue
                 module_fqn = f"model_parts.{part_index}.{name}"
+                module._nonfinite_diagnostic_fqn = module_fqn
 
                 def register_attention_inputs(
                     _module,
@@ -90,8 +178,8 @@ def _install_nonfinite_gradient_diagnostics() -> None:
                     fqn=module_fqn,
                 ):
                     register_tensor_diagnostic(args[0], f"{fqn}.q")
-                    register_tensor_diagnostic(args[1], f"{fqn}.global_k")
-                    register_tensor_diagnostic(args[2], f"{fqn}.global_v")
+                    register_tensor_diagnostic(args[1], f"{fqn}.input_local_k")
+                    register_tensor_diagnostic(args[2], f"{fqn}.input_local_v")
 
                 module.register_forward_pre_hook(
                     register_attention_inputs,
