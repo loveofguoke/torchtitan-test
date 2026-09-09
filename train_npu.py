@@ -16,17 +16,87 @@ def _install_nonfinite_gradient_diagnostics() -> None:
     import torch.distributed as dist
 
     from torchtitan.distributed import utils as dist_utils
+    from torchtitan.models.glm5 import parallelize as glm5_parallelize
+    from torchtitan.models.glm5.dsa import Glm5FlexAttention
     from torchtitan.trainer import Trainer
 
     original_clip_grad_norm = dist_utils.clip_grad_norm_
     original_trainer_init = Trainer.__init__
+    original_flex_cp_allgather = glm5_parallelize.flex_cp_allgather
     parameter_names: dict[int, str] = {}
+    cp_gather_index = 0
+
+    def register_tensor_diagnostic(tensor, tag):
+        if not tensor.requires_grad:
+            return
+
+        def report_gradient(gradient):
+            local_gradient = (
+                gradient.to_local() if hasattr(gradient, "to_local") else gradient
+            )
+            finite = torch.isfinite(local_gradient)
+            rank = dist.get_rank() if dist.is_initialized() else 0
+            finite_count = int(finite.sum().item())
+            numel = local_gradient.numel()
+            max_abs = (
+                float(local_gradient.abs().max().item())
+                if numel and finite_count == numel
+                else None
+            )
+            print(
+                f"[cp-gradient-diagnostic] rank={rank} tag={tag} "
+                f"shape={tuple(local_gradient.shape)} dtype={local_gradient.dtype} "
+                f"finite={finite_count}/{numel} "
+                f"nan={int(torch.isnan(local_gradient).sum().item())} "
+                f"posinf={int(torch.isposinf(local_gradient).sum().item())} "
+                f"neginf={int(torch.isneginf(local_gradient).sum().item())} "
+                f"max_abs={max_abs}",
+                flush=True,
+            )
+            return gradient
+
+        tensor.register_hook(report_gradient)
+
+    def flex_cp_allgather_with_diagnostics(k_local, v_local, *args, **kwargs):
+        nonlocal cp_gather_index
+        gather_index = cp_gather_index
+        cp_gather_index += 1
+        register_tensor_diagnostic(k_local, f"gather.{gather_index}.local_k")
+        register_tensor_diagnostic(v_local, f"gather.{gather_index}.local_v")
+        k_global, v_global = original_flex_cp_allgather(
+            k_local, v_local, *args, **kwargs
+        )
+        register_tensor_diagnostic(k_global, f"gather.{gather_index}.global_k")
+        register_tensor_diagnostic(v_global, f"gather.{gather_index}.global_v")
+        return k_global, v_global
+
+    glm5_parallelize.flex_cp_allgather = flex_cp_allgather_with_diagnostics
 
     def trainer_init_with_diagnostics(self, *args, **kwargs):
         original_trainer_init(self, *args, **kwargs)
         for part_index, model_part in enumerate(self.model_parts):
             for name, parameter in model_part.named_parameters():
                 parameter_names[id(parameter)] = f"model_parts.{part_index}.{name}"
+            for name, module in model_part.named_modules():
+                if not isinstance(module, Glm5FlexAttention):
+                    continue
+                module_fqn = f"model_parts.{part_index}.{name}"
+
+                def register_attention_inputs(
+                    _module,
+                    args,
+                    _kwargs,
+                    *,
+                    fqn=module_fqn,
+                ):
+                    register_tensor_diagnostic(args[0], f"{fqn}.q")
+                    register_tensor_diagnostic(args[1], f"{fqn}.global_k")
+                    register_tensor_diagnostic(args[2], f"{fqn}.global_v")
+
+                module.register_forward_pre_hook(
+                    register_attention_inputs,
+                    with_kwargs=True,
+                )
 
     Trainer.__init__ = trainer_init_with_diagnostics
 
