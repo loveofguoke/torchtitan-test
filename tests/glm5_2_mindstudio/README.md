@@ -206,6 +206,19 @@ python tests/glm5_2_mindstudio/migration_benchmark.py \
 
 ## 4. GPU/NPU 模块与 API 精度迁移
 
+本流程是**一批输入完整执行前向和反向的端到端比较，沿途观测模块/API 边界**。
+两端只在起点共享权重和 token，中途不重新注入相同模块输入，因此观测包含误差传播。
+`statistics/tensor` 区分摘要和完整张量，`L0/L1/mix` 区分观测位置；都不代表
+已实现“相同输入、权重和反向上游梯度的模块独立重放”。详见
+[执行方式与粒度](docs/MSPROBE_RESULT_READING_ZH.md#7-当前端到端比较与相同输入模块独立比较的区别)。
+
+分级图的 pass/warning/error/unmatched、两侧统计字段与 Norm 局限，见
+[msProbe 判定与分级图阅读](docs/MSPROBE_RESULT_READING_ZH.md)。
+
+统计量/tensor 指标、自动 error/warning 规则与官方建议参考值，见
+[精度流程 §7.0：当前阈值来源和判定规则](docs/ACCURACY_WORKFLOW_ZH.md#70-当前阈值来源和判定规则)。
+项目不覆盖官方阈值；安装版本的具体判定与界面百分比单位须以其源码为准。
+
 `--compare` 的跨服务器工具链与项目版本兼容性暂由人工管理，不再因
 msProbe 包 SHA、Git commit 或运行文件 SHA 不同阻止官方比较。
 完整来源信息仍写入报告目录的 `toolchain_compatibility_diff.json`，

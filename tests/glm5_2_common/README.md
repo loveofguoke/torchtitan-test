@@ -63,6 +63,8 @@ Experiment CLIs that support distributed execution use the same vocabulary:
 | `single` | 1 | no distributed degree |
 | `ddp2`, `ddp8` | 2, 8 | DP replicate 2 or 8 |
 | `fsdp8` | 8 | DP shard 8 |
+| `hsdp2x4` | 8 | DP replicate 2 x DP shard 4 |
+| `hsdp4x2` | 8 | DP replicate 4 x DP shard 2 |
 | `tp8` | 8 | TP 8 |
 | `cp8` | 8 | CP 8 |
 | `pp8` | 8 | PP 8 with the shared pipeline schedule |
@@ -99,6 +101,63 @@ Each experiment README states its own default: smoke/checkpoint/stability and
 standalone performance default to `single`; formal precision and the central
 combination suite default to `all`; graph convenience entry points default to
 `single`.
+
+## HSDP：组内分片、组间复制
+
+`hsdpRxS` 的两个数字表示副本组数 R 和每组分片数 S，不是版本号。
+当前注册了两种八卡布局；都使用 TorchTitan 的 FSDP2 路径，
+TP/CP/PP/EP degree 均为 1。它与 `fsdp2-tp4` 不同：后者的 2
+表示 FSDP 分片度，4 表示张量并行度，不包含 HSDP 的副本维度。
+
+以普通二维参数 `W` 的 global shape `[8, 4]` 为例，存储时的
+placement 为 `(Replicate(), Shard(0))`，对应 `(dp_replicate, dp_shard)`。
+下面按连续编号给出逻辑 mesh 示例；实际 rank 组以运行时 DeviceMesh 为准。
+
+```text
+hsdp2x4：mesh shape [2, 4]，每卡参数分片 [2, 4]
+                 shard0   shard1   shard2   shard3
+replicate0       rank0    rank1    rank2    rank3
+replicate1       rank4    rank5    rank6    rank7
+
+rank0 / rank4：W[0:2, :]
+rank1 / rank5：W[2:4, :]
+rank2 / rank6：W[4:6, :]
+rank3 / rank7：W[6:8, :]
+
+hsdp4x2：mesh shape [4, 2]，每卡参数分片 [4, 4]
+                 shard0   shard1
+replicate0       rank0    rank1
+replicate1       rank2    rank3
+replicate2       rank4    rank5
+replicate3       rank6    rank7
+```
+
+前向前，在每一行的 shard 组中 AllGather 所需参数；每个 rank 用自己的
+数据计算。反向梯度在 shard 组内 ReduceScatter，再沿 replicate 维度
+同步对应的梯度分片（AllReduce）。例如 `hsdp2x4` 的 rank0 与 rank4
+同步同一部分参数的梯度，而不是交换整份模型。这里描述逻辑通信语义，
+实际 buffer 分组、异步重叠及参数重分片时机由 FSDP2 配置决定。
+优化器更新本地分片后，同一列的模型状态继续一致。
+
+| 八卡布局 | 参数分片大小（普通均匀参数） | 数据并行度 | 特点 |
+|---|---|---:|---|
+| `ddp8` | 完整参数 | 8 | 参数复制，梯度同步 |
+| `fsdp8` | 参数的1/8 | 8 | 八卡组内分片 |
+| `hsdp2x4` | 参数的1/4，每片复制2份 | 8 | 四卡分片组，加副本间同步 |
+| `hsdp4x2` | 参数的1/2，每片复制4份 | 8 | 两卡分片组，加副本间同步 |
+
+表中是参数分片比例，不是峰值显存比例；激活、临时完整参数、通信缓冲等
+另外占内存。HSDP常用于将频繁参数收集限制在较快的组内链路，但单机八卡
+实验不能证明多机收益，也不能预先认定它比 FSDP8 快。
+
+两种预设的数据并行度都是 `R*S=8`。默认 local batch=8、global batch=64，
+因此梯度累积次数为 `64/(8*8)=1`；序列长度128时，每步总token数为8192。
+
+运行方法见 [smoke HSDP示例](../glm5_2_smoke/README.md#hsdp-smoke-coverage)。
+所有使用共用注册表的实验均能选择这两个名称；`all`按各实验可用列表展开。
+新增拓扑不修改旧成员的配置或结果身份，补跑不用加 `--force`。
+每个成员照常记录配置、起止时间、耗时、状态和日志；功能通过不代表精度
+或性能通过。NPU当前仍需先解决单卡FlexAttention设备接入失败。
 
 ## Output names
 

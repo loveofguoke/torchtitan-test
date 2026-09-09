@@ -377,6 +377,88 @@ official/
 
 ## 7. 指标与公式
 
+### 7.0 当前阈值来源和判定规则
+
+完整的变量定义、输入误差为零/非零分支、严格边界、数值例子和提示写入位置，
+统一见[判定阅读指南 §3.1](MSPROBE_RESULT_READING_ZH.md#31-数值规则变量分支例子和标记位置)。
+下方表格仅作索引，不应脱离上述定义理解“输入/输出误差”。
+
+#### 本地源码审计更新（优先于下方文档规则摘要）
+
+2026-09-07 实读 `D:/yyb/repos/msprobe`，HEAD 为
+`86a64ee303cf27adedcefc0b661fd9d5ab9af615`，`git describe` 为
+`tag_MindStudio_26.2.0.B050_002-8-g86a64ee3`。因此不能把这个 checkout
+直接等同于服务器 wheel `26.1.0.post1`。以下是该 checkout 的确定实现：
+
+源码统一前缀：`python/msprobe/core/compare/indicator_analysis/`。
+
+| 判定 | 实际代码条件（严格不等号） | 文件/符号 |
+| --- | --- | --- |
+| statistics error | 最大输入 NormRelativeErr < 10%，且某输出 > 50%；标记该输出 | `algorithm.py::RelativeErrChecker` |
+| statistics warning，输入非零 | 最大输出误差 / 最大输入误差 > 10；标记第一输出 | `algorithm.py::RelativeWarnChecker` |
+| statistics warning，输入为零 | 最大输出 NormRelativeErr > 10%；标记第一输出 | 同上 |
+| tensor error | 最小输入千分之一达标比例 > 90%，最小输出比例 < **10%**；标记第一输出 | `algorithm.py::OneThousandthErrChecker` |
+| tensor warning | 最小输入 Cosine > 0.9，且最小输入减最小输出 > 0.1；标记第一输出 | `algorithm.py::CosineWarnChecker` |
+
+`utils.py::str2float` 执行 `float(value.strip('%')) / 100`，因此统计阈值
+0.1/0.5 明确是 10%/50%，不是 0.1%/0.5%。此前关于单位待核实的文字
+仅适用于未审计的安装包，不再适用于该 checkout。
+
+**源码与文字不一致：**`OneThousandthErrChecker.output_threshold = 0.1`，
+但其 docstring、err_msg 和官方文档仍写 output < 0.6。该 checkout 的实际
+执行以 0.1 为准，不能按错误提示解释成 60%。要确定服务器 wheel 行为，
+需读取其同名类，不能仅根据发行版本号或本地 master 推断。
+
+`TENSOR_CHECKERS` 未注册 Cosine > 0.99 或 MaxAbsErr < 0.001 的独立
+硬阈值 checker；这两个数字是参考建议，不是自动 Result 通过线。
+`STATISTICS_CHECKERS` 未对 Max/Min/Mean RelativeErr 设置独立数值阈值。
+dtype、shape、requires_grad、标量、Inf/NaN 的 checker 另外参与判定。
+
+compare 路径：`core/compare/acc_compare.py` →
+`calculator.py::calculate_excel_result_df` → `ApiIndicatorCalculator`。
+分级图路径：`visualization/builder/msprobe_adapter.py` →
+`calculator.py::calculate_result` → 同一个 `ApiIndicatorCalculator`。
+因此该源码中二者共享上述 checker；并行图合并有单独 checker 列表，
+不应泛化到所有合并场景。当前单卡不涉及该例外。
+
+核对日期：2026-09-07。项目的 `msprobe_adapter.compare_command` 和
+`graph_visualize_command` 没有传入自定义误差阈值；报告也不会重新计算阈值。
+实际判定来自执行命令时安装的 msProbe。当前服务器记录的版本为
+`26.1.0.post1`，但本地尚未核验该安装包的判定源码；下面是官方当前文档
+“比对结果（Result）”与“计算精度评价指标分析”的规则，不把 master 文档
+冒充该 wheel 的源码审计。
+
+官方依据：[精度比对文档](https://github.com/Ascend/msprobe/blob/master/docs/zh/user_guide/accuracy_compare/pytorch_accuracy_compare_instruct.md)。
+
+| 模式/指标 | 官方 Result 规则或参考值 | 性质 |
+| --- | --- | --- |
+| statistics：Max/Min/Mean diff 及其 RelativeErr | 文档没有逐项统一数值 error 阈值 | 展示统计差异，不应自行补一条 BF16 容忍线 |
+| statistics：NormRelativeErr | 输入 norm 相对误差 < 0.1 且输出 > 0.5，标记输出 error | 输入到输出误差扩大的联合规则，不是所有输出一律 > 0.5 就失败 |
+| statistics：NormRelativeErr | 输出误差达到输入/参数误差的 10 倍，标记输出 warning | 零输入误差等边界需核对安装版本实现 |
+| tensor：千分之一误差带内比例 | 输入/参数 > 0.9 且输出 < 0.6，标记输出 error | 比例是 90% 和 60%，误差带是逐元素 RE < 0.001 |
+| tensor：Cosine | 输入/参数 > 0.9 且输入/参数减输出 > 0.1，标记输出 warning | 相似度下降规则 |
+| tensor：Cosine | > 0.99 | 官方建议参考值，不等同于前一行自动 warning 规则 |
+| tensor：MaxAbsErr | < 0.001 | 官方建议参考值，不是项目另行配置的硬阈值 |
+| tensor：EucDist、MaxRelativeErr | 越接近 0 越好，文档未给统一通过线 | 不虚构默认阈值 |
+| tensor：千分之五误差带内比例 | RE < 0.005 的元素比例 | 趋势指标，没有统一通过比例 |
+| 两种模式：shape/dtype/requires_grad/非 tensor 标量 | 不一致可标记 error | 属于结构或属性问题，不能靠放宽数值阈值消除 |
+| 两种模式：Max/Min 中 NaN/Inf | NPU 异常且标杆未出现相同现象时标记 error | 异常数值检查 |
+
+**单位特别说明：**统计 RelativeErr 在表格中按百分数展示。官方规则文字写
+`0.1`、`0.5`，不能未经安装包源码核对就声称这是 `0.1%/0.5%` 或
+`10%/50%`；尤其 TensorBoard 的 graph_visualize 可能走不同的判定代码。
+报告中的提示“greater than 0.5”不足以单独确定内部单位。确认后应在此记录
+具体文件/函数、版本和转换方式，而不是凭界面猜测。
+
+当前 `statistics + mix` 没有完整张量，不能计算真实逐元素 Cosine、MaxAbsErr
+等 tensor 指标。统计 Norm 差为 `norm(N)-norm(B)`，不是 `norm(N-B)`。
+所有摘要一致也不能证明元素一致，例如 `[1,2]` 和 `[2,1]`。
+
+分级可视化是独立调用 `msprobe graph_visualize`，不是把 compare CSV 转成图。
+模块边界 pass 不代表每个内部 API 都匹配；GPU/NPU 使用不同 RoPE 或融合实现时，
+内部节点可以没有一对一关系。先核对语义、shape 和参数对应，再解释数值阈值。
+工具运行成功、节点匹配成功和数值精度通过是三个不同结论。
+
 设 NPU tensor 为 \(N\)，golden tensor 为 \(B\)，元素数为 \(n\)。
 
 ### 7.1 真实 tensor 模式
