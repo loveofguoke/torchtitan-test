@@ -64,6 +64,9 @@ python tests/glm5_2_smoke/train_smoke.py \
 
 ### HSDP smoke coverage
 
+For mesh/placement examples, gradient communication and batch semantics, see
+the [shared topology guide](../glm5_2_common/README.md#hsdp组内分片组间复制).
+
 HSDP combines replicated groups with parameter sharding inside each group.
 `hsdp2x4` means `dp_replicate=2, dp_shard=4`; `hsdp4x2` means
 `dp_replicate=4, dp_shard=2`. Both use eight devices, DP degree eight,
@@ -129,6 +132,11 @@ nor falsely reuse each other.
 The default local batch size is 8 and the default global batch size is 64.
 This shared profile is valid for every built-in topology through eight ranks,
 including the eight microbatches required by PP8 with the 1F1B schedule.
+For ordinary pipeline schedules, the launcher selects the first rank of the
+last pipeline stage as `LOG_RANK`, because that stage owns the real loss.
+Logging rank 0 instead would aggregate the non-loss-stage `-1` placeholders;
+for PP8 this is displayed as `-8` even though the last stage computed a normal
+loss. An explicit `LOG_RANK` environment value still overrides this default.
 
 Successful topologies are skipped on the next invocation. Incomplete output is
 preserved with a `.failed-<timestamp>` suffix and retried. `--force` removes

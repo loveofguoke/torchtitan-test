@@ -9,7 +9,43 @@ import pytest
 from tests.glm5_2_common.cli import LoggedProcessError
 from tests.glm5_2_common.topology import ParallelTopology
 from tests.glm5_2_graph.config import GraphFeatureConfig
-from tests.glm5_2_smoke.train_smoke import _completed, _contract, _run_topology
+from tests.glm5_2_smoke.train_smoke import (
+    _completed,
+    _contract,
+    _default_log_rank,
+    _run_topology,
+)
+
+
+@pytest.mark.parametrize(
+    ("topology", "expected_rank"),
+    (
+        (ParallelTopology("pp8", 8, pipeline_parallel_degree=8), 7),
+        (
+            ParallelTopology(
+                "fsdp2-pp4",
+                8,
+                data_parallel_shard_degree=2,
+                pipeline_parallel_degree=4,
+            ),
+            6,
+        ),
+        (
+            ParallelTopology(
+                "fsdp2-tp2-pp2",
+                8,
+                data_parallel_shard_degree=2,
+                tensor_parallel_degree=2,
+                pipeline_parallel_degree=2,
+            ),
+            4,
+        ),
+    ),
+)
+def test_default_log_rank_owns_pipeline_loss(
+    topology: ParallelTopology, expected_rank: int
+) -> None:
+    assert _default_log_rank(topology) == expected_rank
 
 
 def test_completed_smoke_contract_survives_json_round_trip(tmp_path) -> None:
@@ -38,9 +74,11 @@ def test_smoke_disables_trainer_cuda_graphs(
     tmp_path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     commands: list[list[str]] = []
+    environments: list[dict[str, str]] = []
 
     def run(command, **kwargs):
         commands.append(command)
+        environments.append(kwargs["env"])
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr("tests.glm5_2_smoke.train_smoke.subprocess.run", run)
@@ -67,6 +105,8 @@ def test_smoke_disables_trainer_cuda_graphs(
     assert manifest["visible_devices"] == "0,1,2,3,4,5,6,7"
     assert "--training.disable_cuda_graphs" in commands[0]
     assert "--parallelism.num_pp_microbatches=8" in commands[0]
+    assert environments[0]["LOG_RANK"] == "7"
+    assert manifest["contract"]["log_rank"] == 7
     assert capsys.readouterr().out.strip().splitlines()[-1] == (
         f"Runtime log: {(tmp_path / 'smoke_runs/pp8/runtime.log').resolve()}"
     )

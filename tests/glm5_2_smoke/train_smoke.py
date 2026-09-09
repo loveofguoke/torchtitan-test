@@ -98,6 +98,19 @@ def _visible_devices(device: str) -> str:
     return value
 
 
+def _default_log_rank(topology: ParallelTopology) -> int:
+    """Select a rank that owns the real loss for the topology."""
+    if (
+        topology.pipeline_parallel_degree == 1
+        or topology.pipeline_parallel_schedule == "ZBVZeroBubble"
+    ):
+        return 0
+    ranks_per_pipeline_stage = (
+        topology.world_size // topology.pipeline_parallel_degree
+    )
+    return ranks_per_pipeline_stage * (topology.pipeline_parallel_degree - 1)
+
+
 def _contract(
     *,
     device: str,
@@ -127,6 +140,10 @@ def _contract(
         "module": module,
         "config": config,
     }
+    if topology.pipeline_parallel_degree > 1:
+        contract["log_rank"] = int(
+            os.environ.get("LOG_RANK", _default_log_rank(topology))
+        )
     if graph.mode != "eager":
         contract["graph"] = {
             "mode": graph.mode,
@@ -241,7 +258,9 @@ def _run_topology(
             "TORCHTITAN_DEVICE": device,
             "TORCHTITAN_RUN_LOG": str(runtime_log),
             "NGPU": str(topology.world_size),
-            "LOG_RANK": environment.get("LOG_RANK", "0"),
+            "LOG_RANK": environment.get(
+                "LOG_RANK", str(_default_log_rank(topology))
+            ),
             "MODULE": module,
             "CONFIG": config,
         }
