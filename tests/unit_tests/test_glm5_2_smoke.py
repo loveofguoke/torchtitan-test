@@ -10,11 +10,43 @@ from tests.glm5_2_common.cli import LoggedProcessError
 from tests.glm5_2_common.topology import ParallelTopology
 from tests.glm5_2_graph.config import GraphFeatureConfig
 from tests.glm5_2_smoke.train_smoke import (
+    _automatic_replay_captures,
     _completed,
     _contract,
     _default_log_rank,
     _run_topology,
 )
+
+
+def test_automatic_replay_selects_largest_qk_gradient_per_rank(tmp_path) -> None:
+    capture_root = tmp_path / "nonfinite_replay"
+    expected = []
+    for rank, values in ((0, (0.1, 9.0)), (1, (float("inf"), 2.0))):
+        rank_directory = capture_root / f"rank{rank}"
+        for call, value in enumerate(values):
+            call_directory = rank_directory / f"call{call:03d}"
+            call_directory.mkdir(parents=True)
+            finite_count = 0 if value == float("inf") else 1
+            (call_directory / "actual_gradients.json").write_text(
+                json.dumps(
+                    {
+                        "dq_QNH": {
+                            "finite_count": finite_count,
+                            "numel": 1,
+                            "max_abs": None if value == float("inf") else value,
+                        },
+                        "dk_KNH": {
+                            "finite_count": 1,
+                            "numel": 1,
+                            "max_abs": 0.0,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+        expected.append(rank_directory / ("call001" if rank == 0 else "call000"))
+
+    assert _automatic_replay_captures(capture_root) == expected
 
 
 @pytest.mark.parametrize(
@@ -140,6 +172,59 @@ def test_failed_smoke_exception_identifies_runtime_log(
     assert str(error.value).endswith(
         f"runtime log: {runtime_log.resolve()}"
     )
+
+
+def test_failed_smoke_runs_nonfinite_replay_before_raising(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands = []
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        if len(commands) == 1:
+            capture = (
+                tmp_path
+                / "smoke_runs/cp8/nonfinite_replay/rank0/call000"
+            )
+            capture.mkdir(parents=True)
+            (capture / "actual_gradients.json").write_text(
+                json.dumps(
+                    {
+                        name: {"finite_count": 1, "numel": 1, "max_abs": 0.1}
+                        for name in ("dq_QNH", "dk_KNH")
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return SimpleNamespace(returncode=9)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("tests.glm5_2_smoke.train_smoke.subprocess.run", run)
+    with pytest.raises(LoggedProcessError):
+        _run_topology(
+            root=tmp_path,
+            suite_root=tmp_path / "smoke_runs",
+            device="npu",
+            visible_devices="0,1,2,3,4,5,6,7",
+            topology=ParallelTopology("cp8", 8, context_parallel_degree=8),
+            steps=1,
+            local_batch_size=8,
+            global_batch_size=64,
+            sequence_length=128,
+            seed=61,
+            module="glm5",
+            config="glm5_debugmodel",
+            nonfinite_diagnostics=True,
+            diagnostic_rank="all",
+            force=False,
+        )
+
+    replay_root = tmp_path / "smoke_runs/cp8/nonfinite_replay"
+    assert len(commands) == 2
+    assert commands[1][-1] == "--compact"
+    assert (replay_root / "replay.log").is_file()
+    status = json.loads((replay_root / "replay_status.json").read_text())
+    assert status["status"] == "completed"
 
 
 def test_suite_report_preserves_historical_unknown_time(tmp_path) -> None:

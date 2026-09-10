@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Apply TorchTitanTurbo's NPU integration before starting TorchTitan."""
 
+import json
 import os
 import sys
 
@@ -174,6 +175,10 @@ def _install_nonfinite_gradient_diagnostics() -> None:
                         },
                     }
                     torch.save(payload, capture_directory / "actual_gradients.pt")
+                    (capture_directory / "actual_gradients.json").write_text(
+                        json.dumps(payload["statistics"], indent=2) + "\n",
+                        encoding="utf-8",
+                    )
                     print(
                         f"[nonfinite-actual-gradients] rank={rank} "
                         f"fqn={module_fqn} call={capture_index} "

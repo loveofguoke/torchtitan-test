@@ -36,7 +36,9 @@ def _statistics(tensor: torch.Tensor) -> dict[str, object]:
     }
 
 
-def replay(capture_directory: Path, device: torch.device) -> dict[str, object]:
+def replay(
+    capture_directory: Path, device: torch.device, *, verbose: bool = True
+) -> dict[str, object]:
     capture_directory = capture_directory.resolve()
     forward = torch.load(
         capture_directory / "forward.pt", map_location="cpu", weights_only=False
@@ -144,30 +146,49 @@ def replay(capture_directory: Path, device: torch.device) -> dict[str, object]:
         },
         capture_directory / "replay_tensors.pt",
     )
-    print(json.dumps(result, indent=2))
-    print(f"Replay result: {result_path}")
+    if verbose:
+        print(json.dumps(result, indent=2), flush=True)
+    print(f"Replay result: {result_path}", flush=True)
     return result
+
+
+def _write_summary(path: Path, summary: dict[str, object]) -> None:
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("capture_directories", type=Path, nargs="+")
     parser.add_argument("--device", default="npu:0")
+    parser.add_argument("--compact", action="store_true")
     args = parser.parse_args()
 
     device = torch.device(args.device)
     if device.type == "npu":
         torch.npu.set_device(device)
-    results = [replay(capture_directory, device) for capture_directory in args.capture_directories]
     capture_root = Path(args.capture_directories[0]).resolve().parents[1]
+    summary_path = capture_root / "replay_summary.json"
     summary = {
-        "capture_count": len(results),
-        "all_replayed_gradients_finite": all(
+        "status": "running",
+        "requested_capture_count": len(args.capture_directories),
+        "completed_capture_count": 0,
+        "all_replayed_gradients_finite": True,
+        "calls": [],
+    }
+    _write_summary(summary_path, summary)
+    print(f"Replay summary initialized: {summary_path}", flush=True)
+    for capture_directory in args.capture_directories:
+        item = replay(capture_directory, device, verbose=not args.compact)
+        summary["completed_capture_count"] += 1
+        summary["all_replayed_gradients_finite"] = bool(
+            summary["all_replayed_gradients_finite"]
+        ) and all(
             item[name]["finite_count"] == item[name]["numel"]
-            for item in results
             for name in ("dq", "dk", "dv")
-        ),
-        "calls": [
+        )
+        summary["calls"].append(
             {
                 "rank": item["rank"],
                 "module_fqn": item["module_fqn"],
@@ -182,12 +203,17 @@ def main() -> int:
                     "captured_vs_replayed_gradients"
                 ),
             }
-            for item in results
-        ],
-    }
-    summary_path = capture_root / "replay_summary.json"
-    summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
-    print(f"Replay summary: {summary_path}")
+        )
+        _write_summary(summary_path, summary)
+        print(
+            "Replay progress: "
+            f"{summary['completed_capture_count']}/"
+            f"{summary['requested_capture_count']}",
+            flush=True,
+        )
+    summary["status"] = "completed"
+    _write_summary(summary_path, summary)
+    print(f"Replay summary: {summary_path}", flush=True)
     return 0
 
 

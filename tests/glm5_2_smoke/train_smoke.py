@@ -196,6 +196,37 @@ def _preserve_failed_run(path: Path) -> None:
     print(f"Preserved incomplete run: {target}")
 
 
+def _automatic_replay_captures(capture_root: Path) -> list[Path]:
+    """Select the call with the largest observed Q/K gradient per rank."""
+    selected = []
+    for rank_directory in sorted(capture_root.glob("rank*")):
+        calls = sorted(rank_directory.glob("call*"))
+        if not calls:
+            continue
+        representative = calls[0]
+        representative_score = -1.0
+        for call_directory in calls:
+            statistics_path = call_directory / "actual_gradients.json"
+            if not statistics_path.is_file():
+                continue
+            try:
+                statistics = json.loads(statistics_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            score = 0.0
+            for name in ("dq_QNH", "dk_KNH"):
+                gradient = statistics.get(name, {})
+                if gradient.get("finite_count") != gradient.get("numel"):
+                    score = float("inf")
+                    break
+                score = max(score, float(gradient.get("max_abs") or 0.0))
+            if score > representative_score:
+                representative = call_directory
+                representative_score = score
+        selected.append(representative)
+    return selected
+
+
 def _run_topology(
     *,
     root: Path,
@@ -356,15 +387,30 @@ def _run_topology(
     )
     if nonfinite_diagnostics:
         capture_root = run_directory / "nonfinite_replay"
-        capture_directories = sorted(capture_root.glob("rank*/call*"))
+        capture_directories = _automatic_replay_captures(capture_root)
         if capture_directories:
             replay_log = capture_root / "replay.log"
+            replay_status = capture_root / "replay_status.json"
+            replay_status.write_text(
+                json.dumps(
+                    {
+                        "status": "starting",
+                        "selected_captures": [str(path) for path in capture_directories],
+                        "log": str(replay_log),
+                        "summary": str(capture_root / "replay_summary.json"),
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             replay_command = [
                 sys.executable,
                 str(Path(__file__).with_name("replay_glm5_flex.py")),
                 *(str(path) for path in capture_directories),
                 "--device",
                 "npu:0",
+                "--compact",
             ]
             print(f"Running automatic FlexAttention replay: {replay_log}")
             with replay_log.open("w", encoding="utf-8") as stream:
@@ -381,6 +427,20 @@ def _run_topology(
                 "log": str(replay_log),
                 "capture_count": len(capture_directories),
             }
+            replay_status.write_text(
+                json.dumps(
+                    {
+                        "status": (
+                            "completed" if replay_result.returncode == 0 else "failed"
+                        ),
+                        **record["nonfinite_replay"],
+                        "summary": str(capture_root / "replay_summary.json"),
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             (run_directory / "manifest.json").write_text(
                 json.dumps(record, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",

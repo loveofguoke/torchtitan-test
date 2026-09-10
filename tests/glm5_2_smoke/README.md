@@ -109,12 +109,16 @@ inside TorchNPU lowering/runtime; it does not by itself prove that the DELTA
 actually consumed by the generated kernel is correct. `actual_gradients.pt`
 captures the dQ/dK/dV returned by that exact distributed backward invocation.
 
-After the distributed process exits, smoke automatically replays every complete
-capture on one NPU. The run-level `nonfinite_replay/replay.log`, per-call
-`replay_result.json`, and run-level `replay_summary.json` compare the actual
-distributed gradients with the isolated replay. This automatic replay also runs
-after a failed training step, so one smoke command produces the complete
-captured-versus-replayed diagnostic rather than requiring a second manual run.
+After the distributed process exits, smoke automatically selects one capture per
+rank: the call with the largest observed dQ/dK magnitude, with non-finite values
+ranked first. This retains every raw capture while avoiding 64 sequential
+compilations for an 8-rank, 8-call CP run. Before replay starts it creates
+`nonfinite_replay/replay_status.json` and `replay.log`; `replay_summary.json` is
+initialized immediately and replaced atomically after every completed call.
+Per-call `replay_result.json` files compare the actual distributed gradients with
+the isolated replay. Automatic replay runs before a failed training result is
+raised, so it is not skipped when the failure being diagnosed terminates the
+training step. Use the manual command below to replay additional saved calls.
 
 Replay one or more captures on a single device with:
 
