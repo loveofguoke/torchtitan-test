@@ -32,6 +32,25 @@ def _install_nonfinite_gradient_diagnostics() -> None:
     def cpu_clone(tensor):
         return tensor.detach().to(device="cpu", copy=True)
 
+    def tensor_statistics(tensor):
+        finite = torch.isfinite(tensor)
+        finite_count = int(finite.sum().item())
+        numel = tensor.numel()
+        return {
+            "shape": tuple(tensor.shape),
+            "dtype": str(tensor.dtype),
+            "finite_count": finite_count,
+            "numel": numel,
+            "nan_count": int(torch.isnan(tensor).sum().item()),
+            "posinf_count": int(torch.isposinf(tensor).sum().item()),
+            "neginf_count": int(torch.isneginf(tensor).sum().item()),
+            "max_abs": (
+                float(tensor.abs().max().item())
+                if numel and finite_count == numel
+                else None
+            ),
+        }
+
     def glm5_flex_forward_with_capture(
         self,
         q_QNH,
@@ -72,9 +91,10 @@ def _install_nonfinite_gradient_diagnostics() -> None:
             dump_root = runtime_log.parent / "nonfinite_replay"
         capture_directory = dump_root / f"rank{rank}" / f"call{capture_index:03d}"
         capture_directory.mkdir(parents=True, exist_ok=True)
+        output_snapshot_QNV = cpu_clone(output_QNV)
         torch.save(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "rank": rank,
                 "module_fqn": module_fqn,
                 "call_index": capture_index,
@@ -83,7 +103,7 @@ def _install_nonfinite_gradient_diagnostics() -> None:
                 "v_KNV": cpu_clone(v_KNV),
                 "attention_masks": cpu_clone(attention_masks),
                 "topk_indices_QS": cpu_clone(topk_indices_QS),
-                "output_QNV": cpu_clone(output_QNV),
+                "output_QNV": output_snapshot_QNV,
                 "scale": scale,
                 "block_size": self.block_size,
                 "lse": None,
@@ -96,13 +116,35 @@ def _install_nonfinite_gradient_diagnostics() -> None:
         )
 
         def save_grad_output(gradient_QNV):
+            # This hook runs before FlexAttention consumes grad_output. Reading
+            # output_QNV here tests whether the forward result retained by the
+            # autograd graph was overwritten during the intervening layers.
+            output_at_backward_QNV = cpu_clone(output_QNV)
+            gradient_at_backward_QNV = cpu_clone(gradient_QNV)
+            output_max_abs_diff = float(
+                (output_at_backward_QNV - output_snapshot_QNV).abs().max().item()
+            )
+            # FlexAttention backward forms DELTA = sum(out * grad_out, -1).
+            # Compute the reference in FP32 before entering the compiled
+            # backward so it is independent of the NPU lowering and kernel.
+            delta_ref_QN = (
+                output_snapshot_QNV.float() * gradient_at_backward_QNV.float()
+            ).sum(dim=-1)
             torch.save(
-                {"grad_output_QNV": cpu_clone(gradient_QNV)},
+                {
+                    "grad_output_QNV": gradient_at_backward_QNV,
+                    "output_at_backward_QNV": output_at_backward_QNV,
+                    "output_max_abs_diff": output_max_abs_diff,
+                    "delta_ref_QN": delta_ref_QN,
+                    "delta_ref_statistics": tensor_statistics(delta_ref_QN),
+                },
                 capture_directory / "backward.pt",
             )
             print(
                 f"[nonfinite-replay-capture] rank={rank} fqn={module_fqn} "
-                f"call={capture_index} path={capture_directory}",
+                f"call={capture_index} output_max_abs_diff={output_max_abs_diff} "
+                f"delta_ref={tensor_statistics(delta_ref_QN)} "
+                f"path={capture_directory}",
                 flush=True,
             )
             return gradient_QNV

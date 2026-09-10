@@ -79,6 +79,45 @@ paired with a mask-out failure localizes the defect to TorchNPU's mask-out
 lowering/kernel family. It does not alone distinguish saved LSE, compact
 backward metadata, dQ, and dK/dV corruption.
 
+To diagnose the observed CP8 backward corruption, enable the focused capture
+on the rank and layer that first showed the large finite dQ/dK values:
+
+```bash
+python tests/glm5_2_smoke/train_smoke.py \
+  --device npu --topology cp8 --graph eager \
+  --npu-codegen ascend-triton \
+  --npu-flexattention-mask-mode mask-out \
+  --nonfinite-diagnostics \
+  --diagnostic-rank 6 \
+  --diagnostic-layer layers.6.attention.inner_attention \
+  --steps 2 --force
+```
+
+The selected topology directory contains
+`nonfinite_replay/rank6/callNNN/{forward,backward}.pt`. `forward.pt` records an
+immediate CPU snapshot of Q/K/V, mask, selected indices, and output.
+`backward.pt` is written when the public attention output first receives its
+gradient, before the compiled FlexAttention backward executes. It contains the
+output read again at that boundary, its maximum difference from the forward
+snapshot, and the independent FP32 reference
+`delta_ref_QN = sum(output_snapshot * grad_output, dim=-1)`. A nonzero output
+difference identifies saved-output overwrite or aliasing before entering the
+backward kernel. A finite, plausible reference DELTA moves the investigation
+inside TorchNPU lowering/runtime; it does not by itself prove that the DELTA
+actually consumed by the generated kernel is correct.
+
+Replay one or more captures on a single device with:
+
+```bash
+python tests/glm5_2_smoke/replay_glm5_flex.py \
+  smoke_runs/<suite>/cp8/nonfinite_replay/rank6/call000 \
+  --device npu:0
+```
+
+The replay report now includes captured and replayed DELTA statistics and their
+maximum difference. Capture schema version 2 is recorded in the smoke contract,
+so a completed older diagnostic run is not silently reused.
+
 Either backend can run a focused subset:
 
 ```bash
@@ -184,6 +223,9 @@ interrupted, rerun without `--force` to continue from its incomplete member.
 | `--graph` | Execution mode: `eager`, `inductor`, or `npugraphs`. Compiled choices are NPU-only. | `eager` |
 | `--compile-loss` | Compile both `model` and `loss`; without it only `model` is compiled. NPUGraph currently rejects this option. | disabled |
 | `--compiler-diagnostics` | Set the shared compiler diagnostic environment for graph breaks, recompiles, and dynamic-shape events. | disabled |
+| `--nonfinite-diagnostics` | Capture GLM FlexAttention inputs, saved-output lifetime evidence, and the independent FP32 backward DELTA reference. NPU only. | disabled |
+| `--diagnostic-rank` | Global rank whose selected FlexAttention layer is captured. Must exist in every selected topology. | `6` |
+| `--diagnostic-layer` | Module-FQN substring selecting the captured GLM FlexAttention layer. | `layers.6.attention.inner_attention` |
 | `--npu-flexattention-mask-mode` | Select TorchNPU `mask-in` or `mask-out` FlexAttention lowering, including internally compiled FlexAttention under `--graph eager`. | unset |
 | `--force` | Remove and rerun completed topology output. Without it, completed runs are skipped and incomplete runs are archived before retry. | disabled |
 

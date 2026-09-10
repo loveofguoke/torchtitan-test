@@ -123,6 +123,9 @@ def _contract(
     module: str,
     config: str,
     graph: GraphFeatureConfig = GraphFeatureConfig(),
+    nonfinite_diagnostics: bool = False,
+    diagnostic_rank: int = 6,
+    diagnostic_layer: str = "layers.6.attention.inner_attention",
 ) -> dict[str, Any]:
     topology_contract = asdict(topology)
     # Manifests are JSON.  Normalize tuple-valued fields before comparing a
@@ -158,6 +161,12 @@ def _contract(
                 if graph.npu_flexattention_mask_mode
                 else {}
             ),
+        }
+    if nonfinite_diagnostics:
+        contract["nonfinite_diagnostics"] = {
+            "rank": diagnostic_rank,
+            "layer": diagnostic_layer,
+            "capture_schema_version": 2,
         }
     return contract
 
@@ -202,6 +211,9 @@ def _run_topology(
     module: str,
     config: str,
     graph: GraphFeatureConfig = GraphFeatureConfig(),
+    nonfinite_diagnostics: bool = False,
+    diagnostic_rank: int = 6,
+    diagnostic_layer: str = "layers.6.attention.inner_attention",
     force: bool,
 ) -> Path:
     execution = compose_execution(
@@ -220,6 +232,9 @@ def _run_topology(
         module=module,
         config=config,
         graph=graph,
+        nonfinite_diagnostics=nonfinite_diagnostics,
+        diagnostic_rank=diagnostic_rank,
+        diagnostic_layer=diagnostic_layer,
     )
     if not force and _completed(run_directory, contract):
         print(f"Skip completed topology {topology.name}: {run_directory}")
@@ -275,6 +290,17 @@ def _run_topology(
         }
     )
     environment.update(execution.environment())
+    if nonfinite_diagnostics:
+        environment.update(
+            {
+                "TORCHTITAN_DIAGNOSE_NONFINITE": "1",
+                "TORCHTITAN_NONFINITE_CAPTURE_RANK": str(diagnostic_rank),
+                "TORCHTITAN_NONFINITE_CAPTURE_LAYER": diagnostic_layer,
+                "TORCHTITAN_NONFINITE_DUMP_DIR": str(
+                    run_directory / "nonfinite_replay"
+                ),
+            }
+        )
     visible_variable = (
         "ASCEND_RT_VISIBLE_DEVICES"
         if device == "npu"
@@ -366,6 +392,19 @@ def main() -> int:
         action="store_true",
         help="enable graph-break, recompile, and dynamic-shape diagnostics",
     )
+    parser.add_argument(
+        "--nonfinite-diagnostics",
+        action="store_true",
+        help=(
+            "capture GLM FlexAttention inputs, the forward-output lifetime "
+            "check, and a reference backward DELTA"
+        ),
+    )
+    parser.add_argument("--diagnostic-rank", type=int, default=6)
+    parser.add_argument(
+        "--diagnostic-layer",
+        default="layers.6.attention.inner_attention",
+    )
     parser.add_argument("--force", action="store_true")
     from tests.glm5_2_graph.config import (
         add_npu_codegen_argument,
@@ -377,7 +416,11 @@ def main() -> int:
 
     if args.steps < 1:
         parser.error("--steps must be positive")
+    if args.diagnostic_rank < 0:
+        parser.error("--diagnostic-rank must be non-negative")
     device = _device(args.device)
+    if args.nonfinite_diagnostics and device != "npu":
+        parser.error("--nonfinite-diagnostics is available only for NPU runs")
     visible_devices = _visible_devices(device)
     graph = GraphFeatureConfig(
         mode=args.graph,
@@ -408,6 +451,14 @@ def main() -> int:
                 f"topology {name} needs {local_world_size} visible {device} "
                 f"devices, but only {num_visible_devices} were exported"
             )
+        if (
+            args.nonfinite_diagnostics
+            and args.diagnostic_rank >= local_world_size
+        ):
+            parser.error(
+                f"--diagnostic-rank={args.diagnostic_rank} is outside topology "
+                f"{name} with world size {local_world_size}"
+            )
     suite_name = (
         f"{device}-{args.config}-s{args.steps}-b{args.global_batch_size}-"
         f"seq{args.sequence_length}-seed{args.seed}"
@@ -420,6 +471,8 @@ def main() -> int:
         suite_name += f"-{graph.npu_codegen}"
     if graph.npu_flexattention_mask_mode:
         suite_name += f"-flex-{graph.npu_flexattention_mask_mode}"
+    if args.nonfinite_diagnostics:
+        suite_name += f"-nonfinite-r{args.diagnostic_rank}"
     root = _root()
     suite_root = root / "smoke_runs" / suite_name
     if args.force:
@@ -452,6 +505,9 @@ def main() -> int:
                 module=args.module,
                 config=args.config,
                 graph=graph,
+                nonfinite_diagnostics=args.nonfinite_diagnostics,
+                diagnostic_rank=args.diagnostic_rank,
+                diagnostic_layer=args.diagnostic_layer,
                 force=False,
             )
         finally:

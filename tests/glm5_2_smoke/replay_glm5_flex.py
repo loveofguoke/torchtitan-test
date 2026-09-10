@@ -74,9 +74,18 @@ def replay(capture_directory: Path, device: torch.device) -> dict[str, object]:
     )
     output_QNV = output_BNQV.squeeze(0).transpose(0, 1)
     grad_output_QNV = backward["grad_output_QNV"].to(device)
+    replay_delta_QN = (
+        output_QNV.detach().float() * grad_output_QNV.float()
+    ).sum(dim=-1)
     output_QNV.backward(grad_output_QNV)
 
     captured_output = forward["output_QNV"].to(device)
+    captured_delta_ref = backward.get("delta_ref_QN")
+    delta_ref_max_abs_diff = None
+    if captured_delta_ref is not None:
+        delta_ref_max_abs_diff = float(
+            (replay_delta_QN - captured_delta_ref.to(device)).abs().max().item()
+        )
     result = {
         "capture_directory": str(capture_directory),
         "rank": forward["rank"],
@@ -89,6 +98,12 @@ def replay(capture_directory: Path, device: torch.device) -> dict[str, object]:
         ),
         "lse": _statistics(aux.lse),
         "grad_output": _statistics(grad_output_QNV),
+        "captured_output_max_abs_diff_at_backward": backward.get(
+            "output_max_abs_diff"
+        ),
+        "captured_delta_ref": backward.get("delta_ref_statistics"),
+        "replayed_delta_ref": _statistics(replay_delta_QN),
+        "delta_ref_max_abs_diff": delta_ref_max_abs_diff,
         "dq": _statistics(q_QNH.grad),
         "dk": _statistics(k_KNH.grad),
         "dv": _statistics(v_KNV.grad),
@@ -99,6 +114,7 @@ def replay(capture_directory: Path, device: torch.device) -> dict[str, object]:
         {
             "output_QNV": output_QNV.detach().cpu(),
             "lse": aux.lse.detach().cpu(),
+            "delta_ref_QN": replay_delta_QN.detach().cpu(),
             "dq_QNH": q_QNH.grad.detach().cpu(),
             "dk_KNH": k_KNH.grad.detach().cpu(),
             "dv_KNV": v_KNV.grad.detach().cpu(),

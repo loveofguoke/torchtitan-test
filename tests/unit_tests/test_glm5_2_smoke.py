@@ -190,6 +190,52 @@ def test_npu_smoke_can_compile_each_topology(
     assert environments[0]["TORCH_LOGS"] == "graph_breaks,recompiles,dynamic"
 
 
+def test_npu_nonfinite_diagnostics_are_recorded_and_routed_to_run(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    environments: list[dict[str, str]] = []
+
+    def run(_command, **kwargs):
+        environments.append(kwargs["env"])
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("tests.glm5_2_smoke.train_smoke.subprocess.run", run)
+    run_directory = _run_topology(
+        root=tmp_path,
+        suite_root=tmp_path / "smoke_runs",
+        device="npu",
+        visible_devices="0,1,2,3,4,5,6,7",
+        topology=ParallelTopology("cp8", 8, context_parallel_degree=8),
+        steps=1,
+        local_batch_size=8,
+        global_batch_size=64,
+        sequence_length=128,
+        seed=61,
+        module="glm5",
+        config="glm5_debugmodel",
+        nonfinite_diagnostics=True,
+        diagnostic_rank=6,
+        diagnostic_layer="layers.6.attention.inner_attention",
+        force=False,
+    )
+
+    environment = environments[0]
+    assert environment["TORCHTITAN_DIAGNOSE_NONFINITE"] == "1"
+    assert environment["TORCHTITAN_NONFINITE_CAPTURE_RANK"] == "6"
+    assert environment["TORCHTITAN_NONFINITE_CAPTURE_LAYER"] == (
+        "layers.6.attention.inner_attention"
+    )
+    assert environment["TORCHTITAN_NONFINITE_DUMP_DIR"] == str(
+        run_directory / "nonfinite_replay"
+    )
+    manifest = json.loads((run_directory / "manifest.json").read_text())
+    assert manifest["contract"]["nonfinite_diagnostics"] == {
+        "rank": 6,
+        "layer": "layers.6.attention.inner_attention",
+        "capture_schema_version": 2,
+    }
+
+
 def test_gpu_smoke_reserves_compiled_graph_interface(tmp_path) -> None:
     with pytest.raises(NotImplementedError, match="only NPU endpoints"):
         _run_topology(
