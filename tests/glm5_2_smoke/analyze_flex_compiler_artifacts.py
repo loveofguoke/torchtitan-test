@@ -29,10 +29,10 @@ KERNEL_PATTERN = re.compile(
 )
 BUFFER_PATTERN = re.compile(r"\b(?:buf\d+|arg\d+_\d+|primals_\d+|tangents_\d+)\b")
 BACKWARD_DEFINITION_PATTERN = re.compile(
-    r"def\s+(?P<kernel>\w*flex_attention_backward\w*)\((?P<args>[^)]*)\)"
+    r"def\s+(?P<kernel>\w*flex_attention_(?:backward|bwd)\w*)\((?P<args>[^)]*)\)"
 )
 BACKWARD_LAUNCH_PATTERN = re.compile(
-    r"(?P<kernel>\w*flex_attention_backward\w*)\.run\((?P<args>.*)\)"
+    r"(?P<kernel>\w*flex_attention_(?:backward|bwd)\w*)\.run\((?P<args>.*)\)"
 )
 LIFETIME_SIGNALS = (
     "empty_strided",
@@ -42,6 +42,7 @@ LIFETIME_SIGNALS = (
     "del ",
     "delta",
     "flex_attention_backward",
+    "flex_attention_bwd",
 )
 
 
@@ -130,7 +131,10 @@ def _inspect_tree(root: Path) -> dict[str, object]:
                     }
                 )
             if (
-                "flex_attention_backward" in lowered_line
+                (
+                    "flex_attention_backward" in lowered_line
+                    or "flex_attention_bwd" in lowered_line
+                )
                 and "def " not in lowered_line
                 and (".run(" in lowered_line or "(" in lowered_line)
             ):

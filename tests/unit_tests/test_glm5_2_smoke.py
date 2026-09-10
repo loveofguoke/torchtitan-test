@@ -57,10 +57,10 @@ def test_compiler_artifact_analysis_separates_ranks_and_replay(tmp_path) -> None
     rank_file.parent.mkdir(parents=True)
     replay_file.parent.mkdir(parents=True)
     rank_file.write_text(
-        "def triton_flex_attention_backward(arg_Q, arg_DELTA, out_ptr0):\n"
+        "def triton_flex_attention_bwd_dq_mask_out(arg_Q, arg_DELTA, out_ptr0):\n"
         "    pass\n"
         "buf7 = empty_strided_npu((8, 128), (128, 1), torch.float32)\n"
-        "triton_flex_attention_backward.run(arg0_1, buf7, buf9)\n"
+        "triton_flex_attention_bwd_dq_mask_out.run(arg0_1, buf7, buf9)\n"
         "del buf7\n"
         "buf11 = buf7.reuse((8, 128), (128, 1), 0)\n"
         "kernel_name = 'triton_flex_attention_backward'\ngrid=(24,)\n",
