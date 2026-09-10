@@ -27,6 +27,22 @@ SIGNALS = (
 KERNEL_PATTERN = re.compile(
     r"\b(?:triton|dvm)_(?:poi|tem|per)_fused_flex_attention[A-Za-z0-9_]*"
 )
+BUFFER_PATTERN = re.compile(r"\b(?:buf\d+|arg\d+_\d+|primals_\d+|tangents_\d+)\b")
+BACKWARD_DEFINITION_PATTERN = re.compile(
+    r"def\s+(?P<kernel>\w*flex_attention_backward\w*)\((?P<args>[^)]*)\)"
+)
+BACKWARD_LAUNCH_PATTERN = re.compile(
+    r"(?P<kernel>\w*flex_attention_backward\w*)\.run\((?P<args>.*)\)"
+)
+LIFETIME_SIGNALS = (
+    "empty_strided",
+    "reinterpret_tensor",
+    "as_strided",
+    ".reuse(",
+    "del ",
+    "delta",
+    "flex_attention_backward",
+)
 
 
 def _sha256(path: Path) -> str:
@@ -37,13 +53,40 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _split_top_level_arguments(arguments: str) -> list[str]:
+    values = []
+    start = 0
+    depth = 0
+    for index, character in enumerate(arguments):
+        if character in "([{":
+            depth += 1
+        elif character in ")]}":
+            depth -= 1
+        elif character == "," and depth == 0:
+            values.append(arguments[start:index].strip())
+            start = index + 1
+    values.append(arguments[start:].strip())
+    return values
+
+
 def _inspect_tree(root: Path) -> dict[str, object]:
     files = []
     signals: Counter[str] = Counter()
     kernels: Counter[str] = Counter()
     snippets = []
+    backward_definitions = []
+    backward_launches = []
+    buffer_events: dict[str, list[dict[str, object]]] = {}
     if not root.is_dir():
-        return {"exists": False, "files": files, "signals": {}, "kernels": {}}
+        return {
+            "exists": False,
+            "files": files,
+            "signals": {},
+            "kernels": {},
+            "backward_definitions": [],
+            "backward_launches": [],
+            "buffer_lifetime_events": {},
+        }
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
         relative = path.relative_to(root).as_posix()
         record = {
@@ -63,13 +106,63 @@ def _inspect_tree(root: Path) -> dict[str, object]:
             signals[signal] += lowered.count(signal)
         kernels.update(KERNEL_PATTERN.findall(text))
         for line_number, line in enumerate(text.splitlines(), 1):
-            if len(snippets) >= 80:
-                break
             lowered_line = line.lower()
-            if any(signal in lowered_line for signal in SIGNALS):
+            if len(snippets) < 80 and any(
+                signal in lowered_line for signal in SIGNALS
+            ):
                 snippets.append(
                     {"file": relative, "line": line_number, "text": line[:500]}
                 )
+            definition = BACKWARD_DEFINITION_PATTERN.search(line)
+            if definition:
+                arguments = _split_top_level_arguments(definition.group("args"))
+                backward_definitions.append(
+                    {
+                        "file": relative,
+                        "line": line_number,
+                        "kernel": definition.group("kernel"),
+                        "delta_argument_indices": [
+                            index
+                            for index, value in enumerate(arguments)
+                            if "DELTA" in value.upper()
+                        ],
+                        "arguments": arguments,
+                    }
+                )
+            if (
+                "flex_attention_backward" in lowered_line
+                and "def " not in lowered_line
+                and (".run(" in lowered_line or "(" in lowered_line)
+            ):
+                launch = BACKWARD_LAUNCH_PATTERN.search(line)
+                record = {"file": relative, "line": line_number, "text": line[:1000]}
+                if launch:
+                    record["kernel"] = launch.group("kernel")
+                    record["arguments"] = _split_top_level_arguments(
+                        launch.group("args")
+                    )
+                backward_launches.append(record)
+            if any(signal in lowered_line for signal in LIFETIME_SIGNALS):
+                for buffer_name in set(BUFFER_PATTERN.findall(line)):
+                    events = buffer_events.setdefault(buffer_name, [])
+                    if len(events) < 40:
+                        events.append(
+                            {"file": relative, "line": line_number, "text": line[:1000]}
+                        )
+    definitions_by_kernel = {
+        record["kernel"]: record for record in backward_definitions
+    }
+    for launch in backward_launches:
+        definition = definitions_by_kernel.get(launch.get("kernel"))
+        arguments = launch.get("arguments")
+        if definition is None or arguments is None:
+            continue
+        launch["delta_arguments"] = [
+            arguments[index]
+            for index in definition["delta_argument_indices"]
+            if index < len(arguments)
+        ]
+
     return {
         "exists": True,
         "file_count": len(files),
@@ -78,6 +171,9 @@ def _inspect_tree(root: Path) -> dict[str, object]:
         "signals": dict(signals),
         "kernels": dict(kernels),
         "snippets": snippets,
+        "backward_definitions": backward_definitions,
+        "backward_launches": backward_launches[:200],
+        "buffer_lifetime_events": buffer_events,
     }
 
 
@@ -131,6 +227,14 @@ def _write_markdown(path: Path, report: dict[str, object]) -> None:
         lines.append(f"- `{name}`: {', '.join(f'`{item}`' for item in kernels) or 'none'}")
     lines.extend(
         [
+            "",
+            "## Backward DELTA and buffer-lifetime evidence",
+            "",
+            "The JSON records backward kernel definitions, every `DELTA` formal "
+            "argument position, matching launch lines, and allocation/reuse/delete "
+            "events grouped by generated buffer name. Map the actual argument at "
+            "the recorded DELTA position, then inspect that buffer's event list to "
+            "identify the object that reuses its storage.",
             "",
             "The JSON companion contains file hashes and source/log snippets for "
             "launch, workspace, autotune, grid, and kernel inspection.",

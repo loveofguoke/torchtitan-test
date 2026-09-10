@@ -57,6 +57,12 @@ def test_compiler_artifact_analysis_separates_ranks_and_replay(tmp_path) -> None
     rank_file.parent.mkdir(parents=True)
     replay_file.parent.mkdir(parents=True)
     rank_file.write_text(
+        "def triton_flex_attention_backward(arg_Q, arg_DELTA, out_ptr0):\n"
+        "    pass\n"
+        "buf7 = empty_strided_npu((8, 128), (128, 1), torch.float32)\n"
+        "triton_flex_attention_backward.run(arg0_1, buf7, buf9)\n"
+        "del buf7\n"
+        "buf11 = buf7.reuse((8, 128), (128, 1), 0)\n"
         "kernel_name = 'triton_flex_attention_backward'\ngrid=(24,)\n",
         encoding="utf-8",
     )
@@ -71,6 +77,11 @@ def test_compiler_artifact_analysis_separates_ranks_and_replay(tmp_path) -> None
     assert report["replay"]["file_count"] == 1
     assert "triton_flex_attention_backward" in report["kernel_name_sets"]["rank6"]
     assert "triton_flex_attention_backward" in report["kernel_name_sets"]["replay"]
+    evidence = report["capture"]["rank6"]
+    assert evidence["backward_definitions"][0]["delta_argument_indices"] == [1]
+    assert len(evidence["backward_launches"]) == 1
+    assert evidence["backward_launches"][0]["delta_arguments"] == ["buf7"]
+    assert len(evidence["buffer_lifetime_events"]["buf7"]) == 4
 
 
 @pytest.mark.parametrize(
@@ -326,6 +337,7 @@ def test_npu_nonfinite_diagnostics_are_recorded_and_routed_to_run(
         nonfinite_diagnostics=True,
         diagnostic_compiler_cache="per-rank",
         diagnostic_flex_dsdp=True,
+        diagnostic_inplace_buffers="disabled",
         diagnostic_rank=6,
         diagnostic_layer="layers.6.attention.inner_attention",
         force=False,
@@ -344,6 +356,7 @@ def test_npu_nonfinite_diagnostics_are_recorded_and_routed_to_run(
     assert environment["TORCHNPU_FLEXATTENTION_DSDP_DIAGNOSTICS"] == "1"
     assert environment["TORCHNPU_FLEXATTENTION_DSDP_DIAGNOSTIC_RANK"] == "6"
     assert environment["TRITON_DEVICE_PRINT"] == "1"
+    assert environment["ENABLE_INPLACE_BUFFERS"] == "0"
     manifest = json.loads((run_directory / "manifest.json").read_text())
     assert manifest["contract"]["nonfinite_diagnostics"] == {
         "rank": 6,
@@ -351,6 +364,7 @@ def test_npu_nonfinite_diagnostics_are_recorded_and_routed_to_run(
         "capture_schema_version": 4,
         "compiler_cache": "per-rank",
         "flex_dsdp": True,
+        "inplace_buffers": "disabled",
     }
 
 

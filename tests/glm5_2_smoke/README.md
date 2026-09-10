@@ -143,6 +143,33 @@ replayed dQ/dK/dV statistics and maximum differences. Capture schema version 4
 is recorded in the smoke contract, so an older diagnostic run is not silently
 reused.
 
+The CP8 root-cause A/B must use the explicit smoke option rather than an
+unrecorded shell export:
+
+```bash
+# Reproduce the corrupt DELTA path with Inductor buffer reuse enabled.
+python tests/glm5_2_smoke/train_smoke.py \
+  --device npu --topology cp8 --graph eager \
+  --npu-codegen ascend-triton --npu-flexattention-mask-mode mask-out \
+  --nonfinite-diagnostics --diagnostic-rank all \
+  --diagnostic-flex-dsdp --diagnostic-inplace-buffers enabled \
+  --steps 2 --force
+
+# Control: the same contract with Inductor buffer reuse disabled.
+python tests/glm5_2_smoke/train_smoke.py \
+  --device npu --topology cp8 --graph eager \
+  --npu-codegen ascend-triton --npu-flexattention-mask-mode mask-out \
+  --nonfinite-diagnostics --diagnostic-rank all \
+  --diagnostic-flex-dsdp --diagnostic-inplace-buffers disabled \
+  --steps 2 --force
+```
+
+These runs use different suite names and manifests. The compiler comparison
+JSON now records every backward kernel's DELTA argument position together with
+launch, allocation, reuse, reinterpretation, and deletion lines grouped by
+generated buffer name. This turns the next step from another numerical A/B into
+a direct wrapper-level storage-lifetime comparison.
+
 Either backend can run a focused subset:
 
 ```bash
@@ -251,6 +278,7 @@ interrupted, rerun without `--force` to continue from its incomplete member.
 | `--nonfinite-diagnostics` | Capture GLM FlexAttention inputs, saved-output lifetime evidence, and the independent FP32 backward DELTA reference. NPU only. | disabled |
 | `--diagnostic-compiler-cache` | Choose `shared` or rank-local `per-rank` Inductor/Triton caches while non-finite diagnostics are active. | `shared` |
 | `--diagnostic-flex-dsdp` | Enable anomaly-triggered device prints for DELTA, dP, dS, dQ, and dK inside the TorchNPU FlexAttention backward kernels. Requires the diagnostic TorchNPU source patch and `--nonfinite-diagnostics`. | disabled |
+| `--diagnostic-inplace-buffers` | Select `default`, `enabled`, or `disabled` Inductor buffer reuse for the FlexAttention A/B. The explicit choice is included in the suite directory and manifest. Requires `--nonfinite-diagnostics`. | `default` |
 | `--diagnostic-rank` | Global rank whose selected FlexAttention layer is captured, or `all` to compare every rank in one run. An integer rank must exist in every selected topology. | `6` |
 | `--diagnostic-layer` | Module-FQN substring selecting the captured GLM FlexAttention layer. | `layers.6.attention.inner_attention` |
 | `--npu-flexattention-mask-mode` | Select TorchNPU `mask-in` or `mask-out` FlexAttention lowering, including internally compiled FlexAttention under `--graph eager`. | unset |

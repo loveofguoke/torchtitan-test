@@ -126,6 +126,7 @@ def _contract(
     nonfinite_diagnostics: bool = False,
     diagnostic_compiler_cache: str = "shared",
     diagnostic_flex_dsdp: bool = False,
+    diagnostic_inplace_buffers: str = "default",
     diagnostic_rank: int | str = 6,
     diagnostic_layer: str = "layers.6.attention.inner_attention",
 ) -> dict[str, Any]:
@@ -171,6 +172,7 @@ def _contract(
             "capture_schema_version": 4,
             "compiler_cache": diagnostic_compiler_cache,
             "flex_dsdp": diagnostic_flex_dsdp,
+            "inplace_buffers": diagnostic_inplace_buffers,
         }
     return contract
 
@@ -249,6 +251,7 @@ def _run_topology(
     nonfinite_diagnostics: bool = False,
     diagnostic_compiler_cache: str = "shared",
     diagnostic_flex_dsdp: bool = False,
+    diagnostic_inplace_buffers: str = "default",
     diagnostic_rank: int | str = 6,
     diagnostic_layer: str = "layers.6.attention.inner_attention",
     force: bool,
@@ -272,6 +275,7 @@ def _run_topology(
         nonfinite_diagnostics=nonfinite_diagnostics,
         diagnostic_compiler_cache=diagnostic_compiler_cache,
         diagnostic_flex_dsdp=diagnostic_flex_dsdp,
+        diagnostic_inplace_buffers=diagnostic_inplace_buffers,
         diagnostic_rank=diagnostic_rank,
         diagnostic_layer=diagnostic_layer,
     )
@@ -350,6 +354,10 @@ def _run_topology(
                     ),
                     "TRITON_DEVICE_PRINT": "1",
                 }
+            )
+        if diagnostic_inplace_buffers != "default":
+            environment["ENABLE_INPLACE_BUFFERS"] = (
+                "1" if diagnostic_inplace_buffers == "enabled" else "0"
             )
     visible_variable = (
         "ASCEND_RT_VISIBLE_DEVICES"
@@ -573,6 +581,15 @@ def main() -> int:
         action="store_true",
         help="print abnormal DELTA/dP/dS values inside NPU FlexAttention kernels",
     )
+    parser.add_argument(
+        "--diagnostic-inplace-buffers",
+        choices=("default", "enabled", "disabled"),
+        default="default",
+        help=(
+            "control Inductor buffer reuse for the FlexAttention non-finite "
+            "A/B; recorded in the run identity and manifest"
+        ),
+    )
     parser.add_argument("--force", action="store_true")
     from tests.glm5_2_graph.config import (
         add_npu_codegen_argument,
@@ -596,6 +613,13 @@ def main() -> int:
         parser.error("--nonfinite-diagnostics is available only for NPU runs")
     if args.diagnostic_flex_dsdp and not args.nonfinite_diagnostics:
         parser.error("--diagnostic-flex-dsdp requires --nonfinite-diagnostics")
+    if (
+        args.diagnostic_inplace_buffers != "default"
+        and not args.nonfinite_diagnostics
+    ):
+        parser.error(
+            "--diagnostic-inplace-buffers requires --nonfinite-diagnostics"
+        )
     visible_devices = _visible_devices(device)
     graph = GraphFeatureConfig(
         mode=args.graph,
@@ -653,6 +677,8 @@ def main() -> int:
             suite_name += "-cache-per-rank"
         if args.diagnostic_flex_dsdp:
             suite_name += "-dsdp"
+        if args.diagnostic_inplace_buffers != "default":
+            suite_name += f"-inplace-{args.diagnostic_inplace_buffers}"
     root = _root()
     suite_root = root / "smoke_runs" / suite_name
     if args.force:
@@ -688,6 +714,7 @@ def main() -> int:
                 nonfinite_diagnostics=args.nonfinite_diagnostics,
                 diagnostic_compiler_cache=args.diagnostic_compiler_cache,
                 diagnostic_flex_dsdp=args.diagnostic_flex_dsdp,
+                diagnostic_inplace_buffers=args.diagnostic_inplace_buffers,
                 diagnostic_rank=args.diagnostic_rank,
                 diagnostic_layer=args.diagnostic_layer,
                 force=False,
