@@ -125,6 +125,7 @@ def _contract(
     graph: GraphFeatureConfig = GraphFeatureConfig(),
     nonfinite_diagnostics: bool = False,
     diagnostic_compiler_cache: str = "shared",
+    diagnostic_flex_dsdp: bool = False,
     diagnostic_rank: int | str = 6,
     diagnostic_layer: str = "layers.6.attention.inner_attention",
 ) -> dict[str, Any]:
@@ -169,6 +170,7 @@ def _contract(
             "layer": diagnostic_layer,
             "capture_schema_version": 4,
             "compiler_cache": diagnostic_compiler_cache,
+            "flex_dsdp": diagnostic_flex_dsdp,
         }
     return contract
 
@@ -246,6 +248,7 @@ def _run_topology(
     graph: GraphFeatureConfig = GraphFeatureConfig(),
     nonfinite_diagnostics: bool = False,
     diagnostic_compiler_cache: str = "shared",
+    diagnostic_flex_dsdp: bool = False,
     diagnostic_rank: int | str = 6,
     diagnostic_layer: str = "layers.6.attention.inner_attention",
     force: bool,
@@ -268,6 +271,7 @@ def _run_topology(
         graph=graph,
         nonfinite_diagnostics=nonfinite_diagnostics,
         diagnostic_compiler_cache=diagnostic_compiler_cache,
+        diagnostic_flex_dsdp=diagnostic_flex_dsdp,
         diagnostic_rank=diagnostic_rank,
         diagnostic_layer=diagnostic_layer,
     )
@@ -337,6 +341,16 @@ def _run_topology(
                 "TORCHTITAN_NONFINITE_COMPILER_CACHE": diagnostic_compiler_cache,
             }
         )
+        if diagnostic_flex_dsdp:
+            environment.update(
+                {
+                    "TORCHNPU_FLEXATTENTION_DSDP_DIAGNOSTICS": "1",
+                    "TORCHNPU_FLEXATTENTION_DSDP_DIAGNOSTIC_RANK": str(
+                        diagnostic_rank
+                    ),
+                    "TRITON_DEVICE_PRINT": "1",
+                }
+            )
     visible_variable = (
         "ASCEND_RT_VISIBLE_DEVICES"
         if device == "npu"
@@ -554,6 +568,11 @@ def main() -> int:
         default="shared",
         help="use a shared or rank-local Inductor/Triton cache for diagnostics",
     )
+    parser.add_argument(
+        "--diagnostic-flex-dsdp",
+        action="store_true",
+        help="print abnormal DELTA/dP/dS values inside NPU FlexAttention kernels",
+    )
     parser.add_argument("--force", action="store_true")
     from tests.glm5_2_graph.config import (
         add_npu_codegen_argument,
@@ -575,6 +594,8 @@ def main() -> int:
     device = _device(args.device)
     if args.nonfinite_diagnostics and device != "npu":
         parser.error("--nonfinite-diagnostics is available only for NPU runs")
+    if args.diagnostic_flex_dsdp and not args.nonfinite_diagnostics:
+        parser.error("--diagnostic-flex-dsdp requires --nonfinite-diagnostics")
     visible_devices = _visible_devices(device)
     graph = GraphFeatureConfig(
         mode=args.graph,
@@ -630,6 +651,8 @@ def main() -> int:
         suite_name += f"-nonfinite-r{args.diagnostic_rank}"
         if args.diagnostic_compiler_cache == "per-rank":
             suite_name += "-cache-per-rank"
+        if args.diagnostic_flex_dsdp:
+            suite_name += "-dsdp"
     root = _root()
     suite_root = root / "smoke_runs" / suite_name
     if args.force:
@@ -664,6 +687,7 @@ def main() -> int:
                 graph=graph,
                 nonfinite_diagnostics=args.nonfinite_diagnostics,
                 diagnostic_compiler_cache=args.diagnostic_compiler_cache,
+                diagnostic_flex_dsdp=args.diagnostic_flex_dsdp,
                 diagnostic_rank=args.diagnostic_rank,
                 diagnostic_layer=args.diagnostic_layer,
                 force=False,

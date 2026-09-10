@@ -325,6 +325,7 @@ def test_npu_nonfinite_diagnostics_are_recorded_and_routed_to_run(
         config="glm5_debugmodel",
         nonfinite_diagnostics=True,
         diagnostic_compiler_cache="per-rank",
+        diagnostic_flex_dsdp=True,
         diagnostic_rank=6,
         diagnostic_layer="layers.6.attention.inner_attention",
         force=False,
@@ -340,12 +341,16 @@ def test_npu_nonfinite_diagnostics_are_recorded_and_routed_to_run(
         run_directory / "nonfinite_replay"
     )
     assert environment["TORCHTITAN_NONFINITE_COMPILER_CACHE"] == "per-rank"
+    assert environment["TORCHNPU_FLEXATTENTION_DSDP_DIAGNOSTICS"] == "1"
+    assert environment["TORCHNPU_FLEXATTENTION_DSDP_DIAGNOSTIC_RANK"] == "6"
+    assert environment["TRITON_DEVICE_PRINT"] == "1"
     manifest = json.loads((run_directory / "manifest.json").read_text())
     assert manifest["contract"]["nonfinite_diagnostics"] == {
         "rank": 6,
         "layer": "layers.6.attention.inner_attention",
         "capture_schema_version": 4,
         "compiler_cache": "per-rank",
+        "flex_dsdp": True,
     }
 
 
