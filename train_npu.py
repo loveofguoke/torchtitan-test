@@ -51,6 +51,22 @@ def _install_nonfinite_gradient_diagnostics() -> None:
             ),
         }
 
+    def tensor_runtime_metadata(tensor):
+        local_tensor = tensor.to_local() if hasattr(tensor, "to_local") else tensor
+        metadata = {
+            "shape": tuple(local_tensor.shape),
+            "stride": tuple(local_tensor.stride()),
+            "storage_offset": local_tensor.storage_offset(),
+            "data_ptr": local_tensor.data_ptr(),
+            "version": local_tensor._version,
+            "is_contiguous": local_tensor.is_contiguous(),
+            "dtype": str(local_tensor.dtype),
+            "device": str(local_tensor.device),
+        }
+        if local_tensor.device.type == "npu":
+            metadata["stream"] = str(torch.npu.current_stream(local_tensor.device))
+        return metadata
+
     def glm5_flex_forward_with_capture(
         self,
         q_QNH,
@@ -72,13 +88,20 @@ def _install_nonfinite_gradient_diagnostics() -> None:
             scale=scale,
         )
         rank = dist.get_rank() if dist.is_initialized() else 0
-        target_rank = int(os.environ.get("TORCHTITAN_NONFINITE_CAPTURE_RANK", "6"))
+        target_rank_value = os.environ.get(
+            "TORCHTITAN_NONFINITE_CAPTURE_RANK", "6"
+        )
+        target_rank = (
+            None if target_rank_value == "all" else int(target_rank_value)
+        )
         target_layer = os.environ.get(
             "TORCHTITAN_NONFINITE_CAPTURE_LAYER",
             "layers.6.attention.inner_attention",
         )
         module_fqn = getattr(self, "_nonfinite_diagnostic_fqn", "unknown")
-        if rank != target_rank or target_layer not in module_fqn:
+        if (
+            target_rank is not None and rank != target_rank
+        ) or target_layer not in module_fqn:
             return output_QNV
 
         capture_index = flex_capture_index
@@ -94,7 +117,7 @@ def _install_nonfinite_gradient_diagnostics() -> None:
         output_snapshot_QNV = cpu_clone(output_QNV)
         torch.save(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "rank": rank,
                 "module_fqn": module_fqn,
                 "call_index": capture_index,
@@ -111,9 +134,63 @@ def _install_nonfinite_gradient_diagnostics() -> None:
                     "The GLM FlexAttention API does not expose its internal backward "
                     "LSE. Recompute it from the captured inputs during standalone replay."
                 ),
+                "runtime_metadata": {
+                    "q": tensor_runtime_metadata(q_QNH),
+                    "k": tensor_runtime_metadata(k_KNH),
+                    "v": tensor_runtime_metadata(v_KNV),
+                    "output": tensor_runtime_metadata(output_QNV),
+                    "attention_masks": tensor_runtime_metadata(attention_masks),
+                    "topk_indices": tensor_runtime_metadata(topk_indices_QS),
+                },
+                "compiler_environment": {
+                    name: os.environ.get(name)
+                    for name in (
+                        "TORCHINDUCTOR_NPU_BACKEND",
+                        "TORCHINDUCTOR_FLEXATTENTION_MASKOUT",
+                        "TORCHINDUCTOR_MAX_AUTOTUNE",
+                        "INDUCTOR_ASCEND_AGGRESSIVE_AUTOTUNE",
+                        "TORCHINDUCTOR_COMPILE_THREADS",
+                        "TASK_QUEUE_ENABLE",
+                        "ASCEND_LAUNCH_BLOCKING",
+                    )
+                },
             },
             capture_directory / "forward.pt",
         )
+
+        actual_gradients = {}
+
+        def save_actual_gradient(name):
+            def hook(gradient):
+                actual_gradients[name] = cpu_clone(gradient)
+                if len(actual_gradients) == 3:
+                    payload = {
+                        "dq_QNH": actual_gradients["dq_QNH"],
+                        "dk_KNH": actual_gradients["dk_KNH"],
+                        "dv_KNV": actual_gradients["dv_KNV"],
+                        "statistics": {
+                            key: tensor_statistics(value)
+                            for key, value in actual_gradients.items()
+                        },
+                    }
+                    torch.save(payload, capture_directory / "actual_gradients.pt")
+                    print(
+                        f"[nonfinite-actual-gradients] rank={rank} "
+                        f"fqn={module_fqn} call={capture_index} "
+                        f"statistics={payload['statistics']} "
+                        f"path={capture_directory / 'actual_gradients.pt'}",
+                        flush=True,
+                    )
+                return gradient
+
+            return hook
+
+        if q_QNH.requires_grad:
+            q_QNH.register_hook(save_actual_gradient("dq_QNH"))
+        if k_KNH.requires_grad:
+            k_KNH.register_hook(save_actual_gradient("dk_KNH"))
+        if v_KNV.requires_grad:
+            v_KNV.register_hook(save_actual_gradient("dv_KNV"))
 
         def save_grad_output(gradient_QNV):
             # This hook runs before FlexAttention consumes grad_output. Reading
@@ -137,6 +214,10 @@ def _install_nonfinite_gradient_diagnostics() -> None:
                     "output_max_abs_diff": output_max_abs_diff,
                     "delta_ref_QN": delta_ref_QN,
                     "delta_ref_statistics": tensor_statistics(delta_ref_QN),
+                    "runtime_metadata": {
+                        "output": tensor_runtime_metadata(output_QNV),
+                        "grad_output": tensor_runtime_metadata(gradient_QNV),
+                    },
                 },
                 capture_directory / "backward.pt",
             )

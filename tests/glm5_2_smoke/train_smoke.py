@@ -124,7 +124,7 @@ def _contract(
     config: str,
     graph: GraphFeatureConfig = GraphFeatureConfig(),
     nonfinite_diagnostics: bool = False,
-    diagnostic_rank: int = 6,
+    diagnostic_rank: int | str = 6,
     diagnostic_layer: str = "layers.6.attention.inner_attention",
 ) -> dict[str, Any]:
     topology_contract = asdict(topology)
@@ -166,7 +166,7 @@ def _contract(
         contract["nonfinite_diagnostics"] = {
             "rank": diagnostic_rank,
             "layer": diagnostic_layer,
-            "capture_schema_version": 2,
+            "capture_schema_version": 3,
         }
     return contract
 
@@ -212,7 +212,7 @@ def _run_topology(
     config: str,
     graph: GraphFeatureConfig = GraphFeatureConfig(),
     nonfinite_diagnostics: bool = False,
-    diagnostic_rank: int = 6,
+    diagnostic_rank: int | str = 6,
     diagnostic_layer: str = "layers.6.attention.inner_attention",
     force: bool,
 ) -> Path:
@@ -354,6 +354,41 @@ def _run_topology(
         "completed" if result.returncode == 0 else "failed",
         return_code=result.returncode,
     )
+    if nonfinite_diagnostics:
+        capture_root = run_directory / "nonfinite_replay"
+        capture_directories = sorted(capture_root.glob("rank*/call*"))
+        if capture_directories:
+            replay_log = capture_root / "replay.log"
+            replay_command = [
+                sys.executable,
+                str(Path(__file__).with_name("replay_glm5_flex.py")),
+                *(str(path) for path in capture_directories),
+                "--device",
+                "npu:0",
+            ]
+            print(f"Running automatic FlexAttention replay: {replay_log}")
+            with replay_log.open("w", encoding="utf-8") as stream:
+                replay_result = subprocess.run(
+                    replay_command,
+                    cwd=root,
+                    env=environment,
+                    stdout=stream,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                )
+            record["nonfinite_replay"] = {
+                "return_code": replay_result.returncode,
+                "log": str(replay_log),
+                "capture_count": len(capture_directories),
+            }
+            (run_directory / "manifest.json").write_text(
+                json.dumps(record, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            print(f"FlexAttention replay log: {replay_log}")
+            summary_path = capture_root / "replay_summary.json"
+            if summary_path.is_file():
+                print(f"FlexAttention replay summary: {summary_path}")
     if result.returncode:
         print_runtime_log(runtime_log)
         raise LoggedProcessError(
@@ -400,7 +435,11 @@ def main() -> int:
             "check, and a reference backward DELTA"
         ),
     )
-    parser.add_argument("--diagnostic-rank", type=int, default=6)
+    parser.add_argument(
+        "--diagnostic-rank",
+        default="6",
+        help="global rank to capture, or 'all' to compare every rank",
+    )
     parser.add_argument(
         "--diagnostic-layer",
         default="layers.6.attention.inner_attention",
@@ -416,8 +455,13 @@ def main() -> int:
 
     if args.steps < 1:
         parser.error("--steps must be positive")
-    if args.diagnostic_rank < 0:
-        parser.error("--diagnostic-rank must be non-negative")
+    if args.diagnostic_rank != "all":
+        try:
+            args.diagnostic_rank = int(args.diagnostic_rank)
+        except ValueError:
+            parser.error("--diagnostic-rank must be a non-negative integer or 'all'")
+        if args.diagnostic_rank < 0:
+            parser.error("--diagnostic-rank must be non-negative")
     device = _device(args.device)
     if args.nonfinite_diagnostics and device != "npu":
         parser.error("--nonfinite-diagnostics is available only for NPU runs")
@@ -453,6 +497,7 @@ def main() -> int:
             )
         if (
             args.nonfinite_diagnostics
+            and args.diagnostic_rank != "all"
             and args.diagnostic_rank >= local_world_size
         ):
             parser.error(

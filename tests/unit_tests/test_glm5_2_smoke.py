@@ -232,7 +232,7 @@ def test_npu_nonfinite_diagnostics_are_recorded_and_routed_to_run(
     assert manifest["contract"]["nonfinite_diagnostics"] == {
         "rank": 6,
         "layer": "layers.6.attention.inner_attention",
-        "capture_schema_version": 2,
+        "capture_schema_version": 3,
     }
 
 

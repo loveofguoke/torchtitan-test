@@ -94,8 +94,10 @@ python tests/glm5_2_smoke/train_smoke.py \
 ```
 
 The selected topology directory contains
-`nonfinite_replay/rank6/callNNN/{forward,backward}.pt`. `forward.pt` records an
-immediate CPU snapshot of Q/K/V, mask, selected indices, and output.
+`nonfinite_replay/rank6/callNNN/{forward,backward,actual_gradients}.pt`.
+`forward.pt` records an immediate CPU snapshot of Q/K/V, mask, selected
+indices, output, tensor storage/version/stride/stream metadata, and the compiler
+environment that created the call.
 `backward.pt` is written when the public attention output first receives its
 gradient, before the compiled FlexAttention backward executes. It contains the
 output read again at that boundary, its maximum difference from the forward
@@ -104,7 +106,15 @@ snapshot, and the independent FP32 reference
 difference identifies saved-output overwrite or aliasing before entering the
 backward kernel. A finite, plausible reference DELTA moves the investigation
 inside TorchNPU lowering/runtime; it does not by itself prove that the DELTA
-actually consumed by the generated kernel is correct.
+actually consumed by the generated kernel is correct. `actual_gradients.pt`
+captures the dQ/dK/dV returned by that exact distributed backward invocation.
+
+After the distributed process exits, smoke automatically replays every complete
+capture on one NPU. The run-level `nonfinite_replay/replay.log`, per-call
+`replay_result.json`, and run-level `replay_summary.json` compare the actual
+distributed gradients with the isolated replay. This automatic replay also runs
+after a failed training step, so one smoke command produces the complete
+captured-versus-replayed diagnostic rather than requiring a second manual run.
 
 Replay one or more captures on a single device with:
 
@@ -114,9 +124,10 @@ python tests/glm5_2_smoke/replay_glm5_flex.py \
   --device npu:0
 ```
 
-The replay report now includes captured and replayed DELTA statistics and their
-maximum difference. Capture schema version 2 is recorded in the smoke contract,
-so a completed older diagnostic run is not silently reused.
+The replay report includes captured and replayed DELTA statistics, actual versus
+replayed dQ/dK/dV statistics and maximum differences. Capture schema version 3
+is recorded in the smoke contract, so an older diagnostic run is not silently
+reused.
 
 Either backend can run a focused subset:
 
@@ -224,7 +235,7 @@ interrupted, rerun without `--force` to continue from its incomplete member.
 | `--compile-loss` | Compile both `model` and `loss`; without it only `model` is compiled. NPUGraph currently rejects this option. | disabled |
 | `--compiler-diagnostics` | Set the shared compiler diagnostic environment for graph breaks, recompiles, and dynamic-shape events. | disabled |
 | `--nonfinite-diagnostics` | Capture GLM FlexAttention inputs, saved-output lifetime evidence, and the independent FP32 backward DELTA reference. NPU only. | disabled |
-| `--diagnostic-rank` | Global rank whose selected FlexAttention layer is captured. Must exist in every selected topology. | `6` |
+| `--diagnostic-rank` | Global rank whose selected FlexAttention layer is captured, or `all` to compare every rank in one run. An integer rank must exist in every selected topology. | `6` |
 | `--diagnostic-layer` | Module-FQN substring selecting the captured GLM FlexAttention layer. | `layers.6.attention.inner_attention` |
 | `--npu-flexattention-mask-mode` | Select TorchNPU `mask-in` or `mask-out` FlexAttention lowering, including internally compiled FlexAttention under `--graph eager`. | unset |
 | `--force` | Remove and rerun completed topology output. Without it, completed runs are skipped and incomplete runs are archived before retry. | disabled |

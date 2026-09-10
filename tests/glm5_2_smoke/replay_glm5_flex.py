@@ -108,6 +108,29 @@ def replay(capture_directory: Path, device: torch.device) -> dict[str, object]:
         "dk": _statistics(k_KNH.grad),
         "dv": _statistics(v_KNV.grad),
     }
+    actual_path = capture_directory / "actual_gradients.pt"
+    if actual_path.is_file():
+        actual = torch.load(actual_path, map_location="cpu", weights_only=False)
+        replayed = {
+            "dq_QNH": q_QNH.grad.detach().cpu(),
+            "dk_KNH": k_KNH.grad.detach().cpu(),
+            "dv_KNV": v_KNV.grad.detach().cpu(),
+        }
+        result["captured_actual_gradients"] = actual.get("statistics")
+        result["captured_vs_replayed_gradients"] = {
+            name: {
+                "shape_equal": tuple(actual[name].shape) == tuple(replayed[name].shape),
+                "max_abs_diff": (
+                    float((actual[name] - replayed[name]).abs().max().item())
+                    if tuple(actual[name].shape) == tuple(replayed[name].shape)
+                    and bool(torch.isfinite(actual[name]).all().item())
+                    else None
+                ),
+                "captured": _statistics(actual[name]),
+                "replayed": _statistics(replayed[name]),
+            }
+            for name in ("dq_QNH", "dk_KNH", "dv_KNV")
+        }
     result_path = capture_directory / "replay_result.json"
     result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     torch.save(
@@ -135,8 +158,36 @@ def main() -> int:
     device = torch.device(args.device)
     if device.type == "npu":
         torch.npu.set_device(device)
-    for capture_directory in args.capture_directories:
-        replay(capture_directory, device)
+    results = [replay(capture_directory, device) for capture_directory in args.capture_directories]
+    capture_root = Path(args.capture_directories[0]).resolve().parents[1]
+    summary = {
+        "capture_count": len(results),
+        "all_replayed_gradients_finite": all(
+            item[name]["finite_count"] == item[name]["numel"]
+            for item in results
+            for name in ("dq", "dk", "dv")
+        ),
+        "calls": [
+            {
+                "rank": item["rank"],
+                "module_fqn": item["module_fqn"],
+                "call_index": item["call_index"],
+                "output_max_abs_diff": item["output_max_abs_diff"],
+                "delta_ref_max_abs_diff": item["delta_ref_max_abs_diff"],
+                "captured_actual_gradients": item.get("captured_actual_gradients"),
+                "replayed_gradients": {
+                    name: item[name] for name in ("dq", "dk", "dv")
+                },
+                "captured_vs_replayed_gradients": item.get(
+                    "captured_vs_replayed_gradients"
+                ),
+            }
+            for item in results
+        ],
+    }
+    summary_path = capture_root / "replay_summary.json"
+    summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    print(f"Replay summary: {summary_path}")
     return 0
 
 
