@@ -101,7 +101,7 @@ environment that created the call.
 `backward.pt` is written when the public attention output first receives its
 gradient, before the compiled FlexAttention backward executes. It contains the
 output read again at that boundary, its maximum difference from the forward
-snapshot, and the independent FP32 reference
+snapshot, allocator state, per-rank compiler trace/debug directories, and the independent FP32 reference
 `delta_ref_QN = sum(output_snapshot * grad_output, dim=-1)`. A nonzero output
 difference identifies saved-output overwrite or aliasing before entering the
 backward kernel. A finite, plausible reference DELTA moves the investigation
@@ -118,7 +118,12 @@ initialized immediately and replaced atomically after every completed call.
 Per-call `replay_result.json` files compare the actual distributed gradients with
 the isolated replay. Automatic replay runs before a failed training result is
 raised, so it is not skipped when the failure being diagnosed terminates the
-training step. Use the manual command below to replay additional saved calls.
+training step. Replay compiler evidence is stored separately under
+`nonfinite_replay/compiler/replay`; `compiler_comparison.{json,md}` inventories
+per-rank and replay files, hashes, kernel names, and relevant source/log snippets.
+The diagnostic deliberately does not change Inductor or Triton cache directories,
+because doing so could hide a cache/concurrency failure. Use the manual command
+below to replay additional saved calls.
 
 Replay one or more captures on a single device with:
 
@@ -129,7 +134,7 @@ python tests/glm5_2_smoke/replay_glm5_flex.py \
 ```
 
 The replay report includes captured and replayed DELTA statistics, actual versus
-replayed dQ/dK/dV statistics and maximum differences. Capture schema version 3
+replayed dQ/dK/dV statistics and maximum differences. Capture schema version 4
 is recorded in the smoke contract, so an older diagnostic run is not silently
 reused.
 

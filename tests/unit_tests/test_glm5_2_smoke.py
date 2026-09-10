@@ -9,6 +9,7 @@ import pytest
 from tests.glm5_2_common.cli import LoggedProcessError
 from tests.glm5_2_common.topology import ParallelTopology
 from tests.glm5_2_graph.config import GraphFeatureConfig
+from tests.glm5_2_smoke.analyze_flex_compiler_artifacts import analyze
 from tests.glm5_2_smoke.train_smoke import (
     _automatic_replay_captures,
     _completed,
@@ -47,6 +48,29 @@ def test_automatic_replay_selects_largest_qk_gradient_per_rank(tmp_path) -> None
         expected.append(rank_directory / ("call001" if rank == 0 else "call000"))
 
     assert _automatic_replay_captures(capture_root) == expected
+
+
+def test_compiler_artifact_analysis_separates_ranks_and_replay(tmp_path) -> None:
+    capture_root = tmp_path / "nonfinite_replay"
+    rank_file = capture_root / "compiler/rank6/debug/output_code.py"
+    replay_file = capture_root / "compiler/replay/trace/dedicated_log.log"
+    rank_file.parent.mkdir(parents=True)
+    replay_file.parent.mkdir(parents=True)
+    rank_file.write_text(
+        "kernel_name = 'triton_flex_attention_backward'\ngrid=(24,)\n",
+        encoding="utf-8",
+    )
+    replay_file.write_text(
+        "autotune flex_attention triton_flex_attention_backward\n",
+        encoding="utf-8",
+    )
+
+    report = analyze(capture_root)
+
+    assert report["capture"]["rank6"]["file_count"] == 1
+    assert report["replay"]["file_count"] == 1
+    assert "triton_flex_attention_backward" in report["kernel_name_sets"]["rank6"]
+    assert "triton_flex_attention_backward" in report["kernel_name_sets"]["replay"]
 
 
 @pytest.mark.parametrize(
@@ -220,8 +244,9 @@ def test_failed_smoke_runs_nonfinite_replay_before_raising(
         )
 
     replay_root = tmp_path / "smoke_runs/cp8/nonfinite_replay"
-    assert len(commands) == 2
+    assert len(commands) == 3
     assert commands[1][-1] == "--compact"
+    assert commands[2][-1] == str(replay_root)
     assert (replay_root / "replay.log").is_file()
     status = json.loads((replay_root / "replay_status.json").read_text())
     assert status["status"] == "completed"
@@ -317,7 +342,7 @@ def test_npu_nonfinite_diagnostics_are_recorded_and_routed_to_run(
     assert manifest["contract"]["nonfinite_diagnostics"] == {
         "rank": 6,
         "layer": "layers.6.attention.inner_attention",
-        "capture_schema_version": 3,
+        "capture_schema_version": 4,
     }
 
 

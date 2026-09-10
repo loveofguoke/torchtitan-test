@@ -166,7 +166,7 @@ def _contract(
         contract["nonfinite_diagnostics"] = {
             "rank": diagnostic_rank,
             "layer": diagnostic_layer,
-            "capture_schema_version": 3,
+            "capture_schema_version": 4,
         }
     return contract
 
@@ -412,10 +412,44 @@ def _run_topology(
                 "npu:0",
                 "--compact",
             ]
+            replay_environment = environment.copy()
+            replay_compiler_root = capture_root / "compiler" / "replay"
+            replay_environment.update(
+                {
+                    "TORCH_TRACE": str(replay_compiler_root / "trace"),
+                    "TORCH_COMPILE_DEBUG": "1",
+                    "TORCH_COMPILE_DEBUG_DIR": str(
+                        replay_compiler_root / "debug"
+                    ),
+                }
+            )
+            Path(replay_environment["TORCH_TRACE"]).mkdir(parents=True, exist_ok=True)
+            Path(replay_environment["TORCH_COMPILE_DEBUG_DIR"]).mkdir(
+                parents=True, exist_ok=True
+            )
             print(f"Running automatic FlexAttention replay: {replay_log}")
             with replay_log.open("w", encoding="utf-8") as stream:
                 replay_result = subprocess.run(
                     replay_command,
+                    cwd=root,
+                    env=replay_environment,
+                    stdout=stream,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                )
+            comparison_log = capture_root / "compiler_comparison.log"
+            comparison_command = [
+                sys.executable,
+                str(
+                    Path(__file__).with_name(
+                        "analyze_flex_compiler_artifacts.py"
+                    )
+                ),
+                str(capture_root),
+            ]
+            with comparison_log.open("w", encoding="utf-8") as stream:
+                comparison_result = subprocess.run(
+                    comparison_command,
                     cwd=root,
                     env=environment,
                     stdout=stream,
@@ -426,6 +460,11 @@ def _run_topology(
                 "return_code": replay_result.returncode,
                 "log": str(replay_log),
                 "capture_count": len(capture_directories),
+                "compiler_comparison_return_code": comparison_result.returncode,
+                "compiler_comparison_log": str(comparison_log),
+                "compiler_comparison": str(
+                    capture_root / "compiler_comparison.json"
+                ),
             }
             replay_status.write_text(
                 json.dumps(

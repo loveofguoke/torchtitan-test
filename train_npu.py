@@ -5,6 +5,29 @@ import json
 import os
 import sys
 
+
+def _configure_nonfinite_compiler_diagnostics() -> None:
+    """Route compiler evidence to rank-specific directories before imports."""
+    if os.environ.get("TORCHTITAN_DIAGNOSE_NONFINITE") != "1":
+        return
+    configured_root = os.environ.get("TORCHTITAN_NONFINITE_DUMP_DIR")
+    if not configured_root:
+        return
+    from pathlib import Path
+
+    rank = os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0"))
+    compiler_root = Path(configured_root) / "compiler" / f"rank{rank}"
+    trace_directory = compiler_root / "trace"
+    debug_directory = compiler_root / "debug"
+    trace_directory.mkdir(parents=True, exist_ok=True)
+    debug_directory.mkdir(parents=True, exist_ok=True)
+    os.environ["TORCH_TRACE"] = str(trace_directory)
+    os.environ["TORCH_COMPILE_DEBUG_DIR"] = str(debug_directory)
+    os.environ["TORCH_COMPILE_DEBUG"] = "1"
+
+
+_configure_nonfinite_compiler_diagnostics()
+
 import torchtitanturbo  # noqa: F401
 
 
@@ -68,6 +91,22 @@ def _install_nonfinite_gradient_diagnostics() -> None:
             metadata["stream"] = str(torch.npu.current_stream(local_tensor.device))
         return metadata
 
+    def allocator_statistics(device):
+        if device.type != "npu":
+            return None
+        statistics = torch.npu.memory_stats(device)
+        keys = (
+            "allocated_bytes.all.current",
+            "allocated_bytes.all.peak",
+            "active_bytes.all.current",
+            "active_bytes.all.peak",
+            "reserved_bytes.all.current",
+            "reserved_bytes.all.peak",
+            "num_alloc_retries",
+            "num_ooms",
+        )
+        return {key: int(statistics.get(key, 0)) for key in keys}
+
     def glm5_flex_forward_with_capture(
         self,
         q_QNH,
@@ -118,7 +157,7 @@ def _install_nonfinite_gradient_diagnostics() -> None:
         output_snapshot_QNV = cpu_clone(output_QNV)
         torch.save(
             {
-                "schema_version": 3,
+                "schema_version": 4,
                 "rank": rank,
                 "module_fqn": module_fqn,
                 "call_index": capture_index,
@@ -153,8 +192,14 @@ def _install_nonfinite_gradient_diagnostics() -> None:
                         "TORCHINDUCTOR_COMPILE_THREADS",
                         "TASK_QUEUE_ENABLE",
                         "ASCEND_LAUNCH_BLOCKING",
+                        "TORCH_TRACE",
+                        "TORCH_COMPILE_DEBUG",
+                        "TORCH_COMPILE_DEBUG_DIR",
+                        "TORCHINDUCTOR_CACHE_DIR",
+                        "TRITON_CACHE_DIR",
                     )
                 },
+                "allocator_at_forward": allocator_statistics(q_QNH.device),
             },
             capture_directory / "forward.pt",
         )
@@ -173,6 +218,13 @@ def _install_nonfinite_gradient_diagnostics() -> None:
                             key: tensor_statistics(value)
                             for key, value in actual_gradients.items()
                         },
+                        "runtime_metadata": {
+                            key: tensor_runtime_metadata(value)
+                            for key, value in actual_gradients.items()
+                        },
+                        "allocator_after_flex_backward": allocator_statistics(
+                            gradient.device
+                        ),
                     }
                     torch.save(payload, capture_directory / "actual_gradients.pt")
                     (capture_directory / "actual_gradients.json").write_text(
@@ -223,6 +275,9 @@ def _install_nonfinite_gradient_diagnostics() -> None:
                         "output": tensor_runtime_metadata(output_QNV),
                         "grad_output": tensor_runtime_metadata(gradient_QNV),
                     },
+                    "allocator_at_backward_entry": allocator_statistics(
+                        gradient_QNV.device
+                    ),
                 },
                 capture_directory / "backward.pt",
             )
