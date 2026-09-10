@@ -125,6 +125,11 @@ The diagnostic deliberately does not change Inductor or Triton cache directories
 because doing so could hide a cache/concurrency failure. Use the manual command
 below to replay additional saved calls.
 
+Replay uses `AuxRequest(lse=False)`, matching GLM training. Enabling LSE only in
+replay would pass a tensor rather than `None` as `grad_logsumexp` to the backward
+higher-order op and generate a different set of `_mul_` kernels. The compiler
+comparison explicitly counts both backward signatures to catch this mismatch.
+
 Replay one or more captures on a single device with:
 
 ```bash

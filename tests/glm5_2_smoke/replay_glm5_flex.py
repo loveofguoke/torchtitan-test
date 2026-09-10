@@ -71,7 +71,9 @@ def replay(
         block_mask=block_mask,
         scale=forward["scale"],
         enable_gqa=False,
-        return_aux=AuxRequest(lse=True),
+        # Match the real GLM training call. Requesting LSE here changes the
+        # backward HOP signature and selects a different compiled kernel graph.
+        return_aux=AuxRequest(lse=False),
         kernel_options={},
     )
     output_QNV = output_BNQV.squeeze(0).transpose(0, 1)
@@ -98,7 +100,7 @@ def replay(
         "output_max_abs_diff": float(
             (output_QNV.detach() - captured_output).abs().max().item()
         ),
-        "lse": _statistics(aux.lse),
+        "lse": _statistics(aux.lse) if aux.lse is not None else None,
         "grad_output": _statistics(grad_output_QNV),
         "captured_output_max_abs_diff_at_backward": backward.get(
             "output_max_abs_diff"
@@ -138,7 +140,7 @@ def replay(
     torch.save(
         {
             "output_QNV": output_QNV.detach().cpu(),
-            "lse": aux.lse.detach().cpu(),
+            "lse": aux.lse.detach().cpu() if aux.lse is not None else None,
             "delta_ref_QN": replay_delta_QN.detach().cpu(),
             "dq_QNH": q_QNH.grad.detach().cpu(),
             "dk_KNH": k_KNH.grad.detach().cpu(),

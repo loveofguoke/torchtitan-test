@@ -21,8 +21,12 @@ SIGNALS = (
     "num_warps",
     "grid=",
     "workspace",
+    "tangents_1, none",
+    "tangents_1, mul_",
 )
-KERNEL_PATTERN = re.compile(r"\b(?:triton|dvm)_[A-Za-z0-9_]+")
+KERNEL_PATTERN = re.compile(
+    r"\b(?:triton|dvm)_(?:poi|tem|per)_fused_flex_attention[A-Za-z0-9_]*"
+)
 
 
 def _sha256(path: Path) -> str:
@@ -109,18 +113,17 @@ def _write_markdown(path: Path, report: dict[str, object]) -> None:
         "This report inventories compiler evidence; matching names alone do not prove "
         "matching launch arguments or buffers.",
         "",
-        "| Context | Files | Bytes | Flex signals | Autotune signals | Kernels |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| Context | Files | Bytes | grad_lse=None | grad_lse=tensor | Autotune | Kernels |",
+        "|---|---:|---:|---:|---:|---:|---:|",
     ]
     contexts = {**report["capture"], "replay": report["replay"]}
     for name, evidence in contexts.items():
         signals = evidence.get("signals", {})
-        flex_count = signals.get("flex_attention", 0) + signals.get(
-            "flexattention", 0
-        )
         lines.append(
             f"| {name} | {evidence.get('file_count', 0)} | "
-            f"{evidence.get('total_bytes', 0)} | {flex_count} | "
+            f"{evidence.get('total_bytes', 0)} | "
+            f"{signals.get('tangents_1, none', 0)} | "
+            f"{signals.get('tangents_1, mul_', 0)} | "
             f"{signals.get('autotune', 0)} | {len(evidence.get('kernels', {}))} |"
         )
     lines.extend(["", "## Kernel names by context", ""])
