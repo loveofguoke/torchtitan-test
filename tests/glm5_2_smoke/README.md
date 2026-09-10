@@ -249,6 +249,7 @@ interrupted, rerun without `--force` to continue from its incomplete member.
 | `--compile-loss` | Compile both `model` and `loss`; without it only `model` is compiled. NPUGraph currently rejects this option. | disabled |
 | `--compiler-diagnostics` | Set the shared compiler diagnostic environment for graph breaks, recompiles, and dynamic-shape events. | disabled |
 | `--nonfinite-diagnostics` | Capture GLM FlexAttention inputs, saved-output lifetime evidence, and the independent FP32 backward DELTA reference. NPU only. | disabled |
+| `--diagnostic-compiler-cache` | Choose `shared` or rank-local `per-rank` Inductor/Triton caches while non-finite diagnostics are active. | `shared` |
 | `--diagnostic-rank` | Global rank whose selected FlexAttention layer is captured, or `all` to compare every rank in one run. An integer rank must exist in every selected topology. | `6` |
 | `--diagnostic-layer` | Module-FQN substring selecting the captured GLM FlexAttention layer. | `layers.6.attention.inner_attention` |
 | `--npu-flexattention-mask-mode` | Select TorchNPU `mask-in` or `mask-out` FlexAttention lowering, including internally compiled FlexAttention under `--graph eager`. | unset |

@@ -24,6 +24,14 @@ def _configure_nonfinite_compiler_diagnostics() -> None:
     os.environ["TORCH_TRACE"] = str(trace_directory)
     os.environ["TORCH_COMPILE_DEBUG_DIR"] = str(debug_directory)
     os.environ["TORCH_COMPILE_DEBUG"] = "1"
+    if os.environ.get("TORCHTITAN_NONFINITE_COMPILER_CACHE") == "per-rank":
+        cache_root = compiler_root / "cache"
+        inductor_cache = cache_root / "inductor"
+        triton_cache = cache_root / "triton"
+        inductor_cache.mkdir(parents=True, exist_ok=True)
+        triton_cache.mkdir(parents=True, exist_ok=True)
+        os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(inductor_cache)
+        os.environ["TRITON_CACHE_DIR"] = str(triton_cache)
 
 
 _configure_nonfinite_compiler_diagnostics()

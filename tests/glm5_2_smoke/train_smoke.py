@@ -124,6 +124,7 @@ def _contract(
     config: str,
     graph: GraphFeatureConfig = GraphFeatureConfig(),
     nonfinite_diagnostics: bool = False,
+    diagnostic_compiler_cache: str = "shared",
     diagnostic_rank: int | str = 6,
     diagnostic_layer: str = "layers.6.attention.inner_attention",
 ) -> dict[str, Any]:
@@ -167,6 +168,7 @@ def _contract(
             "rank": diagnostic_rank,
             "layer": diagnostic_layer,
             "capture_schema_version": 4,
+            "compiler_cache": diagnostic_compiler_cache,
         }
     return contract
 
@@ -243,6 +245,7 @@ def _run_topology(
     config: str,
     graph: GraphFeatureConfig = GraphFeatureConfig(),
     nonfinite_diagnostics: bool = False,
+    diagnostic_compiler_cache: str = "shared",
     diagnostic_rank: int | str = 6,
     diagnostic_layer: str = "layers.6.attention.inner_attention",
     force: bool,
@@ -264,6 +267,7 @@ def _run_topology(
         config=config,
         graph=graph,
         nonfinite_diagnostics=nonfinite_diagnostics,
+        diagnostic_compiler_cache=diagnostic_compiler_cache,
         diagnostic_rank=diagnostic_rank,
         diagnostic_layer=diagnostic_layer,
     )
@@ -330,6 +334,7 @@ def _run_topology(
                 "TORCHTITAN_NONFINITE_DUMP_DIR": str(
                     run_directory / "nonfinite_replay"
                 ),
+                "TORCHTITAN_NONFINITE_COMPILER_CACHE": diagnostic_compiler_cache,
             }
         )
     visible_variable = (
@@ -543,6 +548,12 @@ def main() -> int:
         "--diagnostic-layer",
         default="layers.6.attention.inner_attention",
     )
+    parser.add_argument(
+        "--diagnostic-compiler-cache",
+        choices=("shared", "per-rank"),
+        default="shared",
+        help="use a shared or rank-local Inductor/Triton cache for diagnostics",
+    )
     parser.add_argument("--force", action="store_true")
     from tests.glm5_2_graph.config import (
         add_npu_codegen_argument,
@@ -617,6 +628,8 @@ def main() -> int:
         suite_name += f"-flex-{graph.npu_flexattention_mask_mode}"
     if args.nonfinite_diagnostics:
         suite_name += f"-nonfinite-r{args.diagnostic_rank}"
+        if args.diagnostic_compiler_cache == "per-rank":
+            suite_name += "-cache-per-rank"
     root = _root()
     suite_root = root / "smoke_runs" / suite_name
     if args.force:
@@ -650,6 +663,7 @@ def main() -> int:
                 config=args.config,
                 graph=graph,
                 nonfinite_diagnostics=args.nonfinite_diagnostics,
+                diagnostic_compiler_cache=args.diagnostic_compiler_cache,
                 diagnostic_rank=args.diagnostic_rank,
                 diagnostic_layer=args.diagnostic_layer,
                 force=False,

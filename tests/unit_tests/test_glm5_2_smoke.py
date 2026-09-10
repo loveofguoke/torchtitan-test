@@ -324,6 +324,7 @@ def test_npu_nonfinite_diagnostics_are_recorded_and_routed_to_run(
         module="glm5",
         config="glm5_debugmodel",
         nonfinite_diagnostics=True,
+        diagnostic_compiler_cache="per-rank",
         diagnostic_rank=6,
         diagnostic_layer="layers.6.attention.inner_attention",
         force=False,
@@ -338,11 +339,13 @@ def test_npu_nonfinite_diagnostics_are_recorded_and_routed_to_run(
     assert environment["TORCHTITAN_NONFINITE_DUMP_DIR"] == str(
         run_directory / "nonfinite_replay"
     )
+    assert environment["TORCHTITAN_NONFINITE_COMPILER_CACHE"] == "per-rank"
     manifest = json.loads((run_directory / "manifest.json").read_text())
     assert manifest["contract"]["nonfinite_diagnostics"] == {
         "rank": 6,
         "layer": "layers.6.attention.inner_attention",
         "capture_schema_version": 4,
+        "compiler_cache": "per-rank",
     }
 
 
