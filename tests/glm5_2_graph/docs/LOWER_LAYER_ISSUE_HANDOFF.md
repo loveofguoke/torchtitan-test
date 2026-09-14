@@ -70,7 +70,7 @@ CANN 9.0 header 不含这些类型，而 2.14 源码已经在编译接口中引�
 版本契约不匹配，不是 GLM 模型或 TorchTitan 配置错误。
 
 隔离安装和复验步骤见
-[CANN 9.1.0 安装文档](../glm5_2_graph_debug/CANN_9_1_INSTALLATION.md)。
+[CANN 9.1.0 安装文档](../../glm5_2_graph_debug/docs/CANN_9_1_INSTALLATION.md)。
 
 ### 3.2 建议根治
 
@@ -428,7 +428,7 @@ ProcessGroupHCCL；也可能是 PyTorch batched object 协议与该 backend capa
 ```
 
 原始训练证据和历史 invocation 对应 G001-G019，见
-[失败与修复历史](../glm5_2_graph_debug/experiments/reports/failures.md)。不要把包含编译 cache
+[失败与修复历史](../../glm5_2_graph_debug/experiments/reports/failures.md)。不要把包含编译 cache
 的整个 `.cache` 提交到 Git；只抽取复现所需 generated source、配置和错误片段放入提单
 附件。涉及数值问题时同时保存 eager 与 compiled tensor 摘要、首个不一致 index 和误差，
 不能只附最终 loss。

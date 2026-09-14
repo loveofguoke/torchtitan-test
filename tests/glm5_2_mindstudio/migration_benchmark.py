@@ -32,14 +32,14 @@ CONFIG = MindStudioExperimentConfig(
         device_type="cuda",
         visible_devices=ALL_DEVICES,
         topology=TOPOLOGIES["single"],
-        repeats=1,
+        repeats=2,
     ),
     candidate=TrainingEndpoint(
         name="npu-candidate",
         device_type="npu",
         visible_devices=ALL_DEVICES,
         topology=TOPOLOGIES["single"],
-        repeats=1,
+        repeats=2,
     ),
     training=FormalTrainingConfig(
         steps=2,

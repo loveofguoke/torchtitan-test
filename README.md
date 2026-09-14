@@ -116,7 +116,7 @@ memory handoff. Start with
 [tests/glm5_2_mindstudio/README.md](tests/glm5_2_mindstudio/README.md) for source
 tool installation, doctor, single/distributed/all-topology commands, official
 metrics, output layout, and known limitations. Before claiming a formal result,
-follow its [server validation matrix](tests/glm5_2_mindstudio/docs/SERVER_VALIDATION_MATRIX_ZH.md)
+follow its [server validation matrix](tests/glm5_2_mindstudio/docs/toolchain/SERVER_VALIDATION_MATRIX_ZH.md)
 from single-card minimum closure through representative distributed topologies.
 
 ## Performance, graph, and combined experiments
@@ -126,7 +126,7 @@ from single-card minimum closure through representative distributed topologies.
 The repository root README is the user-facing entry. Do not read every report
 and debug note in filename order. Use this path:
 
-1. [Unified environment and external-tool guide](tests/glm5_2_common/PERFORMANCE_GRAPH_DEPENDENCIES_ZH.md):
+1. [Unified environment and external-tool guide](tests/glm5_2_common/docs/PERFORMANCE_GRAPH_DEPENDENCIES_ZH.md):
    install/verify TorchNPU, CANN, Triton-Ascend, Python readers,
    `msprof-analyze`, MindStudio Insight, Perfetto, and flame-graph tools.
 2. Select one experiment README:
@@ -135,9 +135,9 @@ and debug note in filename order. Use this path:
    [combination](tests/glm5_2_combination/README.md). These are the command and
    parameter authorities.
 3. Read results with the
-   [performance report tutorial](tests/glm5_2_performance/REPORT_GUIDE_ZH.md)
+   [performance report tutorial](tests/glm5_2_performance/docs/REPORT_GUIDE_ZH.md)
    and/or
-   [graph/compiler tutorial](tests/glm5_2_graph/VISUALIZATION_GUIDE_ZH.md).
+   [graph/compiler tutorial](tests/glm5_2_graph/docs/VISUALIZATION_GUIDE_ZH.md).
 4. Open graph debug history, lower-layer handoff, or performance explorations
    only after the formal report identifies the corresponding problem. Those
    directories are engineering evidence, not parallel user interfaces.

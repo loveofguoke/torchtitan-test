@@ -17,13 +17,13 @@ are reserved and raise `NotImplementedError`; ordinary CUDA/NPU eager precision
 experiments remain available from `glm5_2_precision`.
 
 Detailed result interpretation lives in the
-[performance report guide](../glm5_2_performance/REPORT_GUIDE_ZH.md) and
-[graph visualization guide](../glm5_2_graph/VISUALIZATION_GUIDE_ZH.md). The
+[performance report guide](../glm5_2_performance/docs/REPORT_GUIDE_ZH.md) and
+[graph visualization guide](../glm5_2_graph/docs/VISUALIZATION_GUIDE_ZH.md). The
 top-level combined report also starts with a Chinese reading order so precision,
 performance, compiler, runtime Timeline, and TensorBoard evidence are not mixed.
 Install and verify the shared runtime, Python readers, Ascend analyzers, and GUI
 viewers using the
-[unified dependency guide](../glm5_2_common/PERFORMANCE_GRAPH_DEPENDENCIES_ZH.md).
+[unified dependency guide](../glm5_2_common/docs/PERFORMANCE_GRAPH_DEPENDENCIES_ZH.md).
 
 ## Comparison semantics
 

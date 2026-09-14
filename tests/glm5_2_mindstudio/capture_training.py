@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,67 @@ OUTPUT_ENV = "GLM5_MINDSTUDIO_OUTPUT"
 SEED_ENV = "GLM5_MINDSTUDIO_SEED"
 DETERMINISTIC_ENV = "GLM5_MINDSTUDIO_DETERMINISTIC"
 SHELL_PATH_ENV = "GLM5_MINDSTUDIO_SHELL_PATH"
+METRICS_PATH_ENV = "GLM5_MINDSTUDIO_METRICS_PATH"
 logger = logging.getLogger(__name__)
+
+
+def _metric_value(value: Any) -> float | str | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (float, int)):
+        result = float(value)
+    elif hasattr(value, "item"):
+        result = float(value.item())
+    else:
+        return None
+    if math.isnan(result):
+        return "NaN"
+    if math.isinf(result):
+        return "Infinity" if result > 0 else "-Infinity"
+    return result
+
+
+def _install_training_metrics_capture() -> None:
+    """Record whole-training metrics independently from official msProbe data."""
+
+    metrics_path = _require_path(METRICS_PATH_ENV)
+    rank = int(os.environ.get("RANK", "0"))
+    owner_rank = int(os.environ.get("LOG_RANK", "0"))
+    enabled = rank == owner_rank
+    if enabled:
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        metrics_path.write_text("", encoding="utf-8")
+
+    from torchtitan.components.metrics import TensorBoardLogger
+
+    original_log = TensorBoardLogger.log
+
+    def log_with_jsonl(
+        self: TensorBoardLogger,
+        metrics: dict[str, Any],
+        step: int,
+    ) -> None:
+        original_log(self, metrics, step)
+        if not enabled:
+            return
+        values = {
+            key: converted
+            for key, value in metrics.items()
+            if (converted := _metric_value(value)) is not None
+        }
+        required = {
+            "loss_metrics/global_avg_loss",
+            "loss_metrics/global_max_loss",
+            "grad_norm",
+        }
+        if not required.issubset(values):
+            return
+        record = {"step": int(step), "rank": rank, "metrics": values}
+        with metrics_path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, sort_keys=True, separators=(",", ":")))
+            stream.write("\n")
+
+    TensorBoardLogger.log = log_with_jsonl
 
 
 def _require_path(name: str) -> Path:
@@ -326,6 +387,7 @@ def main() -> None:
     )
 
     install_fixed_token_dataloader()
+    _install_training_metrics_capture()
     if mode == "config-check":
         _install_config_checker()
     elif mode == "dump":

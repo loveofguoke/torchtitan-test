@@ -43,7 +43,7 @@ triton-ascend `3.2.1`。TorchTitan 和 Turbo 均由当前 checkout editable impo
 | task queue/profile/cache/ports/timeouts | 是，属于 launcher policy | 保证环境隔离、可复现和共享机器并发安全 | test common；不进 device-neutral TorchTitan |
 
 完整源码模块、函数和提单验收见
-[`LOWER_LAYER_ISSUE_HANDOFF.md`](../../../glm5_2_graph/LOWER_LAYER_ISSUE_HANDOFF.md)。
+[`LOWER_LAYER_ISSUE_HANDOFF.md`](../../../glm5_2_graph/docs/LOWER_LAYER_ISSUE_HANDOFF.md)。
 
 ## 本轮新增验证
 

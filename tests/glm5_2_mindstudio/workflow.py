@@ -1172,6 +1172,9 @@ def capture_official(
         "GLM5_MINDSTUDIO_DETERMINISTIC": (
             "1" if config.training.deterministic else "0"
         ),
+        "GLM5_MINDSTUDIO_METRICS_PATH": str(
+            (run_directory / "training_metrics.jsonl").resolve()
+        ),
         "NPU_ASD_ENABLE": "0",
         **fixed_input_environment(
             token_plan_path=token_plan_path,

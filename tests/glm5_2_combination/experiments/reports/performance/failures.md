@@ -24,7 +24,7 @@ nondeterministic 合约。该开关不允许用于 precision/mixed acceptance，
 opt-in。当前 deterministic single cold-cache 与 smoke 已通过，因此新实验应优先保留
 deterministic，不能继续把 performance nondeterministic 当成图模式必需条件。详细调用链与
 底层根治位置见
-[`LOWER_LAYER_ISSUE_HANDOFF.md`](../../../../glm5_2_graph/LOWER_LAYER_ISSUE_HANDOFF.md#10-g020确定性-pointwise-autotune-未声明-vetted)。
+[`LOWER_LAYER_ISSUE_HANDOFF.md`](../../../../glm5_2_graph/docs/LOWER_LAYER_ISSUE_HANDOFF.md#10-g020确定性-pointwise-autotune-未声明-vetted)。
 
 ## 环境限制
 

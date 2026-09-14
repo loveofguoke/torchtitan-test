@@ -1,7 +1,7 @@
 # GLM-5.2 graph-mode debug
 
 The consolidated current conclusion and three-repository fix ownership are in
-[`../glm5_2_graph/NPU_GRAPH_DEBUG_REPORT.md`](../glm5_2_graph/NPU_GRAPH_DEBUG_REPORT.md).
+[`../glm5_2_graph/docs/NPU_GRAPH_DEBUG_REPORT.md`](../glm5_2_graph/docs/NPU_GRAPH_DEBUG_REPORT.md).
 This directory preserves the detailed chronological debugging evidence.
 
 本目录只承载 NPU 图模式的软件栈调试入口、运行说明、环境适配报告和后续 bug

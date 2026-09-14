@@ -136,7 +136,7 @@ Turbo 的 `TORCHTITAN_VETTED_POINTWISE_AUTOTUNE=1` 只将
 `HeuristicType.POINTWISE` 标记为 vetted；reduction 保持 false。common 对图 profile 默认
 启用该 opt-in，并把最终值写入 wrapper 报告。真正根治应落在 torch_npu autotuner，详细
 模块、函数、分界与验收见
-[G020](../../../glm5_2_graph/LOWER_LAYER_ISSUE_HANDOFF.md#10-g020确定性-pointwise-autotune-未声明-vetted)。
+[G020](../../../glm5_2_graph/docs/LOWER_LAYER_ISSUE_HANDOFF.md#10-g020确定性-pointwise-autotune-未声明-vetted)。
 
 当前结论是 `WORKAROUND_FOCUSED_VALIDATED`：Turbo 单测 6/6、全新 cache 的 deterministic
 single 10-step、正式 smoke runner single 10-step 均通过。它仍不等于 5000-step 精度

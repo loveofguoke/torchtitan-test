@@ -490,7 +490,7 @@ python tools/bootstrap_mindstudio_toolchain.py \
 python -m tests.glm5_2_mindstudio.toolchain doctor --scope memory
 ```
 
-doctor 只检查 CANN、框架和 CLI 是否可见；`LD_PRELOAD` 中每个 hook 库与多 rank 子进程能否工作，必须用单卡最小采集验证。完整步骤分别见 [算子调优](OPERATOR_TUNING_WORKFLOW_ZH.md) 和 [内存调优](MEMORY_TUNING_WORKFLOW_ZH.md)。
+doctor 只检查 CANN、框架和 CLI 是否可见；`LD_PRELOAD` 中每个 hook 库与多 rank 子进程能否工作，必须用单卡最小采集验证。完整步骤分别见 [算子调优](../performance/OPERATOR_TUNING_WORKFLOW_ZH.md) 和 [内存调优](../performance/MEMORY_TUNING_WORKFLOW_ZH.md)。
 
 ## 15. 官方参考
 

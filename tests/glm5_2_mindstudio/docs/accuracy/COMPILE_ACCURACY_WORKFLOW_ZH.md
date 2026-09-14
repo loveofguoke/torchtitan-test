@@ -5,7 +5,7 @@ eager 与 `torch.compile` 的模块级前向/反向差异，以及该结果与�
 之间的边界。
 
 从 single/backend smoke 扩到 FSDP、TP、PP、EP 和 all topology 前，按
-[服务器验收矩阵](SERVER_VALIDATION_MATRIX_ZH.md) 逐级验证。PrecisionChecker
+[服务器验收矩阵](../toolchain/SERVER_VALIDATION_MATRIX_ZH.md) 逐级验证。PrecisionChecker
 single-pass 完成只证明被标记模块的官方比较阶段完成，不等价于整网 fullgraph 或
 多 step 图训练精度通过。
 
@@ -421,7 +421,7 @@ module name 合并。
 10. 关闭精度工具，运行无采集基线和 profiler-active 性能 A/B
 ```
 
-性能证据按 [PERFORMANCE_WORKFLOW_ZH.md](PERFORMANCE_WORKFLOW_ZH.md) 采集并导入
+性能证据按 [PERFORMANCE_WORKFLOW_ZH.md](../performance/PERFORMANCE_WORKFLOW_ZH.md) 采集并导入
 MindStudio Insight；编译精度与性能使用相同源码、输入和拓扑，但保留独立 capture。
 
 ## 11. 图断裂、重编译和 fallback 的区别

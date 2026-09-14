@@ -1402,6 +1402,14 @@ class TestMindStudioLifecycle(unittest.TestCase):
             self.assertFalse(report.exists())
             self.assertNotIn(secret, output)
             self.assertIn("PRIVATE_TOKEN", plan["endpoint_environment_keys"])
+            self.assertEqual(
+                run / "training_metrics.jsonl",
+                Path(
+                    plan["environment_overrides"][
+                        "GLM5_MINDSTUDIO_METRICS_PATH"
+                    ]
+                ),
+            )
             self.assertTrue(
                 any(
                     value.endswith("-candidate-r1")

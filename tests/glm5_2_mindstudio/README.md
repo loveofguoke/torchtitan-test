@@ -19,12 +19,12 @@
 复制 NPU patch。
 
 性能标准流程见
-[docs/PERFORMANCE_WORKFLOW_ZH.md](docs/PERFORMANCE_WORKFLOW_ZH.md)。该入口默认使用
+[docs/performance/PERFORMANCE_WORKFLOW_ZH.md](docs/performance/PERFORMANCE_WORKFLOW_ZH.md)。该入口默认使用
 msProf 建立通用 CANN/NPU 采集；需要 PyTorch module、shape、stack、memory 和
 schedule 窗口时切到 Ascend PyTorch Profiler。系统调优、单算子调优和内存事件调优
 是三个独立工作流：后两者分别见
-[算子调优](docs/OPERATOR_TUNING_WORKFLOW_ZH.md) 与
-[内存调优](docs/MEMORY_TUNING_WORKFLOW_ZH.md)，不会改变现有系统调优默认值。
+[算子调优](docs/performance/OPERATOR_TUNING_WORKFLOW_ZH.md) 与
+[内存调优](docs/performance/MEMORY_TUNING_WORKFLOW_ZH.md)，不会改变现有系统调优默认值。
 
 ## 1. 当前实现状态
 
@@ -40,7 +40,8 @@ schedule 窗口时切到 Ascend PyTorch Profiler。系统调优、单算子调�
 | API 精度预检与两端预检结果比对 | 已实现 | `--precheck`、`--precheck-compare` |
 | 长程训练状态监控 | 已实现，step 数按问题复现窗口显式指定 | `training_monitor_benchmark.py` |
 | 分级图可视化与 TensorBoard 索引 | 已实现 | migration 完成 L0/mix capture 后执行 `--graph-visualize` |
-| NPU 性能采集、分析、可视化 | 已实现标准入口 | `performance_benchmark.py`、`docs/PERFORMANCE_WORKFLOW_ZH.md` |
+| 现象驱动的有状态精度诊断 case | 已实现控制面和整网曲线 | `accuracy_diagnostic_benchmark.py`，输出 Loss/Grad Norm/相对误差 SVG、CSV、JSON，并复用上述官方阶段 |
+| NPU 性能采集、分析、可视化 | 已实现标准入口 | `performance_benchmark.py`、`docs/performance/PERFORMANCE_WORKFLOW_ZH.md` |
 | msOpProf 单算子上板/仿真采集与 Insight handoff | 已实现独立入口，需目标服务器验证具体指标支持 | `operator_tuning_benchmark.py` |
 | msMemScope 单/多卡内存事件、泄漏/拆解与 step 对比 | 已实现独立入口，需按目标 CANN 安装 hook 库 | `memory_tuning_benchmark.py` |
 | 推理部署、算子生产交付 | 尚未纳入当前训练工作流 | 能力边界见官方文档矩阵 |
@@ -54,21 +55,22 @@ schedule 窗口时切到 Ascend PyTorch Profiler。系统调优、单算子调�
 第一次使用按以下顺序阅读：
 
 1. 本 README：安装、命令、参数、目录与边界；
-2. [源码安装与环境检查](docs/SOURCE_INSTALL_ZH.md)：环境分层、源码工具安装、doctor；
-3. [GPU 采集与内网离线比较环境](docs/GPU_COLLECTION_AND_OFFLINE_ANALYSIS_ZH.md)：Nsys、基础 msProbe、msprof-analyze 与单向数据汇合；
-4. [GPU/NPU 模块与 API 精度流程](docs/ACCURACY_WORKFLOW_ZH.md)：官方五阶段、预检、指标与结果判读；
-5. [eager/compile 精度流程](docs/COMPILE_ACCURACY_WORKFLOW_ZH.md)：single-pass、FSDP2、多卡限制；
-6. [官方文档与能力矩阵](docs/OFFICIAL_DOCUMENTATION_MATRIX_ZH.md)：官方章节、GLM 入口、产物和支持状态逐项对应；
-7. [官方工具链全景](docs/OFFICIAL_TOOLCHAIN_ZH.md)：训练、图编译、性能、推理、算子工具的职责；
-8. [官方性能工作流](docs/PERFORMANCE_WORKFLOW_ZH.md)：msProf、Ascend PyTorch Profiler、msprof-analyze 与 Insight；
-9. [msprof-analyze 进阶分析](docs/MSPROF_ANALYZE_ADVANCED_ZH.md)：细粒度拆解/比对、通信瓶颈、慢 Rank/链路与 Host 下发；
-10. [集群分析操作与判读](docs/MSPROF_ANALYZE_CLUSTER_ZH.md)：cluster 参数、交付件、字段、Insight 页面和定位动作；
-11. [算子调优](docs/OPERATOR_TUNING_WORKFLOW_ZH.md)：msOpProf 上板/仿真、核内指标和 Insight 算子页面；
-12. [内存调优](docs/MEMORY_TUNING_WORKFLOW_ZH.md)：msMemScope 事件、泄漏/拆解/对比和 Insight 内存页面；
-13. [输出与报告](docs/OUTPUTS_AND_REPORTS_ZH.md)：raw、artifact、report、同步与保留策略；
-14. [服务器验收矩阵](docs/SERVER_VALIDATION_MATRIX_ZH.md)：从单卡最小闭环到 all topology 的真实验收顺序；
-15. [官方实践学习与复现路线](docs/OFFICIAL_PRACTICE_ROADMAP_ZH.md)：按现象选择精度、性能、图编译、算子和推理工具；
-16. [实施计划与边界](docs/IMPLEMENTATION_PLAN_ZH.md)：标准工作流的实施状态与验收边界。
+2. [源码安装与环境检查](docs/toolchain/SOURCE_INSTALL_ZH.md)：环境分层、源码工具安装、doctor；
+3. [GPU 采集与内网离线比较环境](docs/toolchain/GPU_COLLECTION_AND_OFFLINE_ANALYSIS_ZH.md)：Nsys、基础 msProbe、msprof-analyze 与单向数据汇合；
+4. [GPU/NPU 模块与 API 精度流程](docs/accuracy/ACCURACY_WORKFLOW_ZH.md)：官方五阶段、预检、指标与结果判读；
+5. [eager/compile 精度流程](docs/accuracy/COMPILE_ACCURACY_WORKFLOW_ZH.md)：single-pass、FSDP2、多卡限制；
+6. [官方文档与能力矩阵](docs/toolchain/OFFICIAL_DOCUMENTATION_MATRIX_ZH.md)：官方章节、GLM 入口、产物和支持状态逐项对应；
+7. [官方工具链全景](docs/toolchain/OFFICIAL_TOOLCHAIN_ZH.md)：训练、图编译、性能、推理、算子工具的职责；
+8. [官方性能工作流](docs/performance/PERFORMANCE_WORKFLOW_ZH.md)：msProf、Ascend PyTorch Profiler、msprof-analyze 与 Insight；
+9. [msprof-analyze 进阶分析](docs/performance/MSPROF_ANALYZE_ADVANCED_ZH.md)：细粒度拆解/比对、通信瓶颈、慢 Rank/链路与 Host 下发；
+10. [集群分析操作与判读](docs/performance/MSPROF_ANALYZE_CLUSTER_ZH.md)：cluster 参数、交付件、字段、Insight 页面和定位动作；
+11. [算子调优](docs/performance/OPERATOR_TUNING_WORKFLOW_ZH.md)：msOpProf 上板/仿真、核内指标和 Insight 算子页面；
+12. [内存调优](docs/performance/MEMORY_TUNING_WORKFLOW_ZH.md)：msMemScope 事件、泄漏/拆解/对比和 Insight 内存页面；
+13. [输出与报告](docs/toolchain/OUTPUTS_AND_REPORTS_ZH.md)：raw、artifact、report、同步与保留策略；
+14. [服务器验收矩阵](docs/toolchain/SERVER_VALIDATION_MATRIX_ZH.md)：从单卡最小闭环到 all topology 的真实验收顺序；
+15. [官方实践学习与复现路线](docs/toolchain/OFFICIAL_PRACTICE_ROADMAP_ZH.md)：按现象选择精度、性能、图编译、算子和推理工具；
+16. [实施计划与边界](docs/toolchain/IMPLEMENTATION_PLAN_ZH.md)：标准工作流的实施状态与验收边界。
+17. [精度诊断 Case 工作流](docs/accuracy/DIAGNOSTIC_CASE_WORKFLOW_ZH.md)：按现象选择 recipe、登记第一现场、验证假设并完成分层回归。
 
 官方权威入口：
 
@@ -107,7 +109,7 @@ python -m pip check
 `import torchtitanturbo` 并由其加载 NPU 适配。
 
 GPU 内网服务器的 Nsys、基础 msProbe、离线 `msprof-analyze` 安装与 NPU 数据
-单向汇合方式见 [GPU 采集与内网离线比较环境](docs/GPU_COLLECTION_AND_OFFLINE_ANALYSIS_ZH.md)。
+单向汇合方式见 [GPU 采集与内网离线比较环境](docs/toolchain/GPU_COLLECTION_AND_OFFLINE_ANALYSIS_ZH.md)。
 
 ### 3.2 源码安装官方工具
 
@@ -210,13 +212,13 @@ python tests/glm5_2_mindstudio/migration_benchmark.py \
 两端只在起点共享权重和 token，中途不重新注入相同模块输入，因此观测包含误差传播。
 `statistics/tensor` 区分摘要和完整张量，`L0/L1/mix` 区分观测位置；都不代表
 已实现“相同输入、权重和反向上游梯度的模块独立重放”。详见
-[执行方式与粒度](docs/MSPROBE_RESULT_READING_ZH.md#7-当前端到端比较与相同输入模块独立比较的区别)。
+[执行方式与粒度](docs/accuracy/MSPROBE_RESULT_READING_ZH.md#7-当前端到端比较与相同输入模块独立比较的区别)。
 
 分级图的 pass/warning/error/unmatched、两侧统计字段与 Norm 局限，见
-[msProbe 判定与分级图阅读](docs/MSPROBE_RESULT_READING_ZH.md)。
+[msProbe 判定与分级图阅读](docs/accuracy/MSPROBE_RESULT_READING_ZH.md)。
 
 统计量/tensor 指标、自动 error/warning 规则与官方建议参考值，见
-[精度流程 §7.0：当前阈值来源和判定规则](docs/ACCURACY_WORKFLOW_ZH.md#70-当前阈值来源和判定规则)。
+[精度流程 §7.0：当前阈值来源和判定规则](docs/accuracy/ACCURACY_WORKFLOW_ZH.md#70-当前阈值来源和判定规则)。
 项目不覆盖官方阈值；安装版本的具体判定与界面百分比单位须以其源码为准。
 
 `--compare` 的跨服务器工具链与项目版本兼容性暂由人工管理，不再因
@@ -474,7 +476,7 @@ artifact 与 `precision_precheck` 结果后运行。
 可能产生巨量数据，默认不要这样采。
 
 完整方法、指标和排障顺序见
-[ACCURACY_WORKFLOW_ZH.md](docs/ACCURACY_WORKFLOW_ZH.md)。
+[ACCURACY_WORKFLOW_ZH.md](docs/accuracy/ACCURACY_WORKFLOW_ZH.md)。
 
 ### 4.7 分级图可视化
 
@@ -602,7 +604,7 @@ backend 必须以目标服务器的 `torch.compiler.list_backends()` 和最小 s
 - 正式结论还要跑现有 graph/combination 的多 step 精度与编译诊断。
 
 完整说明见
-[COMPILE_ACCURACY_WORKFLOW_ZH.md](docs/COMPILE_ACCURACY_WORKFLOW_ZH.md)。
+[COMPILE_ACCURACY_WORKFLOW_ZH.md](docs/accuracy/COMPILE_ACCURACY_WORKFLOW_ZH.md)。
 
 ## 6. 配置检查
 
@@ -806,7 +808,7 @@ Profiler 产物可进入 offline、advisor、cluster、compare 和 Insight 中�
 
 性能标准入口当前只允许 NPU；`--device cuda` 保留接口并明确报未实现。完整的采集器
 边界、`--type=text`/`db` 容量取舍、compare 和 Insight 阅读方法见
-[PERFORMANCE_WORKFLOW_ZH.md](docs/PERFORMANCE_WORKFLOW_ZH.md)。
+[PERFORMANCE_WORKFLOW_ZH.md](docs/performance/PERFORMANCE_WORKFLOW_ZH.md)。
 
 ## 9. 通用参数
 
@@ -972,7 +974,7 @@ mindstudio_reports/accuracy/<experiment-id>/<topology>/
 5. `mindstudio_runs/.../runtime.log`：完整命令与异常栈；
 6. 若官方结果异常，按本目录的官方诊断路线缩小 step、rank、module、API 或算子范围后重新采集。
 
-详见 [OUTPUTS_AND_REPORTS_ZH.md](docs/OUTPUTS_AND_REPORTS_ZH.md)。
+详见 [OUTPUTS_AND_REPORTS_ZH.md](docs/toolchain/OUTPUTS_AND_REPORTS_ZH.md)。
 
 ## 12. 不应混淆的结论
 

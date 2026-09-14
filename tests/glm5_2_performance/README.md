@@ -28,8 +28,8 @@ workflow is split by responsibility as follows:
 | Layer | Document or implementation | Purpose |
 |---|---|---|
 | Experiment interface | This README | Commands, parameters, presets, output layout, report contents, and interpretation rules. |
-| Environment and external tools | [性能与图模式统一依赖清单](../glm5_2_common/PERFORMANCE_GRAPH_DEPENDENCIES_ZH.md) | Required runtime, optional Python packages, Ascend tools, GUI viewers, repositories, installation, verification, and version boundaries. |
-| Report interpretation | [中文性能报告与可视化阅读指南](REPORT_GUIDE_ZH.md) | Every HTML section, table, metric, official artifact, viewer, and PP-specific reading path. |
+| Environment and external tools | [性能与图模式统一依赖清单](../glm5_2_common/docs/PERFORMANCE_GRAPH_DEPENDENCIES_ZH.md) | Required runtime, optional Python packages, Ascend tools, GUI viewers, repositories, installation, verification, and version boundaries. |
+| Report interpretation | [中文性能报告与可视化阅读指南](docs/REPORT_GUIDE_ZH.md) | Every HTML section, table, metric, official artifact, viewer, and PP-specific reading path. |
 | Evidence layout | [exploration index](explorations/index.md) and [report index](explorations/reports/index.md) | Immutable run evidence and navigation by card count/topology. |
 | Current analysis | [cross-topology summary](explorations/reports/summary.md) and [failed attempts](explorations/reports/failures.md) | Measured bottlenecks, hardware caveats, optimization backlog, and failed experiments. |
 | Ascend collection implementation | [TorchTitanTurbo profiler document](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/torchtitanturbo/tools/PROFILER.md), [profiler patch](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/torchtitanturbo/tools/profiler.py), and [patch inventory](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/PATCHES.md) | Translation of TorchTitan's lifecycle to `torch_npu.profiler`, NPU-only controls, and memory snapshots. |
@@ -65,7 +65,7 @@ The workflow is deliberately top-down:
 `all` is a meta-preset. It runs the non-redundant policies above as independent
 captures and creates one suite index; it never enables every high-overhead
 switch inside a single training process. See the
-[Chinese report guide](REPORT_GUIDE_ZH.md#2-preset-到底是什么) for the exact
+[Chinese report guide](docs/REPORT_GUIDE_ZH.md#2-preset-到底是什么) for the exact
 coverage matrix and overhead model.
 
 Start at `overview`. Move to a deeper preset only when the previous report
@@ -182,7 +182,7 @@ It also indexes the complete interactive evidence instead of flattening it:
 The generated report starts with a Chinese reading order and metric glossary.
 For a chapter-by-chapter explanation, including StepTrace, HCCL wait/transit,
 operator/shape/L2 tables, flame graphs, memory categories, TensorBoard, and the
-PP8-specific reading path, use [REPORT_GUIDE_ZH.md](REPORT_GUIDE_ZH.md).
+PP8-specific reading path, use [REPORT_GUIDE_ZH.md](docs/REPORT_GUIDE_ZH.md).
 
 ## Complete profiler feature suite
 

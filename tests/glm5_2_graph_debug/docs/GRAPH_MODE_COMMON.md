@@ -319,7 +319,7 @@ tests/glm5_2_graph_debug/run_graph_mode.sh inductor env
 没有把安全 benchmark 声明为 vetted，common 因此默认启用 Turbo 的
 `TORCHTITAN_VETTED_POINTWISE_AUTOTUNE`。它只放行 `HeuristicType.POINTWISE`，不能放行
 reduction，也不能用 `--performance-nondeterministic` 代替精度验收。根因和 torch_npu
-patch 位置见 `tests/glm5_2_graph/LOWER_LAYER_ISSUE_HANDOFF.md` 的 G020。
+patch 位置见 `tests/glm5_2_graph/docs/LOWER_LAYER_ISSUE_HANDOFF.md` 的 G020。
 
 `ASCEND_LAUNCH_BLOCKING=1` 会改变执行时序，只用于把异步 NPU 错误定位到更接近的
 算子，不能作为性能数据或最终通过条件。所有 benchmark 的 eager reference 与图模式

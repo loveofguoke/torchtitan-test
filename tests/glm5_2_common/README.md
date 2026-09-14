@@ -1,6 +1,6 @@
 # Shared experiment primitives
 
-模型配置的来源与各实验检查结果：[模型配置审计](MODEL_CONFIG_AUDIT.md)。
+模型配置的来源与各实验检查结果：[模型配置审计](docs/MODEL_CONFIG_AUDIT.md)。
 
 `glm5_2_common` is dependency-free with respect to individual experiments. It
 owns canonical accelerator selection, topology definitions, topology selection,
@@ -23,7 +23,7 @@ arguments and environment variables through `TrainingFeature`; only the central
 combination workflow assembles them into a training command.
 
 Performance and graph experiments share one external dependency inventory:
-[性能与图模式环境、外部工具和依赖总表](PERFORMANCE_GRAPH_DEPENDENCIES_ZH.md).
+[性能与图模式环境、外部工具和依赖总表](docs/PERFORMANCE_GRAPH_DEPENDENCIES_ZH.md).
 It separates training runtime requirements from optional analysis/GUI tools and
 is the installation authority for performance, graph, and combination reports.
 

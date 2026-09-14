@@ -27,7 +27,7 @@ nightly 和 triton-ascend 3.2.1。统一 smoke contract 为 10 steps、global ba
 
 完整原始调试证据保留在 `tests/glm5_2_graph_debug/`；整理后的 smoke、精度、性能、
 失败历史与命令账本统一从
-[`tests/glm5_2_combination/experiments/index.md`](../glm5_2_combination/experiments/index.md)
+[`tests/glm5_2_combination/experiments/index.md`](../../glm5_2_combination/experiments/index.md)
 进入。本文给出面向后续研发的统一结论、命令、修复归属和剩余问题。
 
 ## 2. 从单卡到全部拓扑的跑通过程
@@ -119,7 +119,7 @@ tests/glm5_2_graph_debug/run_graph_mode.sh inductor precision \
 
 | 仓库 | 入口 | 职责 |
 |---|---|---|
-| `torchtitan-test` | [图模式使用入口](README.md)、[组合实验档案](../glm5_2_combination/experiments/index.md)、[底层提单交接](LOWER_LAYER_ISSUE_HANDOFF.md)、[原始调试入口](../glm5_2_graph_debug/README.md)、[报告索引](../glm5_2_graph_debug/experiments/reports/index.md)、[失败历史](../glm5_2_graph_debug/experiments/reports/failures.md) | 组织 eager/graph、single/all 拓扑实验，保存日志和报告，记录完整调试证据并给出验收结论。 |
+| `torchtitan-test` | [图模式使用入口](../README.md)、[组合实验档案](../../glm5_2_combination/experiments/index.md)、[底层提单交接](LOWER_LAYER_ISSUE_HANDOFF.md)、[原始调试入口](../../glm5_2_graph_debug/README.md)、[报告索引](../../glm5_2_graph_debug/experiments/reports/index.md)、[失败历史](../../glm5_2_graph_debug/experiments/reports/failures.md) | 组织 eager/graph、single/all 拓扑实验，保存日志和报告，记录完整调试证据并给出验收结论。 |
 | `TorchTitanTurbo` | [图模式 patch 说明](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/torchtitanturbo/tools/GRAPH_MODE.md)、[patch 清单](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/PATCHES.md)、`torchtitanturbo/tools/graph_compat.py` | 实现默认关闭的 Ascend 专用兼容 patch；说明触发变量、patch 对象和后端限制。 |
 | `torchtitan` | `torchtitan/distributed/compile.py` | 提供设备无关的 compile 配置和调用流程；不承载 CANN、HCCL、torch_npu 或 NPUGraph workaround。 |
 

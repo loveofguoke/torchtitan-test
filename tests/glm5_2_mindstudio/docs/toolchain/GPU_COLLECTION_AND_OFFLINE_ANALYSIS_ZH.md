@@ -69,7 +69,7 @@ python tests/glm5_2_nvidia/performance_benchmark.py \
 默认会采集 `cuda,nvtx,osrt,cublas,cudnn`，并启用 PyTorch function/shape 和
 autograd NVTX。`--probe` 随后通过 `nsys export` 生成 `.sqlite`；跨平台性能校准
 读取 SQLite，而不是 `.nsys-rep`。具体参数见
-[`tests/glm5_2_nvidia/README.md`](../../glm5_2_nvidia/README.md)。
+[`tests/glm5_2_nvidia/README.md`](../../../glm5_2_nvidia/README.md)。
 
 ## 3. GPU 侧基础 msProbe
 

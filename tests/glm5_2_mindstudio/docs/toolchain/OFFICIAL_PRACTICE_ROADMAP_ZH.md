@@ -78,7 +78,7 @@ GPU reference capture
   -> 再看具体指标与首个异常位置
 ```
 
-完整命令见 [ACCURACY_WORKFLOW_ZH.md](ACCURACY_WORKFLOW_ZH.md)。
+完整命令见 [ACCURACY_WORKFLOW_ZH.md](../accuracy/ACCURACY_WORKFLOW_ZH.md)。
 
 ### 2.5 API 精度预检
 

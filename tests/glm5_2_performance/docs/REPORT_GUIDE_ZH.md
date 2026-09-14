@@ -7,8 +7,8 @@ Profiler 的同学能够回答三件事：
 2. HTML 中每一章、每张表和每个指标应该怎样读；
 3. 发现异常后应打开哪个原始产物继续定位，而不是直接猜优化方案。
 
-实验命令和参数在 [README](README.md)，所有环境、软件、Python 包、仓库及安装方式在
-[统一依赖清单](../glm5_2_common/PERFORMANCE_GRAPH_DEPENDENCIES_ZH.md)。
+实验命令和参数在 [README](../README.md)，所有环境、软件、Python 包、仓库及安装方式在
+[统一依赖清单](../../glm5_2_common/docs/PERFORMANCE_GRAPH_DEPENDENCIES_ZH.md)。
 
 官方参考：
 

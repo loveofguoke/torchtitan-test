@@ -4,9 +4,9 @@
 `torch.compile` 后，Python 程序如何被分成编译区域，编译器对每个区域做了什么，
 最终生成的任务怎样在 NPU 上执行，以及为什么有时“能跑”却没有加速。
 
-命令、参数和验收流程见 [graph README](README.md)；Python 包、Ascend 软件、GUI、
+命令、参数和验收流程见 [graph README](../README.md)；Python 包、Ascend 软件、GUI、
 Git 仓库与安装命令统一见
-[性能与图模式依赖清单](../glm5_2_common/PERFORMANCE_GRAPH_DEPENDENCIES_ZH.md)。
+[性能与图模式依赖清单](../../glm5_2_common/docs/PERFORMANCE_GRAPH_DEPENDENCIES_ZH.md)。
 
 官方入口：
 

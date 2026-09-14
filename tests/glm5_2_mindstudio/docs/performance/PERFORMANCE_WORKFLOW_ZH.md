@@ -218,7 +218,7 @@ python tests/glm5_2_mindstudio/performance_benchmark.py \
 
 只有这个入口使用 `--profiler-level`、`--profile-ranks`、`--record-shapes`、
 `--profile-memory`、`--with-stack`、`--aic-metrics`。每个参数的采集层级、开销和
-对应 Insight 页面见本文第 2 节和 [官方文档矩阵](OFFICIAL_DOCUMENTATION_MATRIX_ZH.md)。
+对应 Insight 页面见本文第 2 节和 [官方文档矩阵](../toolchain/OFFICIAL_DOCUMENTATION_MATRIX_ZH.md)。
 
 当前 MindStudio performance 只实现 NPU。`--device cuda` 保留接口并明确报未实现；
 不能让 GPU 静默落入另一套未确认的采集语义。
@@ -226,7 +226,7 @@ python tests/glm5_2_mindstudio/performance_benchmark.py \
 GPU 标杆由独立的 `tests/glm5_2_nvidia` 采集。官方 `calibrate_npu_gpu` 读取 Nsys
 SQLite 和 Ascend PyTorch Profiler DB，并依赖 NVTX/MSTX Module 标记；GPU 内网
 部署和数据汇合命令见
-[GPU 采集与内网离线比较环境](GPU_COLLECTION_AND_OFFLINE_ANALYSIS_ZH.md)。
+[GPU 采集与内网离线比较环境](../toolchain/GPU_COLLECTION_AND_OFFLINE_ANALYSIS_ZH.md)。
 
 ## 4. 高级分阶段分析命令
 

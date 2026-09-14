@@ -12,7 +12,7 @@ reserved, but selecting Inductor or NPUGraph for a CUDA endpoint raises
 
 The complete 15-topology debug history, downgrade boundary, three-repository
 fix ownership, runnable commands, and remaining backend issues are summarized
-in [NPU_GRAPH_DEBUG_REPORT.md](NPU_GRAPH_DEBUG_REPORT.md).
+in [NPU_GRAPH_DEBUG_REPORT.md](docs/NPU_GRAPH_DEBUG_REPORT.md).
 
 The graph stack is not yet a zero-fallback final delivery. The current
 Inductor profile uses minimal `aten.sum` and compiled-all-reduce fallbacks;
@@ -34,11 +34,11 @@ order when reproducing or extending the graph work:
 | Layer | Document or implementation | Purpose |
 |---|---|---|
 | Experiment interface | This README | Commands, options, outputs, reports, and acceptance rules. |
-| Environment and external tools | [性能与图模式统一依赖清单](../glm5_2_common/PERFORMANCE_GRAPH_DEPENDENCIES_ZH.md) | Torch/TorchNPU/CANN/Triton-Ascend compatibility, Python readers, Ascend tools, GUI viewers, repositories, and installation checks. |
-| Visualization and report interpretation | [VISUALIZATION_GUIDE_ZH.md](VISUALIZATION_GUIDE_ZH.md) | Tool matrix, exact outputs, report columns, graph-break/recompile semantics, and compiler/runtime joint diagnosis. |
-| Current engineering status | [NPU_GRAPH_DEBUG_REPORT.md](NPU_GRAPH_DEBUG_REPORT.md) | Complete single/multi-card bring-up process, solved and unresolved issues, downgrade boundary, and three-repository ownership. |
-| Compile internals and interview preparation | [inductor-compilation-interview-qa-zh.md](inductor-compilation-interview-qa-zh.md) | Actual FX/Inductor evidence, graph-break and dynamic-shape analysis, operator compatibility layers, cold-compile timing, and Chinese interview Q&A. |
-| Lower-layer handoff | [LOWER_LAYER_ISSUE_HANDOFF.md](LOWER_LAYER_ISSUE_HANDOFF.md) | Ticket-ready source locations, functions, confidence boundaries, patch directions, minimal bisects, and workaround-off acceptance criteria for PyTorch, torch_npu, op-plugin, CANN, and HCCL. |
+| Environment and external tools | [性能与图模式统一依赖清单](../glm5_2_common/docs/PERFORMANCE_GRAPH_DEPENDENCIES_ZH.md) | Torch/TorchNPU/CANN/Triton-Ascend compatibility, Python readers, Ascend tools, GUI viewers, repositories, and installation checks. |
+| Visualization and report interpretation | [VISUALIZATION_GUIDE_ZH.md](docs/VISUALIZATION_GUIDE_ZH.md) | Tool matrix, exact outputs, report columns, graph-break/recompile semantics, and compiler/runtime joint diagnosis. |
+| Current engineering status | [NPU_GRAPH_DEBUG_REPORT.md](docs/NPU_GRAPH_DEBUG_REPORT.md) | Complete single/multi-card bring-up process, solved and unresolved issues, downgrade boundary, and three-repository ownership. |
+| Compile internals and interview preparation | [inductor-compilation-interview-qa-zh.md](docs/inductor-compilation-interview-qa-zh.md) | Actual FX/Inductor evidence, graph-break and dynamic-shape analysis, operator compatibility layers, cold-compile timing, and Chinese interview Q&A. |
+| Lower-layer handoff | [LOWER_LAYER_ISSUE_HANDOFF.md](docs/LOWER_LAYER_ISSUE_HANDOFF.md) | Ticket-ready source locations, functions, confidence boundaries, patch directions, minimal bisects, and workaround-off acceptance criteria for PyTorch, torch_npu, op-plugin, CANN, and HCCL. |
 | Combination experiment evidence | [experiment archive](../glm5_2_combination/experiments/index.md) | 15-topology smoke evidence, incomplete 5000-step precision state, 60-run eager/Inductor diagnostic performance matrix, and command ledger. |
 | Raw debug evidence | [graph debug README](../glm5_2_graph_debug/README.md), [report index](../glm5_2_graph_debug/experiments/reports/index.md), and [failure history](../glm5_2_graph_debug/experiments/reports/failures.md) | Immutable command history, topology evidence, failed attempts, and detailed root-cause records. |
 | Ascend implementation | [TorchTitanTurbo graph-mode document](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/torchtitanturbo/tools/GRAPH_MODE.md) and [patch inventory](https://github.com/loveofguoke/TorchTitanTurbo/blob/glm-dev/PATCHES.md) | Opt-in NPU compatibility patches, activation variables, patched objects, and limitations. |
@@ -321,7 +321,7 @@ python -m pip install -r \
 External Ascend/GUI tools are not Python requirements. Their sources,
 installation boundaries, verification commands, MindStudio flame graph,
 Perfetto, and offline handoff are documented in the
-[unified dependency guide](../glm5_2_common/PERFORMANCE_GRAPH_DEPENDENCIES_ZH.md).
+[unified dependency guide](../glm5_2_common/docs/PERFORMANCE_GRAPH_DEPENDENCIES_ZH.md).
 
 Capture with `--compiler-diagnostics`, then rerun the matching `--compare`
 command. Compare converts every available structured trace automatically. The
@@ -335,7 +335,7 @@ GraphDrawer are useful for static model/autograd/single-FX visualization, but
 they do not explain Dynamo guards, multiple compilation regions, graph breaks,
 or per-rank recompilation. MindStudio Insight and Perfetto remain the runtime
 Timeline viewers. The tools are complementary; see
-[VISUALIZATION_GUIDE_ZH.md](VISUALIZATION_GUIDE_ZH.md) for the full comparison.
+[VISUALIZATION_GUIDE_ZH.md](docs/VISUALIZATION_GUIDE_ZH.md) for the full comparison.
 
 For the primary graph acceptance experiment, precision PASS/FAIL comes from
 NPU eager-single versus the selected NPU graph candidate. Performance numbers
@@ -374,4 +374,4 @@ from the report; unrelated ambient `torch_compile_debug` output should remain
 outside the repository.
 # NPU codegen selection
 
-共享 DVM/Ascend Triton 参数、环境与命令见 [NPU_CODEGEN.md](NPU_CODEGEN.md)。
+共享 DVM/Ascend Triton 参数、环境与命令见 [NPU_CODEGEN.md](docs/NPU_CODEGEN.md)。

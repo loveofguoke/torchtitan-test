@@ -145,7 +145,7 @@ collector；msProf 作为底层或黑盒入口保留，两者不是互斥替代�
 CANN/MindStudio 的命令行工具。当前 GLM PyTorch 标准流程默认
 `torch_npu_profiler`；需要命令行包裹、无法修改训练程序或底层黑盒排障时显式
 切换 `msprof`。具体命令和选择边界见
-[PERFORMANCE_WORKFLOW_ZH.md](PERFORMANCE_WORKFLOW_ZH.md)。
+[PERFORMANCE_WORKFLOW_ZH.md](../performance/PERFORMANCE_WORKFLOW_ZH.md)。
 
 “msProf”有时也作为产品/组件品牌出现；脚本自动化中应以实际可执行文件 `msprof`、版本输出和所选官方文档为准，不能只靠大小写推断接口。
 
@@ -232,7 +232,7 @@ python tests/glm5_2_mindstudio/operator_tuning_benchmark.py \
 ```
 
 具体的 onboard/simulator 选择、Kernel 过滤、采集次数、输出目录、Insight 导入和
-指标阅读顺序见 [OPERATOR_TUNING_WORKFLOW_ZH.md](OPERATOR_TUNING_WORKFLOW_ZH.md)。
+指标阅读顺序见 [OPERATOR_TUNING_WORKFLOW_ZH.md](../performance/OPERATOR_TUNING_WORKFLOW_ZH.md)。
 不同芯片和版本支持的扩展指标并不完全相同，正式实验必须先运行 toolchain doctor，
 并以当前版本 `msopprof --help` 和官方文档为准。
 
@@ -276,7 +276,7 @@ Python `config/start/stop/step` 接口，也提供包装应用的命令行模式
 
 - [msMemScope 快速入门](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msMemScope/docs/zh/quick_start/quick_start.md)
 - [msMemScope 源码](https://gitcode.com/Ascend/msmemscope)
-- [本项目内存调优流程](MEMORY_TUNING_WORKFLOW_ZH.md)
+- [本项目内存调优流程](../performance/MEMORY_TUNING_WORKFLOW_ZH.md)
 
 ## 3. 图编译工具链
 

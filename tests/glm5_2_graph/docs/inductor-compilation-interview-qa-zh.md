@@ -41,8 +41,8 @@ Inductor 图执行。重点回答四类问题：整图到底指什么、图断�
 | torchtitan-test | 环境隔离、实验编排、精度/性能判定、报告 | `tests/glm5_2_graph_debug/run_graph_mode.sh`、`tests/glm5_2_combination/` |
 
 图模式公共环境、CANN 9.1 安装和历史问题分别见
-[GRAPH_MODE_COMMON.md](../glm5_2_graph_debug/GRAPH_MODE_COMMON.md)、
-[CANN_9_1_INSTALLATION.md](../glm5_2_graph_debug/CANN_9_1_INSTALLATION.md) 和
+[GRAPH_MODE_COMMON.md](../../glm5_2_graph_debug/docs/GRAPH_MODE_COMMON.md)、
+[CANN_9_1_INSTALLATION.md](../../glm5_2_graph_debug/docs/CANN_9_1_INSTALLATION.md) 和
 [LOWER_LAYER_ISSUE_HANDOFF.md](LOWER_LAYER_ISSUE_HANDOFF.md)。
 
 ### 2.2 为什么不是编译整个模型
@@ -447,7 +447,7 @@ tests/glm5_2_combination/run_graph_precision_5000.sh inductor all
 ```
 
 当前执行状态见
-[precision-5000.md](../glm5_2_combination/experiments/reports/precision-5000.md)。
+[precision-5000.md](../../glm5_2_combination/experiments/reports/precision-5000.md)。
 
 ## 10. 从编译证据到性能结论
 
@@ -469,8 +469,8 @@ tests/glm5_2_combination/run_graph_precision_5000.sh inductor all
 2026-08-26 的组合性能矩阵固定 step-0 checkpoint 和 token plan，使用 30 steps、跳过前
 10 steps、每种模式两个 repeat、每 step 8,192 tokens。15 个验收拓扑共完成
 `15 × 2 modes × 2 repeats = 60` 个运行，每个运行均有 30 条指标。完整数据见
-[组合性能报告](../glm5_2_combination/experiments/reports/performance/summary.md) 和
-[机器可读数据](../glm5_2_combination/experiments/reports/performance/data.json)。
+[组合性能报告](../../glm5_2_combination/experiments/reports/performance/summary.md) 和
+[机器可读数据](../../glm5_2_combination/experiments/reports/performance/data.json)。
 
 主要结果按结构分组如下：
 
@@ -512,7 +512,7 @@ NPU0 作业重叠。因此 45% 以上、跨多个 TP 组合一致的信号值得
 collective 分组粒度。BF16 reduction 原型把 payload 精确减半、物理传输降约 41%–44%，但
 当时受另一八卡作业竞争，未把吞吐当正式加速结论。这种“保留微观机制结论、拒绝污染后的
 端到端数字”是性能报告可信度的重要部分。完整历史见
-[NPU 性能探索总览](../glm5_2_performance/explorations/reports/summary.md)。
+[NPU 性能探索总览](../../glm5_2_performance/explorations/reports/summary.md)。
 
 ### 10.4 Ascend 官方三阶段如何落地
 
@@ -542,7 +542,7 @@ MindStudio Insight
 
 性能 runner 的 `--topology all` 还包含 1/2/4/8 卡共 27 个实验拓扑，所以完整矩阵是
 216 次独立 capture。精确命令、队列、隔离策略和输出层级见
-[all-preset 命令账本](../glm5_2_performance/explorations/history/all-preset-commands.md)。矩阵尚未
+[all-preset 命令账本](../../glm5_2_performance/explorations/history/all-preset-commands.md)。矩阵尚未
 生成全部 manifest 前，不能把 `QUEUED` 写成 `PASS`。
 
 ### 10.5 如何把这段实习讲成 90 秒
@@ -816,5 +816,5 @@ artifact；动态 shape、operator category 和修复位置来自当前三仓源
 
 正式 5000-step 精度矩阵尚未完成时，本文不会提前给出“全部 topology 精度通过”的结论。
 实验状态必须以
-[precision-5000.md](../glm5_2_combination/experiments/reports/precision-5000.md) 和最终生成的
+[precision-5000.md](../../glm5_2_combination/experiments/reports/precision-5000.md) 和最终生成的
 `combination_reports/.../report.md` 为准。

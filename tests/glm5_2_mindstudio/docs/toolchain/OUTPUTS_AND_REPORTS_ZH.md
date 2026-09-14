@@ -40,8 +40,18 @@ mindstudio_runs/                  # 原始运行根目录，按 accuracy/perform
 mindstudio_artifacts/accuracy/    # 精度官方 raw + manifest/hash/complete
 mindstudio_artifacts/performance/system/ # 系统性能轻量状态
 mindstudio_reports/accuracy/      # 精度 compare、摘要与中文入口
+mindstudio_cases/accuracy/        # 本地诊断控制面，只引用上述证据
 mindstudio_reports/performance/system/ # 系统性能报告
 ```
+
+诊断 case 不复制 official raw。每个 case 只保存 `case.json`、下一步 recipe、
+人类可读报告和指向 fixture/run/artifact/report 的证据路径。该目录默认忽略，是否
+同步由问题敏感性和协作方式决定；它不能替代被引用的原始产物。
+
+每次新的精度 capture 在自己的 run 根目录额外保留
+`training_metrics.jsonl`，用于整网 Loss/Grad Norm 现象分析。Case 下的
+`03_observe/` 只包含由该文件生成的 CSV、JSON 和 SVG 派生证据；msProbe 的 dump、
+Monitor CSV、`.trend.db` 和 `.vis.db` 仍留在各自官方 artifact/report 目录。
 
 实验 ID 应简洁但能区分工作流、设备、模式、拓扑和关键训练配置。例如：
 

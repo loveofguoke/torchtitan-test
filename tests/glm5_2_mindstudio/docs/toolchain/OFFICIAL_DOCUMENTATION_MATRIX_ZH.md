@@ -38,6 +38,7 @@
 | TrainerMonitorV2 | 训练模块、优化器、配置 -> 多 step CSV | `training_monitor_benchmark.py` | 激活/梯度/权重/优化器状态趋势 | SUPPORTED |
 | 趋势可视化 | 大规模 monitor/dump -> `.trend.db` | `migration_benchmark.py --trend ROLE` 或 monitor 同名入口 | TensorBoard Trend Analyzer | SUPPORTED |
 | [编译精度比对](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msProbe/docs/zh/user_guide/accuracy_compare/pytorch_compile_accuracy_compare_instruct.md) | 同一 NPU 的 eager/compile -> PrecisionChecker CSV | `compile_accuracy_benchmark.py` | 每 rank、model part、module 的 fwd/bwd 结果 | SUPPORTED |
+| 现象驱动精度诊断 case | 官方 CheckList、复现、定位、验证和回归步骤 -> case 状态与证据链 | `accuracy_diagnostic_benchmark.py` | `case.json`、`next_plan.json`、`README.md` | PROJECT ORCHESTRATION |
 
 ### 2.1 标准命令顺序
 
@@ -71,7 +72,7 @@ python tests/glm5_2_mindstudio/migration_benchmark.py --graph-visualize --topolo
 | [性能比对](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msprof_analyze/docs/zh/user_guide/compare_tool_instruct.md) | 官方支持的 baseline 与 comparison profile | `--compare-baseline PATH` | 计算/通信/调度、算子、内存差异 | SUPPORTED |
 | [专家建议](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msprof_analyze/docs/zh/user_guide/advisor_instruct.md) | `*_ascend_pt` | `--advisor` | HTML/XLSX/terminal suggestions | SUPPORTED |
 | [Insight 系统调优快速入门](https://www.hiascend.com/document/detail/zh/mindstudio/2610/GUI_baseddevelopmenttool/MindStudioInsight/docs/zh/quick_start/system_tuning_quick_start.md) | 完整 profile 或 cluster output | handoff JSON 给出导入根 | Summary/Timeline/Communication/Operator/Memory | HANDOFF |
-| [msMemScope](MEMORY_TUNING_WORKFLOW_ZH.md) | 指定进程和内存采集配置 | `memory_tuning_benchmark.py --probe ...` | 内存申请、释放、泄漏、拆解与对比 | SUPPORTED，待服务器验收 |
+| [msMemScope](../performance/MEMORY_TUNING_WORKFLOW_ZH.md) | 指定进程和内存采集配置 | `memory_tuning_benchmark.py --probe ...` | 内存申请、释放、泄漏、拆解与对比 | SUPPORTED，待服务器验收 |
 | msMonitor | 长时在线性能与健康监测 | 需部署 monitor 服务/数据库 | 长时异常和集群指标 | SPECIALIZED |
 | msPTI/msTX | 框架/应用埋点接口 | 当前训练已有 MSTX 开关；其他 API 按需接入 | 自定义 range、事件和关联 | HANDOFF |
 
@@ -87,7 +88,7 @@ python tests/glm5_2_mindstudio/migration_benchmark.py --graph-visualize --topolo
   -> 单变量修改 -> 相同窗口 A/B
 ```
 
-集群分析的所有参数、字段和诊断例子见 [MSPROF_ANALYZE_CLUSTER_ZH.md](MSPROF_ANALYZE_CLUSTER_ZH.md)。
+集群分析的所有参数、字段和诊断例子见 [MSPROF_ANALYZE_CLUSTER_ZH.md](../performance/MSPROF_ANALYZE_CLUSTER_ZH.md)。
 
 ## 4. MindStudio Insight 页面
 
@@ -129,7 +130,7 @@ Insight 导入根，不能混用原始数据。
 | msOpGen | 生成算子工程 | 已确定要交付独立 Ascend 算子 | SPECIALIZED |
 | msDebug | 功能和内核调试 | 单算子复现失败或 kernel 行为异常 | SPECIALIZED |
 | msSanitizer | 越界、竞态、异常检测 | NaN/随机失效/内存踩踏指向 kernel | SPECIALIZED |
-| [msOpProf](OPERATOR_TUNING_WORKFLOW_ZH.md) | 单算子多维性能采集 | Operator 页面已定位到具体 op/shape | SUPPORTED，待服务器验收 |
+| [msOpProf](../performance/OPERATOR_TUNING_WORKFLOW_ZH.md) | 单算子多维性能采集 | Operator 页面已定位到具体 op/shape | SUPPORTED，待服务器验收 |
 | msKL | 算子调用与验证 | 单算子复现和基准 | SPECIALIZED |
 | msInsight 算子调优 | 展示 Pipe、带宽、指令和内存访问 | msOpProf 产物完成后 | HANDOFF |
 

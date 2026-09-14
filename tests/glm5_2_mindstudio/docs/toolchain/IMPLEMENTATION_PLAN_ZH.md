@@ -1,7 +1,7 @@
 # MindStudio 官方标准工作流实施计划
 
 本文只描述 `tests/glm5_2_mindstudio`。阶段定义、工具选择、输入格式和结果解释均以
-MindStudio 26.1 官方文档为准。可执行命令以 [README](../README.md) 和各 CLI 的
+MindStudio 26.1 官方文档为准。可执行命令以 [README](../../README.md) 和各 CLI 的
 `--help` 为准；服务器未验证的阶段必须显示为未执行，不能推断为 PASS。
 
 ## 1. 目标工作流

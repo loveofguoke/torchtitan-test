@@ -5,7 +5,7 @@
 
 本文件按时间保留现象、尝试和实验现场；面向 PyTorch、torch_npu、op-plugin、CANN、
 HCCL 提单或制作 patch 时，请使用
-[底层问题定位与提单交接](../../../glm5_2_graph/LOWER_LAYER_ISSUE_HANDOFF.md)。后者进一步
+[底层问题定位与提单交接](../../../glm5_2_graph/docs/LOWER_LAYER_ISSUE_HANDOFF.md)。后者进一步
 记录具体文件、模块/函数、置信度、分界实验和 workaround-off 验收条件。
 
 ## G001：torch_npu 2.14 与 CANN 9.0 header 不匹配

@@ -91,7 +91,7 @@ loss/grad norm 同为 `2.230001449584961` / `0.23182907700538635`。这证明 re
 `benchmark_gpu(..., device_type="npu")` 时没有把 pointwise 场景标记为
 `is_vetted_benchmarking=True`，于是正式精度的 deterministic guard 主动拒绝 benchmark。
 完整定位和真正 patch 位置见
-[G020](../../../glm5_2_graph/LOWER_LAYER_ISSUE_HANDOFF.md#10-g020确定性-pointwise-autotune-未声明-vetted)。
+[G020](../../../glm5_2_graph/docs/LOWER_LAYER_ISSUE_HANDOFF.md#10-g020确定性-pointwise-autotune-未声明-vetted)。
 
 Turbo 已增加 opt-in、仅 pointwise 生效的兼容实现，common 默认通过
 `GRAPH_VETTED_POINTWISE_AUTOTUNE=1` 选择它；reduction 仍不允许在 deterministic mode

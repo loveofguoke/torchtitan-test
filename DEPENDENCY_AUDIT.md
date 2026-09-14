@@ -24,7 +24,7 @@ Parity CLI configuration is shared by paired/offline entry points in
 factory; `ParityModelConfig` contains optional overrides, not copied debug sizes.
 Direct pytest `ParityModelSize` also resolves missing fields from that factory.
 Do not reintroduce model-size defaults in scenario files. See
-`tests/glm5_2_common/MODEL_CONFIG_AUDIT.md` for the other experiment consumers.
+`tests/glm5_2_common/docs/MODEL_CONFIG_AUDIT.md` for the other experiment consumers.
 Run `test_parity_cli_config` and `test_glm5_2_parity_workflow` after changes;
 configuration overrides must reach subprocess environment and generation identity.
 Paired parity runtime evidence lives at `parity_runs/<scenario-id>/`; offline
@@ -41,7 +41,7 @@ Audit smoke, combination, performance (including MindStudio), MindStudio
 accuracy, precision topology suites, and checkpoint CLI when changing it.
 Explicit codegen belongs in endpoint/feature environment and experiment
 identity; never switch DVM/Triton through an unrecorded ambient variable.
-See `tests/glm5_2_graph/NPU_CODEGEN.md` for loader names and validation scope.
+See `tests/glm5_2_graph/docs/NPU_CODEGEN.md` for loader names and validation scope.
 
 | Changed module | Required consumers to inspect |
 |---|---|
@@ -61,6 +61,7 @@ See `tests/glm5_2_graph/NPU_CODEGEN.md` for loader names and validation scope.
 | MindStudio pre-check output layout | endpoint artifact discovery, pre-check compare, main report, README sync commands, Release analysis filter |
 | MindStudio Monitor V2 hook/config | single and distributed capture, PP/optimizer ownership validation, per-rank CSV completeness, report semantics |
 | MindStudio graph visualization output | L0/mix construct validation, `.vis.db` hash index, TensorBoard command, Release analysis sensitivity policy |
+| MindStudio diagnostic case schema or recipe | configuration, migration, monitor, graph, pre-check and overflow CLI; case reports and ignored state root |
 | parity trace/report schema | paired and offline parity, artifact reader/writer, HTML regression tests |
 | output directory nesting | rerun reset, report links, docs, release discovery and restore |
 
@@ -73,7 +74,7 @@ changes recorded by the combination submission-readiness report.
 - Deterministic pointwise autotune compatibility is Turbo-owned and activated
   by the graph common launcher. The lower-layer torch_npu root fix and exact
   symbol are tracked as G020 in
-  `tests/glm5_2_graph/LOWER_LAYER_ISSUE_HANDOFF.md`.
+  `tests/glm5_2_graph/docs/LOWER_LAYER_ISSUE_HANDOFF.md`.
 - The stronger Ascend GLM Router contract (BF16 input, one FP32 gate call, FP32
   scores) is Turbo-owned after TorchTitan `ad17686a` removed the common
   `Linear(compute_dtype=...)` extension. CPU parity tests must not pretend to
@@ -141,6 +142,15 @@ change:
 - Keep official module/API evidence, end-to-end training evidence, performance
   capture evidence, and compile evidence in separate classes. Tool-stage
   completion is never a numerical or performance verdict.
+- Diagnostic cases are a control plane over existing official workflows. They
+  may reference official outputs but must not copy, rename, or synthesize them.
+  A case can advance only with explicit evidence, and can close only after a
+  supported hypothesis and local, incident, long-term, topology, and task-level
+  validation. Recipe defaults are prompts, not official acceptance thresholds.
+  Whole-training Loss/Grad Norm observations are captured under each run and
+  rendered as case-owned CSV/JSON/SVG evidence. They must preserve non-finite
+  values, bind derived output to input hashes and explicit thresholds, and
+  remain separate from every official msProbe output tree.
 - A `msprof-analyze cluster` option change must update the analysis identity,
   CLI help, output inventory, Release discovery, and the official field guide.
   `cluster --force` bypasses analyzer input checks; it is not the experiment
@@ -182,6 +192,15 @@ change:
   run-owned under `trainer_output/profiling/nsys/`; artifacts contain only
   lifecycle/provenance metadata. Historical `nsys_*` roots and artifact-owned
   payloads are byte-checked and moved without recollection.
+- NVIDIA performance diagnosis is layered. A low-overhead Nsight Systems
+  capture precedes communication, host, memory, or deep recapture. Automatic
+  triage must cite official stats rows and may recommend a next stage, but may
+  not convert heuristics into a pass/fail verdict. Nsight Compute is an
+  independently resumable, narrowly filtered targeted replay under
+  `performance/operator/`; never launch broad NCU replay automatically after a
+  system capture or mix `.ncu-rep` with `.nsys-rep` outputs. Multi-process NCU
+  must use collision-free official report placeholders; replayed/serialized
+  timing is never evidence of natural cross-rank skew.
 - msOpProf and msMemScope are independent from system profiling, but remain
   performance experiments. Preserve their native `OPPROF_*` and memory DB/CSV
   trees below `mindstudio_runs/performance/operator/` and
