@@ -90,6 +90,22 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
         self.assertTrue(long.output_subdirectory.startswith("observations/monitor/"))
         self.assertNotEqual(short.fixture_subdirectory, long.fixture_subdirectory)
 
+    def test_diagnostic_root_name_keeps_contract_but_excludes_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = create_case(
+                Path(temporary_directory),
+                case_id="display-alias",
+                title="Display name",
+                symptom="unknown",
+                topologies=("fsdp8",),
+                repeat=1,
+                notes="",
+            )
+            name = path.parent.name
+            self.assertIn("glm5-2-migration-cuda-npu-fsdp8-bf16", name)
+            self.assertIn("b64-seq128-seed61", name)
+            self.assertNotIn("-s2-", name)
+
     def test_forcing_scoped_stage_preserves_default_dump(self) -> None:
         topology = MIGRATION_CONFIG.candidate.topology
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -191,7 +207,7 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
     def test_case_training_observation_is_cached(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            create_case(
+            case_path = create_case(
                 root,
                 case_id="observation-001",
                 title="Training observation",
@@ -200,10 +216,11 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                 repeat=1,
                 notes="",
             )
+            experiment = case_path.parent.name
             config = _stage_scoped_config(
                 MONITOR_CONFIG,
                 MIGRATION_CONFIG,
-                "observation-001",
+                experiment,
             )
             run_root = root / config.run_root / config.output_relative_root
             for role, loss in (("reference", 1.0), ("candidate", 1.02)):
@@ -278,7 +295,7 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            create_case(
+            case_path = create_case(
                 root,
                 case_id="repeat-001",
                 title="Repeat diagnosis",
@@ -287,6 +304,7 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                 repeat=1,
                 notes="",
             )
+            experiment = case_path.parent.name
             config = replace(
                 MIGRATION_CONFIG,
                 dump=replace(
@@ -298,7 +316,7 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
             config = _stage_scoped_config(
                 config,
                 MIGRATION_CONFIG,
-                "repeat-001",
+                experiment,
             )
             artifact_root = (
                 root
@@ -378,7 +396,7 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
     def test_stage_order_and_evidence_are_required(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            create_case(
+            case_path = create_case(
                 root,
                 case_id="loss-001",
                 title="Loss diagnosis",
@@ -417,13 +435,7 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                 notes="mismatch",
                 incident={},
             )
-            value = json.loads(
-                (
-                    root
-                    / MIGRATION_CONFIG.artifact_root
-                    / "loss-001/case.json"
-                ).read_text(encoding="utf-8")
-            )
+            value = json.loads(case_path.read_text(encoding="utf-8"))
             self.assertEqual("checklist", build_plan(value)["stage"])
             with self.assertRaisesRegex(ValueError, "does not permit advancing"):
                 record_stage(
@@ -436,34 +448,15 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                     incident={},
                 )
 
-    def test_legacy_case_is_adopted_into_the_accuracy_experiment(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            path = create_case(
-                root,
-                case_id="legacy-001",
-                title="Legacy case",
-                symptom="unknown",
-                topologies=("single",),
-                repeat=1,
-                notes="",
-            )
-            legacy = root / "mindstudio_cases/accuracy/legacy-001"
-            legacy.parent.mkdir(parents=True)
-            path.parent.rename(legacy)
-
-            value = _load_case(root, "legacy-001")
-            self.assertEqual("legacy-001", value["case_id"])
-
     def test_symptom_selects_nan_and_monitor_recipes(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            evidence = root / "evidence"
-            evidence.mkdir()
-            for case_id, symptom in (
-                ("nan-002", "nan-or-overflow"),
-                ("long-001", "long-term-loss"),
-            ):
+        for case_id, symptom in (
+            ("nan-002", "nan-or-overflow"),
+            ("long-001", "long-term-loss"),
+        ):
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                root = Path(temporary_directory)
+                evidence = root / "evidence"
+                evidence.mkdir()
                 path = create_case(
                     root,
                     case_id=case_id,

@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 import json
 import os
@@ -20,6 +20,7 @@ from tests.glm5_2_common.cli import (
     archive_previous_output,
     assert_run_not_active,
 )
+from tests.glm5_2_common.naming import config_digest, slug
 from tests.glm5_2_common.topology import select_topologies, standard_topologies
 from tests.glm5_2_mindstudio.artifacts import (
     artifact_is_complete,
@@ -115,26 +116,47 @@ def _python_command(script: str, *arguments: str) -> str:
     return _quote_command(("python", script, *arguments))
 
 
+def _experiment_storage_name(topologies: Sequence[str]) -> str:
+    training = MIGRATION_CONFIG.training
+    topology_name = "-".join(topologies)
+    contract = {
+        "model": "glm5-2",
+        "workflow": "migration",
+        "reference": MIGRATION_CONFIG.reference.device_type,
+        "candidate": MIGRATION_CONFIG.candidate.device_type,
+        "topologies": list(topologies),
+        "training": {
+            key: value
+            for key, value in asdict(training).items()
+            if key != "steps"
+        },
+    }
+    prefix = slug(
+        f"glm5-2-migration-{MIGRATION_CONFIG.reference.device_type}-"
+        f"{MIGRATION_CONFIG.candidate.device_type}-{topology_name}-"
+        f"{MIGRATION_CONFIG.precision_name}-random-"
+        f"b{training.global_batch_size}-seq{training.sequence_length}-"
+        f"seed{training.seed}"
+    )
+    return f"{prefix}-{config_digest(contract)}"
+
+
 def _case_root(repository_root: Path, case_id: str) -> Path:
-    return (
-        repository_root
-        / MIGRATION_CONFIG.artifact_root
-        / case_id
-    )
-
-
-def _legacy_case_root(repository_root: Path, case_id: str) -> Path:
-    return repository_root / "mindstudio_cases" / "accuracy" / case_id
-
-
-def _nested_case_root(repository_root: Path, case_id: str) -> Path:
-    return (
-        repository_root
-        / MIGRATION_CONFIG.artifact_root
-        / MIGRATION_CONFIG.storage_name
-        / "cases"
-        / case_id
-    )
+    accuracy_root = repository_root / MIGRATION_CONFIG.artifact_root
+    direct = accuracy_root / case_id
+    if (direct / "case.json").is_file():
+        return direct
+    matches = []
+    for candidate in accuracy_root.glob("*/case.json"):
+        try:
+            value = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if value.get("case_id") == case_id:
+            matches.append(candidate.parent)
+    if len(matches) > 1:
+        raise RuntimeError(f"multiple accuracy experiments use case ID {case_id!r}")
+    return matches[0] if matches else direct
 
 
 def _case_path(repository_root: Path, case_id: str) -> Path:
@@ -143,15 +165,6 @@ def _case_path(repository_root: Path, case_id: str) -> Path:
 
 def _load_case(repository_root: Path, case_id: str) -> dict[str, Any]:
     path = _case_path(repository_root, case_id)
-    legacy_roots = (
-        _nested_case_root(repository_root, case_id),
-        _legacy_case_root(repository_root, case_id),
-    )
-    for legacy_root in legacy_roots:
-        if not path.exists() and legacy_root.is_dir():
-            path.parent.parent.mkdir(parents=True, exist_ok=True)
-            legacy_root.rename(path.parent)
-            print(f"Adopted legacy diagnostic case:\n  {legacy_root}\n  -> {path.parent}")
     if not path.is_file():
         raise FileNotFoundError(f"diagnostic case does not exist: {path}")
     value = json.loads(path.read_text(encoding="utf-8"))
@@ -162,7 +175,12 @@ def _load_case(repository_root: Path, case_id: str) -> dict[str, Any]:
 
 def _write_case(repository_root: Path, value: dict[str, Any]) -> Path:
     value["updated_at"] = _utc_now()
-    path = _case_path(repository_root, value["case_id"])
+    path = (
+        repository_root
+        / MIGRATION_CONFIG.artifact_root
+        / value["experiment"]["storage_name"]
+        / "case.json"
+    )
     write_json(path, value)
     _write_case_report(repository_root, value)
     return path
@@ -185,7 +203,13 @@ def create_case(
         )
     if repeat < 1:
         raise ValueError("repeat must be positive")
-    path = _case_path(repository_root, case_id)
+    experiment_name = _experiment_storage_name(topologies)
+    path = (
+        repository_root
+        / MIGRATION_CONFIG.artifact_root
+        / experiment_name
+        / "case.json"
+    )
     if path.exists():
         raise FileExistsError(f"diagnostic case already exists: {path}")
     registry = standard_topologies()
@@ -217,7 +241,7 @@ def create_case(
             ),
         },
         "experiment": {
-            "storage_name": case_id,
+            "storage_name": experiment_name,
             "stages": {
                 "dump": MIGRATION_CONFIG.output_subdirectory,
                 "configuration_check": CONFIG_CHECK_CONFIG.output_subdirectory,
@@ -455,7 +479,7 @@ def _migration_command(
         "--stage",
         "dump",
         "--experiment",
-        value["case_id"],
+        value["experiment"]["storage_name"],
         *arguments,
         *_selected_topology_args(value),
         "--repeat",
@@ -469,7 +493,7 @@ def _monitor_command(value: dict[str, Any], *arguments: str) -> str:
         "--stage",
         "monitor",
         "--experiment",
-        value["case_id"],
+        value["experiment"]["storage_name"],
         *arguments,
         *_selected_topology_args(value),
         "--repeat",
@@ -485,7 +509,8 @@ def _checklist_plan(value: dict[str, Any]) -> dict[str, Any]:
         "goal": "Prove that both endpoints execute the same experiment contract.",
         "commands": [
             _python_command(
-                script, "--stage", "dump", "--experiment", value["case_id"],
+                script, "--stage", "dump", "--experiment",
+                value["experiment"]["storage_name"],
                 "--data", *topology_args,
             ),
             _python_command(
@@ -493,7 +518,7 @@ def _checklist_plan(value: dict[str, Any]) -> dict[str, Any]:
                 "--stage",
                 "config-check",
                 "--experiment",
-                value["case_id"],
+                value["experiment"]["storage_name"],
                 "--capture",
                 "reference",
                 *topology_args,
@@ -503,7 +528,7 @@ def _checklist_plan(value: dict[str, Any]) -> dict[str, Any]:
                 "--stage",
                 "config-check",
                 "--experiment",
-                value["case_id"],
+                value["experiment"]["storage_name"],
                 "--capture",
                 "candidate",
                 *topology_args,
@@ -513,7 +538,7 @@ def _checklist_plan(value: dict[str, Any]) -> dict[str, Any]:
                 "--stage",
                 "config-check",
                 "--experiment",
-                value["case_id"],
+                value["experiment"]["storage_name"],
                 "--compare",
                 *topology_args,
             ),
@@ -606,7 +631,11 @@ def compare_repeats(
         MIGRATION_CONFIG,
         dump=replace(MIGRATION_CONFIG.dump, level="mix", summary_mode="md5"),
     )
-    config = _stage_scoped_config(config, MIGRATION_CONFIG, case_id)
+    config = _stage_scoped_config(
+        config,
+        MIGRATION_CONFIG,
+        value["experiment"]["storage_name"],
+    )
     endpoint = config.reference if role == "reference" else config.candidate
     for repeat_value in (baseline_repeat, target_repeat):
         if not 1 <= repeat_value <= endpoint.repeats:
@@ -781,7 +810,11 @@ def analyze_training_observation(
             / "03_observe/monitor"
             / f"s{steps}"
         )
-    config = _stage_scoped_config(config, MIGRATION_CONFIG, case_id)
+    config = _stage_scoped_config(
+        config,
+        MIGRATION_CONFIG,
+        value["experiment"]["storage_name"],
+    )
     inputs: list[dict[str, Any]] = []
     jobs: list[tuple[str, Path, Path, Path]] = []
     registry = standard_topologies()
