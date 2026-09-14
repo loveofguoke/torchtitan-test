@@ -51,7 +51,7 @@ python tests/glm5_2_smoke/smoke_benchmark.py --help
 deterministic、TF32/混合精度、通信规约精度、优化器和数据契约差异，再讨论算子误差。
 
 ```bash
-python tests/glm5_2_mindstudio/configuration_check_benchmark.py --help
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check --help
 ```
 
 ### 2.3 训练状态监测
@@ -60,7 +60,7 @@ python tests/glm5_2_mindstudio/configuration_check_benchmark.py --help
 用于筛出异常 step/rank/module，不负责给出 GPU/NPU 的最终迁移 PASS/FAIL。
 
 ```bash
-python tests/glm5_2_mindstudio/training_monitor_benchmark.py --help
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage monitor --help
 ```
 
 ### 2.4 模块/API 采集与比较

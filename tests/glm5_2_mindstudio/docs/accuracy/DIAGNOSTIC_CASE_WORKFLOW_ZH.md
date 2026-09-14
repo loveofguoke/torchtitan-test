@@ -1,6 +1,6 @@
 # GLM-5.2 MindStudio 精度诊断 Case 工作流
 
-`accuracy_diagnostic_benchmark.py` 在现有官方 msProbe 实验之上提供有状态精度诊断控制面。它不
+`accuracy_diagnostic_benchmark.py` 是同一个官方精度实验的有状态诊断控制面。它不
 重新实现 ConfigChecker、PrecisionDebugger、compare、Monitor V2、Trend Analyzer、
 graph_visualize、overflow check 或 API 预检，也不复制官方产物。它解决的是原来
 缺少的编排问题：面对一个具体精度现象，下一步应该运行什么、依据什么进入下一阶段、
@@ -31,13 +31,14 @@ python tests/glm5_2_mindstudio/accuracy_diagnostic_benchmark.py init glm5-first-
 输出位于：
 
 ```text
-mindstudio_cases/accuracy/<case-id>/
+mindstudio_artifacts/accuracy/<accuracy-id>/cases/<case-id>/
 ├── case.json       # 唯一状态源
 ├── next_plan.json  # 当前阶段的机器可读 recipe
 └── README.md       # 阶段、证据、第一现场、假设和下一命令
 ```
 
-创建后会立即输出 CheckList recipe。命令是现有 benchmark 的正常命令，因此继续
+创建后会立即输出 CheckList recipe。所有官方阶段统一调用
+`accuracy_benchmark.py --stage ...`，因此继续
 遵守原来的 fixture generation、断点重跑、`--force` 和官方产物目录契约。GPU 与
 NPU 命令仍在各自服务器执行；case 只在证据汇合的位置维护。
 
@@ -70,8 +71,8 @@ manifest 未变化就跳过，失败产物则归档后重试。原有 r1 不会�
 python tests/glm5_2_mindstudio/accuracy_diagnostic_benchmark.py record glm5-first-loss-001 \
   --stage checklist \
   --conclusion pass \
-  --evidence mindstudio_reports/accuracy/<config-check-id> \
-  --evidence mindstudio_fixtures/accuracy/<migration-id>/fixture.json \
+  --evidence mindstudio_reports/accuracy/<accuracy-id>/diagnostics/configuration-check \
+  --evidence mindstudio_fixtures/accuracy/<accuracy-id>/fixture.json \
   --notes "Reviewed all rank sheets; CUDA/NPU-only packages are expected differences."
 ```
 
@@ -98,7 +99,7 @@ python tests/glm5_2_mindstudio/accuracy_diagnostic_benchmark.py training-observa
 长稳和尖刺场景使用 `--workflow monitor`。每个拓扑生成：
 
 ```text
-mindstudio_cases/accuracy/<case-id>/03_observe/<workflow>/<topology>/
+mindstudio_artifacts/accuracy/<accuracy-id>/cases/<case-id>/03_observe/<workflow>/<topology>/
 ├── training_metrics_compare.csv
 ├── summary.json
 ├── loss.svg

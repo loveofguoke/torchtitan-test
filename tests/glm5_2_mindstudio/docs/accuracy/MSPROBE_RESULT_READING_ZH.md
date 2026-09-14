@@ -413,7 +413,7 @@ Megatron、MindSpeed-LLM，其他套件的效果需要验证。DP 数必须一�
 | Megatron/MindSpeed 的 TP/PP/VPP | 配齐并行参数后可用官方 GraphMerger | 是，但 DP 副本数必须一致 |
 
 当前 GLM wrapper 虽然底层 `graph_visualize_command()` 已能组装图合并参数，公开
-`migration_benchmark.py` CLI 并未把这些参数传给 `run_graph_visualization()`；所以
+统一精度入口的 dump 阶段并未把这些参数传给 `run_graph_visualization()`；所以
 本次 `--graph-visualize --topology all` 明确属于“多 step、多 rank 批量比对”，
 不是图合并。MindStudio 页面里的“开启不同切分策略下的图合并”是官方工具的另一
 模式；对 FSDP8 不应开启，也不能借用 Megatron 的 TP/PP 参数假装还原 TorchTitan

@@ -12,9 +12,14 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from tests.glm5_2_mindstudio.configuration_check_benchmark import (
+    CONFIG as CONFIG_CHECK_CONFIG,
+)
+from tests.glm5_2_mindstudio.accuracy_benchmark import _select_stage
 from tests.glm5_2_mindstudio.migration_benchmark import CONFIG as MIGRATION_CONFIG
 
 from tests.glm5_2_mindstudio.accuracy_diagnostics import (
+    _load_case,
     add_hypothesis,
     analyze_training_observation,
     build_plan,
@@ -28,9 +33,86 @@ from tests.glm5_2_mindstudio.training_monitor_benchmark import (
     CONFIG as MONITOR_CONFIG,
 )
 from tests.glm5_2_mindstudio.training_observation import compare_training_metrics
+from tests.glm5_2_mindstudio.workflow import (
+    _paths,
+    _stage_scoped_config,
+    reset_selected_outputs,
+)
 
 
 class MindStudioDiagnosticsTest(unittest.TestCase):
+    def test_accuracy_stages_share_one_experiment_root(self) -> None:
+        self.assertEqual(
+            MIGRATION_CONFIG.storage_name,
+            CONFIG_CHECK_CONFIG.storage_name,
+        )
+        self.assertEqual(
+            MIGRATION_CONFIG.storage_name,
+            MONITOR_CONFIG.storage_name,
+        )
+        self.assertEqual(
+            Path(MIGRATION_CONFIG.storage_name) / "diagnostics/configuration-check",
+            CONFIG_CHECK_CONFIG.output_relative_root,
+        )
+        monitor = _stage_scoped_config(MONITOR_CONFIG, MIGRATION_CONFIG)
+        self.assertEqual(
+            Path(MIGRATION_CONFIG.storage_name),
+            monitor.output_relative_root.parents[2],
+        )
+
+    def test_unified_accuracy_entry_removes_only_its_stage_option(self) -> None:
+        stage, remaining = _select_stage(
+            ["--capture", "candidate", "--stage", "monitor", "--topology", "fsdp8"]
+        )
+        self.assertEqual("monitor", stage)
+        self.assertEqual(
+            ["--capture", "candidate", "--topology", "fsdp8"], remaining
+        )
+
+    def test_forcing_scoped_stage_preserves_default_dump(self) -> None:
+        topology = MIGRATION_CONFIG.candidate.topology
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            default_run, default_artifact, default_report = _paths(
+                root,
+                MIGRATION_CONFIG,
+                topology,
+                "candidate",
+                1,
+            )
+            scoped = _stage_scoped_config(CONFIG_CHECK_CONFIG, MIGRATION_CONFIG)
+            scoped_run, scoped_artifact, scoped_report = _paths(
+                root,
+                scoped,
+                topology,
+                "candidate",
+                1,
+            )
+            for path in (
+                default_run,
+                default_artifact,
+                default_report,
+                scoped_run,
+                scoped_artifact,
+                scoped_report,
+            ):
+                path.mkdir(parents=True)
+
+            reset_selected_outputs(
+                root,
+                scoped,
+                topologies=(topology,),
+                role="candidate",
+                include_fixture=False,
+            )
+
+            self.assertTrue(default_run.is_dir())
+            self.assertTrue(default_artifact.is_dir())
+            self.assertTrue(default_report.is_dir())
+            self.assertFalse(scoped_run.exists())
+            self.assertFalse(scoped_artifact.exists())
+            self.assertFalse(scoped_report.exists())
+
     def test_training_metrics_generate_csv_summary_and_charts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -87,7 +169,8 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                 repeat=1,
                 notes="",
             )
-            run_root = root / MONITOR_CONFIG.run_root / MONITOR_CONFIG.storage_name
+            config = _stage_scoped_config(MONITOR_CONFIG, MIGRATION_CONFIG)
+            run_root = root / config.run_root / config.output_relative_root
             for role, loss in (("reference", 1.0), ("candidate", 1.02)):
                 path = run_root / "single" / f"{role}-r1" / "training_metrics.jsonl"
                 path.parent.mkdir(parents=True)
@@ -110,6 +193,7 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                 root,
                 case_id="observation-001",
                 workflow="monitor",
+                training_steps=100,
                 loss_relative_threshold=0.01,
                 grad_norm_relative_threshold=None,
                 spike_relative_threshold=None,
@@ -119,6 +203,7 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                 root,
                 case_id="observation-001",
                 workflow="monitor",
+                training_steps=100,
                 loss_relative_threshold=0.01,
                 grad_norm_relative_threshold=None,
                 spike_relative_threshold=None,
@@ -175,10 +260,11 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                     summary_mode="md5",
                 ),
             )
+            config = _stage_scoped_config(config, MIGRATION_CONFIG)
             artifact_root = (
                 root
                 / config.artifact_root
-                / config.storage_name
+                / config.output_relative_root
                 / "single"
             )
             for repeat_value in (1, 2):
@@ -293,9 +379,12 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                 incident={},
             )
             value = json.loads(
-                (root / "mindstudio_cases/accuracy/loss-001/case.json").read_text(
-                    encoding="utf-8"
-                )
+                (
+                    root
+                    / MIGRATION_CONFIG.artifact_root
+                    / MIGRATION_CONFIG.storage_name
+                    / "cases/loss-001/case.json"
+                ).read_text(encoding="utf-8")
             )
             self.assertEqual("checklist", build_plan(value)["stage"])
             with self.assertRaisesRegex(ValueError, "does not permit advancing"):
@@ -308,6 +397,25 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                     notes="",
                     incident={},
                 )
+
+    def test_legacy_case_is_adopted_into_the_accuracy_experiment(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            path = create_case(
+                root,
+                case_id="legacy-001",
+                title="Legacy case",
+                symptom="unknown",
+                topologies=("single",),
+                repeat=1,
+                notes="",
+            )
+            legacy = root / "mindstudio_cases/accuracy/legacy-001"
+            legacy.parent.mkdir(parents=True)
+            path.parent.rename(legacy)
+
+            value = _load_case(root, "legacy-001")
+            self.assertEqual("legacy-001", value["case_id"])
 
     def test_symptom_selects_nan_and_monitor_recipes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -345,9 +453,9 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                 self.assertEqual("observe", plan["stage"])
                 commands = "\n".join(plan["commands"])
                 if symptom == "long-term-loss":
-                    self.assertIn("training_monitor_benchmark.py", commands)
+                    self.assertIn("--stage monitor", commands)
                 else:
-                    self.assertIn("migration_benchmark.py", commands)
+                    self.assertIn("--stage dump", commands)
 
     def test_close_requires_supported_hypothesis_and_all_gates(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -86,16 +86,60 @@ def _paths(
     role: Role,
     repeat: int,
 ) -> tuple[Path, Path, Path]:
-    relative = Path(config.storage_name) / topology.slug / f"{role}-r{repeat}"
+    relative = config.output_relative_root / topology.slug / f"{role}-r{repeat}"
     return (
         root / config.run_root / relative,
         root / config.artifact_root / relative,
-        root / config.report_root / config.storage_name / topology.slug,
+        root / config.report_root / config.output_relative_root / topology.slug,
     )
 
 
 def _fixture_directory(root: Path, config: MindStudioExperimentConfig) -> Path:
-    return root / config.fixture_root / config.storage_name
+    return root / config.fixture_root / config.fixture_relative_root
+
+
+def _output_root(
+    root: Path,
+    configured_root: str,
+    config: MindStudioExperimentConfig,
+) -> Path:
+    return root / configured_root / config.output_relative_root
+
+
+def _stage_scoped_config(
+    config: MindStudioExperimentConfig,
+    base_config: MindStudioExperimentConfig,
+) -> MindStudioExperimentConfig:
+    """Place diagnostic variants below one canonical accuracy experiment."""
+
+    if config.experiment_storage_name is None:
+        return config
+    if config.workflow == "migration" and config.dump != base_config.dump:
+        profile = (
+            f"{config.dump.task}-{config.dump.level}-"
+            f"{config.dump.summary_mode}-"
+            f"{config_digest(asdict(config.dump), length=8)}"
+        )
+        return replace(
+            config,
+            output_subdirectory=f"diagnostics/dump/{profile}",
+        )
+    if config.workflow == "monitor":
+        identity = {
+            "training": asdict(config.training),
+            "monitor": asdict(config.monitor),
+        }
+        profile = (
+            f"s{config.training.steps}-"
+            f"{config_digest(identity, length=8)}"
+        )
+        relative = f"diagnostics/monitor/{profile}"
+        return replace(
+            config,
+            output_subdirectory=relative,
+            fixture_subdirectory=relative,
+        )
+    return config
 
 
 def _adopt_legacy_accuracy_storage(
@@ -108,6 +152,11 @@ def _adopt_legacy_accuracy_storage(
     byte, so historical official runs remain resumable without recollection.
     """
 
+    if (
+        config.output_subdirectory is not None
+        or config.fixture_subdirectory is not None
+    ):
+        return
     for configured_root in (
         config.fixture_root,
         config.run_root,
@@ -996,9 +1045,9 @@ def reset_selected_outputs(
         paths.append(_fixture_directory(root, config))
         paths.extend(
             (
-                root / config.run_root / config.storage_name,
-                root / config.artifact_root / config.storage_name,
-                root / config.report_root / config.storage_name,
+                _output_root(root, config.run_root, config),
+                _output_root(root, config.artifact_root, config),
+                _output_root(root, config.report_root, config),
             )
         )
     else:
@@ -1021,7 +1070,7 @@ def reset_selected_outputs(
                         repeat=repeat,
                     )
                     paths.extend((run, artifact, precheck, report))
-        aggregate = root / config.report_root / config.storage_name
+        aggregate = _output_root(root, config.report_root, config)
         paths.extend(
             (
                 aggregate / f"{config.storage_name}.html",
@@ -1043,7 +1092,7 @@ def reset_compare_outputs(
 ) -> None:
     """Reset one selected comparison generation before any compare starts."""
 
-    aggregate = root / config.report_root / config.storage_name
+    aggregate = _output_root(root, config.report_root, config)
     paths: list[Path] = [
         aggregate / f"{config.storage_name}.html",
         aggregate / "report.json",
@@ -1071,7 +1120,7 @@ def _aggregate_report_paths(
     root: Path,
     config: MindStudioExperimentConfig,
 ) -> tuple[Path, ...]:
-    aggregate = root / config.report_root / config.storage_name
+    aggregate = _output_root(root, config.report_root, config)
     return (
         aggregate / f"{config.storage_name}.html",
         aggregate / "report.json",
@@ -1426,7 +1475,9 @@ def _precheck_root(
         )
         base = report_directory
     else:
-        base = root / config.artifact_root / config.storage_name / topology.slug
+        base = (
+            _output_root(root, config.artifact_root, config) / topology.slug
+        )
     return base / "precision_precheck" / f"{owner}-r{repeat}"
 
 
@@ -3058,6 +3109,7 @@ def run_mindstudio_cli(
         monitor=monitor_config,
         training=training,
     )
+    config = _stage_scoped_config(config, base_config)
     if args.npu_codegen:
         def select_codegen(endpoint):
             if endpoint.device_type != "npu":
@@ -3071,7 +3123,7 @@ def run_mindstudio_cli(
     if not args.dry_run:
         _adopt_legacy_accuracy_storage(root, config)
         write_experiment_overview(
-            root / config.run_root / config.storage_name,
+            _output_root(root, config.run_root, config),
             title=f"GLM5.2 MindStudio {config.workflow} experiment",
             summary={
                 "storage_name": config.storage_name,
@@ -3105,6 +3157,11 @@ def run_mindstudio_cli(
     )
     selected = tuple(registry[name] for name in selected_names)
     if args.data:
+        if not config.owns_fixture:
+            parser.error(
+                "this diagnostic stage reuses the canonical accuracy fixture; "
+                "run --stage dump --data through accuracy_benchmark.py"
+            )
         endpoint = _data_endpoint(config, args.data_device)
         if args.dry_run:
             print(
@@ -3481,7 +3538,7 @@ def run_mindstudio_cli(
     ]
     if args.dry_run:
         return
-    report_directory = root / config.report_root / config.storage_name
+    report_directory = _output_root(root, config.report_root, config)
     path = write_report_index(
         repository_root=root,
         report_directory=report_directory,

@@ -1740,7 +1740,14 @@ class TestMindStudioLifecycle(unittest.TestCase):
             self.assertEqual(2, run.call_count)
             self.assertTrue((report / "step0" / "rank0" / "complete.json").is_file())
             self.assertTrue((report / "step1" / "rank0" / "complete.json").is_file())
-            self.assertIn(config.artifact_root, report.parts)
+            artifact_parts = Path(config.artifact_root).parts
+            self.assertTrue(
+                any(
+                    report.parts[index : index + len(artifact_parts)]
+                    == artifact_parts
+                    for index in range(len(report.parts) - len(artifact_parts) + 1)
+                )
+            )
             self.assertFalse((artifact / "precision_precheck").exists())
 
             reset_precheck_outputs(
@@ -1912,7 +1919,14 @@ class TestMindStudioLifecycle(unittest.TestCase):
                     encoding="utf-8"
                 )
             )["command"]
-            self.assertIn(config.report_root, report.parts)
+            report_parts = Path(config.report_root).parts
+            self.assertTrue(
+                any(
+                    report.parts[index : index + len(report_parts)]
+                    == report_parts
+                    for index in range(len(report.parts) - len(report_parts) + 1)
+                )
+            )
             npu_path = invocation[invocation.index("-npu") + 1]
             gpu_path = invocation[invocation.index("-gpu") + 1]
             self.assertIn("reference-r1", npu_path)

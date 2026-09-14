@@ -28,15 +28,15 @@
 
 | 官方章节/工具 | 官方输入与输出 | GLM 命令 | 分析入口 | 状态 |
 | --- | --- | --- | --- | --- |
-| [msProbe PyTorch 快速入门](https://www.hiascend.com/document/detail/zh/mindstudio/2610/msTT_msIT/msProbe/docs/zh/quick_start/pytorch_quick_start.md) | 模型训练进程 -> dump/construct/stack/config | `migration_benchmark.py --capture ...` | `official_summary.json`、官方 CSV/XLSX | SUPPORTED |
-| [PyTorch 精度比对](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msProbe/docs/zh/user_guide/accuracy_compare/pytorch_accuracy_compare_instruct.md) | target/golden dump -> compare result、advisor | `migration_benchmark.py --compare` | Result、Err_Message、MeanRelativeErr、双千指标 | SUPPORTED |
-| ConfigChecker | 两端环境、库、参数、权重、数据 -> zip/result.xlsx | `configuration_check_benchmark.py` | summary sheet 后逐项 sheet | SUPPORTED |
-| API 精度预检 | L1 API dump -> acc_check result/details | `migration_benchmark.py --precheck ROLE` | 单端 API 对 CPU 高精度结果 | SUPPORTED |
-| API 预检比较 | 两端 details -> api_precision_compare | `migration_benchmark.py --precheck-compare` | `precheck_report.html` 和官方 CSV | SUPPORTED |
-| graph_visualize | L0/mix construct -> `.vis.db` | `migration_benchmark.py --graph-visualize` | TensorBoard Ascend Graph | SUPPORTED |
-| structure/overflow/nan capture | 结构、软件统计溢出或 NPU 寄存器状态 -> construct/dump | `migration_benchmark.py --capture ... --dump-task TASK` | construct、首异常节点和 is_nan | SUPPORTED |
-| TrainerMonitorV2 | 训练模块、优化器、配置 -> 多 step CSV | `training_monitor_benchmark.py` | 激活/梯度/权重/优化器状态趋势 | SUPPORTED |
-| 趋势可视化 | 大规模 monitor/dump -> `.trend.db` | `migration_benchmark.py --trend ROLE` 或 monitor 同名入口 | TensorBoard Trend Analyzer | SUPPORTED |
+| [msProbe PyTorch 快速入门](https://www.hiascend.com/document/detail/zh/mindstudio/2610/msTT_msIT/msProbe/docs/zh/quick_start/pytorch_quick_start.md) | 模型训练进程 -> dump/construct/stack/config | `accuracy_benchmark.py --stage dump --capture ...` | `official_summary.json`、官方 CSV/XLSX | SUPPORTED |
+| [PyTorch 精度比对](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msProbe/docs/zh/user_guide/accuracy_compare/pytorch_accuracy_compare_instruct.md) | target/golden dump -> compare result、advisor | `accuracy_benchmark.py --stage dump --compare` | Result、Err_Message、MeanRelativeErr、双千指标 | SUPPORTED |
+| ConfigChecker | 两端环境、库、参数、权重、数据 -> zip/result.xlsx | `accuracy_benchmark.py --stage config-check` | summary sheet 后逐项 sheet | SUPPORTED |
+| API 精度预检 | L1 API dump -> acc_check result/details | `accuracy_benchmark.py --stage dump --precheck ROLE` | 单端 API 对 CPU 高精度结果 | SUPPORTED |
+| API 预检比较 | 两端 details -> api_precision_compare | `accuracy_benchmark.py --stage dump --precheck-compare` | `precheck_report.html` 和官方 CSV | SUPPORTED |
+| graph_visualize | L0/mix construct -> `.vis.db` | `accuracy_benchmark.py --stage dump --graph-visualize` | TensorBoard Ascend Graph | SUPPORTED |
+| structure/overflow/nan capture | 结构、软件统计溢出或 NPU 寄存器状态 -> construct/dump | `accuracy_benchmark.py --stage dump --capture ... --dump-task TASK` | construct、首异常节点和 is_nan | SUPPORTED |
+| TrainerMonitorV2 | 训练模块、优化器、配置 -> 多 step CSV | `accuracy_benchmark.py --stage monitor` | 激活/梯度/权重/优化器状态趋势 | SUPPORTED |
+| 趋势可视化 | 大规模 monitor/dump -> `.trend.db` | `accuracy_benchmark.py --stage dump --trend ROLE` 或 monitor stage 同名入口 | TensorBoard Trend Analyzer | SUPPORTED |
 | [编译精度比对](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msProbe/docs/zh/user_guide/accuracy_compare/pytorch_compile_accuracy_compare_instruct.md) | 同一 NPU 的 eager/compile -> PrecisionChecker CSV | `compile_accuracy_benchmark.py` | 每 rank、model part、module 的 fwd/bwd 结果 | SUPPORTED |
 | 现象驱动精度诊断 case | 官方 CheckList、复现、定位、验证和回归步骤 -> case 状态与证据链 | `accuracy_diagnostic_benchmark.py` | `case.json`、`next_plan.json`、`README.md` | PROJECT ORCHESTRATION |
 
@@ -45,17 +45,17 @@
 ```bash
 python -m tests.glm5_2_mindstudio.toolchain doctor --scope full
 
-python tests/glm5_2_mindstudio/migration_benchmark.py --data --topology single
-python tests/glm5_2_mindstudio/configuration_check_benchmark.py --capture reference --topology single
-python tests/glm5_2_mindstudio/configuration_check_benchmark.py --capture candidate --topology single
-python tests/glm5_2_mindstudio/configuration_check_benchmark.py --compare --topology single
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump --data --topology single
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check --capture reference --topology single
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check --capture candidate --topology single
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check --compare --topology single
 
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --capture reference --topology single --level L0 --dump-task statistics
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --capture candidate --topology single --level L0 --dump-task statistics
-python tests/glm5_2_mindstudio/migration_benchmark.py --compare --topology single
-python tests/glm5_2_mindstudio/migration_benchmark.py --graph-visualize --topology single
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump --compare --topology single
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump --graph-visualize --topology single
 ```
 
 定位到模块后才把 `--level` 提升到 L1/mix，缩小 step、rank 和 module；确认 API 时才

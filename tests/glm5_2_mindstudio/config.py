@@ -229,10 +229,22 @@ class MindStudioExperimentConfig:
     run_root: str = "mindstudio_runs/accuracy"
     artifact_root: str = "mindstudio_artifacts/accuracy"
     report_root: str = "mindstudio_reports/accuracy"
+    experiment_storage_name: str | None = None
+    output_subdirectory: str | None = None
+    fixture_subdirectory: str | None = None
+    owns_fixture: bool = True
 
     def __post_init__(self) -> None:
         for name in ("fixture_root", "run_root", "artifact_root", "report_root"):
             _validate_repository_root(name, getattr(self, name))
+        for name in (
+            "experiment_storage_name",
+            "output_subdirectory",
+            "fixture_subdirectory",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                _validate_repository_root(name, value)
         if self.workflow in {"config-check", "migration", "monitor"}:
             if self.reference.topology != self.candidate.topology:
                 raise ValueError("migration requires equal reference/candidate topology")
@@ -310,7 +322,23 @@ class MindStudioExperimentConfig:
 
     @property
     def storage_name(self) -> str:
-        return config_name(self.storage_base_name, self.identity)
+        return self.experiment_storage_name or config_name(
+            self.storage_base_name, self.identity
+        )
+
+    @property
+    def output_relative_root(self) -> Path:
+        root = Path(self.storage_name)
+        if self.output_subdirectory is not None:
+            root /= self.output_subdirectory
+        return root
+
+    @property
+    def fixture_relative_root(self) -> Path:
+        root = Path(self.storage_name)
+        if self.fixture_subdirectory is not None:
+            root /= self.fixture_subdirectory
+        return root
 
     def formal_fixture_config(self) -> FormalExperimentConfig:
         """Build the existing fixed-input producer without reusing its verdict."""
@@ -329,7 +357,7 @@ class MindStudioExperimentConfig:
             artifact_root=self.artifact_root,
             report_root=self.report_root,
             run_root=self.run_root,
-            fixture_name=self.storage_name,
+            fixture_name=self.fixture_relative_root.as_posix(),
             storage_name_override=self.storage_base_name,
             topology_subdirectory=True,
         )

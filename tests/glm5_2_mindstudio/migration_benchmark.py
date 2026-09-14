@@ -4,6 +4,7 @@
 
 """Official msProbe GPU-to-NPU module/API accuracy workflow."""
 
+from dataclasses import replace
 from pathlib import Path
 import sys
 
@@ -24,7 +25,7 @@ from tests.glm5_2_precision.workflow import (  # noqa: E402
 TOPOLOGIES = standard_topologies()
 ALL_DEVICES = "0,1,2,3,4,5,6,7"
 
-CONFIG = MindStudioExperimentConfig(
+_BASE_CONFIG = MindStudioExperimentConfig(
     name="glm5-2-official-accuracy-migration",
     workflow="migration",
     reference=TrainingEndpoint(
@@ -58,6 +59,14 @@ CONFIG = MindStudioExperimentConfig(
         steps=(0, 1),
         summary_mode="statistics",
     ),
+)
+
+# This is the canonical identity for the complete GPU-to-NPU accuracy flow.
+# Diagnostic capture options select sub-stages; they do not create new
+# top-level experiments.
+CONFIG = replace(
+    _BASE_CONFIG,
+    experiment_storage_name=_BASE_CONFIG.storage_name,
 )
 
 

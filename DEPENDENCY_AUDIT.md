@@ -145,6 +145,10 @@ change:
   completion is never a numerical or performance verdict.
 - Diagnostic cases are a control plane over existing official workflows. They
   may reference official outputs but must not copy, rename, or synthesize them.
+  Configuration check, msProbe dump/compare/visualization, Monitor V2, and
+  diagnostic cases share one canonical accuracy experiment root. Specialized
+  captures live below its `diagnostics/` subtree and cases below `cases/`;
+  they are stages of one experiment, not separate top-level experiments.
   A case can advance only with explicit evidence, and can close only after a
   supported hypothesis and local, incident, long-term, topology, and task-level
   validation. Recipe defaults are prompts, not official acceptance thresholds.

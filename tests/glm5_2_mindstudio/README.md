@@ -32,13 +32,13 @@ schedule 窗口时切到 Ascend PyTorch Profiler。系统调优、单算子调�
 | --- | --- | --- |
 | 工具源码 checkout、安装计划、版本/路径 doctor | 已实现 | `tools/bootstrap_mindstudio_toolchain.py`、`toolchain.py` |
 | 固定 token plan 和 seed checkpoint | 已实现 | 每个 benchmark 的 `--data` |
-| GPU/NPU 模块级、API 级、kernel 级采集 | 已实现 | `migration_benchmark.py` 的 `L0/L1/mix/L2` |
+| GPU/NPU 完整精度流程 | 已实现统一入口 | `accuracy_benchmark.py --stage {dump,config-check,monitor}`；旧入口保留兼容 |
 | 同一 GPU 官方链路自检 | 已实现 | `self_consistency_benchmark.py` |
-| 官方离线 `msprobe compare` | 已实现 | `migration_benchmark.py --compare` |
+| 官方离线 `msprobe compare` | 已实现 | `accuracy_benchmark.py --stage dump --compare` |
 | NPU eager/compile 模块前向与反向比较 | 已实现 | `compile_accuracy_benchmark.py` |
-| GPU/NPU 训练前配置检查与逐 rank compare | 已实现 | `configuration_check_benchmark.py` |
+| GPU/NPU 训练前配置检查与逐 rank compare | 已实现 | `accuracy_benchmark.py --stage config-check` |
 | API 精度预检与两端预检结果比对 | 已实现 | `--precheck`、`--precheck-compare` |
-| 长程训练状态监控 | 已实现，step 数按问题复现窗口显式指定 | `training_monitor_benchmark.py` |
+| 长程训练状态监控 | 已实现，step 数按问题复现窗口显式指定 | `accuracy_benchmark.py --stage monitor` |
 | 分级图可视化与 TensorBoard 索引 | 已实现 | migration 完成 L0/mix capture 后执行 `--graph-visualize` |
 | 现象驱动的有状态精度诊断 case | 已实现控制面和整网曲线 | `accuracy_diagnostic_benchmark.py`，输出 Loss/Grad Norm/相对误差 SVG、CSV、JSON，并复用上述官方阶段 |
 | NPU 性能采集、分析、可视化 | 已实现标准入口 | `performance_benchmark.py`、`docs/performance/PERFORMANCE_WORKFLOW_ZH.md` |
@@ -199,10 +199,10 @@ python -m tests.glm5_2_mindstudio.toolchain metadata \
 `--help` 和 doctor 输出为准：
 
 ```bash
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --doctor --doctor-device cuda
 
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --doctor --doctor-device npu
 ```
 
@@ -255,7 +255,7 @@ python tests/glm5_2_mindstudio/self_consistency_benchmark.py \
 
 ```bash
 export CUDA_VISIBLE_DEVICES=7
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --data --data-device cuda --topology single
 ```
 
@@ -263,7 +263,7 @@ python tests/glm5_2_mindstudio/migration_benchmark.py \
 
 ```bash
 export ASCEND_RT_VISIBLE_DEVICES=4
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --data --data-device npu --topology single
 ```
 
@@ -274,7 +274,7 @@ seed checkpoint、fixture manifest 和 generation ID。
 
 ```bash
 export CUDA_VISIBLE_DEVICES=7
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --capture reference --topology single
 ```
 
@@ -282,7 +282,7 @@ python tests/glm5_2_mindstudio/migration_benchmark.py \
 
 ```bash
 export ASCEND_RT_VISIBLE_DEVICES=4
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --capture candidate --topology single
 ```
 
@@ -300,7 +300,7 @@ L0 artifact 做预检。完成两端 L1 capture 后，在 GPU 端执行：
 
 ```bash
 export CUDA_VISIBLE_DEVICES=7
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --precheck reference --topology single \
   --level L1 --dump-task statistics
 ```
@@ -309,7 +309,7 @@ NPU 端：
 
 ```bash
 export ASCEND_RT_VISIBLE_DEVICES=4
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --precheck candidate --topology single \
   --level L1 --dump-task statistics
 ```
@@ -324,7 +324,7 @@ mindstudio_artifacts/<experiment-id>/single/precision_precheck/candidate-r1/
 reference/candidate 预检属于 endpoint artifact，不在 report 根。两端数据汇合后执行：
 
 ```bash
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --precheck-compare --topology single \
   --level L1 --dump-task statistics
 ```
@@ -344,7 +344,7 @@ mindstudio_reports/<experiment-id>/single/precision_precheck/compare-r1/
 数据量大时可改用官方 `multi_acc_check`。例如在两个 device 上合计切成 16 份：
 
 ```bash
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --precheck candidate --topology single \
   --level L1 --dump-task statistics \
   --precheck-device-ids 0,1 --precheck-splits 16
@@ -361,7 +361,7 @@ device 预检；否则必须明确合并/选择规则并人工运行官方 compa
 CSV：
 
 ```bash
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --precheck candidate --topology single \
   --level L1 --dump-task statistics --dump-step 0 --dump-ranks 0 \
   --precheck-resume-csv /absolute/path/accuracy_checking_result_<timestamp>.csv
@@ -377,7 +377,7 @@ operation identity。只允许续接同一 capture/config 的结果，不能用 
 把两端 `mindstudio_artifacts/<experiment-id>/single/` 同步到同一仓库后执行：
 
 ```bash
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --compare --topology single
 ```
 
@@ -387,20 +387,20 @@ reference、candidate 和 compare 都必须带同一组 override：
 
 ```bash
 export CUDA_VISIBLE_DEVICES=7
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --data --data-device cuda --topology single \
   --level L1 --dump-task statistics
 
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --capture reference --topology single \
   --level L1 --dump-task statistics
 
 export ASCEND_RT_VISIBLE_DEVICES=4
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --capture candidate --topology single \
   --level L1 --dump-task statistics
 
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --compare --topology single \
   --level L1 --dump-task statistics
 ```
@@ -415,21 +415,21 @@ python tests/glm5_2_mindstudio/migration_benchmark.py \
 查看真实拓扑注册表：
 
 ```bash
-python tests/glm5_2_mindstudio/migration_benchmark.py --list-topologies
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump --list-topologies
 ```
 
 指定一个分布式拓扑，例如：
 
 ```bash
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --capture reference --topology fsdp8
 
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --capture candidate --topology fsdp8
 
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --compare --topology fsdp8
 ```
 
@@ -437,17 +437,17 @@ python tests/glm5_2_mindstudio/migration_benchmark.py \
 
 ```bash
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --data --data-device cuda --topology all
 
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --capture reference --topology all
 
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --capture candidate --topology all
 
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --compare --topology all
 ```
 
@@ -455,15 +455,15 @@ python tests/glm5_2_mindstudio/migration_benchmark.py \
 命令都使用同一组 `--level L1 --dump-task statistics`：
 
 ```bash
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --precheck reference --topology all \
   --level L1 --dump-task statistics
 
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --precheck candidate --topology all \
   --level L1 --dump-task statistics
 
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --precheck-compare --topology all \
   --level L1 --dump-task statistics
 ```
@@ -487,17 +487,17 @@ fixture generation，并以 `--level L0` 或 `--level mix` 生成非空
 
 ```bash
 export CUDA_VISIBLE_DEVICES=7
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --data --data-device cuda --topology single --level L0
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --capture reference --topology single --level L0
 
 unset CUDA_VISIBLE_DEVICES
 export ASCEND_RT_VISIBLE_DEVICES=4
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --capture candidate --topology single --level L0
 
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --graph-visualize --topology single --level L0
 ```
 
@@ -506,10 +506,10 @@ python tests/glm5_2_mindstudio/migration_benchmark.py \
 指定分布式拓扑或全部拓扑：
 
 ```bash
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --graph-visualize --topology fsdp8 --level L0
 
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --graph-visualize --topology all --level L0
 ```
 
@@ -614,7 +614,7 @@ backend 必须以目标服务器的 `torch.compiler.list_backends()` 和最小 s
 
 ```bash
 export CUDA_VISIBLE_DEVICES=7
-python tests/glm5_2_mindstudio/configuration_check_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
   --data --data-device cuda --topology single
 ```
 
@@ -622,14 +622,14 @@ python tests/glm5_2_mindstudio/configuration_check_benchmark.py \
 
 ```bash
 export CUDA_VISIBLE_DEVICES=7
-python tests/glm5_2_mindstudio/configuration_check_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
   --capture reference --topology single
 
 export ASCEND_RT_VISIBLE_DEVICES=4
-python tests/glm5_2_mindstudio/configuration_check_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
   --capture candidate --topology single
 
-python tests/glm5_2_mindstudio/configuration_check_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
   --compare --topology single
 ```
 
@@ -642,16 +642,16 @@ python tests/glm5_2_mindstudio/configuration_check_benchmark.py \
 
 ```bash
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-python tests/glm5_2_mindstudio/configuration_check_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
   --data --data-device cuda --topology all
-python tests/glm5_2_mindstudio/configuration_check_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
   --capture reference --topology all
 
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-python tests/glm5_2_mindstudio/configuration_check_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
   --capture candidate --topology all
 
-python tests/glm5_2_mindstudio/configuration_check_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
   --compare --topology all
 ```
 
@@ -666,21 +666,21 @@ cc 按问题现象显式开启。在 TorchTitan 完成一次 optimizer step
 ```bash
 # 生成一次共享 fixture
 export CUDA_VISIBLE_DEVICES=7
-python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage monitor \
   --data --data-device cuda --topology single
 
 # GPU reference
-python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage monitor \
   --capture reference --topology single --training-steps 5000
 
 # NPU candidate（GPU/NPU 服务器分开时，在 NPU 端同步 fixture 后执行）
 unset CUDA_VISIBLE_DEVICES
 export ASCEND_RT_VISIBLE_DEVICES=4
-python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage monitor \
   --capture candidate --topology single --training-steps 5000
 
 # 同步 artifact 后生成索引；不虚构官方不存在的 cross-device verdict
-python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage monitor \
   --compare --topology single --training-steps 5000
 ```
 
@@ -689,23 +689,23 @@ python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
 ```bash
 # 代表性分布式拓扑
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage monitor \
   --capture candidate --topology fsdp8 --training-steps 5000
-python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage monitor \
   --compare --topology fsdp8 --training-steps 5000
 
 # all：分别在 GPU/NPU 端 capture，汇合 artifact 后 compare
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage monitor \
   --data --data-device cuda --topology all
-python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage monitor \
   --capture reference --topology all --training-steps 5000
 
 unset CUDA_VISIBLE_DEVICES
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage monitor \
   --capture candidate --topology all --training-steps 5000
-python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage monitor \
   --compare --topology all --training-steps 5000
 ```
 

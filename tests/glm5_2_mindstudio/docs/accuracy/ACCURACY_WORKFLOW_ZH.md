@@ -6,16 +6,30 @@
 官方闭环在本项目中的对应关系是：
 
 ```text
-训练前配置检查        configuration_check_benchmark.py
-长程训练状态监控      training_monitor_benchmark.py (显式指定复现窗口)
-模块级快速定界        migration_benchmark.py --level L0
-API 级下钻            migration_benchmark.py --level L1/mix
-kernel 级下钻         migration_benchmark.py --level L2
-API 高精度预检        migration_benchmark.py --precheck
-GPU/NPU 官方比对      migration_benchmark.py --compare
-分级图可视化          migration_benchmark.py --graph-visualize
-首个溢出节点分析      migration_benchmark.py --overflow-check
+训练前配置检查        accuracy_benchmark.py --stage config-check
+长程训练状态监控      accuracy_benchmark.py --stage monitor (显式指定复现窗口)
+模块级快速定界        accuracy_benchmark.py --stage dump --level L0
+API 级下钻            accuracy_benchmark.py --stage dump --level L1/mix
+kernel 级下钻         accuracy_benchmark.py --stage dump --level L2
+API 高精度预检        accuracy_benchmark.py --stage dump --precheck
+GPU/NPU 官方比对      accuracy_benchmark.py --stage dump --compare
+分级图可视化          accuracy_benchmark.py --stage dump --graph-visualize
+首个溢出节点分析      accuracy_benchmark.py --stage dump --overflow-check
 eager/compile 比对    compile_accuracy_benchmark.py
+```
+
+前三类官方能力现在共用一个精度实验入口和一个实验身份。`migration_benchmark.py`、
+`configuration_check_benchmark.py`、`training_monitor_benchmark.py` 仅作为兼容入口保留。
+默认 L0 dump 继续使用原目录，已有成功采集可以断点续跑；配置检查、其他 dump 规格和
+Monitor V2 则位于同一根目录的 `diagnostics/` 下，避免被误认为互不相关的实验。
+
+```text
+mindstudio_{fixtures,runs,artifacts,reports}/accuracy/<accuracy-id>/
+├── <topology>/...                         # 默认 L0 dump/compare/visualization
+└── diagnostics/
+    ├── configuration-check/<topology>/... # CheckList 官方结果
+    ├── dump/<dump-profile>/<topology>/... # MD5、L1/mix、tensor 等定点采集
+    └── monitor/<monitor-profile>/<topology>/... # 长程 Monitor V2
 ```
 
 这些阶段不是把 5000 step 全量 dump。Monitor V2 负责低开销长程筛查；发现异常
@@ -91,8 +105,8 @@ msProbe 快速入门给出的标准精度调试顺序是：
 | 阶段 | 目的 | 当前实现 |
 | --- | --- | --- |
 | 配置检查 | 找出两端 seed、dtype、优化器、模型、环境等差异 | 已接入 dynamic `ConfigChecker` 和逐 rank 官方 compare |
-| 训练状态监控 | 监控激活、梯度、权重、优化器及异常状态 | 已由 `training_monitor_benchmark.py` 接入 Monitor V2 |
-| 数据采集 | L0/L1/mix，statistics/tensor | 已由 `migration_benchmark.py` 接入 `PrecisionDebugger` |
+| 训练状态监控 | 监控激活、梯度、权重、优化器及异常状态 | 已由 `accuracy_benchmark.py --stage monitor` 接入 Monitor V2 |
+| 数据采集 | L0/L1/mix，statistics/tensor | 已由 `accuracy_benchmark.py --stage dump` 接入 `PrecisionDebugger` |
 | 精度预检 | 对单端 API 构造单测、比较 CPU 高精度标杆，再比较 GPU/NPU 预检结论 | 已接入 `--precheck`、`--precheck-compare`，逐 step、逐 rank 保存官方结果 |
 | 精度比对 | GPU/CPU golden 与 NPU target 比较 | 已由 `--compare` 调用官方 `msprobe compare` |
 
@@ -209,7 +223,7 @@ schema 并补配置验证和测试。
 
 ```bash
 export CUDA_VISIBLE_DEVICES=7
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --data --data-device cuda --topology single
 ```
 
@@ -217,7 +231,7 @@ python tests/glm5_2_mindstudio/migration_benchmark.py \
 
 ```bash
 export ASCEND_RT_VISIBLE_DEVICES=4
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --data --data-device npu --topology single
 ```
 
@@ -235,7 +249,7 @@ msProbe 不负责生成训练数据。它只观察使用这份契约的训练。
 
 ```bash
 export CUDA_VISIBLE_DEVICES=7
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --capture reference --topology single
 ```
 
@@ -243,7 +257,7 @@ python tests/glm5_2_mindstudio/migration_benchmark.py \
 
 ```bash
 export ASCEND_RT_VISIBLE_DEVICES=4
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --capture candidate --topology single
 ```
 
@@ -253,7 +267,7 @@ python tests/glm5_2_mindstudio/migration_benchmark.py \
 ### 5.4 compare
 
 ```bash
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --compare --topology single
 ```
 
@@ -272,25 +286,25 @@ msprobe compare \
 可选定位参数：
 
 ```bash
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --compare --topology single --diff-analysis
 ```
 
 真实 tensor compare 还可以输出单模块/API 日志或 XLSX：
 
 ```bash
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --compare --topology single --tensor-log --xlsx
 ```
 
 结构或名字无法自动配对时可传官方映射：
 
 ```bash
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --compare --topology single \
   --data-mapping /absolute/path/data_mapping.yaml
 
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --compare --topology single \
   --cell-mapping /absolute/path/cell_mapping.yaml
 ```
@@ -309,32 +323,32 @@ python tests/glm5_2_mindstudio/migration_benchmark.py \
 接口复用公共拓扑注册表：
 
 ```bash
-python tests/glm5_2_mindstudio/migration_benchmark.py --list-topologies
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump --list-topologies
 ```
 
 一个分布式例子：
 
 ```bash
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --capture reference --topology fsdp8
 
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --capture candidate --topology fsdp8
 
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --compare --topology fsdp8
 ```
 
 全拓扑：
 
 ```bash
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --capture reference --topology all
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --capture candidate --topology all
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --compare --topology all
 ```
 
@@ -630,16 +644,16 @@ msprobe config_check \
 
 ```bash
 export CUDA_VISIBLE_DEVICES=7
-python tests/glm5_2_mindstudio/configuration_check_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
   --data --data-device cuda --topology single
-python tests/glm5_2_mindstudio/configuration_check_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
   --capture reference --topology single
 
 export ASCEND_RT_VISIBLE_DEVICES=4
-python tests/glm5_2_mindstudio/configuration_check_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
   --capture candidate --topology single
 
-python tests/glm5_2_mindstudio/configuration_check_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
   --compare --topology single
 ```
 
@@ -649,7 +663,7 @@ python tests/glm5_2_mindstudio/configuration_check_benchmark.py \
 ### 9.2 训练状态监控
 
 官方训练状态监控面向长程运行中的激活、梯度、参数、优化器和通信异常。当前
-`training_monitor_benchmark.py` 在 Trainer 创建模型与优化器后调用
+`accuracy_benchmark.py --stage monitor` 在 Trainer 创建模型与优化器后调用
 `TrainerMonitorV2.start()`，每个完整 train step 后调用一次 `step()`，并在正常
 结束或异常退出时通过 `finally` 调用 `stop()`。官方没有固定训练步数；调用者必须
 用 `--training-steps` 指定能够覆盖问题复现的窗口。默认只开官方案例常用的
@@ -668,17 +682,17 @@ TorchTitan Trainer.train
 
 ```bash
 export CUDA_VISIBLE_DEVICES=7
-python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage monitor \
   --data --data-device cuda --topology single
-python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage monitor \
   --capture reference --topology single --training-steps 5000
 
 unset CUDA_VISIBLE_DEVICES
 export ASCEND_RT_VISIBLE_DEVICES=4
-python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage monitor \
   --capture candidate --topology single --training-steps 5000
 
-python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage monitor \
   --compare --topology single --training-steps 5000
 ```
 
@@ -699,7 +713,7 @@ Monitor V2 与正式 `--compile.enable` 组合，避免静默产生不可解释�
 `construct.json`，调用官方 `graph_visualize` 生成 `.vis.db`：
 
 ```bash
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --graph-visualize --topology single --level L0
 
 tensorboard \
@@ -733,15 +747,15 @@ NPU L1/mix dump.json ── acc_check ── NPU vs CPU高精度 details ┘
 
 ```bash
 export CUDA_VISIBLE_DEVICES=7
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --data --data-device cuda --topology single \
   --level L1 --dump-task statistics
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --capture reference --topology single \
   --level L1 --dump-task statistics
 
 export ASCEND_RT_VISIBLE_DEVICES=4
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --capture candidate --topology single \
   --level L1 --dump-task statistics
 ```
@@ -750,12 +764,12 @@ python tests/glm5_2_mindstudio/migration_benchmark.py \
 
 ```bash
 # GPU server
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --precheck reference --topology single \
   --level L1 --dump-task statistics
 
 # NPU server
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --precheck candidate --topology single \
   --level L1 --dump-task statistics
 ```
@@ -775,7 +789,7 @@ multi-device 预检可能产生多份 details；项目会完整保存并在 mani
 时，可使用官方断点续检：
 
 ```bash
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --precheck candidate --topology single \
   --level L1 --dump-task statistics --dump-step 0 --dump-ranks 0 \
   --precheck-resume-csv /absolute/path/accuracy_checking_result_<timestamp>.csv
@@ -796,7 +810,7 @@ mindstudio_artifacts/<experiment-id>/<topology>/precision_precheck/candidate-r1/
 然后执行：
 
 ```bash
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --precheck-compare --topology single \
   --level L1 --dump-task statistics
 ```
@@ -902,10 +916,10 @@ msProbe capture 只运行少量目标 step，因为它要保存模块/API 数据
 L0/mix dump 完成后，可直接生成单边结构图或双边比较图：
 
 ```bash
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --graph-visualize --graph-side candidate --topology single --level L0
 
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --graph-visualize --graph-side compare --topology single --level L0 \
   --layer-mapping mapping.yaml
 ```
@@ -913,10 +927,10 @@ python tests/glm5_2_mindstudio/migration_benchmark.py \
 多 step、多 rank 或 Monitor V2 数据使用官方 `msprobe data2db` 转成趋势数据库：
 
 ```bash
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --trend candidate --topology all --level L0 --trend-format dump
 
-python tests/glm5_2_mindstudio/training_monitor_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage monitor \
   --trend candidate --topology all --training-steps 5000 \
   --trend-format monitor --trend-processes 8
 ```
@@ -964,11 +978,11 @@ Megatron rank order 合并且不支持 CP，后者只用于 verl 的受支持模
 generation。L2 数据不能和原有 L0/L1 artifact 混用：
 
 ```bash
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --data --data-device npu --topology single \
   --level L2 --dump-steps 0,1 --force
 
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --capture candidate --topology single \
   --level L2 --dump-steps 0,1
 ```
@@ -976,7 +990,7 @@ python tests/glm5_2_mindstudio/migration_benchmark.py \
 当 dump 或 Monitor 发现 INF/NaN 时，对已经完成的官方 capture 执行首节点分析：
 
 ```bash
-python tests/glm5_2_mindstudio/migration_benchmark.py \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --overflow-check candidate --topology single \
   --level L0 --dump-steps 0,1
 ```

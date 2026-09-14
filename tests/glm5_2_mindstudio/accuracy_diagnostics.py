@@ -42,7 +42,11 @@ from tests.glm5_2_mindstudio.training_monitor_benchmark import (
     CONFIG as MONITOR_CONFIG,
 )
 from tests.glm5_2_mindstudio.training_observation import compare_training_metrics
-from tests.glm5_2_mindstudio.workflow import _experiment_digest, _run_process
+from tests.glm5_2_mindstudio.workflow import (
+    _experiment_digest,
+    _run_process,
+    _stage_scoped_config,
+)
 
 
 Symptom = Literal[
@@ -112,6 +116,16 @@ def _python_command(script: str, *arguments: str) -> str:
 
 
 def _case_root(repository_root: Path, case_id: str) -> Path:
+    return (
+        repository_root
+        / MIGRATION_CONFIG.artifact_root
+        / MIGRATION_CONFIG.storage_name
+        / "cases"
+        / case_id
+    )
+
+
+def _legacy_case_root(repository_root: Path, case_id: str) -> Path:
     return repository_root / "mindstudio_cases" / "accuracy" / case_id
 
 
@@ -121,6 +135,11 @@ def _case_path(repository_root: Path, case_id: str) -> Path:
 
 def _load_case(repository_root: Path, case_id: str) -> dict[str, Any]:
     path = _case_path(repository_root, case_id)
+    legacy_root = _legacy_case_root(repository_root, case_id)
+    if not path.exists() and legacy_root.is_dir():
+        path.parent.parent.mkdir(parents=True, exist_ok=True)
+        legacy_root.rename(path.parent)
+        print(f"Adopted legacy diagnostic case:\n  {legacy_root}\n  -> {path.parent}")
     if not path.is_file():
         raise FileNotFoundError(f"diagnostic case does not exist: {path}")
     value = json.loads(path.read_text(encoding="utf-8"))
@@ -185,10 +204,13 @@ def create_case(
                 "window aggregation, grad-norm threshold, or task metric tolerance."
             ),
         },
-        "experiments": {
-            "configuration_check": CONFIG_CHECK_CONFIG.storage_name,
-            "migration": MIGRATION_CONFIG.storage_name,
-            "monitor": MONITOR_CONFIG.storage_name,
+        "experiment": {
+            "storage_name": MIGRATION_CONFIG.storage_name,
+            "stages": {
+                "dump": MIGRATION_CONFIG.output_subdirectory,
+                "configuration_check": CONFIG_CHECK_CONFIG.output_subdirectory,
+                "monitor": "diagnostics/monitor/<configuration>",
+            },
         },
         "stages": {
             stage: {
@@ -417,7 +439,9 @@ def _migration_command(
     repeat: int | None = None,
 ) -> str:
     return _python_command(
-        "tests/glm5_2_mindstudio/migration_benchmark.py",
+        "tests/glm5_2_mindstudio/accuracy_benchmark.py",
+        "--stage",
+        "dump",
         *arguments,
         *_selected_topology_args(value),
         "--repeat",
@@ -427,7 +451,9 @@ def _migration_command(
 
 def _monitor_command(value: dict[str, Any], *arguments: str) -> str:
     return _python_command(
-        "tests/glm5_2_mindstudio/training_monitor_benchmark.py",
+        "tests/glm5_2_mindstudio/accuracy_benchmark.py",
+        "--stage",
+        "monitor",
         *arguments,
         *_selected_topology_args(value),
         "--repeat",
@@ -437,15 +463,35 @@ def _monitor_command(value: dict[str, Any], *arguments: str) -> str:
 
 def _checklist_plan(value: dict[str, Any]) -> dict[str, Any]:
     topology_args = _selected_topology_args(value)
-    script = "tests/glm5_2_mindstudio/configuration_check_benchmark.py"
+    script = "tests/glm5_2_mindstudio/accuracy_benchmark.py"
     return {
         "stage": "checklist",
         "goal": "Prove that both endpoints execute the same experiment contract.",
         "commands": [
-            _python_command(script, "--data", *topology_args),
-            _python_command(script, "--capture", "reference", *topology_args),
-            _python_command(script, "--capture", "candidate", *topology_args),
-            _python_command(script, "--compare", *topology_args),
+            _python_command(script, "--stage", "dump", "--data", *topology_args),
+            _python_command(
+                script,
+                "--stage",
+                "config-check",
+                "--capture",
+                "reference",
+                *topology_args,
+            ),
+            _python_command(
+                script,
+                "--stage",
+                "config-check",
+                "--capture",
+                "candidate",
+                *topology_args,
+            ),
+            _python_command(
+                script,
+                "--stage",
+                "config-check",
+                "--compare",
+                *topology_args,
+            ),
         ],
         "inspect": [
             "Review every rank's config-check summary and detailed sheets.",
@@ -535,6 +581,7 @@ def compare_repeats(
         MIGRATION_CONFIG,
         dump=replace(MIGRATION_CONFIG.dump, level="mix", summary_mode="md5"),
     )
+    config = _stage_scoped_config(config, MIGRATION_CONFIG)
     endpoint = config.reference if role == "reference" else config.candidate
     for repeat_value in (baseline_repeat, target_repeat):
         if not 1 <= repeat_value <= endpoint.repeats:
@@ -554,7 +601,7 @@ def compare_repeats(
         artifact_root = (
             repository_root
             / config.artifact_root
-            / config.storage_name
+            / config.output_relative_root
             / topology.slug
         )
         baseline = artifact_root / f"{role}-r{baseline_repeat}"
@@ -627,6 +674,7 @@ def compare_repeats(
     if output_root.exists():
         archived = archive_previous_output(output_root)
         print(f"Retry incomplete repeat comparison; archived: {archived}")
+    output_root.mkdir(parents=True, exist_ok=True)
     attempt = RunAttempt.start(
         output_root,
         kind="mindstudio_repeat_compare",
@@ -676,27 +724,45 @@ def analyze_training_observation(
     *,
     case_id: str,
     workflow: str,
+    training_steps: int | None,
     loss_relative_threshold: float,
     grad_norm_relative_threshold: float | None,
     spike_relative_threshold: float | None,
     force: bool,
 ) -> Path:
     value = _load_case(repository_root, case_id)
-    config = (
-        replace(
+    if workflow == "migration":
+        config = replace(
             MIGRATION_CONFIG,
             dump=replace(MIGRATION_CONFIG.dump, level="mix"),
         )
-        if workflow == "migration"
-        else MONITOR_CONFIG
-    )
-    output_root = _case_root(repository_root, case_id) / "03_observe" / workflow
+        output_root = (
+            _case_root(repository_root, case_id) / "03_observe/migration"
+        )
+    else:
+        steps = (
+            MONITOR_CONFIG.training.steps
+            if training_steps is None
+            else training_steps
+        )
+        if steps < 1:
+            raise ValueError("training steps must be positive")
+        config = replace(
+            MONITOR_CONFIG,
+            training=replace(MONITOR_CONFIG.training, steps=steps),
+        )
+        output_root = (
+            _case_root(repository_root, case_id)
+            / "03_observe/monitor"
+            / f"s{steps}"
+        )
+    config = _stage_scoped_config(config, MIGRATION_CONFIG)
     inputs: list[dict[str, Any]] = []
     jobs: list[tuple[str, Path, Path, Path]] = []
     registry = standard_topologies()
     for topology_name in value["topologies"]:
         topology = registry[topology_name]
-        run_root = repository_root / config.run_root / config.storage_name
+        run_root = repository_root / config.run_root / config.output_relative_root
         reference = (
             run_root
             / topology.slug
@@ -750,6 +816,7 @@ def analyze_training_observation(
     if output_root.exists():
         archived = archive_previous_output(output_root)
         print(f"Replace training observation; archived: {archived}")
+    output_root.mkdir(parents=True, exist_ok=True)
     attempt = RunAttempt.start(
         output_root,
         kind="mindstudio_training_observation",
@@ -828,6 +895,8 @@ def _observe_plan(value: dict[str, Any]) -> dict[str, Any]:
                 value["case_id"],
                 "--workflow",
                 "monitor",
+                "--training-steps",
+                "100",
             ),
         ]
         inspect = [
@@ -1318,6 +1387,7 @@ def run_diagnostic_cli(
     observation.add_argument(
         "--workflow", choices=("migration", "monitor"), required=True
     )
+    observation.add_argument("--training-steps", type=int)
     observation.add_argument("--loss-relative-threshold", type=float, default=0.01)
     observation.add_argument("--grad-norm-relative-threshold", type=float)
     observation.add_argument("--spike-relative-threshold", type=float)
@@ -1423,6 +1493,7 @@ def run_diagnostic_cli(
             repository_root,
             case_id=args.case_id,
             workflow=args.workflow,
+            training_steps=args.training_steps,
             loss_relative_threshold=args.loss_relative_threshold,
             grad_norm_relative_threshold=args.grad_norm_relative_threshold,
             spike_relative_threshold=args.spike_relative_threshold,
