@@ -1,9 +1,32 @@
-# GLM CUDA Nsight Systems performance probe
+# GLM NVIDIA GPU performance experiments
 
-This experiment is the GPU counterpart of the NPU MindStudio performance
-workflow. It reuses the canonical GLM topology and token-budget definitions,
-but its collection and analysis are completely independent from the NPU path.
-It does not modify TorchTitan or TorchTitanTurbo.
+This package is the NVIDIA GPU counterpart of the NPU MindStudio experiment
+family. It reuses the canonical GLM topology and token-budget definitions, but
+its collection and analysis are independent from the NPU path. It does not
+modify TorchTitan or TorchTitanTurbo.
+
+The package is named after the NVIDIA experiment family instead of one tool.
+Nsight Systems is the first implemented collector. Nsight Compute belongs here
+as a separate kernel-analysis workflow once its capture, replay, report, and
+lifecycle contracts are implemented. Nsight Systems and Nsight Compute outputs
+remain separate because they answer different questions and use different file
+formats.
+
+The shared output namespace follows the same category split as MindStudio:
+
+```text
+nvidia_{runs,artifacts,reports}/
+  accuracy/             # future NVIDIA-side accuracy endpoints and reports
+  performance/
+    system/             # Nsight Systems, implemented here
+    operator/           # Nsight Compute, reserved until implemented
+  graph/                # eager/torch.compile capture and compiler evidence
+```
+
+For CUDA `torch.compile` experiments, PyTorch Inductor normally uses Triton for
+GPU kernel code generation. A formal graph run must still record the resolved
+compiler/backend and generated evidence; the directory name or an ambient
+default is not sufficient proof that a specific region used Triton.
 
 The first implementation follows NVIDIA's standard PyTorch workflow:
 
@@ -37,30 +60,30 @@ TorchTitan. No additional Python package is required for the standard path.
 Single GPU:
 
 ```bash
-python tests/glm5_2_nsys/performance_benchmark.py \
+python tests/glm5_2_nvidia/performance_benchmark.py \
   --probe --topology single
 ```
 
 One distributed topology (replace `fsdp8` with any common topology):
 
 ```bash
-python tests/glm5_2_nsys/performance_benchmark.py \
+python tests/glm5_2_nvidia/performance_benchmark.py \
   --probe --topology fsdp8
 ```
 
 Every registered topology through eight GPUs:
 
 ```bash
-python tests/glm5_2_nsys/performance_benchmark.py \
+python tests/glm5_2_nvidia/performance_benchmark.py \
   --probe --topology all
 ```
 
 Capture and analysis may be resumed independently:
 
 ```bash
-python tests/glm5_2_nsys/performance_benchmark.py \
+python tests/glm5_2_nvidia/performance_benchmark.py \
   --capture --topology ddp2
-python tests/glm5_2_nsys/performance_benchmark.py \
+python tests/glm5_2_nvidia/performance_benchmark.py \
   --analyze --topology ddp2
 ```
 
@@ -68,7 +91,7 @@ For a newer NCCL that supports Nsight Systems advanced NCCL tracing, add it
 explicitly instead of silently changing the compatible default:
 
 ```bash
-python tests/glm5_2_nsys/performance_benchmark.py \
+python tests/glm5_2_nvidia/performance_benchmark.py \
   --probe --topology ddp2 \
   --trace cuda,nvtx,osrt,cublas,cudnn,nccl
 ```
@@ -102,7 +125,7 @@ members while retaining completed ones.
 ## Outputs
 
 ```text
-nsys_runs/<N-card>/<topology>/<experiment>/
+nvidia_runs/performance/system/<N-card>/<topology>/<experiment>/
   nsys_profile.log
   training.log
   trainer_output/profiling/nsys/
@@ -113,17 +136,17 @@ nsys_runs/<N-card>/<topology>/<experiment>/
     stats/*.log
   run_state.json
 
-nsys_artifacts/<N-card>/<topology>/<experiment>/
+nvidia_artifacts/performance/system/<N-card>/<topology>/<experiment>/
   manifest.json
 
-nsys_reports/<N-card>/<topology>/<experiment>.html
+nvidia_reports/performance/system/<N-card>/<topology>/<experiment>.html
 ```
 
-The `nsys_artifacts` tree contains only orchestration metadata. Official
+The `nvidia_artifacts/performance/system` tree contains only orchestration metadata. Official
 Nsight capture and export products stay together under the run's
 `trainer_output/profiling/nsys/` directory. Existing captures made with the
-older artifact-owned layout are moved there automatically after their bytes
-are checked; no profiling rerun is required.
+older artifact-owned layout or top-level `nsys_*` roots are moved there
+automatically after their bytes are checked; no profiling rerun is required.
 
 Open `trainer_output/profiling/nsys/profile.nsys-rep` in Nsight Systems UI to inspect CPU/PyTorch/NVTX,
 CUDA API launches, GPU streams, kernels, memory operations, and NCCL events

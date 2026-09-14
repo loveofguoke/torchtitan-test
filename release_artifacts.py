@@ -33,6 +33,10 @@ EXPERIMENT_ROOTS = (
     "mindstudio_runs",
     "mindstudio_artifacts",
     "mindstudio_reports",
+    "nvidia_runs",
+    "nvidia_artifacts",
+    "nvidia_reports",
+    # Legacy roots remain readable until every existing Nsys run is adopted.
     "nsys_runs",
     "nsys_artifacts",
     "nsys_reports",
@@ -278,7 +282,7 @@ def _analysis_archive_filter(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
         } else None
 
     # Nsight metadata is lightweight; official profiler payloads are run-owned.
-    if root == "nsys_artifacts":
+    if root in {"nvidia_artifacts", "nsys_artifacts"}:
         if member.isdir():
             return member
         return member if path.suffix.lower() in {".json", ".log", ".md"} else None
@@ -286,7 +290,7 @@ def _analysis_archive_filter(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
     # Nsight Systems reports can be very large. Analysis archives retain the
     # run-owned SQLite export and CSV summaries, while the authoritative
     # .nsys-rep remains available only in lossless full archives.
-    if root == "nsys_runs":
+    if root in {"nvidia_runs", "nsys_runs"}:
         if member.isdir():
             return member
         if "nsys" in path.parts and path.suffix.lower() in {

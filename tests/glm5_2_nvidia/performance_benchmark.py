@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Profile GLM CUDA training with NVIDIA Nsight Systems."""
+"""Profile GLM training with the NVIDIA performance toolchain."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from tests.glm5_2_nsys.workflow import run_cli  # noqa: E402
+from tests.glm5_2_nvidia.workflow import run_cli  # noqa: E402
 
 
 if __name__ == "__main__":

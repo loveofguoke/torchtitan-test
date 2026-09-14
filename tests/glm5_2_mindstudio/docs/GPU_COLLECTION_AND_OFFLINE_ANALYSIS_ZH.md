@@ -59,17 +59,17 @@ python -m pip check
 cd /workspace/yyb/torchtitan-test
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
-python tests/glm5_2_nsys/performance_benchmark.py \
+python tests/glm5_2_nvidia/performance_benchmark.py \
   --probe --topology single
 
-python tests/glm5_2_nsys/performance_benchmark.py \
+python tests/glm5_2_nvidia/performance_benchmark.py \
   --probe --topology ddp2
 ```
 
 默认会采集 `cuda,nvtx,osrt,cublas,cudnn`，并启用 PyTorch function/shape 和
 autograd NVTX。`--probe` 随后通过 `nsys export` 生成 `.sqlite`；跨平台性能校准
 读取 SQLite，而不是 `.nsys-rep`。具体参数见
-[`tests/glm5_2_nsys/README.md`](../../glm5_2_nsys/README.md)。
+[`tests/glm5_2_nvidia/README.md`](../../glm5_2_nvidia/README.md)。
 
 ## 3. GPU 侧基础 msProbe
 
@@ -161,7 +161,7 @@ conda activate glm5-ms-analysis
 
 msprof-analyze cluster -m calibrate_npu_gpu \
   --profiling_path /secure/inbound/npu_profile \
-  --baseline_profiling_path /workspace/yyb/torchtitan-test/nsys_runs/PROFILE.sqlite \
+  --baseline_profiling_path /workspace/yyb/torchtitan-test/nvidia_runs/performance/system/PROFILE.sqlite \
   --output_path /workspace/yyb/analysis/calibrate_npu_gpu \
   --export_type text \
   --dump_intermediate_results
@@ -222,4 +222,3 @@ accuracy/
 - [msProbe PyTorch 精度比对](https://github.com/Ascend/msprobe/blob/master/docs/zh/accuracy_compare/pytorch_accuracy_compare_instruct.md)
 - [msProbe 安装指南](https://github.com/Ascend/msprobe/blob/master/docs/zh/msprobe_install_guide.md)
 - [Nsight Systems 文档](https://docs.nvidia.com/nsight-systems/)
-

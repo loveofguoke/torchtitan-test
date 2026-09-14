@@ -1,4 +1,4 @@
-"""Nsight Systems capture and post-collection analysis orchestration."""
+"""Nsight Systems capture and post-collection analysis for NVIDIA GPUs."""
 
 from __future__ import annotations
 
@@ -188,6 +188,33 @@ def _adopt_legacy_outputs(run_dir: Path, artifact_dir: Path) -> Path:
             source.replace(destination)
     _move_tree_without_overwrite(artifact_dir / "stats", output / "stats")
     return output
+
+
+def _adopt_legacy_experiment_layout(
+    *,
+    run_dir: Path,
+    artifact_dir: Path,
+    report_path: Path,
+    legacy_run_dir: Path,
+    legacy_artifact_dir: Path,
+    legacy_report_path: Path,
+) -> None:
+    """Move an existing nsys_* experiment into the NVIDIA suite layout."""
+
+    _move_tree_without_overwrite(legacy_run_dir, run_dir)
+    _move_tree_without_overwrite(legacy_artifact_dir, artifact_dir)
+    if not legacy_report_path.is_file():
+        return
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    if report_path.exists():
+        if legacy_report_path.read_bytes() != report_path.read_bytes():
+            raise RuntimeError(
+                "refusing to merge conflicting legacy Nsight report: "
+                f"{legacy_report_path} -> {report_path}"
+            )
+        legacy_report_path.unlink()
+    else:
+        legacy_report_path.replace(report_path)
 
 
 def _capture(
@@ -506,12 +533,62 @@ def run_cli() -> int:
         contract = _contract(args, topology, version)
         identity = _identity_name(args, topology, contract)
         card_group = f"{topology.world_size}-card"
+        run_dir = (
+            _root()
+            / "nvidia_runs"
+            / "performance"
+            / "system"
+            / card_group
+            / topology.slug
+            / identity
+        )
+        artifact_dir = (
+            _root()
+            / "nvidia_artifacts"
+            / "performance"
+            / "system"
+            / card_group
+            / topology.slug
+            / identity
+        )
+        report_path = (
+            _root()
+            / "nvidia_reports"
+            / "performance"
+            / "system"
+            / card_group
+            / topology.slug
+            / f"{identity}.html"
+        )
+        if not args.dry_run:
+            _adopt_legacy_experiment_layout(
+                run_dir=run_dir,
+                artifact_dir=artifact_dir,
+                report_path=report_path,
+                legacy_run_dir=(
+                    _root() / "nsys_runs" / card_group / topology.slug / identity
+                ),
+                legacy_artifact_dir=(
+                    _root()
+                    / "nsys_artifacts"
+                    / card_group
+                    / topology.slug
+                    / identity
+                ),
+                legacy_report_path=(
+                    _root()
+                    / "nsys_reports"
+                    / card_group
+                    / topology.slug
+                    / f"{identity}.html"
+                ),
+            )
         members.append((
             topology,
             contract,
-            _root() / "nsys_runs" / card_group / topology.slug / identity,
-            _root() / "nsys_artifacts" / card_group / topology.slug / identity,
-            _root() / "nsys_reports" / card_group / topology.slug / f"{identity}.html",
+            run_dir,
+            artifact_dir,
+            report_path,
         ))
     if args.force:
         reset_output_generation(

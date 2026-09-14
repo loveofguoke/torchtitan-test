@@ -45,9 +45,25 @@ class TestReleaseArtifacts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             experiment = "cuda-ddp2-bf16-standard-abcd1234"
-            run = root / "nsys_runs" / "2-card" / "ddp2" / experiment
+            run = (
+                root
+                / "nvidia_runs"
+                / "performance"
+                / "system"
+                / "2-card"
+                / "ddp2"
+                / experiment
+            )
             output = run / "trainer_output" / "profiling" / "nsys"
-            artifact = root / "nsys_artifacts" / "2-card" / "ddp2" / experiment
+            artifact = (
+                root
+                / "nvidia_artifacts"
+                / "performance"
+                / "system"
+                / "2-card"
+                / "ddp2"
+                / experiment
+            )
             output.mkdir(parents=True)
             artifact.mkdir(parents=True)
             (output / "profile.nsys-rep").write_bytes(b"raw")
@@ -63,12 +79,17 @@ class TestReleaseArtifacts(unittest.TestCase):
 
             with tarfile.open(archive) as bundle:
                 names = set(bundle.getnames())
-            prefix = f"nsys_runs/2-card/ddp2/{experiment}/trainer_output/profiling/nsys"
+            prefix = (
+                "nvidia_runs/performance/system/2-card/ddp2/"
+                f"{experiment}/trainer_output/profiling/nsys"
+            )
             self.assertIn(f"{prefix}/profile.sqlite", names)
             self.assertIn(f"{prefix}/stats/cuda_api_sum.csv", names)
             self.assertNotIn(f"{prefix}/profile.nsys-rep", names)
             self.assertIn(
-                f"nsys_artifacts/2-card/ddp2/{experiment}/manifest.json", names
+                "nvidia_artifacts/performance/system/2-card/ddp2/"
+                f"{experiment}/manifest.json",
+                names,
             )
 
     def test_wget_keeps_tls_certificate_verification_enabled(self) -> None:
@@ -100,6 +121,9 @@ class TestReleaseArtifacts(unittest.TestCase):
             "mindstudio_runs",
             "mindstudio_artifacts",
             "mindstudio_reports",
+            "nvidia_runs",
+            "nvidia_artifacts",
+            "nvidia_reports",
             "nsys_runs",
             "nsys_artifacts",
             "nsys_reports",

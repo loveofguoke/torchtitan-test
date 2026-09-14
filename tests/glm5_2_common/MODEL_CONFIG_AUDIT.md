@@ -12,7 +12,7 @@
 | performance、MindStudio 系统性能 | `PerformanceConfig.module/model_config` → `glm5_2_performance/workflow.py` | 传递配置名给 capture_metrics，不复制模型结构 |
 | MindStudio accuracy | `config.training` → `glm5_2_mindstudio/workflow.py` 的 capture_training | 复用选定训练配置；不另外定义模型 |
 | graph、combination | 通过 precision/performance 训练配置构造对应工作流 | 编译设置叠加在选定训练配置上，不单独复制模型尺寸 |
-| nsys | `glm5_2_nsys/workflow.py` 的 `--module/--config` | 通过训练启动路径使用所选配置 |
+| NVIDIA GPU profiling | `glm5_2_nvidia/workflow.py` 的 `--module/--config` | 通过训练启动路径使用所选配置 |
 
 注意两种配置名不是同一层：parity 的 `debugmodel` 是模型注册表 flavor；
 其他训练入口的 `glm5_debugmodel` 是 TorchTitan 训练配置名，内部选择模型。

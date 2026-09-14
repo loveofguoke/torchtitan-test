@@ -52,7 +52,7 @@ See `tests/glm5_2_graph/NPU_CODEGEN.md` for loader names and validation scope.
 | precision fixture/capture | self-consistency suite, migration suite, graph and combination precision |
 | graph mode or Turbo compile API | graph debug, graph smoke, graph precision/performance, combination |
 | profiler API or output layout | performance capture, preset-all matrix, stack/flamegraph and memory-timeline rendering, TensorBoard discovery, offline analysis, curated explorations, combination reports, Release |
-| Nsight Systems CLI or GPU performance output layout | `glm5_2_nsys` capture, stats/export, report paths, lifecycle tests, GPU/NPU comparison inputs, Release discovery |
+| NVIDIA GPU profiling CLI or output layout | `glm5_2_nvidia` collector workflows, stats/export, report paths, lifecycle tests, GPU/NPU comparison inputs, Release discovery |
 | graph diagnostics output | per-rank `TORCH_TRACE`, `tlparse`, Inductor FX/IR/code inventory, combination reports, Release |
 | external profiler/compiler/accuracy tool or environment dependency | common dependency inventory, performance, graph and MindStudio guides/READMEs, combination reports, Release portability |
 | msOpProf or msMemScope CLI/output layout | MindStudio specialized tuning launchers, toolchain doctor/lock, operator/memory guides, lifecycle tests, Release analysis filter |
@@ -174,10 +174,14 @@ change:
   `cluster_analysis_output/`. Never create a second run-level `cluster/` copy.
   Historical layouts are byte-checked and moved into this official location
   before resume; a conflict is an error rather than a silent data mix.
-- Nsight Systems `.nsys-rep`, `.sqlite`, official statistics and their logs are
-  run-owned under `trainer_output/profiling/nsys/`. `nsys_artifacts` contains
-  only lifecycle/provenance metadata. Historical artifact-owned payloads are
-  byte-checked and moved without recollection.
+- NVIDIA experiments use category roots parallel to MindStudio:
+  `nvidia_{runs,artifacts,reports}/performance/system/` for Nsight Systems.
+  Accuracy, graph, and future Nsight Compute operator analysis must use their
+  own category paths instead of creating another top-level tool family.
+  Nsight Systems `.nsys-rep`, `.sqlite`, official statistics and logs remain
+  run-owned under `trainer_output/profiling/nsys/`; artifacts contain only
+  lifecycle/provenance metadata. Historical `nsys_*` roots and artifact-owned
+  payloads are byte-checked and moved without recollection.
 - msOpProf and msMemScope are independent from system profiling, but remain
   performance experiments. Preserve their native `OPPROF_*` and memory DB/CSV
   trees below `mindstudio_runs/performance/operator/` and
