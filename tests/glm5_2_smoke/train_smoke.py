@@ -267,13 +267,10 @@ def _run_device_replays(
     environment: dict[str, str],
     visible_devices: str,
 ) -> dict[str, object]:
-    """Replay every rank on its original device plus one device-zero control."""
-    jobs = [
-        (f"rank{_capture_rank(path)}-origin", path, _capture_rank(path))
-        for path in capture_directories
-    ]
+    """Replay the worst capture on its origin device and device zero."""
     worst_capture = max(capture_directories, key=_capture_gradient_score)
     worst_rank = _capture_rank(worst_capture)
+    jobs = [(f"rank{worst_rank}-origin", worst_capture, worst_rank)]
     if worst_rank != 0:
         jobs.append((f"rank{worst_rank}-control-device0", worst_capture, 0))
 
@@ -282,7 +279,10 @@ def _run_device_replays(
     records = []
     for name, capture_directory, logical_device in jobs:
         job_root = replay_root / name
-        compiler_root = capture_root / "compiler" / "device_replays" / name
+        # Both jobs intentionally reuse one compiled kernel. Changing only the
+        # execution device isolates a physical-device/runtime effect without
+        # paying for or introducing another autotune decision.
+        compiler_root = capture_root / "compiler" / "targeted_replay"
         replay_log = job_root / "replay.log"
         summary_path = job_root / "replay_summary.json"
         job_root.mkdir(parents=True, exist_ok=True)
@@ -350,6 +350,16 @@ def _run_device_replays(
                 "result": str(result_path),
                 "replay_result": replay_result,
             }
+        )
+        partial_summary = {
+            "status": "running",
+            "visible_devices": visible_devices,
+            "worst_capture": str(worst_capture),
+            "worst_capture_rank": worst_rank,
+            "jobs": records,
+        }
+        (capture_root / "device_replay_summary.json").write_text(
+            json.dumps(partial_summary, indent=2) + "\n", encoding="utf-8"
         )
     origin = next(
         (job for job in records if job["name"] == f"rank{worst_rank}-origin"),

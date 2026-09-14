@@ -297,16 +297,15 @@ def test_device_replay_runs_origin_and_worst_rank_control(
     )
 
     assert [job["name"] for job in summary["jobs"]] == [
-        "rank0-origin",
         "rank1-origin",
         "rank1-control-device0",
     ]
-    assert [job["physical_device"] for job in summary["jobs"]] == ["4", "7", "4"]
+    assert [job["physical_device"] for job in summary["jobs"]] == ["7", "4"]
     assert [command[command.index("--device") + 1] for command in commands] == [
-        "npu:0",
         "npu:1",
         "npu:0",
     ]
+    assert len({command[command.index("--result-directory") + 1] for command in commands}) == 2
 
 
 def test_suite_report_preserves_historical_unknown_time(tmp_path) -> None:
