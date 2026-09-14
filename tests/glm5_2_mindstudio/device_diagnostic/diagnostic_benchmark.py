@@ -1,0 +1,388 @@
+#!/usr/bin/env python3
+"""Orchestrate repeatable Ascend device and HCCL diagnostics."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import importlib.metadata
+import json
+import os
+from pathlib import Path
+import shlex
+import socket
+import statistics
+import subprocess
+import sys
+from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
+from tests.glm5_2_common.cli import (  # noqa: E402
+    RunAttempt,
+    reset_output_generation,
+    write_experiment_overview,
+)
+from tests.glm5_2_mindstudio.artifacts import output_index, write_json  # noqa: E402
+
+
+def repository_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def package_version(name: str) -> str:
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
+
+
+def run_command(
+    command: list[str],
+    *,
+    root: Path,
+    log,
+    output: Path,
+    environment: dict[str, str] | None = None,
+) -> None:
+    rendered = shlex.join(command)
+    log.write(f"\n$ {rendered}\n")
+    log.flush()
+    process = subprocess.run(
+        command,
+        cwd=root,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(process.stdout, encoding="utf-8")
+    log.write(process.stderr)
+    log.write(f"[exit code: {process.returncode}]\n")
+    log.flush()
+    if process.returncode:
+        raise subprocess.CalledProcessError(process.returncode, command)
+
+
+def read_json_lines(path: Path) -> list[dict[str, Any]]:
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("{"):
+            rows.append(json.loads(stripped))
+    if not rows:
+        raise ValueError(f"no JSON measurement rows found in {path}")
+    return rows
+
+
+def make_summary(official: Path) -> dict[str, Any]:
+    device_rows = read_json_lines(official / "single_device.jsonl")
+    pair_rows = read_json_lines(official / "pairwise_all_reduce.jsonl")
+    all_device_rows = read_json_lines(official / "all_device_all_reduce.jsonl")
+
+    device_metrics: dict[str, dict[str, float]] = {}
+    for row in device_rows:
+        device = str(row["physical_device"])
+        device_metrics.setdefault(device, {})
+        if row["benchmark"] == "bf16_matmul":
+            device_metrics[device]["matmul_tflops"] = float(row["tflops"])
+        elif row["benchmark"] == "bf16_copy":
+            device_metrics[device]["copy_gib_per_second"] = float(
+                row["gib_per_second"]
+            )
+
+    matmul_median = statistics.median(
+        metrics["matmul_tflops"] for metrics in device_metrics.values()
+    )
+    copy_median = statistics.median(
+        metrics["copy_gib_per_second"] for metrics in device_metrics.values()
+    )
+    for metrics in device_metrics.values():
+        metrics["matmul_vs_median"] = metrics["matmul_tflops"] / matmul_median
+        metrics["copy_vs_median"] = metrics["copy_gib_per_second"] / copy_median
+
+    pair_metrics: dict[str, float] = {}
+    for row in pair_rows:
+        pair = str(row["visible_devices"])
+        pair_metrics[pair] = max(
+            pair_metrics.get(pair, 0.0), float(row["median_ms"])
+        )
+    pair_median = statistics.median(pair_metrics.values())
+    pair_ratios = {
+        pair: latency / pair_median for pair, latency in pair_metrics.items()
+    }
+
+    return {
+        "schema": "torchtitan.glm5_2.device_diagnostic_summary",
+        "schema_version": 1,
+        "device_metrics": device_metrics,
+        "pair_median_ms": pair_median,
+        "pair_median_ms_by_devices": pair_metrics,
+        "pair_latency_vs_median": pair_ratios,
+        "all_device_median_ms_by_rank": {
+            str(row["rank"]): float(row["median_ms"])
+            for row in all_device_rows
+        },
+        "suspect_compute_devices": sorted(
+            device
+            for device, metrics in device_metrics.items()
+            if metrics["matmul_vs_median"] < 0.9
+            or metrics["copy_vs_median"] < 0.9
+        ),
+        "suspect_pairs": sorted(
+            pair for pair, ratio in pair_ratios.items() if ratio > 1.2
+        ),
+        "thresholds": {
+            "device_throughput_vs_median": 0.9,
+            "pair_latency_vs_median": 1.2,
+        },
+    }
+
+
+def write_report(report: Path, summary: dict[str, Any]) -> None:
+    report.mkdir(parents=True, exist_ok=True)
+    write_json(report / "summary.json", summary)
+    lines = [
+        "# Ascend device diagnostic report",
+        "",
+        "Triage thresholds identify candidates, not hardware pass/fail criteria.",
+        "",
+        f"- Suspect compute devices: `{summary['suspect_compute_devices']}`",
+        f"- Suspect HCCL pairs: `{summary['suspect_pairs']}`",
+        f"- Median pair latency: `{summary['pair_median_ms']:.3f} ms`",
+        "",
+        "See `summary.json` for per-device and per-pair measurements.",
+        "",
+    ]
+    (report / "README.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--devices", default="0,1,2,3,4,5,6,7")
+    parser.add_argument("--matrix-size", type=int, default=8192)
+    parser.add_argument("--memory-mib", type=int, default=512)
+    parser.add_argument("--collective-size-mib", type=int, default=256)
+    parser.add_argument("--warmup", type=int, default=10)
+    parser.add_argument("--iterations", type=int, default=50)
+    parser.add_argument("--repeat", type=int, default=1)
+    parser.add_argument("--force", action="store_true")
+    args = parser.parse_args()
+
+    devices = [part.strip() for part in args.devices.split(",") if part.strip()]
+    if len(devices) < 2 or len(set(devices)) != len(devices):
+        raise ValueError("--devices requires at least two unique physical device IDs")
+    if args.repeat < 1:
+        raise ValueError("--repeat must be positive")
+
+    root = repository_root()
+    script_directory = Path(__file__).resolve().parent
+    identity = {
+        "devices": devices,
+        "matrix_size": args.matrix_size,
+        "memory_mib": args.memory_mib,
+        "collective_size_mib": args.collective_size_mib,
+        "warmup": args.warmup,
+        "iterations": args.iterations,
+    }
+    digest = hashlib.sha256(
+        json.dumps(identity, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    experiment_id = f"device-diagnostic-{digest[:8]}"
+    relative = Path(experiment_id) / f"{len(devices)}-device" / f"candidate-r{args.repeat}"
+    run_directory = root / "mindstudio_runs/performance/device_diagnostic" / relative
+    artifact_directory = (
+        root / "mindstudio_artifacts/performance/device_diagnostic" / relative
+    )
+    report_directory = (
+        root
+        / "mindstudio_reports/performance/device_diagnostic"
+        / experiment_id
+        / f"{len(devices)}-device"
+        / f"candidate-r{args.repeat}"
+    )
+    official = artifact_directory / "official"
+
+    selected = (run_directory, artifact_directory, report_directory)
+    if args.force:
+        reset_output_generation(
+            selected,
+            active_run_directories=(run_directory,),
+            label="device diagnostic",
+        )
+    elif any(path.exists() for path in selected):
+        raise FileExistsError(
+            "device diagnostic generation already exists; use another --repeat "
+            f"or --force: {run_directory}"
+        )
+
+    entry_command = [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]]
+    write_experiment_overview(
+        run_directory,
+        title="Ascend device and HCCL diagnostic",
+        summary={
+            "experiment_id": experiment_id,
+            "experiment_digest": digest,
+            "identity": identity,
+            "run_directory": str(run_directory.resolve()),
+            "artifact_directory": str(artifact_directory.resolve()),
+            "report_directory": str(report_directory.resolve()),
+        },
+        entry_command=entry_command,
+    )
+    write_json(run_directory / "resolved_command.json", {"command": entry_command})
+    (run_directory / "resolved_launch.sh").write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        + shlex.join(entry_command)
+        + "\n",
+        encoding="utf-8",
+    )
+
+    attempt = RunAttempt.start(
+        run_directory,
+        kind="ascend_device_diagnostic",
+        context={"experiment_id": experiment_id, "experiment_digest": digest},
+    )
+    runtime_log = run_directory / "runtime.log"
+    try:
+        official.mkdir(parents=True, exist_ok=False)
+        with runtime_log.open("w", encoding="utf-8") as log:
+            inventory_commands = [
+                ["hostname"],
+                ["npu-smi", "info"],
+                ["npu-smi", "info", "-l"],
+                ["npu-smi", "info", "-m"],
+                ["npu-smi", "info", "-t", "topo"],
+            ]
+            inventory_parts = []
+            for index, command in enumerate(inventory_commands):
+                output = official / f".inventory_{index}.txt"
+                run_command(command, root=root, log=log, output=output)
+                inventory_parts.append(output.read_text(encoding="utf-8"))
+                output.unlink()
+            (official / "inventory.txt").write_text(
+                "\n".join(inventory_parts), encoding="utf-8"
+            )
+
+            for device in devices:
+                for query in ("hccs", "health"):
+                    run_command(
+                        ["npu-smi", "info", "-t", query, "-i", device, "-c", "0"],
+                        root=root,
+                        log=log,
+                        output=official / f"{query}_device_{device}.txt",
+                    )
+
+            single_output = official / "single_device.jsonl"
+            single_parts = []
+            for device in devices:
+                environment = dict(os.environ)
+                environment["ASCEND_RT_VISIBLE_DEVICES"] = device
+                output = official / f".single_device_{device}.jsonl"
+                run_command(
+                    [
+                        sys.executable,
+                        str(script_directory / "device_benchmark.py"),
+                        "--matrix-size", str(args.matrix_size),
+                        "--memory-mib", str(args.memory_mib),
+                        "--warmup", str(args.warmup),
+                        "--iterations", str(args.iterations),
+                    ],
+                    root=root,
+                    log=log,
+                    output=output,
+                    environment=environment,
+                )
+                single_parts.append(output.read_text(encoding="utf-8"))
+                output.unlink()
+            single_output.write_text("".join(single_parts), encoding="utf-8")
+
+            pair_output = official / "pairwise_all_reduce.jsonl"
+            pair_parts = []
+            for first_index, first in enumerate(devices[:-1]):
+                for second in devices[first_index + 1 :]:
+                    pair = f"{first},{second}"
+                    environment = dict(os.environ)
+                    environment["ASCEND_RT_VISIBLE_DEVICES"] = pair
+                    output = official / f".pair_{first}_{second}.jsonl"
+                    run_command(
+                        [
+                            sys.executable, "-m", "torch.distributed.run",
+                            "--standalone", "--nproc-per-node=2",
+                            str(script_directory / "collective_benchmark.py"),
+                            "--size-mib", str(args.collective_size_mib),
+                            "--warmup", str(args.warmup),
+                            "--iterations", str(args.iterations),
+                        ],
+                        root=root,
+                        log=log,
+                        output=output,
+                        environment=environment,
+                    )
+                    pair_parts.append(output.read_text(encoding="utf-8"))
+                    output.unlink()
+            pair_output.write_text("".join(pair_parts), encoding="utf-8")
+
+            environment = dict(os.environ)
+            environment["ASCEND_RT_VISIBLE_DEVICES"] = ",".join(devices)
+            run_command(
+                [
+                    sys.executable, "-m", "torch.distributed.run",
+                    "--standalone", f"--nproc-per-node={len(devices)}",
+                    str(script_directory / "collective_benchmark.py"),
+                    "--size-mib", str(args.collective_size_mib),
+                    "--warmup", str(args.warmup),
+                    "--iterations", str(args.iterations),
+                ],
+                root=root,
+                log=log,
+                output=official / "all_device_all_reduce.jsonl",
+                environment=environment,
+            )
+
+        summary = make_summary(official)
+        write_report(report_directory, summary)
+        manifest = {
+            "schema": "torchtitan.glm5_2.device_diagnostic_artifact",
+            "schema_version": 1,
+            "experiment_id": experiment_id,
+            "experiment_digest": digest,
+            "identity": identity,
+            "host": socket.gethostname(),
+            "toolchain": {
+                "python": sys.version,
+                "torch": package_version("torch"),
+                "torch_npu": package_version("torch-npu"),
+            },
+            "official_output": "official",
+            "official_files": output_index(official),
+            "runtime_log": str(runtime_log.resolve()),
+            "report": str(report_directory.resolve()),
+        }
+        write_json(artifact_directory / "manifest.json", manifest)
+        write_json(
+            artifact_directory / "complete.json",
+            {
+                "status": "completed",
+                "experiment_digest": digest,
+                "attempt_id": attempt.attempt_id,
+            },
+        )
+        attempt.update(
+            "completed",
+            artifact=str(artifact_directory.resolve()),
+            report=str(report_directory.resolve()),
+        )
+    except BaseException as error:
+        attempt.update("failed", error=repr(error))
+        raise
+
+    print(f"Run: {run_directory}")
+    print(f"Artifact: {artifact_directory}")
+    print(f"Report: {report_directory}")
+
+
+if __name__ == "__main__":
+    main()
