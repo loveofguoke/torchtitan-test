@@ -109,8 +109,45 @@ def _output_root(
 def _stage_scoped_config(
     config: MindStudioExperimentConfig,
     base_config: MindStudioExperimentConfig,
+    experiment_name: str | None = None,
 ) -> MindStudioExperimentConfig:
     """Place diagnostic variants below one canonical accuracy experiment."""
+
+    if experiment_name is not None:
+        config = replace(config, experiment_storage_name=experiment_name)
+        fixture_profile = (
+            f"s{config.training.steps}-"
+            f"{config_digest(asdict(config.training), length=8)}"
+        )
+        fixture_subdirectory = f"fixtures/{fixture_profile}"
+        if config.workflow == "config-check":
+            return replace(
+                config,
+                output_subdirectory="checklist/configuration-check",
+                fixture_subdirectory=fixture_subdirectory,
+            )
+        if config.workflow == "migration":
+            profile = (
+                f"{config.dump.task}-{config.dump.level}-"
+                f"{config.dump.summary_mode}-"
+                f"{config_digest(asdict(config.dump), length=8)}"
+            )
+            return replace(
+                config,
+                output_subdirectory=f"captures/{profile}",
+                fixture_subdirectory=fixture_subdirectory,
+            )
+        if config.workflow == "monitor":
+            identity = {
+                "training": asdict(config.training),
+                "monitor": asdict(config.monitor),
+            }
+            profile = f"s{config.training.steps}-{config_digest(identity, length=8)}"
+            return replace(
+                config,
+                output_subdirectory=f"observations/monitor/{profile}",
+                fixture_subdirectory=fixture_subdirectory,
+            )
 
     if config.experiment_storage_name is None:
         return config
@@ -2778,6 +2815,10 @@ def run_mindstudio_cli(
     actions.add_argument("--list-topologies", action="store_true")
     parser.add_argument("--topology", default="single")
     parser.add_argument("--topologies")
+    parser.add_argument(
+        "--experiment",
+        help="diagnostic experiment ID; all selected operations become child scopes",
+    )
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--data-device", choices=("cuda", "npu"))
     parser.add_argument(
@@ -3109,7 +3150,7 @@ def run_mindstudio_cli(
         monitor=monitor_config,
         training=training,
     )
-    config = _stage_scoped_config(config, base_config)
+    config = _stage_scoped_config(config, base_config, args.experiment)
     if args.npu_codegen:
         def select_codegen(endpoint):
             if endpoint.device_type != "npu":

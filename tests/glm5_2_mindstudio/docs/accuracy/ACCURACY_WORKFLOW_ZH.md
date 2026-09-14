@@ -18,18 +18,18 @@ GPU/NPU 官方比对      accuracy_benchmark.py --stage dump --compare
 eager/compile 比对    compile_accuracy_benchmark.py
 ```
 
-前三类官方能力现在共用一个精度实验入口和一个实验身份。`migration_benchmark.py`、
+各类官方能力通过 `--experiment <实验ID>` 共用一个精度实验根。训练步数、问题 step、
+dump task/level 和 Monitor 配置只定义根目录下的操作 scope，不能定义整个实验。
+`migration_benchmark.py`、
 `configuration_check_benchmark.py`、`training_monitor_benchmark.py` 仅作为兼容入口保留。
-默认 L0 dump 继续使用原目录，已有成功采集可以断点续跑；配置检查、其他 dump 规格和
-Monitor V2 则位于同一根目录的 `diagnostics/` 下，避免被误认为互不相关的实验。
+不传 `--experiment` 时仍使用旧目录合同，已有成功采集可以断点续跑。
 
 ```text
-mindstudio_{fixtures,runs,artifacts,reports}/accuracy/<accuracy-id>/
-├── <topology>/...                         # 默认 L0 dump/compare/visualization
-└── diagnostics/
-    ├── configuration-check/<topology>/... # CheckList 官方结果
-    ├── dump/<dump-profile>/<topology>/... # MD5、L1/mix、tensor 等定点采集
-    └── monitor/<monitor-profile>/<topology>/... # 长程 Monitor V2
+mindstudio_{fixtures,runs,artifacts,reports}/accuracy/<experiment-id>/
+├── checklist/configuration-check/         # 训练前合同检查
+├── captures/<dump-profile>/               # 任意 step/task/level 的 msProbe 采集
+├── observations/monitor/<monitor-profile>/# 任意长度的训练状态监测
+└── case.json                              # 诊断状态（artifact 根目录）
 ```
 
 这些阶段不是把 5000 step 全量 dump。Monitor V2 负责低开销长程筛查；发现异常

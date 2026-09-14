@@ -119,8 +119,6 @@ def _case_root(repository_root: Path, case_id: str) -> Path:
     return (
         repository_root
         / MIGRATION_CONFIG.artifact_root
-        / MIGRATION_CONFIG.storage_name
-        / "cases"
         / case_id
     )
 
@@ -129,17 +127,31 @@ def _legacy_case_root(repository_root: Path, case_id: str) -> Path:
     return repository_root / "mindstudio_cases" / "accuracy" / case_id
 
 
+def _nested_case_root(repository_root: Path, case_id: str) -> Path:
+    return (
+        repository_root
+        / MIGRATION_CONFIG.artifact_root
+        / MIGRATION_CONFIG.storage_name
+        / "cases"
+        / case_id
+    )
+
+
 def _case_path(repository_root: Path, case_id: str) -> Path:
     return _case_root(repository_root, case_id) / "case.json"
 
 
 def _load_case(repository_root: Path, case_id: str) -> dict[str, Any]:
     path = _case_path(repository_root, case_id)
-    legacy_root = _legacy_case_root(repository_root, case_id)
-    if not path.exists() and legacy_root.is_dir():
-        path.parent.parent.mkdir(parents=True, exist_ok=True)
-        legacy_root.rename(path.parent)
-        print(f"Adopted legacy diagnostic case:\n  {legacy_root}\n  -> {path.parent}")
+    legacy_roots = (
+        _nested_case_root(repository_root, case_id),
+        _legacy_case_root(repository_root, case_id),
+    )
+    for legacy_root in legacy_roots:
+        if not path.exists() and legacy_root.is_dir():
+            path.parent.parent.mkdir(parents=True, exist_ok=True)
+            legacy_root.rename(path.parent)
+            print(f"Adopted legacy diagnostic case:\n  {legacy_root}\n  -> {path.parent}")
     if not path.is_file():
         raise FileNotFoundError(f"diagnostic case does not exist: {path}")
     value = json.loads(path.read_text(encoding="utf-8"))
@@ -205,7 +217,7 @@ def create_case(
             ),
         },
         "experiment": {
-            "storage_name": MIGRATION_CONFIG.storage_name,
+            "storage_name": case_id,
             "stages": {
                 "dump": MIGRATION_CONFIG.output_subdirectory,
                 "configuration_check": CONFIG_CHECK_CONFIG.output_subdirectory,
@@ -442,6 +454,8 @@ def _migration_command(
         "tests/glm5_2_mindstudio/accuracy_benchmark.py",
         "--stage",
         "dump",
+        "--experiment",
+        value["case_id"],
         *arguments,
         *_selected_topology_args(value),
         "--repeat",
@@ -454,6 +468,8 @@ def _monitor_command(value: dict[str, Any], *arguments: str) -> str:
         "tests/glm5_2_mindstudio/accuracy_benchmark.py",
         "--stage",
         "monitor",
+        "--experiment",
+        value["case_id"],
         *arguments,
         *_selected_topology_args(value),
         "--repeat",
@@ -468,11 +484,16 @@ def _checklist_plan(value: dict[str, Any]) -> dict[str, Any]:
         "stage": "checklist",
         "goal": "Prove that both endpoints execute the same experiment contract.",
         "commands": [
-            _python_command(script, "--stage", "dump", "--data", *topology_args),
+            _python_command(
+                script, "--stage", "dump", "--experiment", value["case_id"],
+                "--data", *topology_args,
+            ),
             _python_command(
                 script,
                 "--stage",
                 "config-check",
+                "--experiment",
+                value["case_id"],
                 "--capture",
                 "reference",
                 *topology_args,
@@ -481,6 +502,8 @@ def _checklist_plan(value: dict[str, Any]) -> dict[str, Any]:
                 script,
                 "--stage",
                 "config-check",
+                "--experiment",
+                value["case_id"],
                 "--capture",
                 "candidate",
                 *topology_args,
@@ -489,6 +512,8 @@ def _checklist_plan(value: dict[str, Any]) -> dict[str, Any]:
                 script,
                 "--stage",
                 "config-check",
+                "--experiment",
+                value["case_id"],
                 "--compare",
                 *topology_args,
             ),
@@ -581,7 +606,7 @@ def compare_repeats(
         MIGRATION_CONFIG,
         dump=replace(MIGRATION_CONFIG.dump, level="mix", summary_mode="md5"),
     )
-    config = _stage_scoped_config(config, MIGRATION_CONFIG)
+    config = _stage_scoped_config(config, MIGRATION_CONFIG, case_id)
     endpoint = config.reference if role == "reference" else config.candidate
     for repeat_value in (baseline_repeat, target_repeat):
         if not 1 <= repeat_value <= endpoint.repeats:
@@ -756,7 +781,7 @@ def analyze_training_observation(
             / "03_observe/monitor"
             / f"s{steps}"
         )
-    config = _stage_scoped_config(config, MIGRATION_CONFIG)
+    config = _stage_scoped_config(config, MIGRATION_CONFIG, case_id)
     inputs: list[dict[str, Any]] = []
     jobs: list[tuple[str, Path, Path, Path]] = []
     registry = standard_topologies()

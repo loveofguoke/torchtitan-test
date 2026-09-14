@@ -69,18 +69,49 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
             ["--capture", "candidate", "--topology", "fsdp8"], remaining
         )
 
+    def test_named_experiment_contains_variable_operation_scopes(self) -> None:
+        experiment = "fsdp8-accuracy-001"
+        short = _stage_scoped_config(
+            MIGRATION_CONFIG,
+            MIGRATION_CONFIG,
+            experiment,
+        )
+        long = _stage_scoped_config(
+            replace(
+                MONITOR_CONFIG,
+                training=replace(MONITOR_CONFIG.training, steps=5000),
+            ),
+            MIGRATION_CONFIG,
+            experiment,
+        )
+        self.assertEqual(experiment, short.storage_name)
+        self.assertEqual(experiment, long.storage_name)
+        self.assertTrue(short.output_subdirectory.startswith("captures/"))
+        self.assertTrue(long.output_subdirectory.startswith("observations/monitor/"))
+        self.assertNotEqual(short.fixture_subdirectory, long.fixture_subdirectory)
+
     def test_forcing_scoped_stage_preserves_default_dump(self) -> None:
         topology = MIGRATION_CONFIG.candidate.topology
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
+            experiment = "fsdp8-accuracy-001"
+            dump_scope = _stage_scoped_config(
+                MIGRATION_CONFIG,
+                MIGRATION_CONFIG,
+                experiment,
+            )
             default_run, default_artifact, default_report = _paths(
                 root,
-                MIGRATION_CONFIG,
+                dump_scope,
                 topology,
                 "candidate",
                 1,
             )
-            scoped = _stage_scoped_config(CONFIG_CHECK_CONFIG, MIGRATION_CONFIG)
+            scoped = _stage_scoped_config(
+                CONFIG_CHECK_CONFIG,
+                MIGRATION_CONFIG,
+                experiment,
+            )
             scoped_run, scoped_artifact, scoped_report = _paths(
                 root,
                 scoped,
@@ -169,7 +200,11 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                 repeat=1,
                 notes="",
             )
-            config = _stage_scoped_config(MONITOR_CONFIG, MIGRATION_CONFIG)
+            config = _stage_scoped_config(
+                MONITOR_CONFIG,
+                MIGRATION_CONFIG,
+                "observation-001",
+            )
             run_root = root / config.run_root / config.output_relative_root
             for role, loss in (("reference", 1.0), ("candidate", 1.02)):
                 path = run_root / "single" / f"{role}-r1" / "training_metrics.jsonl"
@@ -260,7 +295,11 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                     summary_mode="md5",
                 ),
             )
-            config = _stage_scoped_config(config, MIGRATION_CONFIG)
+            config = _stage_scoped_config(
+                config,
+                MIGRATION_CONFIG,
+                "repeat-001",
+            )
             artifact_root = (
                 root
                 / config.artifact_root
@@ -382,8 +421,7 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                 (
                     root
                     / MIGRATION_CONFIG.artifact_root
-                    / MIGRATION_CONFIG.storage_name
-                    / "cases/loss-001/case.json"
+                    / "loss-001/case.json"
                 ).read_text(encoding="utf-8")
             )
             self.assertEqual("checklist", build_plan(value)["stage"])
