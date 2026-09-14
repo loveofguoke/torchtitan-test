@@ -1469,9 +1469,10 @@ def main() -> int:
     baseline_log = baseline_root / "runtime.log"
     print(
         f"Starting uninterrupted baseline: topology={topology.name}, "
-        f"target_step={args.total_steps}\nRuntime log: {baseline_log}",
+        f"target_step={args.total_steps}",
         flush=True,
     )
+    print_runtime_log(baseline_log)
     baseline_environment = _capture_environment(
         base=common_environment,
         device=device,
@@ -1517,10 +1518,10 @@ def main() -> int:
     completed_restart_root = baseline_root / "completed_restart"
     print(
         f"Validating restart after normal completion: topology={topology.name}, "
-        f"expected_load_step={args.total_steps}\n"
-        f"Runtime log: {completed_restart_root / 'runtime.log'}",
+        f"expected_load_step={args.total_steps}",
         flush=True,
     )
+    print_runtime_log(completed_restart_root / "runtime.log")
     completed_environment = _capture_environment(
         base=common_environment,
         device=device,
@@ -1577,10 +1578,10 @@ def main() -> int:
         fault_step = args.split_step if mode == "graceful" else interrupt_step
         print(
             f"Starting checkpoint scenario: mode={mode}, topology={topology.name}, "
-            f"checkpoint_step={args.split_step}, interrupt_step={fault_step}\n"
-            f"Runtime log: {phase_1 / 'runtime.log'}",
+            f"checkpoint_step={args.split_step}, interrupt_step={fault_step}",
             flush=True,
         )
+        print_runtime_log(phase_1 / "runtime.log")
         phase_1_environment = _capture_environment(
             base=common_environment,
             device=device,
@@ -1656,10 +1657,10 @@ def main() -> int:
 
         print(
             f"Restarting checkpoint scenario: mode={mode}, "
-            f"expected_load_step={args.split_step}\n"
-            f"Runtime log: {phase_2 / 'runtime.log'}",
+            f"expected_load_step={args.split_step}",
             flush=True,
         )
+        print_runtime_log(phase_2 / "runtime.log")
         phase_2_environment = _capture_environment(
             base=common_environment,
             device=device,

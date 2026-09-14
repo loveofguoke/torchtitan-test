@@ -24,6 +24,20 @@ from typing import Any, Sequence
 import uuid
 
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+
+def display_repository_path(path: Path) -> str:
+    """Render repository-owned paths from the checkout directory name."""
+
+    resolved = path.resolve()
+    try:
+        relative = resolved.relative_to(REPOSITORY_ROOT)
+    except ValueError:
+        return str(resolved)
+    return (Path(REPOSITORY_ROOT.name) / relative).as_posix()
+
+
 class LoggedProcessError(subprocess.CalledProcessError):
     """A failed subprocess whose final exception line identifies its log."""
 
@@ -38,12 +52,15 @@ class LoggedProcessError(subprocess.CalledProcessError):
         self.log_path = log_path.resolve()
 
     def __str__(self) -> str:
-        return f"{super().__str__().rstrip('.')}; runtime log: {self.log_path}"
+        return (
+            f"{super().__str__().rstrip('.')}; runtime log: "
+            f"{display_repository_path(self.log_path)}"
+        )
 
 
 def print_runtime_log(log_path: Path) -> None:
-    """Print the absolute log location at a process-stage boundary."""
-    print(f"Runtime log: {log_path.resolve()}", flush=True)
+    """Print a clickable repository-relative log location."""
+    print(f"Runtime log: {display_repository_path(log_path)}", flush=True)
 
 
 def write_experiment_overview(

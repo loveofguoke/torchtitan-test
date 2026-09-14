@@ -23,6 +23,7 @@ from tests.glm5_2_common.cli import (
     RunAttempt,
     archive_previous_output,
     assert_run_not_active,
+    display_repository_path,
     print_runtime_log,
     reset_output_generation,
     write_experiment_overview,
@@ -631,7 +632,7 @@ def _run_process(
     context: dict[str, Any],
 ) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    print(f"Runtime log: {log_path}", flush=True)
+    print_runtime_log(log_path)
     with log_path.open("w", encoding="utf-8") as stream:
         for key, value in context.items():
             stream.write(f"{key}: {value}\n")
@@ -647,7 +648,11 @@ def _run_process(
             check=False,
         )
     if process.returncode:
-        print(f"Process failed; runtime log: {log_path}", file=sys.stderr)
+        print(
+            "Process failed; runtime log: "
+            f"{display_repository_path(log_path)}",
+            file=sys.stderr,
+        )
         lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
         if lines:
             print("\n".join(lines[-80:]), file=sys.stderr)

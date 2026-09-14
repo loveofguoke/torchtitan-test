@@ -83,7 +83,7 @@ def _run_logged(
     command: list[str], *, cwd: Path, log: Path, env: dict[str, str]
 ) -> None:
     log.parent.mkdir(parents=True, exist_ok=True)
-    print(f"Runtime log: {log}")
+    print_runtime_log(log)
     print("Command: " + subprocess.list2cmdline(command))
     with log.open("w", encoding="utf-8") as stream:
         stream.write("Command: " + subprocess.list2cmdline(command) + "\n\n")

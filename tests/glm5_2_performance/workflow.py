@@ -1162,7 +1162,7 @@ def capture(
         f"topology={config.topology}, "
         f"preset={config.preset}, output={run_directory}"
     )
-    print(f"Runtime log: {runtime_log}")
+    print_runtime_log(runtime_log)
     capture_started = time.monotonic()
     try:
         _run_process(

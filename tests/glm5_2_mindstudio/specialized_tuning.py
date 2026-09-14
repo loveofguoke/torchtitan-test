@@ -71,7 +71,7 @@ def _run_logged(command: Sequence[str], *, log: Path, env: dict[str, str]) -> No
     log.parent.mkdir(parents=True, exist_ok=True)
     normalized = [str(part) for part in command]
     rendered = shlex.join(normalized)
-    print(f"Runtime log: {log}")
+    print_runtime_log(log)
     print(f"Command: {rendered}")
     with log.open("w", encoding="utf-8") as stream:
         stream.write(f"Command: {rendered}\n\n")

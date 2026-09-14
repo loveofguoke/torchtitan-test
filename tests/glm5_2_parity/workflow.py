@@ -31,6 +31,7 @@ from tests.glm5_2_common.cli import (
     RunAttempt,
     archive_previous_output,
     assert_run_not_active,
+    print_runtime_log,
     reset_output_generation,
 )
 from tests.glm5_2_parity.contracts import (
@@ -307,7 +308,7 @@ def _run_parity_stage(
             raise error
         attempt.update("completed")
     finally:
-        print(f"Runtime log: {log_path.resolve()}", flush=True)
+        print_runtime_log(log_path)
 
 
 def _assert_parity_states_not_active(run_directory: Path) -> None:
@@ -401,7 +402,7 @@ def _run_test(
     )
     command = [sys.executable, "-m", "pytest", TEST_TARGET, "-s"]
     print(f"command: {' '.join(command)}")
-    print(f"log: {log_path}")
+    print_runtime_log(log_path)
     with log_path.open("w", encoding="utf-8") as log_file:
         process = subprocess.Popen(
             command,

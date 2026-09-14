@@ -37,6 +37,7 @@ from tests.glm5_2_common.cli import (
     LoggedProcessError,
     archive_previous_output,
     assert_run_not_active,
+    display_repository_path,
     process_is_running,
     print_runtime_log,
     reset_output_generation,
@@ -950,7 +951,11 @@ def _run_process(
         )
     print_runtime_log(log_path)
     if process.returncode:
-        print(f"Process failed; runtime log: {log_path}", file=sys.stderr)
+        print(
+            "Process failed; runtime log: "
+            f"{display_repository_path(log_path)}",
+            file=sys.stderr,
+        )
         try:
             lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
@@ -1343,10 +1348,8 @@ def capture_endpoint(
         else uuid.uuid4().hex
     )
     if not finalize_existing:
-        print(
-            f"Starting capture: {capture_label}\nRuntime log: {runtime_log}",
-            flush=True,
-        )
+        print(f"Starting capture: {capture_label}", flush=True)
+        print_runtime_log(runtime_log)
         capture_state = {
             "schema": "torchtitan.glm5_2.precision_capture_state",
             "status": "running",
@@ -1379,7 +1382,8 @@ def capture_endpoint(
                 },
             )
             print(
-                f"Capture failed: {capture_label}\nRuntime log: {runtime_log}",
+                f"Capture failed: {capture_label}\nRuntime log: "
+                f"{display_repository_path(runtime_log)}",
                 file=sys.stderr,
                 flush=True,
             )

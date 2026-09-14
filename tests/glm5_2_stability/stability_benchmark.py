@@ -696,10 +696,10 @@ def main() -> int:
 
     print(
         f"Starting stability run: device={device}, topology={topology.name}, "
-        f"steps={training.steps}, minimum_hours={args.minimum_hours}\n"
-        f"Runtime log: {runtime_log}",
+        f"steps={training.steps}, minimum_hours={args.minimum_hours}",
         flush=True,
     )
+    print_runtime_log(runtime_log)
     started_at = datetime.now(timezone.utc)
     started = time.monotonic()
     last_progress = started

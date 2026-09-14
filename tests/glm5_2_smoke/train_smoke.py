@@ -553,7 +553,7 @@ def _run_topology(
         f"Starting smoke topology: {topology.name}, device={device}, "
         f"world_size={topology.world_size}"
     )
-    print(f"Runtime log: {runtime_log}")
+    print_runtime_log(runtime_log)
     started_at = datetime.now(timezone.utc).isoformat()
     started_clock = time.perf_counter()
     try:

@@ -96,9 +96,10 @@ changes recorded by the combination submission-readiness report.
 - Finalizing an already completed training run must preserve the original
   training attempt identity in its artifact metadata.
 - Every subprocess stage records its resolved command and exact log path. It
-  prints the absolute log path again after successful completion; a nonzero
-  subprocess exception includes that path in its final exception line so long
-  tracebacks cannot hide the log location.
+  prints repository-owned logs from the `torchtitan-test/` directory name so
+  terminals can recognize them as clickable workspace paths; external logs
+  remain absolute. A nonzero subprocess exception includes the same display
+  path in its final line so long tracebacks cannot hide the log location.
 
 ## Required change procedure
 

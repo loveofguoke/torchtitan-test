@@ -25,7 +25,7 @@ def test_context_parallel_diagnostic_topologies_scale_world_size() -> None:
         assert topology.context_parallel_degree == degree
 
 
-def test_logged_process_error_ends_with_absolute_runtime_log(
+def test_logged_process_error_keeps_external_runtime_log_absolute(
     tmp_path: Path,
 ) -> None:
     log_path = tmp_path / "run" / "runtime.log"
@@ -33,6 +33,17 @@ def test_logged_process_error_ends_with_absolute_runtime_log(
     error = LoggedProcessError(7, ["trainer", "--run"], log_path=log_path)
 
     assert str(error).endswith(f"runtime log: {log_path.resolve()}")
+
+
+def test_logged_process_error_starts_repository_log_at_checkout_name() -> None:
+    repository_root = Path(__file__).resolve().parents[2]
+    log_path = repository_root / "smoke_runs" / "single" / "runtime.log"
+
+    error = LoggedProcessError(7, ["trainer", "--run"], log_path=log_path)
+
+    assert str(error).endswith(
+        "runtime log: torchtitan-test/smoke_runs/single/runtime.log"
+    )
 
 
 def test_experiment_overview_is_human_and_machine_readable(tmp_path: Path) -> None:
