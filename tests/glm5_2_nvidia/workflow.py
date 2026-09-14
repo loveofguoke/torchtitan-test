@@ -18,7 +18,9 @@ from tests.glm5_2_common.cli import (
     RunAttempt,
     print_runtime_log,
     reset_output_generation,
+    write_experiment_overview,
 )
+from tests.glm5_2_nvidia.diagnostics import diagnose
 from tests.glm5_2_common.naming import config_name
 from tests.glm5_2_common.topology import (
     ParallelTopology,
@@ -38,6 +40,39 @@ DEFAULT_STATS = (
     "nvtx_sum",
     "osrt_sum",
 )
+
+PROFILE_PRESETS = {
+    "standard": {
+        "trace": DEFAULT_TRACE,
+        "sample": "none",
+        "cuda_memory_usage": True,
+        "stats": DEFAULT_STATS,
+    },
+    "communication": {
+        "trace": DEFAULT_TRACE + ",nccl",
+        "sample": "none",
+        "cuda_memory_usage": False,
+        "stats": DEFAULT_STATS + ("gpu_gaps", "gpu_time_util"),
+    },
+    "host": {
+        "trace": DEFAULT_TRACE,
+        "sample": "process-tree",
+        "cuda_memory_usage": False,
+        "stats": DEFAULT_STATS + ("cuda_api_sync", "gpu_gaps"),
+    },
+    "memory": {
+        "trace": DEFAULT_TRACE,
+        "sample": "none",
+        "cuda_memory_usage": True,
+        "stats": DEFAULT_STATS + ("cuda_memcpy_async", "cuda_memcpy_sync"),
+    },
+    "deep": {
+        "trace": DEFAULT_TRACE + ",nccl",
+        "sample": "process-tree",
+        "cuda_memory_usage": True,
+        "stats": DEFAULT_STATS + ("cuda_api_sync", "gpu_gaps", "gpu_time_util"),
+    },
+}
 
 
 def _root() -> Path:
@@ -118,7 +153,7 @@ def _identity_name(
 ) -> str:
     base = (
         f"cuda-{topology.slug}-bf16-s{args.steps}-l{args.local_batch_size}-"
-        f"b{args.global_batch_size}-seq{args.sequence_length}-seed{args.seed}-standard"
+        f"b{args.global_batch_size}-seq{args.sequence_length}-seed{args.seed}-{args.profile}"
     )
     return config_name(base, contract)
 
@@ -244,6 +279,17 @@ def _capture(
     run_dir.mkdir(parents=True, exist_ok=True)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
+    write_experiment_overview(
+        run_dir,
+        title=f"GLM NVIDIA system profile: {topology.slug}",
+        summary={
+            "workflow": "performance/system",
+            "profile": args.profile,
+            "topology": topology.slug,
+            "contract": contract,
+        },
+        entry_command=sys.argv,
+    )
     attempt = RunAttempt.start(
         run_dir,
         kind="nsys-performance",
@@ -349,10 +395,12 @@ def _analyze(
     stats_dir = output_dir / "stats"
     sqlite_path = output_dir / "profile.sqlite"
     expected = [stats_dir / f"{name}.csv" for name in args.stats_reports]
+    diagnosis_dir = output_dir / "diagnosis"
     if (
         manifest.get("analysis_status") == "completed"
         and sqlite_path.is_file()
         and all(path.is_file() for path in expected)
+        and (diagnosis_dir / "diagnosis.json").is_file()
     ):
         print(f"Skip completed Nsight Systems analysis: {artifact_dir}")
         return
@@ -405,9 +453,12 @@ def _analyze(
         output.write_text(result.stdout, encoding="utf-8")
         print(f"Nsight Systems statistic: {output}")
         print_runtime_log(stats_log)
+    diagnosis = diagnose(stats_dir, diagnosis_dir)
+    print(f"NVIDIA automatic diagnosis: {diagnosis['markdown']}")
     manifest["analysis_status"] = "completed"
     manifest["sqlite"] = str(sqlite_path)
     manifest["statistics"] = [str(path) for path in expected]
+    manifest["diagnosis"] = diagnosis
     manifest["official_output"] = str(output_dir)
     (artifact_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -438,6 +489,10 @@ def _write_report(
         "<p>Open the .nsys-rep in Nsight Systems UI for the interactive timeline. "
         "Use the CSV summaries for CUDA API, kernel, memory, NVTX, and OS "
         "runtime aggregation.</p>"
+        "<p>Automatic triage: <code>"
+        f"{html.escape(str(output_dir / 'diagnosis' / 'diagnosis.md'))}</code>. "
+        "Triage findings select the next investigation; they are not pass/fail "
+        "claims.</p>"
         f"<h2>Statistics</h2><ul>{rows}</ul>",
         encoding="utf-8",
     )
@@ -470,17 +525,23 @@ def run_cli() -> int:
         "--visible-devices", default=os.environ.get("CUDA_VISIBLE_DEVICES", "")
     )
     parser.add_argument("--nsys", default=os.environ.get("NSYS", "nsys"))
-    parser.add_argument("--trace", default=DEFAULT_TRACE)
+    parser.add_argument(
+        "--profile",
+        choices=tuple(PROFILE_PRESETS),
+        default="standard",
+        help="layered collection policy; standard is the low-overhead first pass",
+    )
+    parser.add_argument("--trace")
     parser.add_argument("--pytorch", default=DEFAULT_PYTORCH)
     parser.add_argument(
         "--sample",
         choices=("none", "process-tree", "system-wide"),
-        default="none",
+        default=None,
     )
     parser.add_argument(
         "--cuda-memory-usage",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=None,
     )
     parser.add_argument(
         "--cuda-graph-trace",
@@ -489,13 +550,19 @@ def run_cli() -> int:
     )
     parser.add_argument("--delay", type=float)
     parser.add_argument("--duration", type=float)
-    parser.add_argument("--stats-reports", default=",".join(DEFAULT_STATS))
+    parser.add_argument("--stats-reports")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+    preset = PROFILE_PRESETS[args.profile]
+    args.trace = args.trace or preset["trace"]
+    args.sample = args.sample or preset["sample"]
+    if args.cuda_memory_usage is None:
+        args.cuda_memory_usage = preset["cuda_memory_usage"]
+    raw_stats = args.stats_reports or ",".join(preset["stats"])
     args.stats_reports = tuple(
         value.strip()
-        for value in args.stats_reports.split(",")
+        for value in raw_stats.split(",")
         if value.strip()
     )
     if (

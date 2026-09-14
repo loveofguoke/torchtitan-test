@@ -301,6 +301,13 @@ def _analysis_archive_filter(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
             ".sqlite",
         }:
             return member
+        # An NCU report is the processed result of targeted kernel replay, not
+        # a raw system timeline. Keep it in analysis archives with its log.
+        if "ncu" in path.parts and (
+            path.suffix.lower() in {".log", ".json", ".md"}
+            or path.name.endswith(".ncu-rep")
+        ):
+            return member
         return member if path.name in ANALYSIS_RUN_FILES else None
 
     # Specialized MindStudio tuning keeps official processed operator/memory

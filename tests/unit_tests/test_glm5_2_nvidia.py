@@ -6,10 +6,16 @@ import tempfile
 from tests.glm5_2_common.topology import standard_topologies
 from tests.glm5_2_nvidia.workflow import (
     DEFAULT_STATS,
+    PROFILE_PRESETS,
     _adopt_legacy_experiment_layout,
     _adopt_legacy_outputs,
     _contract,
     _identity_name,
+)
+from tests.glm5_2_nvidia.diagnostics import diagnose
+from tests.glm5_2_nvidia.ncu_workflow import (
+    _completed as ncu_completed,
+    _contract as ncu_contract,
 )
 
 
@@ -30,6 +36,7 @@ def _args() -> Namespace:
         delay=None,
         duration=None,
         stats_reports=DEFAULT_STATS,
+        profile="standard",
     )
 
 
@@ -52,6 +59,14 @@ def test_nvidia_nsys_identity_changes_with_trace_policy() -> None:
     second = _identity_name(args, topology, _contract(args, topology, "v1"))
 
     assert first != second
+
+
+def test_nvidia_identity_exposes_profile_policy() -> None:
+    args = _args()
+    args.profile = "communication"
+    topology = standard_topologies()["ddp2"]
+    name = _identity_name(args, topology, _contract(args, topology, "v1"))
+    assert "-communication-" in name
 
 
 def test_legacy_nsys_payload_is_adopted_by_run_without_reprofiling() -> None:
@@ -118,3 +133,66 @@ def test_legacy_nsys_roots_are_adopted_by_nvidia_suite() -> None:
         assert not legacy_run.exists()
         assert not legacy_artifact.exists()
         assert not legacy_report.exists()
+
+
+def test_layered_profiles_preserve_a_light_standard_first_pass() -> None:
+    assert "nccl" not in PROFILE_PRESETS["standard"]["trace"]
+    assert PROFILE_PRESETS["standard"]["sample"] == "none"
+    assert "nccl" in PROFILE_PRESETS["communication"]["trace"]
+    assert PROFILE_PRESETS["host"]["sample"] == "process-tree"
+    assert PROFILE_PRESETS["memory"]["cuda_memory_usage"] is True
+
+
+def test_automatic_diagnosis_is_evidence_linked() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        stats = root / "stats"
+        stats.mkdir()
+        (stats / "cuda_gpu_kern_sum.csv").write_text(
+            'Time (%),Total Time (ns),Instances,Name\n60,1200,2,"ncclKernel"\n40,800,1,"gemm"\n',
+            encoding="utf-8",
+        )
+        (stats / "cuda_api_sum.csv").write_text(
+            'Time (%),Total Time (ns),Instances,Name\n70,700,2,"cudaDeviceSynchronize"\n',
+            encoding="utf-8",
+        )
+
+        result = diagnose(stats, root / "diagnosis")
+
+        payload = json.loads(Path(result["json"]).read_text(encoding="utf-8"))
+        assert payload["interpretation"] == "triage_only"
+        assert {item["category"] for item in payload["findings"]} >= {
+            "communication", "host_or_synchronization", "kernel_hotspots"
+        }
+
+
+def test_ncu_contract_records_replay_and_selection() -> None:
+    args = Namespace(
+        module="glm5", config="glm5_debugmodel", steps=30,
+        local_batch_size=8, global_batch_size=64, sequence_length=128,
+        seed=61, section_set="basic", kernel_name="regex:.*gemm.*",
+        nvtx_include=None, launch_skip=2, launch_count=1,
+        replay_mode="kernel",
+    )
+    contract = ncu_contract(args, standard_topologies()["single"], "2026.4")
+    assert contract["kernel_name"] == "regex:.*gemm.*"
+    assert contract["launch_skip"] == 2
+    assert contract["replay_mode"] == "kernel"
+
+
+def test_ncu_resume_requires_matching_complete_report() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        manifest = root / "manifest.json"
+        report_dir = root / "ncu"
+        report_dir.mkdir()
+        report = report_dir / "profile-1.ncu-rep"
+        contract = {"kernel_name": "gemm"}
+        manifest.write_text(
+            json.dumps({"status": "completed", "contract": contract}),
+            encoding="utf-8",
+        )
+        assert not ncu_completed(manifest, report_dir, contract)
+        report.write_bytes(b"ncu")
+        assert ncu_completed(manifest, report_dir, contract)
+        assert not ncu_completed(manifest, report_dir, {"kernel_name": "attention"})

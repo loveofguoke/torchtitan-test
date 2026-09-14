@@ -92,6 +92,41 @@ class TestReleaseArtifacts(unittest.TestCase):
                 names,
             )
 
+    def test_ncu_analysis_archive_keeps_targeted_kernel_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            experiment = "cuda-single-bf16-basic-abcd1234"
+            run = (
+                root / "nvidia_runs" / "performance" / "operator"
+                / "1-card" / "single" / experiment
+            )
+            output = run / "trainer_output" / "profiling" / "ncu"
+            artifact = (
+                root / "nvidia_artifacts" / "performance" / "operator"
+                / "1-card" / "single" / experiment
+            )
+            output.mkdir(parents=True)
+            artifact.mkdir(parents=True)
+            (output / "profile-1.ncu-rep").write_bytes(b"report")
+            (run / "ncu_profile.log").write_text("complete\n", encoding="utf-8")
+            (artifact / "manifest.json").write_text("{}", encoding="utf-8")
+            archive = root / "analysis.tar.gz"
+
+            create_archive(root, experiment, archive, content="analysis")
+
+            with tarfile.open(archive) as bundle:
+                names = set(bundle.getnames())
+            prefix = (
+                "nvidia_runs/performance/operator/1-card/single/"
+                f"{experiment}/trainer_output/profiling/ncu"
+            )
+            self.assertIn(f"{prefix}/profile-1.ncu-rep", names)
+            self.assertIn(
+                "nvidia_artifacts/performance/operator/1-card/single/"
+                f"{experiment}/manifest.json",
+                names,
+            )
+
     def test_wget_keeps_tls_certificate_verification_enabled(self) -> None:
         with (
             mock.patch("release_artifacts.shutil.which", return_value="wget"),
