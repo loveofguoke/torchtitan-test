@@ -233,6 +233,179 @@ def _automatic_replay_captures(capture_root: Path) -> list[Path]:
     return selected
 
 
+def _capture_gradient_score(capture_directory: Path) -> float:
+    statistics_path = capture_directory / "actual_gradients.json"
+    if not statistics_path.is_file():
+        return -1.0
+    try:
+        statistics = json.loads(statistics_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return -1.0
+    score = 0.0
+    for name in ("dq_QNH", "dk_KNH"):
+        gradient = statistics.get(name, {})
+        if gradient.get("finite_count") != gradient.get("numel"):
+            return float("inf")
+        score = max(score, float(gradient.get("max_abs") or 0.0))
+    return score
+
+
+def _capture_rank(capture_directory: Path) -> int:
+    name = capture_directory.parent.name
+    if not name.startswith("rank") or not name[4:].isdigit():
+        raise ValueError(
+            f"cannot determine rank from capture path: {capture_directory}"
+        )
+    return int(name[4:])
+
+
+def _run_device_replays(
+    *,
+    root: Path,
+    capture_root: Path,
+    capture_directories: list[Path],
+    environment: dict[str, str],
+    visible_devices: str,
+) -> dict[str, object]:
+    """Replay every rank on its original device plus one device-zero control."""
+    jobs = [
+        (f"rank{_capture_rank(path)}-origin", path, _capture_rank(path))
+        for path in capture_directories
+    ]
+    worst_capture = max(capture_directories, key=_capture_gradient_score)
+    worst_rank = _capture_rank(worst_capture)
+    if worst_rank != 0:
+        jobs.append((f"rank{worst_rank}-control-device0", worst_capture, 0))
+
+    replay_root = capture_root / "device_replays"
+    replay_root.mkdir(parents=True, exist_ok=True)
+    records = []
+    for name, capture_directory, logical_device in jobs:
+        job_root = replay_root / name
+        compiler_root = capture_root / "compiler" / "device_replays" / name
+        replay_log = job_root / "replay.log"
+        summary_path = job_root / "replay_summary.json"
+        job_root.mkdir(parents=True, exist_ok=True)
+        replay_environment = environment.copy()
+        replay_environment.update(
+            {
+                "TORCH_TRACE": str(compiler_root / "trace"),
+                "TORCH_COMPILE_DEBUG": "1",
+                "TORCH_COMPILE_DEBUG_DIR": str(compiler_root / "debug"),
+                "TORCHINDUCTOR_CACHE_DIR": str(compiler_root / "cache" / "inductor"),
+                "TRITON_CACHE_DIR": str(compiler_root / "cache" / "triton"),
+            }
+        )
+        for variable in (
+            "TORCH_TRACE",
+            "TORCH_COMPILE_DEBUG_DIR",
+            "TORCHINDUCTOR_CACHE_DIR",
+            "TRITON_CACHE_DIR",
+        ):
+            Path(replay_environment[variable]).mkdir(parents=True, exist_ok=True)
+        command = [
+            sys.executable,
+            str(Path(__file__).with_name("replay_glm5_flex.py")),
+            str(capture_directory),
+            "--device",
+            f"npu:{logical_device}",
+            "--visible-devices",
+            visible_devices,
+            "--result-directory",
+            str(job_root),
+            "--summary-path",
+            str(summary_path),
+            "--compact",
+        ]
+        print(
+            f"Running FlexAttention replay {name} on npu:{logical_device}: "
+            f"{replay_log}"
+        )
+        with replay_log.open("w", encoding="utf-8") as stream:
+            result = subprocess.run(
+                command,
+                cwd=root,
+                env=replay_environment,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
+        result_path = job_root / "replay_result.json"
+        replay_result = None
+        if result_path.is_file():
+            try:
+                replay_result = json.loads(result_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                pass
+        records.append(
+            {
+                "name": name,
+                "capture": str(capture_directory),
+                "capture_rank": _capture_rank(capture_directory),
+                "logical_device": logical_device,
+                "physical_device": visible_devices.split(",")[logical_device].strip(),
+                "return_code": result.returncode,
+                "log": str(replay_log),
+                "summary": str(summary_path),
+                "result": str(result_path),
+                "replay_result": replay_result,
+            }
+        )
+    origin = next(
+        (job for job in records if job["name"] == f"rank{worst_rank}-origin"),
+        None,
+    )
+    control = next(
+        (
+            job
+            for job in records
+            if job["name"] == f"rank{worst_rank}-control-device0"
+        ),
+        origin if worst_rank == 0 else None,
+    )
+
+    def qk_max(job):
+        result_payload = job.get("replay_result") if job else None
+        if not result_payload:
+            return None
+        return max(
+            float(result_payload[name].get("max_abs") or 0.0)
+            for name in ("dq", "dk")
+        )
+
+    origin_qk_max = qk_max(origin)
+    control_qk_max = qk_max(control)
+    captured_qk_max = _capture_gradient_score(worst_capture)
+    if origin_qk_max is None or control_qk_max is None:
+        diagnosis = "incomplete_replay"
+    elif origin_qk_max > max(control_qk_max * 1000.0, 1.0):
+        diagnosis = "origin_device_or_origin_compiler_choice"
+    elif origin_qk_max > 1.0 and control_qk_max > 1.0:
+        diagnosis = "reproducible_input_or_kernel_path"
+    elif captured_qk_max > max(origin_qk_max * 1000.0, 1.0):
+        diagnosis = "full_cp_runtime_only"
+    else:
+        diagnosis = "no_large_replay_divergence"
+    summary = {
+        "status": "completed",
+        "visible_devices": visible_devices,
+        "worst_capture": str(worst_capture),
+        "worst_capture_rank": worst_rank,
+        "captured_worst_qk_max_abs": captured_qk_max,
+        "origin_replay_qk_max_abs": origin_qk_max,
+        "control_replay_qk_max_abs": control_qk_max,
+        "diagnosis": diagnosis,
+        "jobs": records,
+    }
+    summary_path = capture_root / "device_replay_summary.json"
+    summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    (capture_root / "replay_summary.json").write_text(
+        json.dumps(summary, indent=2) + "\n", encoding="utf-8"
+    )
+    print(f"FlexAttention device replay summary: {summary_path}")
+    return summary
+
+
 def _run_topology(
     *,
     root: Path,
@@ -416,14 +589,13 @@ def _run_topology(
         capture_root = run_directory / "nonfinite_replay"
         capture_directories = _automatic_replay_captures(capture_root)
         if capture_directories:
-            replay_log = capture_root / "replay.log"
             replay_status = capture_root / "replay_status.json"
             replay_status.write_text(
                 json.dumps(
                     {
                         "status": "starting",
                         "selected_captures": [str(path) for path in capture_directories],
-                        "log": str(replay_log),
+                        "log": str(capture_root / "device_replay_summary.json"),
                         "summary": str(capture_root / "replay_summary.json"),
                     },
                     indent=2,
@@ -431,39 +603,13 @@ def _run_topology(
                 + "\n",
                 encoding="utf-8",
             )
-            replay_command = [
-                sys.executable,
-                str(Path(__file__).with_name("replay_glm5_flex.py")),
-                *(str(path) for path in capture_directories),
-                "--device",
-                "npu:0",
-                "--compact",
-            ]
-            replay_environment = environment.copy()
-            replay_compiler_root = capture_root / "compiler" / "replay"
-            replay_environment.update(
-                {
-                    "TORCH_TRACE": str(replay_compiler_root / "trace"),
-                    "TORCH_COMPILE_DEBUG": "1",
-                    "TORCH_COMPILE_DEBUG_DIR": str(
-                        replay_compiler_root / "debug"
-                    ),
-                }
+            device_replays = _run_device_replays(
+                root=root,
+                capture_root=capture_root,
+                capture_directories=capture_directories,
+                environment=environment,
+                visible_devices=visible_devices,
             )
-            Path(replay_environment["TORCH_TRACE"]).mkdir(parents=True, exist_ok=True)
-            Path(replay_environment["TORCH_COMPILE_DEBUG_DIR"]).mkdir(
-                parents=True, exist_ok=True
-            )
-            print(f"Running automatic FlexAttention replay: {replay_log}")
-            with replay_log.open("w", encoding="utf-8") as stream:
-                replay_result = subprocess.run(
-                    replay_command,
-                    cwd=root,
-                    env=replay_environment,
-                    stdout=stream,
-                    stderr=subprocess.STDOUT,
-                    check=False,
-                )
             comparison_log = capture_root / "compiler_comparison.log"
             comparison_command = [
                 sys.executable,
@@ -484,9 +630,13 @@ def _run_topology(
                     check=False,
                 )
             record["nonfinite_replay"] = {
-                "return_code": replay_result.returncode,
-                "log": str(replay_log),
+                "return_code": max(
+                    (job["return_code"] for job in device_replays["jobs"]),
+                    default=0,
+                ),
+                "log": str(capture_root / "device_replay_summary.json"),
                 "capture_count": len(capture_directories),
+                "device_replays": device_replays,
                 "compiler_comparison_return_code": comparison_result.returncode,
                 "compiler_comparison_log": str(comparison_log),
                 "compiler_comparison": str(
@@ -497,7 +647,9 @@ def _run_topology(
                 json.dumps(
                     {
                         "status": (
-                            "completed" if replay_result.returncode == 0 else "failed"
+                            "completed"
+                            if record["nonfinite_replay"]["return_code"] == 0
+                            else "failed"
                         ),
                         **record["nonfinite_replay"],
                         "summary": str(capture_root / "replay_summary.json"),

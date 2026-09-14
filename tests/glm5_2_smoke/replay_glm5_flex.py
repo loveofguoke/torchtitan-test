@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 import torch
@@ -37,7 +38,12 @@ def _statistics(tensor: torch.Tensor) -> dict[str, object]:
 
 
 def replay(
-    capture_directory: Path, device: torch.device, *, verbose: bool = True
+    capture_directory: Path,
+    device: torch.device,
+    *,
+    result_directory: Path | None = None,
+    visible_devices: str | None = None,
+    verbose: bool = True,
 ) -> dict[str, object]:
     capture_directory = capture_directory.resolve()
     forward = torch.load(
@@ -90,9 +96,37 @@ def replay(
         delta_ref_max_abs_diff = float(
             (replay_delta_QN - captured_delta_ref.to(device)).abs().max().item()
         )
+    result_directory = result_directory or capture_directory
+    result_directory.mkdir(parents=True, exist_ok=True)
+    visible_device_ids = [
+        value.strip() for value in (visible_devices or "").split(",") if value.strip()
+    ]
+    logical_device_index = device.index or 0
+    physical_device_id = (
+        visible_device_ids[logical_device_index]
+        if logical_device_index < len(visible_device_ids)
+        else None
+    )
     result = {
         "capture_directory": str(capture_directory),
         "rank": forward["rank"],
+        "replay_device": str(device),
+        "visible_devices": visible_devices,
+        "physical_device_id": physical_device_id,
+        "compiler_environment": {
+            name: os.environ.get(name)
+            for name in (
+                "TORCHINDUCTOR_NPU_BACKEND",
+                "TORCHINDUCTOR_FLEXATTENTION_MASKOUT",
+                "TORCHINDUCTOR_MAX_AUTOTUNE",
+                "INDUCTOR_ASCEND_AGGRESSIVE_AUTOTUNE",
+                "TORCHINDUCTOR_COMPILE_THREADS",
+                "TORCHINDUCTOR_CACHE_DIR",
+                "TRITON_CACHE_DIR",
+                "ENABLE_INPLACE_BUFFERS",
+                "ASCEND_RT_VISIBLE_DEVICES",
+            )
+        },
         "module_fqn": forward["module_fqn"],
         "call_index": forward["call_index"],
         "captured_output": _statistics(captured_output),
@@ -135,7 +169,7 @@ def replay(
             }
             for name in ("dq_QNH", "dk_KNH", "dv_KNV")
         }
-    result_path = capture_directory / "replay_result.json"
+    result_path = result_directory / "replay_result.json"
     result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     torch.save(
         {
@@ -146,7 +180,7 @@ def replay(
             "dk_KNH": k_KNH.grad.detach().cpu(),
             "dv_KNV": v_KNV.grad.detach().cpu(),
         },
-        capture_directory / "replay_tensors.pt",
+        result_directory / "replay_tensors.pt",
     )
     if verbose:
         print(json.dumps(result, indent=2), flush=True)
@@ -164,6 +198,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("capture_directories", type=Path, nargs="+")
     parser.add_argument("--device", default="npu:0")
+    parser.add_argument("--result-directory", type=Path)
+    parser.add_argument("--summary-path", type=Path)
+    parser.add_argument("--visible-devices")
     parser.add_argument("--compact", action="store_true")
     args = parser.parse_args()
 
@@ -171,7 +208,8 @@ def main() -> int:
     if device.type == "npu":
         torch.npu.set_device(device)
     capture_root = Path(args.capture_directories[0]).resolve().parents[1]
-    summary_path = capture_root / "replay_summary.json"
+    summary_path = args.summary_path or capture_root / "replay_summary.json"
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary = {
         "status": "running",
         "requested_capture_count": len(args.capture_directories),
@@ -182,7 +220,13 @@ def main() -> int:
     _write_summary(summary_path, summary)
     print(f"Replay summary initialized: {summary_path}", flush=True)
     for capture_directory in args.capture_directories:
-        item = replay(capture_directory, device, verbose=not args.compact)
+        item = replay(
+            capture_directory,
+            device,
+            result_directory=args.result_directory,
+            visible_devices=args.visible_devices,
+            verbose=not args.compact,
+        )
         summary["completed_capture_count"] += 1
         summary["all_replayed_gradients_finite"] = bool(
             summary["all_replayed_gradients_finite"]

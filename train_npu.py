@@ -205,6 +205,8 @@ def _install_nonfinite_gradient_diagnostics() -> None:
                         "TORCH_COMPILE_DEBUG_DIR",
                         "TORCHINDUCTOR_CACHE_DIR",
                         "TRITON_CACHE_DIR",
+                        "ENABLE_INPLACE_BUFFERS",
+                        "ASCEND_RT_VISIBLE_DEVICES",
                     )
                 },
                 "allocator_at_forward": allocator_statistics(q_QNH.device),

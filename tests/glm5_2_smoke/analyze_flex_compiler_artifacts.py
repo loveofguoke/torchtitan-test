@@ -189,14 +189,28 @@ def analyze(capture_root: Path) -> dict[str, object]:
         if directory.is_dir()
     }
     replay = _inspect_tree(compiler_root / "replay")
+    device_replays = {
+        directory.name: _inspect_tree(directory)
+        for directory in sorted((compiler_root / "device_replays").glob("*"))
+        if directory.is_dir()
+    }
+    contexts = {
+        **capture,
+        **({"replay": replay} if replay.get("exists") else {}),
+        **{
+            f"device_replay/{name}": value
+            for name, value in device_replays.items()
+        },
+    }
     kernel_sets = {
         name: sorted(evidence.get("kernels", {}))
-        for name, evidence in {**capture, "replay": replay}.items()
+        for name, evidence in contexts.items()
     }
     return {
         "capture_root": str(capture_root.resolve()),
         "capture": capture,
         "replay": replay,
+        "device_replays": device_replays,
         "kernel_name_sets": kernel_sets,
         "kernel_names_common_to_all": sorted(
             set.intersection(*(set(value) for value in kernel_sets.values()))
@@ -216,7 +230,14 @@ def _write_markdown(path: Path, report: dict[str, object]) -> None:
         "| Context | Files | Bytes | grad_lse=None | grad_lse=tensor | Autotune | Kernels |",
         "|---|---:|---:|---:|---:|---:|---:|",
     ]
-    contexts = {**report["capture"], "replay": report["replay"]}
+    contexts = {
+        **report["capture"],
+        **({"replay": report["replay"]} if report["replay"].get("exists") else {}),
+        **{
+            f"device_replay/{name}": value
+            for name, value in report.get("device_replays", {}).items()
+        },
+    }
     for name, evidence in contexts.items():
         signals = evidence.get("signals", {})
         lines.append(

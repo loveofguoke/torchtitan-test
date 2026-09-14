@@ -15,6 +15,7 @@ from tests.glm5_2_smoke.train_smoke import (
     _completed,
     _contract,
     _default_log_rank,
+    _run_device_replays,
     _run_topology,
 )
 
@@ -257,10 +258,55 @@ def test_failed_smoke_runs_nonfinite_replay_before_raising(
     replay_root = tmp_path / "smoke_runs/cp8/nonfinite_replay"
     assert len(commands) == 3
     assert commands[1][-1] == "--compact"
-    assert commands[2][-1] == str(replay_root)
-    assert (replay_root / "replay.log").is_file()
+    assert commands[-1][-1] == str(replay_root)
+    assert (replay_root / "device_replay_summary.json").is_file()
     status = json.loads((replay_root / "replay_status.json").read_text())
     assert status["status"] == "completed"
+
+
+def test_device_replay_runs_origin_and_worst_rank_control(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captures = []
+    for rank, value in ((0, 0.1), (1, 99.0)):
+        capture = tmp_path / "nonfinite_replay" / f"rank{rank}" / "call000"
+        capture.mkdir(parents=True)
+        (capture / "actual_gradients.json").write_text(
+            json.dumps(
+                {
+                    name: {"finite_count": 1, "numel": 1, "max_abs": value}
+                    for name in ("dq_QNH", "dk_KNH")
+                }
+            ),
+            encoding="utf-8",
+        )
+        captures.append(capture)
+    commands = []
+    monkeypatch.setattr(
+        "tests.glm5_2_smoke.train_smoke.subprocess.run",
+        lambda command, **_kwargs: commands.append(command)
+        or SimpleNamespace(returncode=0),
+    )
+
+    summary = _run_device_replays(
+        root=tmp_path,
+        capture_root=tmp_path / "nonfinite_replay",
+        capture_directories=captures,
+        environment={},
+        visible_devices="4,7",
+    )
+
+    assert [job["name"] for job in summary["jobs"]] == [
+        "rank0-origin",
+        "rank1-origin",
+        "rank1-control-device0",
+    ]
+    assert [job["physical_device"] for job in summary["jobs"]] == ["4", "7", "4"]
+    assert [command[command.index("--device") + 1] for command in commands] == [
+        "npu:0",
+        "npu:1",
+        "npu:0",
+    ]
 
 
 def test_suite_report_preserves_historical_unknown_time(tmp_path) -> None:
