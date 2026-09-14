@@ -16,6 +16,20 @@ from torchtitan.models.common.attention import FlexAttention
 from torchtitan.models.glm5.dsa import build_dsa_block_mask
 
 
+def _compile_delta_probe(
+    output_BNQV: torch.Tensor,
+    grad_output_BNQV: torch.Tensor,
+) -> torch.Tensor:
+    """Compile the exact reduction used by the FlexAttention DELTA lowering."""
+
+    def compute_delta(out: torch.Tensor, grad_out: torch.Tensor) -> torch.Tensor:
+        return (out * grad_out).sum(dim=-1, dtype=torch.float32)
+
+    return torch.compile(compute_delta, fullgraph=True)(
+        output_BNQV.detach(), grad_output_BNQV
+    )
+
+
 def _statistics(tensor: torch.Tensor) -> dict[str, object]:
     tensor = tensor.detach()
     finite = torch.isfinite(tensor)
@@ -87,6 +101,13 @@ def replay(
     replay_delta_QN = (
         output_QNV.detach().float() * grad_output_QNV.float()
     ).sum(dim=-1)
+    grad_output_BNQV = grad_output_QNV.transpose(0, 1).unsqueeze(0)
+    compiled_delta_BNQ = _compile_delta_probe(output_BNQV, grad_output_BNQV)
+    compiled_delta_QN = compiled_delta_BNQ.squeeze(0).transpose(0, 1)
+    compiled_delta_diff = (compiled_delta_QN - replay_delta_QN).abs()
+    compiled_delta_bad = ~torch.isfinite(compiled_delta_QN)
+    compiled_delta_bad |= compiled_delta_diff > 1e-6
+    compiled_delta_bad_coordinates = torch.nonzero(compiled_delta_bad)[:32].tolist()
     output_QNV.backward(grad_output_QNV)
 
     captured_output = forward["output_QNV"].to(device)
@@ -142,6 +163,21 @@ def replay(
         "captured_delta_ref": backward.get("delta_ref_statistics"),
         "replayed_delta_ref": _statistics(replay_delta_QN),
         "delta_ref_max_abs_diff": delta_ref_max_abs_diff,
+        "compiled_delta_probe": {
+            "statistics": _statistics(compiled_delta_QN),
+            "reference_max_abs_diff": (
+                float(compiled_delta_diff.max().item())
+                if compiled_delta_diff.numel()
+                else 0.0
+            ),
+            "bad_count": int(compiled_delta_bad.sum().item()),
+            "first_bad_coordinates_QN": compiled_delta_bad_coordinates,
+            "interpretation": (
+                "bad values identify the standalone Inductor DELTA reduction; "
+                "a clean result moves the fault to DELTA consumption inside the "
+                "FlexAttention backward templates"
+            ),
+        },
         "dq": _statistics(q_QNH.grad),
         "dk": _statistics(k_KNH.grad),
         "dv": _statistics(v_KNV.grad),
@@ -241,6 +277,7 @@ def main() -> int:
                 "call_index": item["call_index"],
                 "output_max_abs_diff": item["output_max_abs_diff"],
                 "delta_ref_max_abs_diff": item["delta_ref_max_abs_diff"],
+                "compiled_delta_probe": item["compiled_delta_probe"],
                 "captured_actual_gradients": item.get("captured_actual_gradients"),
                 "replayed_gradients": {
                     name: item[name] for name in ("dq", "dk", "dv")

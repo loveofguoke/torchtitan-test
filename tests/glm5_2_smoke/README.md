@@ -108,6 +108,10 @@ backward kernel. A finite, plausible reference DELTA moves the investigation
 inside TorchNPU lowering/runtime; it does not by itself prove that the DELTA
 actually consumed by the generated kernel is correct. `actual_gradients.pt`
 captures the dQ/dK/dV returned by that exact distributed backward invocation.
+Replay also compiles the exact `[B,H,Q,V] -> [B,H,Q]` DELTA reduction used by
+the lowering and records `compiled_delta_probe` in `replay_result.json`. A bad
+probe localizes the fault to the standalone Inductor reduction; a clean probe
+moves it to DELTA addressing or consumption in the FlexAttention dQ/dK kernels.
 
 After the distributed process exits, smoke automatically selects one capture per
 rank: the call with the largest observed dQ/dK magnitude, with non-finite values
