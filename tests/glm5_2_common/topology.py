@@ -222,6 +222,8 @@ def standard_topologies() -> dict[str, ParallelTopology]:
             data_parallel_shard_degree=2,
         ),
         "tp8": ParallelTopology("tp8", 8, tensor_parallel_degree=8),
+        "cp2": ParallelTopology("cp2", 2, context_parallel_degree=2),
+        "cp4": ParallelTopology("cp4", 4, context_parallel_degree=4),
         "cp8": ParallelTopology("cp8", 8, context_parallel_degree=8),
         "pp8": ParallelTopology("pp8", 8, pipeline_parallel_degree=8),
         "ep8": ParallelTopology(

@@ -13,6 +13,16 @@ from tests.glm5_2_common.cli import (
     reset_output_generation,
     write_experiment_overview,
 )
+from tests.glm5_2_common.topology import standard_topologies
+
+
+def test_context_parallel_diagnostic_topologies_scale_world_size() -> None:
+    topologies = standard_topologies()
+
+    for degree in (2, 4, 8):
+        topology = topologies[f"cp{degree}"]
+        assert topology.world_size == degree
+        assert topology.context_parallel_degree == degree
 
 
 def test_logged_process_error_ends_with_absolute_runtime_log(
