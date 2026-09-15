@@ -15,6 +15,8 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 from datetime import datetime, timezone
+import hashlib
+from importlib import metadata as importlib_metadata
 import json
 import os
 from pathlib import Path
@@ -111,6 +113,76 @@ def _default_log_rank(topology: ParallelTopology) -> int:
     return ranks_per_pipeline_stage * (topology.pipeline_parallel_degree - 1)
 
 
+def _distribution_identity(distribution_name: str) -> dict[str, str | None]:
+    """Identify installed wheel contents without importing the package."""
+    try:
+        distribution = importlib_metadata.distribution(distribution_name)
+    except importlib_metadata.PackageNotFoundError:
+        return {"version": None, "record_sha256": None}
+    record = distribution.read_text("RECORD")
+    normalized_record = "\n".join(
+        sorted(
+            line
+            for line in (record or "").splitlines()
+            if "__pycache__" not in line and not line.endswith(".pyc,,")
+        )
+    )
+    return {
+        "version": distribution.version,
+        "record_sha256": (
+            hashlib.sha256(normalized_record.encode("utf-8")).hexdigest()
+            if normalized_record
+            else None
+        ),
+    }
+
+
+def _torch_npu_compiler_tree_sha256() -> str | None:
+    try:
+        distribution = importlib_metadata.distribution("torch-npu")
+    except importlib_metadata.PackageNotFoundError:
+        return None
+    package_root = Path(distribution.locate_file("torch_npu"))
+    roots = (
+        package_root / "_inductor",
+        package_root / "utils" / "patch_flexattention.py",
+    )
+    files: list[Path] = []
+    for root in roots:
+        if root.is_file():
+            files.append(root)
+        elif root.is_dir():
+            files.extend(path for path in root.rglob("*") if path.is_file())
+    digest = hashlib.sha256()
+    for path in sorted(files):
+        if "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:
+            continue
+        digest.update(path.relative_to(package_root).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        digest.update(b"\n")
+    return digest.hexdigest() if files else None
+
+
+def _npu_compiler_identity() -> dict[str, Any]:
+    identity = {
+        "schema_version": 1,
+        "torch": _distribution_identity("torch"),
+        "torch_npu": _distribution_identity("torch-npu"),
+        "triton": _distribution_identity("triton"),
+        "ascend_home_path": os.environ.get("ASCEND_HOME_PATH"),
+    }
+    identity["torch_npu"]["compiler_tree_sha256"] = (
+        _torch_npu_compiler_tree_sha256()
+    )
+    identity["cache_key"] = hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:16]
+    return identity
+
+
 def _contract(
     *,
     device: str,
@@ -129,6 +201,7 @@ def _contract(
     diagnostic_inplace_buffers: str = "default",
     diagnostic_rank: int | str = 6,
     diagnostic_layer: str = "layers.6.attention.inner_attention",
+    npu_compiler_identity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     topology_contract = asdict(topology)
     # Manifests are JSON.  Normalize tuple-valued fields before comparing a
@@ -165,6 +238,10 @@ def _contract(
                 else {}
             ),
         }
+    if npu_compiler_identity is not None:
+        contract.setdefault("npu_compiler", {})["installation"] = (
+            npu_compiler_identity
+        )
     if nonfinite_diagnostics:
         contract["nonfinite_diagnostics"] = {
             "rank": diagnostic_rank,
@@ -444,6 +521,7 @@ def _run_topology(
         [graph.feature(device_type="npu" if device == "npu" else "cuda")],
     )
     run_directory = suite_root / topology.slug
+    npu_compiler_identity = _npu_compiler_identity() if device == "npu" else None
     contract = _contract(
         device=device,
         topology=topology,
@@ -461,6 +539,7 @@ def _run_topology(
         diagnostic_inplace_buffers=diagnostic_inplace_buffers,
         diagnostic_rank=diagnostic_rank,
         diagnostic_layer=diagnostic_layer,
+        npu_compiler_identity=npu_compiler_identity,
     )
     if not force and _completed(run_directory, contract):
         print(f"Skip completed topology {topology.name}: {run_directory}")
@@ -516,6 +595,23 @@ def _run_topology(
         }
     )
     environment.update(execution.environment())
+    if npu_compiler_identity is not None:
+        compiler_cache_root = (
+            suite_root
+            / ".compiler_cache"
+            / str(npu_compiler_identity["cache_key"])
+            / topology.name
+        )
+        inductor_cache = compiler_cache_root / "inductor"
+        triton_cache = compiler_cache_root / "triton"
+        inductor_cache.mkdir(parents=True, exist_ok=True)
+        triton_cache.mkdir(parents=True, exist_ok=True)
+        environment.update(
+            {
+                "TORCHINDUCTOR_CACHE_DIR": str(inductor_cache),
+                "TRITON_CACHE_DIR": str(triton_cache),
+            }
+        )
     if nonfinite_diagnostics:
         environment.update(
             {
@@ -595,7 +691,7 @@ def _run_topology(
         "completed" if result.returncode == 0 else "failed",
         return_code=result.returncode,
     )
-    if nonfinite_diagnostics:
+    if nonfinite_diagnostics and result.returncode:
         capture_root = run_directory / "nonfinite_replay"
         capture_directories = _automatic_replay_captures(capture_root)
         if capture_directories:
@@ -673,7 +769,10 @@ def _run_topology(
                 json.dumps(record, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-            print(f"FlexAttention replay log: {replay_log}")
+            print(
+                "FlexAttention replay log: "
+                f"{capture_root / 'device_replay_summary.json'}"
+            )
             summary_path = capture_root / "replay_summary.json"
             if summary_path.is_file():
                 print(f"FlexAttention replay summary: {summary_path}")

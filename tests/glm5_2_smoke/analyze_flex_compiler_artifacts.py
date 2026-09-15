@@ -25,7 +25,7 @@ SIGNALS = (
     "tangents_1, mul_",
 )
 KERNEL_PATTERN = re.compile(
-    r"\b(?:triton|dvm)_(?:poi|tem|per)_fused_flex_attention[A-Za-z0-9_]*"
+    r"\b(?:triton|dvm)_(?:(?:poi|tem|per)_fused_)?flex_attention[A-Za-z0-9_]*"
 )
 BUFFER_PATTERN = re.compile(r"\b(?:buf\d+|arg\d+_\d+|primals_\d+|tangents_\d+)\b")
 BACKWARD_DEFINITION_PATTERN = re.compile(
@@ -116,6 +116,7 @@ def _inspect_tree(root: Path) -> dict[str, object]:
                 )
             definition = BACKWARD_DEFINITION_PATTERN.search(line)
             if definition:
+                kernels[definition.group("kernel")] += 1
                 arguments = _split_top_level_arguments(definition.group("args"))
                 backward_definitions.append(
                     {
@@ -141,6 +142,7 @@ def _inspect_tree(root: Path) -> dict[str, object]:
                 launch = BACKWARD_LAUNCH_PATTERN.search(line)
                 record = {"file": relative, "line": line_number, "text": line[:1000]}
                 if launch:
+                    kernels[launch.group("kernel")] += 1
                     record["kernel"] = launch.group("kernel")
                     record["arguments"] = _split_top_level_arguments(
                         launch.group("args")

@@ -55,6 +55,15 @@ python tests/glm5_2_smoke/train_smoke.py \
   --device npu --topology all
 ```
 
+NPU smoke stores Inductor and Triton caches under the suite directory. The
+cache key includes the exact installed Torch, TorchNPU, and Triton wheel
+records plus the selected CANN installation. Reinstalling a rebuilt TorchNPU
+wheel therefore starts a new cache generation. Each topology has a separate
+subdirectory below that generation because TorchNPU's FlexAttention compiler
+artifacts are not safe to reuse across different distributed shape families.
+The compiler installation identity and cache key are recorded in every
+topology manifest.
+
 For the CP8 FlexAttention backward investigation, select TorchNPU's two
 lowering paths explicitly. This does not enable whole-model compilation:
 FlexAttention still invokes its internal compile while `--graph eager` keeps
@@ -113,10 +122,12 @@ the lowering and records `compiled_delta_probe` in `replay_result.json`. A bad
 probe localizes the fault to the standalone Inductor reduction; a clean probe
 moves it to DELTA addressing or consumption in the FlexAttention dQ/dK kernels.
 
-After the distributed process exits, smoke automatically selects one capture per
-rank: the call with the largest observed dQ/dK magnitude, with non-finite values
-ranked first. This retains every raw capture while avoiding 64 sequential
-compilations for an 8-rank, 8-call CP run. Before replay starts it creates
+After a failed distributed process exits, smoke automatically selects one capture
+per rank: the call with the largest observed dQ/dK magnitude, with non-finite
+values ranked first. Successful diagnostic runs retain their captures but skip
+the expensive replay because there is no failed invocation to reproduce. This
+retains every raw capture while avoiding 64 sequential compilations for an
+8-rank, 8-call CP run. Before replay starts it creates
 `nonfinite_replay/replay_status.json` and `replay.log`; `replay_summary.json` is
 initialized immediately and replaced atomically after every completed call.
 Per-call `replay_result.json` files compare the actual distributed gradients with

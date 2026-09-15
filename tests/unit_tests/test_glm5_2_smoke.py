@@ -264,6 +264,51 @@ def test_failed_smoke_runs_nonfinite_replay_before_raising(
     assert status["status"] == "completed"
 
 
+def test_passed_smoke_skips_nonfinite_replay(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands = []
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        capture = tmp_path / "smoke_runs/cp8/nonfinite_replay/rank0/call000"
+        capture.mkdir(parents=True, exist_ok=True)
+        (capture / "actual_gradients.json").write_text(
+            json.dumps(
+                {
+                    name: {"finite_count": 1, "numel": 1, "max_abs": 0.1}
+                    for name in ("dq_QNH", "dk_KNH")
+                }
+            ),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("tests.glm5_2_smoke.train_smoke.subprocess.run", run)
+    _run_topology(
+        root=tmp_path,
+        suite_root=tmp_path / "smoke_runs",
+        device="npu",
+        visible_devices="0,1,2,3,4,5,6,7",
+        topology=ParallelTopology("cp8", 8, context_parallel_degree=8),
+        steps=1,
+        local_batch_size=8,
+        global_batch_size=64,
+        sequence_length=128,
+        seed=61,
+        module="glm5",
+        config="glm5_debugmodel",
+        nonfinite_diagnostics=True,
+        diagnostic_rank="all",
+        force=False,
+    )
+
+    assert len(commands) == 1
+    assert not (
+        tmp_path / "smoke_runs/cp8/nonfinite_replay/replay_status.json"
+    ).exists()
+
+
 def test_device_replay_runs_origin_and_worst_rank_control(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -403,6 +448,18 @@ def test_npu_nonfinite_diagnostics_are_recorded_and_routed_to_run(
     assert environment["TRITON_DEVICE_PRINT"] == "1"
     assert environment["ENABLE_INPLACE_BUFFERS"] == "0"
     manifest = json.loads((run_directory / "manifest.json").read_text())
+    compiler_installation = manifest["contract"]["npu_compiler"]["installation"]
+    compiler_cache_root = (
+        tmp_path
+        / "smoke_runs"
+        / ".compiler_cache"
+        / compiler_installation["cache_key"]
+        / "cp8"
+    )
+    assert environment["TORCHINDUCTOR_CACHE_DIR"] == str(
+        compiler_cache_root / "inductor"
+    )
+    assert environment["TRITON_CACHE_DIR"] == str(compiler_cache_root / "triton")
     assert manifest["contract"]["nonfinite_diagnostics"] == {
         "rank": 6,
         "layer": "layers.6.attention.inner_attention",
