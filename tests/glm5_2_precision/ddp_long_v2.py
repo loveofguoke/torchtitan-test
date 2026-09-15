@@ -350,15 +350,10 @@ def _validate_contracts(readers: Sequence[PrecisionArtifactReader]) -> None:
                 "GPU/NPU artifacts use different training contracts; comparison is invalid"
             )
     topology = expected.get("topology", {})
-    replicate = int(topology.get("data_parallel_replicate_degree", 1))
-    shard = int(topology.get("data_parallel_shard_degree", 1))
-    tensor = int(topology.get("tensor_parallel_degree", 1))
-    pipeline = int(topology.get("pipeline_parallel_degree", 1))
-    expert = int(topology.get("expert_parallel_degree", 1))
-    if replicate <= 1 or (shard, tensor, pipeline, expert) != (1, 1, 1, 1):
+    world_size = int(topology.get("world_size", 1))
+    if world_size <= 1:
         raise ValueError(
-            "ddp-long-v2 requires a pure multi-rank DDP topology "
-            "(replicate>1; shard=tp=pp=ep=1)"
+            "distributed long-run convergence V2 requires world_size > 1"
         )
 
 
@@ -380,16 +375,19 @@ def _criterion(
     )
 
 
-def compare_ddp_long_v2(
+def compare_distributed_long_convergence_v2(
     gpu_artifacts: Sequence[str | Path],
     npu_artifacts: Sequence[str | Path],
     *,
     config: DdpLongV2Config = DdpLongV2Config(),
 ) -> DdpLongV2Result:
-    """Compare existing GPU/NPU DDP artifacts without rerunning training."""
+    """Compare existing GPU/NPU distributed artifacts without retraining."""
 
     if len(gpu_artifacts) < 2 or len(npu_artifacts) < 2:
-        raise ValueError("ddp-long-v2 requires at least two GPU and two NPU artifacts")
+        raise ValueError(
+            "distributed long-run convergence V2 requires at least two GPU "
+            "and two NPU artifacts"
+        )
     gpu = tuple(PrecisionArtifactReader(path) for path in gpu_artifacts)
     npu = tuple(PrecisionArtifactReader(path) for path in npu_artifacts)
     _validate_contracts((*gpu, *npu))
@@ -566,7 +564,24 @@ def compare_ddp_long_v2(
     )
 
 
-def _write_report(result: DdpLongV2Result, output_directory: Path) -> tuple[Path, Path]:
+def compare_ddp_long_v2(
+    gpu_artifacts: Sequence[str | Path],
+    npu_artifacts: Sequence[str | Path],
+    *,
+    config: DdpLongV2Config = DdpLongV2Config(),
+) -> DdpLongV2Result:
+    """Backward-compatible alias for the topology-neutral evaluator."""
+
+    return compare_distributed_long_convergence_v2(
+        gpu_artifacts,
+        npu_artifacts,
+        config=config,
+    )
+
+
+def write_distributed_long_convergence_v2_report(
+    result: DdpLongV2Result, output_directory: Path
+) -> tuple[Path, Path]:
     output_directory.mkdir(parents=True, exist_ok=True)
     json_path = output_directory / "ddp_long_v2_summary.json"
     payload = asdict(result)
@@ -667,7 +682,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        result = compare_ddp_long_v2(
+        result = compare_distributed_long_convergence_v2(
             args.gpu_artifact,
             args.npu_artifact,
             config=DdpLongV2Config(
@@ -683,7 +698,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
             ),
         )
-        json_path, markdown_path = _write_report(result, args.output_dir)
+        json_path, markdown_path = write_distributed_long_convergence_v2_report(
+            result, args.output_dir
+        )
     except (OSError, ValueError, RuntimeError) as error:
         print(f"ddp-long-v2: {error}", file=sys.stderr)
         return 2

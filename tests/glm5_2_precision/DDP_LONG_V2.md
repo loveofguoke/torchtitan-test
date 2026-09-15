@@ -1,7 +1,9 @@
 # DDP long-run convergence alignment V2
 
-`ddp_long_v2.py` re-scores existing GPU/NPU DDP artifacts. It never launches
-training and does not modify or regenerate a fixture.
+`ddp_long_v2.py` re-scores one existing GPU/NPU distributed scenario, and
+`distributed_long_convergence_v2.py` applies the same decision profile to the
+complete eight-topology 5000-step matrix. Neither entry launches training or
+modifies a fixture.
 
 This profile answers whether the overall training loss curves have equivalent
 shape and convergence. It deliberately does not require raw loss values at each
@@ -15,7 +17,7 @@ claim of a universal MindStudio or hardware-vendor delivery threshold.
 ## Default decision profile
 
 - at least two GPU artifacts and two NPU artifacts;
-- identical checksummed training contracts and a pure multi-rank DDP topology;
+- identical checksummed training contracts and a multi-rank topology;
 - 5000 matching optimizer-step observations;
 - finite loss and global grad norm at every step;
 - whole-run loss area-under-curve relative difference at most 2%;
@@ -63,6 +65,23 @@ The command writes:
 Exit codes are `0` for PASS, `1` for FAIL, and `2` for INCONCLUSIVE or invalid
 input. A nonzero status is therefore expected for a valid convergence failure;
 do not hide it with `|| true` in CI.
+
+## Eight-topology matrix reassessment
+
+The batch entry evaluates DDP8, EP8, FSDP2-TP4, FSDP2-TP4-EP8, FSDP4-TP2,
+FSDP8, PP8, and TP8 with one profile:
+
+```bash
+python3 -m tests.glm5_2_precision.distributed_long_convergence_v2 \
+  --artifact-root precision_artifacts \
+  --output-root precision_reports/distributed-long-convergence-v2
+```
+
+It writes an individual report below `<output-root>/<topology>/` and the matrix
+files `distributed_long_convergence_v2_summary.json` and
+`distributed_long_convergence_v2_report.md` at the output root. Missing or
+invalid topology artifacts are recorded as `INVALID`, and make the matrix result
+`INCONCLUSIVE`; the remaining topologies are still assessed.
 
 ## Reuse policy
 
