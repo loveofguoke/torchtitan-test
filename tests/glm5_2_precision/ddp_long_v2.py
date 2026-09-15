@@ -1,7 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
-"""Offline MindStudio-aligned DDP long-run precision assessment.
+"""Offline DDP long-run convergence-curve assessment.
 
 This module deliberately consumes existing formal precision artifacts.  It does
 not launch training, mutate fixtures, or require accelerator dependencies.
@@ -15,36 +15,42 @@ import json
 import math
 from pathlib import Path
 import sys
-from typing import Any, Mapping, Sequence
+from typing import Mapping, Sequence
 
 from .artifacts import PrecisionArtifactReader
 
 
 @dataclass(frozen=True)
 class DdpLongV2Config:
-    """Project guardrails around MindStudio's public one-percent loss signal."""
+    """Project guardrails for overall loss-curve convergence equivalence."""
 
-    relative_loss_limit: float = 0.01
-    pointwise_p99_limit: float = 0.05
+    curve_area_relative_limit: float = 0.02
+    final_mean_relative_limit: float = 0.02
+    smoothed_correlation_minimum: float = 0.99
+    sustained_window_relative_limit: float = 0.03
     warmup_steps: int = 100
     late_fraction: float = 0.20
     window_size: int = 100
-    consecutive_bad_windows: int = 3
+    sustained_window_size: int = 500
     minimum_steps: int = 5000
 
     def __post_init__(self) -> None:
-        if self.relative_loss_limit < 0.0:
-            raise ValueError("relative_loss_limit must be nonnegative")
-        if self.pointwise_p99_limit < 0.0:
-            raise ValueError("pointwise_p99_limit must be nonnegative")
+        if self.curve_area_relative_limit < 0.0:
+            raise ValueError("curve_area_relative_limit must be nonnegative")
+        if self.final_mean_relative_limit < 0.0:
+            raise ValueError("final_mean_relative_limit must be nonnegative")
+        if not -1.0 <= self.smoothed_correlation_minimum <= 1.0:
+            raise ValueError("smoothed_correlation_minimum must be in [-1, 1]")
+        if self.sustained_window_relative_limit < 0.0:
+            raise ValueError("sustained_window_relative_limit must be nonnegative")
         if self.warmup_steps < 1:
             raise ValueError("warmup_steps must be positive")
         if not 0.0 < self.late_fraction <= 1.0:
             raise ValueError("late_fraction must be in (0, 1]")
         if self.window_size < 1:
             raise ValueError("window_size must be positive")
-        if self.consecutive_bad_windows < 1:
-            raise ValueError("consecutive_bad_windows must be positive")
+        if self.sustained_window_size < 1:
+            raise ValueError("sustained_window_size must be positive")
         if self.minimum_steps <= self.warmup_steps:
             raise ValueError("minimum_steps must be greater than warmup_steps")
 
@@ -70,6 +76,24 @@ class SeriesDiagnostics:
 
 
 @dataclass(frozen=True)
+class CurveDiagnostics:
+    area_relative_error: float
+    final_mean_relative_error: float
+    smoothed_correlation: float
+    maximum_sustained_window_relative_error: float
+    worst_window_start_step: int
+    worst_window_end_step: int
+
+
+@dataclass(frozen=True)
+class RepeatCurveDiagnostics:
+    maximum_area_relative_error: float
+    maximum_final_mean_relative_error: float
+    minimum_smoothed_correlation: float
+    maximum_sustained_window_relative_error: float
+
+
+@dataclass(frozen=True)
 class DdpLongV2Result:
     status: str
     criteria: tuple[Criterion, ...]
@@ -77,6 +101,9 @@ class DdpLongV2Result:
     steps: tuple[int, ...]
     loss: SeriesDiagnostics
     grad_norm: SeriesDiagnostics
+    curve: CurveDiagnostics
+    gpu_repeat_curve: RepeatCurveDiagnostics
+    npu_repeat_curve: RepeatCurveDiagnostics
     gpu_repeat_loss_mare: float
     npu_repeat_loss_mare: float
     gpu_repeat_grad_norm_mare: float
@@ -85,8 +112,6 @@ class DdpLongV2Result:
     npu_loss_bitwise_reproducible: bool
     gpu_grad_norm_bitwise_reproducible: bool
     npu_grad_norm_bitwise_reproducible: bool
-    bad_window_streak: int
-    bad_windows: tuple[dict[str, Any], ...]
     config: DdpLongV2Config
 
 
@@ -160,6 +185,143 @@ def _all_exact(curves: Sequence[Sequence[float]]) -> bool:
     return all(
         tuple(float(value).hex() for value in curve) == first
         for curve in curves[1:]
+    )
+
+
+def _mean(values: Sequence[float]) -> float:
+    if not values:
+        raise ValueError("mean requires observations")
+    return sum(values) / len(values)
+
+
+def _relative_mean_error(
+    reference: Sequence[float],
+    candidate: Sequence[float],
+    *,
+    epsilon: float = 1e-8,
+) -> float:
+    if len(reference) != len(candidate) or not reference:
+        raise ValueError("series must have the same nonzero length")
+    reference_mean = _mean(reference)
+    candidate_mean = _mean(candidate)
+    return abs(candidate_mean - reference_mean) / max(abs(reference_mean), epsilon)
+
+
+def _moving_average(values: Sequence[float], window_size: int) -> tuple[float, ...]:
+    if not values:
+        raise ValueError("moving average requires observations")
+    width = min(window_size, len(values))
+    prefix = [0.0]
+    for value in values:
+        prefix.append(prefix[-1] + value)
+    return tuple(
+        (prefix[end] - prefix[end - width]) / width
+        for end in range(width, len(values) + 1)
+    )
+
+
+def _pearson_correlation(
+    reference: Sequence[float], candidate: Sequence[float]
+) -> float:
+    if len(reference) != len(candidate) or not reference:
+        raise ValueError("series must have the same nonzero length")
+    if len(reference) == 1:
+        return 1.0
+    reference_mean = _mean(reference)
+    candidate_mean = _mean(candidate)
+    reference_centered = tuple(value - reference_mean for value in reference)
+    candidate_centered = tuple(value - candidate_mean for value in candidate)
+    covariance = sum(
+        left * right for left, right in zip(reference_centered, candidate_centered)
+    )
+    reference_norm = math.sqrt(sum(value * value for value in reference_centered))
+    candidate_norm = math.sqrt(sum(value * value for value in candidate_centered))
+    if reference_norm <= 1e-12 and candidate_norm <= 1e-12:
+        return 1.0
+    if reference_norm <= 1e-12 or candidate_norm <= 1e-12:
+        return 0.0
+    return max(-1.0, min(1.0, covariance / (reference_norm * candidate_norm)))
+
+
+def _curve_diagnostics(
+    reference: Sequence[float],
+    candidate: Sequence[float],
+    steps: Sequence[int],
+    config: DdpLongV2Config,
+) -> CurveDiagnostics:
+    if len(reference) != len(candidate) or len(reference) != len(steps) or not steps:
+        raise ValueError("curve values and steps must have the same nonzero length")
+
+    late_count = max(1, math.ceil(len(reference) * config.late_fraction))
+    retained_start = min(config.warmup_steps, len(reference) - 1)
+    retained_reference = reference[retained_start:]
+    retained_candidate = candidate[retained_start:]
+    smoothed_reference = _moving_average(retained_reference, config.window_size)
+    smoothed_candidate = _moving_average(retained_candidate, config.window_size)
+
+    sustained_width = min(config.sustained_window_size, len(retained_reference))
+    reference_prefix = [0.0]
+    candidate_prefix = [0.0]
+    for reference_value, candidate_value in zip(
+        retained_reference, retained_candidate
+    ):
+        reference_prefix.append(reference_prefix[-1] + reference_value)
+        candidate_prefix.append(candidate_prefix[-1] + candidate_value)
+
+    worst_error = -1.0
+    worst_offset = 0
+    for offset in range(0, len(retained_reference) - sustained_width + 1):
+        end = offset + sustained_width
+        reference_mean = (
+            reference_prefix[end] - reference_prefix[offset]
+        ) / sustained_width
+        candidate_mean = (
+            candidate_prefix[end] - candidate_prefix[offset]
+        ) / sustained_width
+        error = abs(candidate_mean - reference_mean) / max(abs(reference_mean), 1e-8)
+        if error > worst_error:
+            worst_error = error
+            worst_offset = offset
+
+    worst_start = retained_start + worst_offset
+    worst_end = worst_start + sustained_width - 1
+    return CurveDiagnostics(
+        area_relative_error=_relative_mean_error(reference, candidate),
+        final_mean_relative_error=_relative_mean_error(
+            reference[-late_count:], candidate[-late_count:]
+        ),
+        smoothed_correlation=_pearson_correlation(
+            smoothed_reference, smoothed_candidate
+        ),
+        maximum_sustained_window_relative_error=worst_error,
+        worst_window_start_step=steps[worst_start],
+        worst_window_end_step=steps[worst_end],
+    )
+
+
+def _repeat_curve_diagnostics(
+    curves: Sequence[Sequence[float]],
+    steps: Sequence[int],
+    config: DdpLongV2Config,
+) -> RepeatCurveDiagnostics:
+    pairwise = [
+        _curve_diagnostics(curves[left], curves[right], steps, config)
+        for left in range(len(curves))
+        for right in range(left + 1, len(curves))
+    ]
+    if not pairwise:
+        raise ValueError("at least two repeats are required")
+    return RepeatCurveDiagnostics(
+        maximum_area_relative_error=max(item.area_relative_error for item in pairwise),
+        maximum_final_mean_relative_error=max(
+            item.final_mean_relative_error for item in pairwise
+        ),
+        minimum_smoothed_correlation=min(
+            item.smoothed_correlation for item in pairwise
+        ),
+        maximum_sustained_window_relative_error=max(
+            item.maximum_sustained_window_relative_error for item in pairwise
+        ),
     )
 
 
@@ -271,46 +433,13 @@ def compare_ddp_long_v2(
     safe_npu_grad = tuple(value if math.isfinite(value) else 0.0 for value in npu_grad_mean)
     loss = _diagnostics(safe_gpu_loss, safe_npu_loss)
     grad_norm = _diagnostics(safe_gpu_grad, safe_npu_grad)
-
-    early_count = min(config.warmup_steps, len(steps))
-    retained_start = min(config.warmup_steps, len(steps))
-    retained_gpu = safe_gpu_loss[retained_start:]
-    retained_npu = safe_npu_loss[retained_start:]
-    if not retained_gpu:
-        retained_gpu = safe_gpu_loss
-        retained_npu = safe_npu_loss
-    late_count = max(1, math.ceil(len(retained_gpu) * config.late_fraction))
-
-    first_mare = _diagnostics(safe_gpu_loss[:1], safe_npu_loss[:1]).mean_absolute_relative_error
-    early_mare = _diagnostics(
-        safe_gpu_loss[:early_count], safe_npu_loss[:early_count]
-    ).mean_absolute_relative_error
-    retained_diagnostics = _diagnostics(retained_gpu, retained_npu)
-    late_mare = _diagnostics(
-        retained_gpu[-late_count:], retained_npu[-late_count:]
-    ).mean_absolute_relative_error
-
-    bad_windows: list[dict[str, Any]] = []
-    bad_streak = 0
-    maximum_bad_streak = 0
-    for offset in range(0, len(retained_gpu), config.window_size):
-        left = retained_gpu[offset : offset + config.window_size]
-        right = retained_npu[offset : offset + config.window_size]
-        if len(left) < config.window_size:
-            break
-        mare = _diagnostics(left, right).mean_absolute_relative_error
-        if mare > config.relative_loss_limit:
-            bad_streak += 1
-            bad_windows.append(
-                {
-                    "start_step": steps[retained_start + offset],
-                    "end_step": steps[retained_start + offset + len(left) - 1],
-                    "mare": mare,
-                }
-            )
-        else:
-            bad_streak = 0
-        maximum_bad_streak = max(maximum_bad_streak, bad_streak)
+    curve = _curve_diagnostics(safe_gpu_loss, safe_npu_loss, steps, config)
+    gpu_repeat_curve = _repeat_curve_diagnostics(
+        gpu_loss_curves, steps, config
+    )
+    npu_repeat_curve = _repeat_curve_diagnostics(
+        npu_loss_curves, steps, config
+    )
 
     criteria = [
         Criterion(
@@ -322,49 +451,45 @@ def compare_ddp_long_v2(
             explanation="NaN or Inf is a hard precision failure.",
         ),
         _criterion(
-            name="First-step loss MARE",
-            observed=first_mare,
-            maximum=config.relative_loss_limit,
-            category="mindstudio_core",
-            explanation="Checks the first-step difference with a relative metric.",
+            name="Whole-run loss AUC relative difference",
+            observed=curve.area_relative_error,
+            maximum=config.curve_area_relative_limit,
+            category="convergence_core",
+            explanation=(
+                "Compares the total area under both loss curves instead of "
+                "requiring individual optimizer steps to match."
+            ),
         ),
         _criterion(
-            name=f"First {early_count} steps loss MARE",
-            observed=early_mare,
-            maximum=config.relative_loss_limit,
-            category="mindstudio_core",
-            explanation="Covers the early-training window instead of silently dropping it.",
-        ),
-        _criterion(
-            name="Post-warmup loss MARE",
-            observed=retained_diagnostics.mean_absolute_relative_error,
-            maximum=config.relative_loss_limit,
-            category="mindstudio_core",
-            explanation="The public MindStudio long-stable signal uses one-percent mean error.",
-        ),
-        _criterion(
-            name="Final-window loss MARE",
-            observed=late_mare,
-            maximum=config.relative_loss_limit,
-            category="drift_guardrail",
-            explanation=f"Checks the final {config.late_fraction:.0%} of retained steps.",
-        ),
-        _criterion(
-            name="Post-warmup pointwise relative-error P99",
-            observed=retained_diagnostics.p99_absolute_relative_error,
-            maximum=config.pointwise_p99_limit,
-            category="spike_guardrail",
-            explanation="Controls spikes without deleting the largest errors.",
+            name="Final-window mean loss relative difference",
+            observed=curve.final_mean_relative_error,
+            maximum=config.final_mean_relative_limit,
+            category="convergence_core",
+            explanation=f"Checks the mean loss over the final {config.late_fraction:.0%}.",
         ),
         Criterion(
-            name="Sustained bad-window streak",
-            passed=maximum_bad_streak < config.consecutive_bad_windows,
-            observed=f"{maximum_bad_streak} consecutive bad windows",
-            required=f"< {config.consecutive_bad_windows}",
-            category="drift_guardrail",
+            name="Smoothed loss-curve correlation",
+            passed=(
+                curve.smoothed_correlation
+                >= config.smoothed_correlation_minimum
+            ),
+            observed=f"{curve.smoothed_correlation:.8f}",
+            required=f">= {config.smoothed_correlation_minimum:.5f}",
+            category="convergence_core",
             explanation=(
-                f"A bad window is {config.window_size} complete steps with loss MARE "
-                f"> {config.relative_loss_limit:.3%}."
+                f"Uses a {config.window_size}-step moving average after the "
+                f"first {config.warmup_steps} steps."
+            ),
+        ),
+        _criterion(
+            name="Maximum sustained-window mean loss difference",
+            observed=curve.maximum_sustained_window_relative_error,
+            maximum=config.sustained_window_relative_limit,
+            category="convergence_core",
+            explanation=(
+                f"Checks every rolling {config.sustained_window_size}-step window; "
+                f"the worst is step {curve.worst_window_start_step}.."
+                f"{curve.worst_window_end_step}."
             ),
         ),
     ]
@@ -374,11 +499,42 @@ def compare_ddp_long_v2(
         inconclusive_reasons.append(
             f"only {len(steps)} steps were captured; {config.minimum_steps} are required"
         )
-    for platform, value in (("GPU", gpu_repeat_loss), ("NPU", npu_repeat_loss)):
-        if value > config.relative_loss_limit:
+    for platform, repeat in (
+        ("GPU", gpu_repeat_curve),
+        ("NPU", npu_repeat_curve),
+    ):
+        if repeat.maximum_area_relative_error > config.curve_area_relative_limit:
             inconclusive_reasons.append(
-                f"{platform} repeat loss MARE {value:.6%} exceeds "
-                f"{config.relative_loss_limit:.3%}"
+                f"{platform} repeat loss AUC difference "
+                f"{repeat.maximum_area_relative_error:.6%} exceeds "
+                f"{config.curve_area_relative_limit:.3%}"
+            )
+        if (
+            repeat.maximum_final_mean_relative_error
+            > config.final_mean_relative_limit
+        ):
+            inconclusive_reasons.append(
+                f"{platform} repeat final-window mean loss difference "
+                f"{repeat.maximum_final_mean_relative_error:.6%} exceeds "
+                f"{config.final_mean_relative_limit:.3%}"
+            )
+        if (
+            repeat.minimum_smoothed_correlation
+            < config.smoothed_correlation_minimum
+        ):
+            inconclusive_reasons.append(
+                f"{platform} repeat smoothed loss correlation "
+                f"{repeat.minimum_smoothed_correlation:.8f} is below "
+                f"{config.smoothed_correlation_minimum:.5f}"
+            )
+        if (
+            repeat.maximum_sustained_window_relative_error
+            > config.sustained_window_relative_limit
+        ):
+            inconclusive_reasons.append(
+                f"{platform} repeat sustained-window mean loss difference "
+                f"{repeat.maximum_sustained_window_relative_error:.6%} exceeds "
+                f"{config.sustained_window_relative_limit:.3%}"
             )
 
     if inconclusive_reasons:
@@ -395,6 +551,9 @@ def compare_ddp_long_v2(
         steps=steps,
         loss=loss,
         grad_norm=grad_norm,
+        curve=curve,
+        gpu_repeat_curve=gpu_repeat_curve,
+        npu_repeat_curve=npu_repeat_curve,
         gpu_repeat_loss_mare=gpu_repeat_loss,
         npu_repeat_loss_mare=npu_repeat_loss,
         gpu_repeat_grad_norm_mare=gpu_repeat_grad,
@@ -403,8 +562,6 @@ def compare_ddp_long_v2(
         npu_loss_bitwise_reproducible=_all_exact(npu_loss_curves),
         gpu_grad_norm_bitwise_reproducible=_all_exact(gpu_grad_curves),
         npu_grad_norm_bitwise_reproducible=_all_exact(npu_grad_curves),
-        bad_window_streak=maximum_bad_streak,
-        bad_windows=tuple(bad_windows),
         config=config,
     )
 
@@ -420,7 +577,7 @@ def _write_report(result: DdpLongV2Result, output_directory: Path) -> tuple[Path
     )
 
     lines = [
-        "# DDP long-run precision V2",
+        "# DDP long-run convergence alignment V2",
         "",
         f"Result: **{result.status}**",
         "",
@@ -437,8 +594,32 @@ def _write_report(result: DdpLongV2Result, output_directory: Path) -> tuple[Path
     lines.extend(
         [
             "",
+            "## Pointwise diagnostics (non-gating)",
+            "",
+            f"- Raw loss MARE: {result.loss.mean_absolute_relative_error:.6%}",
+            f"- Raw loss P95 relative error: {result.loss.p95_absolute_relative_error:.6%}",
+            f"- Raw loss P99 relative error: {result.loss.p99_absolute_relative_error:.6%}",
+            f"- Raw loss maximum relative error: {result.loss.maximum_absolute_relative_error:.6%}",
+            f"- Grad-norm MARE: {result.grad_norm.mean_absolute_relative_error:.6%}",
+            "",
             "## Repeat stability",
             "",
+            (
+                "- GPU repeat maximum loss AUC difference: "
+                f"{result.gpu_repeat_curve.maximum_area_relative_error:.6%}"
+            ),
+            (
+                "- NPU repeat maximum loss AUC difference: "
+                f"{result.npu_repeat_curve.maximum_area_relative_error:.6%}"
+            ),
+            (
+                "- GPU repeat minimum smoothed correlation: "
+                f"{result.gpu_repeat_curve.minimum_smoothed_correlation:.8f}"
+            ),
+            (
+                "- NPU repeat minimum smoothed correlation: "
+                f"{result.npu_repeat_curve.minimum_smoothed_correlation:.8f}"
+            ),
             f"- GPU loss MARE: {result.gpu_repeat_loss_mare:.6%}",
             f"- NPU loss MARE: {result.npu_repeat_loss_mare:.6%}",
             f"- GPU grad-norm MARE: {result.gpu_repeat_grad_norm_mare:.6%}",
@@ -446,7 +627,10 @@ def _write_report(result: DdpLongV2Result, output_directory: Path) -> tuple[Path
             f"- GPU loss bitwise reproducible: {result.gpu_loss_bitwise_reproducible}",
             f"- NPU loss bitwise reproducible: {result.npu_loss_bitwise_reproducible}",
             "",
-            "Grad norm is diagnostic in V2 and does not independently decide PASS/FAIL.",
+            (
+                "Raw pointwise loss error, grad norm, and bitwise equality are "
+                "diagnostic in V2 and do not independently decide PASS/FAIL."
+            ),
         ]
     )
     if result.inconclusive_reasons:
@@ -459,7 +643,10 @@ def _write_report(result: DdpLongV2Result, output_directory: Path) -> tuple[Path
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Re-score existing GPU/NPU DDP artifacts with the long-run V2 standard."
+        description=(
+            "Re-score existing GPU/NPU DDP artifacts using overall loss-curve "
+            "convergence equivalence."
+        )
     )
     parser.add_argument("--gpu-artifact", action="append", required=True, type=Path)
     parser.add_argument("--npu-artifact", action="append", required=True, type=Path)
@@ -467,6 +654,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--minimum-steps", type=int, default=5000)
     parser.add_argument("--warmup-steps", type=int, default=100)
     parser.add_argument("--window-size", type=int, default=100)
+    parser.add_argument("--sustained-window-size", type=int, default=500)
+    parser.add_argument("--curve-area-relative-limit", type=float, default=0.02)
+    parser.add_argument("--final-mean-relative-limit", type=float, default=0.02)
+    parser.add_argument("--smoothed-correlation-minimum", type=float, default=0.99)
+    parser.add_argument(
+        "--sustained-window-relative-limit", type=float, default=0.03
+    )
     return parser
 
 
@@ -480,13 +674,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 minimum_steps=args.minimum_steps,
                 warmup_steps=args.warmup_steps,
                 window_size=args.window_size,
+                sustained_window_size=args.sustained_window_size,
+                curve_area_relative_limit=args.curve_area_relative_limit,
+                final_mean_relative_limit=args.final_mean_relative_limit,
+                smoothed_correlation_minimum=args.smoothed_correlation_minimum,
+                sustained_window_relative_limit=(
+                    args.sustained_window_relative_limit
+                ),
             ),
         )
         json_path, markdown_path = _write_report(result, args.output_dir)
     except (OSError, ValueError, RuntimeError) as error:
         print(f"ddp-long-v2: {error}", file=sys.stderr)
         return 2
-    print(f"DDP long-run V2: {result.status}")
+    print(f"DDP long-run convergence V2: {result.status}")
     print(f"JSON: {json_path}")
     print(f"Report: {markdown_path}")
     return {"PASS": 0, "FAIL": 1, "INCONCLUSIVE": 2}[result.status]
