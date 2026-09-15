@@ -83,6 +83,25 @@ files `distributed_long_convergence_v2_summary.json` and
 invalid topology artifacts are recorded as `INVALID`, and make the matrix result
 `INCONCLUSIVE`; the remaining topologies are still assessed.
 
+## Loss-step plots
+
+The same four artifacts per topology can be rendered without matplotlib or any
+other plotting dependency:
+
+```bash
+python3 -m tests.glm5_2_precision.plot_distributed_loss_curves \
+  --artifact-root precision_artifacts \
+  --output-root precision_reports/distributed-long-convergence-v2/loss-curves
+```
+
+The command creates `loss_step_overview.svg` with the 100-step moving-average
+GPU/NPU curves for all eight topologies, plus one `loss_step_<topology>.svg` per
+topology. Each detailed chart contains both raw repeat curves as faint lines and
+the repeat-mean 100-step moving-average curves as emphasized lines. The y-axis
+uses the observed range for that topology so a persistent curve offset remains
+visible. `loss_step_plots.json` records the source artifacts and generated plot
+paths.
+
 ## Reuse policy
 
 Existing data, tokenizer, token plan, seed checkpoint, and formal training
