@@ -102,6 +102,22 @@ uses the observed range for that topology so a persistent curve offset remains
 visible. `loss_step_plots.json` records the source artifacts and generated plot
 paths.
 
+## Compact result summary
+
+After the per-topology reports have been generated, their key decision values
+can be condensed into one short table:
+
+```bash
+python3 -m tests.glm5_2_precision.summarize_distributed_long_results \
+  --report-root precision_reports/distributed-long-convergence-v2
+```
+
+The table is printed to the terminal and also written as
+`distributed_long_key_results.md` and `distributed_long_key_results.json` in the
+report root. It retains only the topology result, step count, loss AUC
+difference, final-20% loss difference, smoothed correlation, and worst
+500-step-window loss difference.
+
 ## Reuse policy
 
 Existing data, tokenizer, token plan, seed checkpoint, and formal training
