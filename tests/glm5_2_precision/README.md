@@ -212,6 +212,14 @@ unexpected, duplicated, structurally inconsistent, or unsupported tensors.
 The JSON and Markdown summaries are written under
 `<report_root>/<scenario>/<topology>/msprobe_native/repeat-N/`.
 
+Use `--msprobe-standard compatibility` for the single-step adaptation gate used
+by the topology matrix. It requires native msProbe success and complete,
+structurally consistent semantic coverage, while retaining the documented
+cosine/max-absolute checks as warnings. The default `strict` mode keeps those
+indicator warnings blocking for divergence localization. Runtime-only final
+norm metadata is excluded from both modes because its value and shape are
+topology dependent.
+
 When EP shares the TP/FSDP mesh, the framework records and excludes `_tp_sum`
 diagnostics automatically because TP all-reduce is not a valid global logical
 reconstruction in that layout. No other exclusion is implicit. Additional
@@ -240,6 +248,12 @@ Select additional steps or a subset of ranks by repeating `--msprobe-step` or
 narrowed the problem because a full tensor dump is much larger. Both `L0` and
 `mix` are accepted; `mix` is the default because it exposes module and API
 structure to the hierarchy view.
+
+By default diagnostic training stops after the last selected dump step. Pass
+`--msprobe-run-steps N` to keep training through step `N` while dumping only the
+steps selected by `--msprobe-step`. For example, `--msprobe-step 0
+--msprobe-run-steps 10` executes ten optimizer steps but produces only the
+single-step dump used by the compatibility comparison.
 
 After the paired captures complete, generate the hierarchy comparison and two
 trend databases:

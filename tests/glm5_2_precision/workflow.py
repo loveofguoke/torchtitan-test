@@ -1054,6 +1054,7 @@ def capture_msprobe_endpoint(
     repeat: int,
     capture_config: MsprobeCaptureConfig,
     force: bool,
+    run_steps: int | None = None,
     resume: bool = False,
 ) -> Path:
     """Run a separate diagnostic capture for msProbe visualizations.
@@ -1081,9 +1082,19 @@ def capture_msprobe_endpoint(
             "msProbe uses zero-based step indexes; every selected step must be "
             f"less than training.steps={config.training.steps}"
         )
-    diagnostic_training = replace(
-        config.training, steps=max(capture_config.steps) + 1
-    )
+    minimum_run_steps = max(capture_config.steps) + 1
+    diagnostic_steps = minimum_run_steps if run_steps is None else run_steps
+    if diagnostic_steps < minimum_run_steps:
+        raise ValueError(
+            "msProbe run steps must include every selected dump step: "
+            f"run_steps={diagnostic_steps}, minimum={minimum_run_steps}"
+        )
+    if diagnostic_steps > config.training.steps:
+        raise ValueError(
+            "msProbe run steps cannot exceed the prepared experiment steps: "
+            f"run_steps={diagnostic_steps}, configured={config.training.steps}"
+        )
+    diagnostic_training = replace(config.training, steps=diagnostic_steps)
     diagnostic_config = replace(config, training=diagnostic_training)
 
     fixture_directory = _fixture_directory(root, config)
@@ -1114,6 +1125,8 @@ def capture_msprobe_endpoint(
                         manifest.get("role") == role
                         and manifest.get("repeat") == repeat
                         and manifest.get("endpoint") == asdict(endpoint)
+                        and manifest.get("training")
+                        == _normalized_training(diagnostic_training)
                         and manifest.get("msprobe") == expected_capture
                     )
             if completed:
@@ -1364,6 +1377,14 @@ def run_formal_cli(
         help="zero-based training step to dump; repeat for multiple steps (default: 0)",
     )
     parser.add_argument(
+        "--msprobe-run-steps",
+        type=int,
+        help=(
+            "training steps executed by an msProbe capture; defaults to stopping "
+            "after the last selected --msprobe-step"
+        ),
+    )
+    parser.add_argument(
         "--msprobe-rank",
         action="append",
         type=int,
@@ -1452,6 +1473,15 @@ def run_formal_cli(
         help="native msProbe executable used by --compare-msprobe",
     )
     parser.add_argument(
+        "--msprobe-standard",
+        choices=("strict", "compatibility"),
+        default="strict",
+        help=(
+            "strict also gates documented tensor indicators; compatibility "
+            "uses native msProbe results plus semantic coverage"
+        ),
+    )
+    parser.add_argument(
         "--msprobe-exclude-pattern",
         action="append",
         default=[],
@@ -1504,6 +1534,10 @@ def run_formal_cli(
         parser.error("--msprobe-exclude-pattern requires --compare-msprobe")
     if args.msprobe_executable != "msprobe" and not args.compare_msprobe:
         parser.error("--msprobe-executable requires --compare-msprobe")
+    if args.msprobe_standard != "strict" and not args.compare_msprobe:
+        parser.error("--msprobe-standard requires --compare-msprobe")
+    if args.msprobe_run_steps is not None and not args.capture_msprobe:
+        parser.error("--msprobe-run-steps requires --capture-msprobe")
     if (
         args.serve_tensorboard
         or args.tensorboard_bind_all
@@ -1623,6 +1657,7 @@ def run_formal_cli(
             role=args.capture_msprobe,
             repeat=args.repeat,
             capture_config=capture_config,
+            run_steps=args.msprobe_run_steps,
             force=args.force,
             resume=args.resume,
         )
@@ -1662,6 +1697,7 @@ def run_formal_cli(
             repeat=args.repeat,
             capture_config=capture_config,
             exclude_patterns=exclude_patterns,
+            comparison_standard=args.msprobe_standard,
             executable=args.msprobe_executable,
             force=args.force,
             resume=args.resume,

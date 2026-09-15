@@ -636,3 +636,63 @@ def test_msprobe_capture_is_separate_from_formal_artifacts(
     assert migrated_statistics_directory.name.endswith(
         "-msprobe-statistics-mix"
     )
+
+
+def test_msprobe_capture_can_run_past_the_last_selected_dump_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.glm5_2_precision import workflow
+
+    topology = workflow.ParallelTopology("single", 1)
+    endpoint = workflow.TrainingEndpoint("endpoint", "cuda", "0", topology)
+    config = workflow.FormalExperimentConfig(
+        name="msprobe-run-steps",
+        kind="self_consistency",
+        reference=endpoint,
+        candidate=endpoint,
+        training=workflow.FormalTrainingConfig(steps=10, global_batch_size=2),
+    )
+    fixture = workflow._fixture_directory(tmp_path, config)
+    checkpoint = fixture / "checkpoint"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "model.bin").write_bytes(b"checkpoint")
+    (fixture / "fixture.json").write_text(
+        json.dumps(
+            {
+                "checkpoint_relative_path": "checkpoint",
+                "checkpoint_sha256": workflow._directory_digest(checkpoint),
+                "fixed_batches_relative_path": None,
+                "fixed_batches_sha256": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_run_process(command, *, root, environment, log_path) -> None:
+        del root
+        log_path.write_text("completed\n", encoding="utf-8")
+        config_path = Path(environment[MSPROBE_CONFIG_PATH_ENV])
+        dump_path = Path(
+            json.loads(config_path.read_text(encoding="utf-8"))["dump_path"]
+        )
+        _dump(dump_path)
+        assert "--training.steps=10" in command
+
+    monkeypatch.setattr(workflow, "_run_process", fake_run_process)
+    monkeypatch.setattr(workflow, "_source_metadata", lambda root: {"root": str(root)})
+
+    result = workflow.capture_msprobe_endpoint(
+        tmp_path,
+        config,
+        role="candidate",
+        repeat=1,
+        capture_config=MsprobeCaptureConfig(steps=(0,)),
+        run_steps=10,
+        force=False,
+    )
+
+    manifest = json.loads(
+        (result / "msprobe_capture.json").read_text(encoding="utf-8")
+    )
+    assert manifest["training"]["steps"] == 10
+    assert manifest["msprobe"]["steps"] == [0]

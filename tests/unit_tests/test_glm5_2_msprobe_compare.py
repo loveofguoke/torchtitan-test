@@ -200,3 +200,78 @@ def test_documented_msprobe_threshold_backstops_stale_native_result(
     assert summary["steps"][0]["documented_threshold_failures"] == [
         "bad_tensor.debug"
     ]
+
+
+def test_compatibility_standard_reports_threshold_warning_without_failing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = MsprobeCaptureConfig(task="tensor", level="debug")
+    reference = _capture(
+        tmp_path / "reference",
+        role="reference",
+        config=config,
+        ranks={0: ("bad_tensor.debug",)},
+    )
+    candidate = _capture(
+        tmp_path / "candidate",
+        role="candidate",
+        config=config,
+        ranks={0: ("bad_tensor.debug",)},
+    )
+    monkeypatch.setattr(
+        msprobe_compare, "_run_native_compare", _fake_native_compare
+    )
+
+    summary_path = compare_msprobe_captures(
+        reference_run=reference,
+        candidate_run=candidate,
+        output_directory=tmp_path / "report",
+        repeat=1,
+        capture_config=config,
+        comparison_standard="compatibility",
+    )
+    summary = json.loads(summary_path.read_text())
+
+    assert summary["passed"]
+    assert summary["comparison_standard"] == "compatibility"
+    assert summary["steps"][0]["documented_threshold_failures"] == [
+        "bad_tensor.debug"
+    ]
+
+
+def test_topology_metadata_is_excluded_from_native_compatibility_gate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = MsprobeCaptureConfig(task="tensor", level="debug")
+    metadata_name = "final_norm_forward_weight_local_numel.0.debug"
+    reference = _capture(
+        tmp_path / "reference",
+        role="reference",
+        config=config,
+        ranks={0: ("block.debug", metadata_name)},
+    )
+    candidate = _capture(
+        tmp_path / "candidate",
+        role="candidate",
+        config=config,
+        ranks={0: ("block.debug", metadata_name)},
+    )
+    monkeypatch.setattr(
+        msprobe_compare, "_run_native_compare", _fake_native_compare
+    )
+
+    summary_path = compare_msprobe_captures(
+        reference_run=reference,
+        candidate_run=candidate,
+        output_directory=tmp_path / "report",
+        repeat=1,
+        capture_config=config,
+        comparison_standard="compatibility",
+    )
+    summary = json.loads(summary_path.read_text())
+
+    assert summary["passed"]
+    assert summary["steps"][0]["expected_tensor_count"] == 1
+    assert summary["steps"][0]["excluded_tensor_count"] == 1

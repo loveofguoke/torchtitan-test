@@ -14,12 +14,18 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
-from typing import Any, Sequence
+from typing import Any, Literal, Sequence
 
 from .msprobe_tensorboard import MsprobeCaptureConfig, validate_debug_dump_directory
 
 
 SCHEMA = "torchtitan.glm5_2.msprobe_native_compare"
+ComparisonStandard = Literal["strict", "compatibility"]
+DEFAULT_SEMANTIC_EXCLUDE_PATTERNS = (
+    r"^final_norm_forward_weight_local_numel(?:\.|$)",
+    r"^final_norm_forward_is_backward_recompute(?:\.|$)",
+    r"^final_norm_ungrouped_fsdp_unit(?:\.|$)",
+)
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -186,14 +192,21 @@ def _run_native_compare(
 
 
 def _markdown(summary: dict[str, Any]) -> str:
+    threshold_label = (
+        "Threshold fail"
+        if summary["comparison_standard"] == "strict"
+        else "Threshold warning"
+    )
     lines = [
         "# Native msProbe tensor comparison",
         "",
         f"Overall: **{'PASS' if summary['passed'] else 'FAIL'}**",
         "",
+        f"Comparison standard: `{summary['comparison_standard']}`",
+        "",
         f"mindstudio-probe: `{summary['mindstudio_probe_version']}`",
         "",
-        "| Step | Result | Expected | Compared | Native fail | Threshold fail | "
+        f"| Step | Result | Expected | Compared | Native fail | {threshold_label} | "
         "Unsupported | Excluded | Missing | Unexpected | Duplicated |",
         "| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | "
         "---: | ---: |",
@@ -229,7 +242,7 @@ def _markdown(summary: dict[str, Any]) -> str:
         failures.extend(step["first_native_failures"])
         failures.extend(step["documented_threshold_failures"][:20])
     if failures:
-        lines.extend(["", "First native failures:"])
+        lines.extend(["", "First native failures and threshold diagnostics:"])
         lines.extend(f"- `{name}`" for name in failures[:20])
     return "\n".join(lines) + "\n"
 
@@ -242,6 +255,7 @@ def compare_msprobe_captures(
     repeat: int,
     capture_config: MsprobeCaptureConfig,
     exclude_patterns: Sequence[str] = (),
+    comparison_standard: ComparisonStandard = "strict",
     executable: str = "msprobe",
     force: bool = False,
     resume: bool = False,
@@ -250,8 +264,15 @@ def compare_msprobe_captures(
 
     if capture_config.task != "tensor" or capture_config.level != "debug":
         raise ValueError("native msProbe comparison requires task=tensor, level=debug")
+    if comparison_standard not in {"strict", "compatibility"}:
+        raise ValueError(f"unsupported msProbe comparison standard: {comparison_standard}")
     if force and resume:
         raise ValueError("force and resume are mutually exclusive")
+    effective_exclude_patterns = list(DEFAULT_SEMANTIC_EXCLUDE_PATTERNS)
+    for pattern in exclude_patterns:
+        if pattern not in effective_exclude_patterns:
+            effective_exclude_patterns.append(pattern)
+    exclude_patterns = tuple(effective_exclude_patterns)
     reference_run = Path(reference_run)
     candidate_run = Path(candidate_run)
     output_directory = Path(output_directory)
@@ -266,6 +287,8 @@ def compare_msprobe_captures(
                 and summary.get("candidate_run") == str(candidate_run)
                 and summary.get("capture_config") == normalized_capture_config
                 and summary.get("exclude_patterns") == list(exclude_patterns)
+                and summary.get("comparison_standard", "strict")
+                == comparison_standard
             ):
                 return summary_path
         if not force and not resume:
@@ -391,19 +414,22 @@ def compare_msprobe_captures(
         counts = {name: observed_names.count(name) for name in observed_name_set}
         duplicated_tensors = sorted(name for name, count in counts.items() if count > 1)
         native_fail_count = len(native_failures)
-        passed = not any(
-            (
-                missing_tensors,
-                unexpected_tensors,
-                missing_native_rows,
-                unexpected_native_rows,
-                duplicated_tensors,
-                native_failures,
-                structural_failures,
-                threshold_failures,
-                unsupported_indicators,
+        blocking_failures = [
+            missing_tensors,
+            unexpected_tensors,
+            missing_native_rows,
+            unexpected_native_rows,
+            duplicated_tensors,
+            native_failures,
+            structural_failures,
+        ]
+        if comparison_standard == "strict":
+            blocking_failures.extend(
+                (threshold_failures, unsupported_indicators)
             )
-        ) and len(observed_name_set) == len(expected_names)
+        passed = not any(blocking_failures) and len(observed_name_set) == len(
+            expected_names
+        )
         step_summaries.append(
             {
                 "step": step,
@@ -431,7 +457,8 @@ def compare_msprobe_captures(
 
     summary = {
         "schema": SCHEMA,
-        "schema_version": 1,
+        "schema_version": 2,
+        "comparison_standard": comparison_standard,
         "passed": all(step["passed"] for step in step_summaries),
         "mindstudio_probe_version": _package_version(),
         "reference_run": str(reference_run),
@@ -450,4 +477,8 @@ def compare_msprobe_captures(
     return summary_path
 
 
-__all__ = ["SCHEMA", "compare_msprobe_captures"]
+__all__ = [
+    "DEFAULT_SEMANTIC_EXCLUDE_PATTERNS",
+    "SCHEMA",
+    "compare_msprobe_captures",
+]
