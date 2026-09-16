@@ -11,9 +11,11 @@ cd /path/to/torchtitan-test
 bash tests/glm5_2_mindstudio/device_diagnostic/run_diagnostics.sh
 ```
 
-Use `--repeat 2` to retain another run of the same configuration, or `--force`
-to replace the selected repeat after verifying that it is not active. Relevant
-measurement controls are available from `--help`.
+Rerunning the same command skips a complete generation. If the selected repeat
+is incomplete or failed, it is archived automatically and retried. Use
+`--repeat 2` only when a second retained measurement is intentional, and use
+`--force` to replace only the selected repeat after verifying it is not active.
+Relevant measurement controls are available from `--help`.
 
 Outputs use the repository conventions:
 
@@ -25,6 +27,10 @@ mindstudio_reports/performance/device_diagnostic/<experiment-id>/<N>-device/cand
 
 The run directory records `runtime.log`, `run_state.json`,
 `resolved_command.json`, `resolved_launch.sh`, and the experiment overview.
+Every completion, skip, and subprocess failure prints the clickable
+`torchtitan-test/mindstudio_runs/performance/device_diagnostic/.../runtime.log`
+path; the long-running command output is preserved there rather than relying on
+terminal scrollback.
 The artifact stores raw evidence under `official/`, plus a hashed `manifest.json`
 and a `complete.json` marker written only after successful validation. The
 report contains `summary.json` and a short human-readable verdict.

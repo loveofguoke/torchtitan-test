@@ -19,7 +19,11 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from tests.glm5_2_common.cli import (  # noqa: E402
+    LoggedProcessError,
     RunAttempt,
+    archive_previous_output,
+    assert_run_not_active,
+    print_runtime_log,
     reset_output_generation,
     write_experiment_overview,
 )
@@ -63,7 +67,74 @@ def run_command(
     log.write(f"[exit code: {process.returncode}]\n")
     log.flush()
     if process.returncode:
-        raise subprocess.CalledProcessError(process.returncode, command)
+        raise LoggedProcessError(
+            process.returncode,
+            command,
+            log_path=Path(log.name),
+        )
+
+
+def generation_complete(
+    artifact: Path,
+    report: Path,
+    *,
+    experiment_digest: str,
+) -> bool:
+    complete_path = artifact / "complete.json"
+    manifest_path = artifact / "manifest.json"
+    official = artifact / "official"
+    if not complete_path.is_file() or not manifest_path.is_file():
+        return False
+    try:
+        complete = json.loads(complete_path.read_text(encoding="utf-8"))
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return (
+        complete.get("status") == "completed"
+        and complete.get("experiment_digest") == experiment_digest
+        and manifest.get("experiment_digest") == experiment_digest
+        and official.is_dir()
+        and manifest.get("official_files") == output_index(official)
+        and (report / "summary.json").is_file()
+        and (report / "README.md").is_file()
+    )
+
+
+def prepare_generation(
+    run: Path,
+    artifact: Path,
+    report: Path,
+    *,
+    experiment_digest: str,
+    force: bool,
+) -> bool:
+    """Return whether the selected generation still needs to run."""
+
+    selected = (run, artifact, report)
+    if force:
+        reset_output_generation(
+            selected,
+            active_run_directories=(run,),
+            label="device diagnostic",
+        )
+        return True
+    if generation_complete(
+        artifact,
+        report,
+        experiment_digest=experiment_digest,
+    ):
+        print(f"Skip completed device diagnostic: {artifact}")
+        print_runtime_log(run / "runtime.log")
+        return False
+    if not any(path.exists() for path in selected):
+        return True
+    assert_run_not_active(run)
+    for path in selected:
+        archived = archive_previous_output(path)
+        if archived is not None:
+            print(f"Retry incomplete device diagnostic; archived: {archived}")
+    return True
 
 
 def read_json_lines(path: Path) -> list[dict[str, Any]]:
@@ -205,18 +276,14 @@ def main() -> None:
     )
     official = artifact_directory / "official"
 
-    selected = (run_directory, artifact_directory, report_directory)
-    if args.force:
-        reset_output_generation(
-            selected,
-            active_run_directories=(run_directory,),
-            label="device diagnostic",
-        )
-    elif any(path.exists() for path in selected):
-        raise FileExistsError(
-            "device diagnostic generation already exists; use another --repeat "
-            f"or --force: {run_directory}"
-        )
+    if not prepare_generation(
+        run_directory,
+        artifact_directory,
+        report_directory,
+        experiment_digest=digest,
+        force=args.force,
+    ):
+        return
 
     entry_command = [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]]
     write_experiment_overview(
@@ -378,6 +445,8 @@ def main() -> None:
     except BaseException as error:
         attempt.update("failed", error=repr(error))
         raise
+    finally:
+        print_runtime_log(runtime_log)
 
     print(f"Run: {run_directory}")
     print(f"Artifact: {artifact_directory}")

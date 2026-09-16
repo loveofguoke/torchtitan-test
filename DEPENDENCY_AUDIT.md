@@ -100,6 +100,10 @@ changes recorded by the combination submission-readiness report.
   terminals can recognize them as clickable workspace paths; external logs
   remain absolute. A nonzero subprocess exception includes the same display
   path in its final line so long tracebacks cannot hide the log location.
+- Device diagnostics follow the same contract under
+  `mindstudio_runs/performance/device_diagnostic/`: complete generations skip,
+  incomplete generations archive and retry, and `--force` replaces only the
+  selected repeat.
 - NPU smoke defaults to fresh run-local and rank-local Inductor/Triton caches.
   Failed-run archival and force reset therefore remove the active cache
   generation together with the run. Persistent reuse is explicit, recorded in
