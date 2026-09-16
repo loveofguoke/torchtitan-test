@@ -5,6 +5,10 @@ import json
 import os
 import sys
 
+from tests.glm5_2_common.compiler_cache import (
+    configure_rank_local_compiler_cache,
+)
+
 
 def _configure_nonfinite_compiler_diagnostics() -> None:
     """Route compiler evidence to rank-specific directories before imports."""
@@ -24,8 +28,13 @@ def _configure_nonfinite_compiler_diagnostics() -> None:
     os.environ["TORCH_TRACE"] = str(trace_directory)
     os.environ["TORCH_COMPILE_DEBUG_DIR"] = str(debug_directory)
     os.environ["TORCH_COMPILE_DEBUG"] = "1"
-    if os.environ.get("TORCHTITAN_NONFINITE_COMPILER_CACHE") == "per-rank":
-        cache_root = compiler_root / "cache"
+    compiler_cache = os.environ.get("TORCHTITAN_NONFINITE_COMPILER_CACHE")
+    if compiler_cache in {"per-rank", "shared"}:
+        cache_root = (
+            compiler_root / "cache"
+            if compiler_cache == "per-rank"
+            else Path(configured_root) / "compiler" / "shared" / "cache"
+        )
         inductor_cache = cache_root / "inductor"
         triton_cache = cache_root / "triton"
         inductor_cache.mkdir(parents=True, exist_ok=True)
@@ -34,6 +43,7 @@ def _configure_nonfinite_compiler_diagnostics() -> None:
         os.environ["TRITON_CACHE_DIR"] = str(triton_cache)
 
 
+configure_rank_local_compiler_cache()
 _configure_nonfinite_compiler_diagnostics()
 
 import torchtitanturbo  # noqa: F401

@@ -55,14 +55,14 @@ python tests/glm5_2_smoke/train_smoke.py \
   --device npu --topology all
 ```
 
-NPU smoke stores Inductor and Triton caches under the suite directory. The
-cache key includes the exact installed Torch, TorchNPU, and Triton wheel
-records plus the selected CANN installation. Reinstalling a rebuilt TorchNPU
-wheel therefore starts a new cache generation. Each topology has a separate
-subdirectory below that generation because TorchNPU's FlexAttention compiler
-artifacts are not safe to reuse across different distributed shape families.
-The compiler installation identity and cache key are recorded in every
-topology manifest.
+NPU smoke uses fresh run-local, rank-local Inductor and Triton caches by
+default. A retry first archives the failed run directory, so stale autotune
+failures and compiled artifacts cannot enter the new attempt; different ranks
+also cannot race through one shared cache. Pass `--compiler-cache reuse` only
+when persistent cache reuse is intentional. Reuse remains isolated by exact
+Torch, TorchNPU, Triton, CANN installation identity, topology, and rank. The
+cache policy and compiler installation identity are recorded in every topology
+manifest.
 
 For the CP8 FlexAttention backward investigation, select TorchNPU's two
 lowering paths explicitly. This does not enable whole-model compilation:
@@ -136,9 +136,10 @@ raised, so it is not skipped when the failure being diagnosed terminates the
 training step. Replay compiler evidence is stored separately under
 `nonfinite_replay/compiler/replay`; `compiler_comparison.{json,md}` inventories
 per-rank and replay files, hashes, kernel names, and relevant source/log snippets.
-The diagnostic deliberately does not change Inductor or Triton cache directories,
-because doing so could hide a cache/concurrency failure. Use the manual command
-below to replay additional saved calls.
+Diagnostics keep the default fresh rank-local compiler-cache policy. Select
+`--diagnostic-compiler-cache shared` only for a deliberate cache-concurrency
+A/B; that non-default choice is recorded in the run identity. Use the manual
+command below to replay additional saved calls.
 
 Replay uses `AuxRequest(lse=False)`, matching GLM training. Enabling LSE only in
 replay would pass a tensor rather than `None` as `grad_logsumexp` to the backward
@@ -290,8 +291,9 @@ interrupted, rerun without `--force` to continue from its incomplete member.
 | `--graph` | Execution mode: `eager`, `inductor`, or `npugraphs`. Compiled choices are NPU-only. | `eager` |
 | `--compile-loss` | Compile both `model` and `loss`; without it only `model` is compiled. NPUGraph currently rejects this option. | disabled |
 | `--compiler-diagnostics` | Set the shared compiler diagnostic environment for graph breaks, recompiles, and dynamic-shape events. | disabled |
+| `--compiler-cache` | Use fresh run-local, rank-local NPU compiler caches, or explicitly `reuse` persistent caches for the same compiler installation and topology. | `fresh` |
 | `--nonfinite-diagnostics` | Capture GLM FlexAttention inputs, saved-output lifetime evidence, and the independent FP32 backward DELTA reference. NPU only. | disabled |
-| `--diagnostic-compiler-cache` | Choose `shared` or rank-local `per-rank` Inductor/Triton caches while non-finite diagnostics are active. | `shared` |
+| `--diagnostic-compiler-cache` | Choose `shared` or rank-local `per-rank` Inductor/Triton caches while non-finite diagnostics are active. | `per-rank` |
 | `--diagnostic-flex-dsdp` | Enable anomaly-triggered device prints for DELTA, dP, dS, dQ, and dK inside the TorchNPU FlexAttention backward kernels. Requires the diagnostic TorchNPU source patch and `--nonfinite-diagnostics`. | disabled |
 | `--diagnostic-inplace-buffers` | Select `default`, `enabled`, or `disabled` Inductor buffer reuse for the FlexAttention A/B. The explicit choice is included in the suite directory and manifest. Requires `--nonfinite-diagnostics`. | `default` |
 | `--diagnostic-rank` | Global rank whose selected FlexAttention layer is captured, or `all` to compare every rank in one run. An integer rank must exist in every selected topology. | `6` |

@@ -195,8 +195,9 @@ def _contract(
     module: str,
     config: str,
     graph: GraphFeatureConfig = GraphFeatureConfig(),
+    compiler_cache: str = "fresh",
     nonfinite_diagnostics: bool = False,
-    diagnostic_compiler_cache: str = "shared",
+    diagnostic_compiler_cache: str = "per-rank",
     diagnostic_flex_dsdp: bool = False,
     diagnostic_inplace_buffers: str = "default",
     diagnostic_rank: int | str = 6,
@@ -242,6 +243,7 @@ def _contract(
         contract.setdefault("npu_compiler", {})["installation"] = (
             npu_compiler_identity
         )
+        contract.setdefault("npu_compiler", {})["cache_policy"] = compiler_cache
     if nonfinite_diagnostics:
         contract["nonfinite_diagnostics"] = {
             "rank": diagnostic_rank,
@@ -508,8 +510,9 @@ def _run_topology(
     module: str,
     config: str,
     graph: GraphFeatureConfig = GraphFeatureConfig(),
+    compiler_cache: str = "fresh",
     nonfinite_diagnostics: bool = False,
-    diagnostic_compiler_cache: str = "shared",
+    diagnostic_compiler_cache: str = "per-rank",
     diagnostic_flex_dsdp: bool = False,
     diagnostic_inplace_buffers: str = "default",
     diagnostic_rank: int | str = 6,
@@ -533,6 +536,7 @@ def _run_topology(
         module=module,
         config=config,
         graph=graph,
+        compiler_cache=compiler_cache,
         nonfinite_diagnostics=nonfinite_diagnostics,
         diagnostic_compiler_cache=diagnostic_compiler_cache,
         diagnostic_flex_dsdp=diagnostic_flex_dsdp,
@@ -596,22 +600,17 @@ def _run_topology(
     )
     environment.update(execution.environment())
     if npu_compiler_identity is not None:
-        compiler_cache_root = (
-            suite_root
-            / ".compiler_cache"
-            / str(npu_compiler_identity["cache_key"])
-            / topology.name
-        )
-        inductor_cache = compiler_cache_root / "inductor"
-        triton_cache = compiler_cache_root / "triton"
-        inductor_cache.mkdir(parents=True, exist_ok=True)
-        triton_cache.mkdir(parents=True, exist_ok=True)
-        environment.update(
-            {
-                "TORCHINDUCTOR_CACHE_DIR": str(inductor_cache),
-                "TRITON_CACHE_DIR": str(triton_cache),
-            }
-        )
+        if compiler_cache == "fresh":
+            compiler_cache_root = run_directory / "compiler_cache"
+        else:
+            compiler_cache_root = (
+                suite_root
+                / ".compiler_cache"
+                / str(npu_compiler_identity["cache_key"])
+                / topology.name
+            )
+        compiler_cache_root.mkdir(parents=True, exist_ok=True)
+        environment["TORCHTITAN_COMPILER_CACHE_ROOT"] = str(compiler_cache_root)
     if nonfinite_diagnostics:
         environment.update(
             {
@@ -815,6 +814,15 @@ def main() -> int:
         help="enable graph-break, recompile, and dynamic-shape diagnostics",
     )
     parser.add_argument(
+        "--compiler-cache",
+        choices=("fresh", "reuse"),
+        default="fresh",
+        help=(
+            "use fresh run-local rank caches by default, or explicitly reuse "
+            "rank caches for the same compiler installation and topology"
+        ),
+    )
+    parser.add_argument(
         "--nonfinite-diagnostics",
         action="store_true",
         help=(
@@ -834,7 +842,7 @@ def main() -> int:
     parser.add_argument(
         "--diagnostic-compiler-cache",
         choices=("shared", "per-rank"),
-        default="shared",
+        default="per-rank",
         help="use a shared or rank-local Inductor/Triton cache for diagnostics",
     )
     parser.add_argument(
@@ -932,10 +940,12 @@ def main() -> int:
         suite_name += f"-{graph.npu_codegen}"
     if graph.npu_flexattention_mask_mode:
         suite_name += f"-flex-{graph.npu_flexattention_mask_mode}"
+    if device == "npu" and args.compiler_cache == "reuse":
+        suite_name += "-cache-reuse"
     if args.nonfinite_diagnostics:
         suite_name += f"-nonfinite-r{args.diagnostic_rank}"
-        if args.diagnostic_compiler_cache == "per-rank":
-            suite_name += "-cache-per-rank"
+        if args.diagnostic_compiler_cache == "shared":
+            suite_name += "-cache-shared"
         if args.diagnostic_flex_dsdp:
             suite_name += "-dsdp"
         if args.diagnostic_inplace_buffers != "default":
@@ -972,6 +982,7 @@ def main() -> int:
                 module=args.module,
                 config=args.config,
                 graph=graph,
+                compiler_cache=args.compiler_cache,
                 nonfinite_diagnostics=args.nonfinite_diagnostics,
                 diagnostic_compiler_cache=args.diagnostic_compiler_cache,
                 diagnostic_flex_dsdp=args.diagnostic_flex_dsdp,

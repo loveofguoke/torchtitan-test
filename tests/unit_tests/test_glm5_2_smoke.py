@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.glm5_2_common.cli import LoggedProcessError
+from tests.glm5_2_common.compiler_cache import configure_rank_local_compiler_cache
 from tests.glm5_2_common.topology import ParallelTopology
 from tests.glm5_2_graph.config import GraphFeatureConfig
 from tests.glm5_2_smoke.analyze_flex_compiler_artifacts import analyze
@@ -138,6 +139,27 @@ def test_completed_smoke_contract_survives_json_round_trip(tmp_path) -> None:
     assert _completed(tmp_path, contract)
 
 
+def test_compiler_cache_is_rank_local(tmp_path) -> None:
+    environment = {
+        "TORCHTITAN_COMPILER_CACHE_ROOT": str(tmp_path / "compiler_cache"),
+        "RANK": "3",
+    }
+
+    cache_paths = configure_rank_local_compiler_cache(environment)
+
+    expected_root = tmp_path / "compiler_cache" / "rank3"
+    assert cache_paths == (
+        expected_root / "inductor",
+        expected_root / "triton",
+    )
+    assert environment["TORCHINDUCTOR_CACHE_DIR"] == str(
+        expected_root / "inductor"
+    )
+    assert environment["TRITON_CACHE_DIR"] == str(expected_root / "triton")
+    assert (expected_root / "inductor").is_dir()
+    assert (expected_root / "triton").is_dir()
+
+
 def test_smoke_disables_trainer_cuda_graphs(
     tmp_path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -208,6 +230,47 @@ def test_failed_smoke_exception_identifies_runtime_log(
     assert str(error.value).endswith(
         f"runtime log: {runtime_log.resolve()}"
     )
+
+
+def test_failed_npu_retry_starts_with_a_fresh_compiler_cache(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = SimpleNamespace(returncode=7)
+    monkeypatch.setattr(
+        "tests.glm5_2_smoke.train_smoke.subprocess.run",
+        lambda *_args, **_kwargs: result,
+    )
+    suite_root = tmp_path / "smoke_runs"
+    kwargs = {
+        "root": tmp_path,
+        "suite_root": suite_root,
+        "device": "npu",
+        "visible_devices": "0,1",
+        "topology": ParallelTopology(
+            "ddp2", 2, data_parallel_replicate_degree=2
+        ),
+        "steps": 1,
+        "local_batch_size": 1,
+        "global_batch_size": 2,
+        "sequence_length": 8,
+        "seed": 61,
+        "module": "glm5",
+        "config": "glm5_debugmodel",
+        "force": False,
+    }
+
+    with pytest.raises(LoggedProcessError):
+        _run_topology(**kwargs)
+    poisoned_cache = suite_root / "ddp2/compiler_cache/poisoned"
+    poisoned_cache.write_text("failed autotune", encoding="utf-8")
+
+    result.returncode = 0
+    run_directory = _run_topology(**kwargs)
+
+    assert not (run_directory / "compiler_cache/poisoned").exists()
+    archived = list(suite_root.glob("ddp2.failed-*"))
+    assert len(archived) == 1
+    assert (archived[0] / "compiler_cache/poisoned").is_file()
 
 
 def test_failed_smoke_runs_nonfinite_replay_before_raising(
@@ -449,17 +512,11 @@ def test_npu_nonfinite_diagnostics_are_recorded_and_routed_to_run(
     assert environment["ENABLE_INPLACE_BUFFERS"] == "0"
     manifest = json.loads((run_directory / "manifest.json").read_text())
     compiler_installation = manifest["contract"]["npu_compiler"]["installation"]
-    compiler_cache_root = (
-        tmp_path
-        / "smoke_runs"
-        / ".compiler_cache"
-        / compiler_installation["cache_key"]
-        / "cp8"
+    assert compiler_installation["cache_key"]
+    assert environment["TORCHTITAN_COMPILER_CACHE_ROOT"] == str(
+        run_directory / "compiler_cache"
     )
-    assert environment["TORCHINDUCTOR_CACHE_DIR"] == str(
-        compiler_cache_root / "inductor"
-    )
-    assert environment["TRITON_CACHE_DIR"] == str(compiler_cache_root / "triton")
+    assert manifest["contract"]["npu_compiler"]["cache_policy"] == "fresh"
     assert manifest["contract"]["nonfinite_diagnostics"] == {
         "rank": 6,
         "layer": "layers.6.attention.inner_attention",

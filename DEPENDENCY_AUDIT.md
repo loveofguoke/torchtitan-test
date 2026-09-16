@@ -100,6 +100,10 @@ changes recorded by the combination submission-readiness report.
   terminals can recognize them as clickable workspace paths; external logs
   remain absolute. A nonzero subprocess exception includes the same display
   path in its final line so long tracebacks cannot hide the log location.
+- NPU smoke defaults to fresh run-local and rank-local Inductor/Triton caches.
+  Failed-run archival and force reset therefore remove the active cache
+  generation together with the run. Persistent reuse is explicit, recorded in
+  the contract, and isolated by compiler installation, topology, and rank.
 
 ## Required change procedure
 
