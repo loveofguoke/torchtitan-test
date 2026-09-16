@@ -444,13 +444,13 @@ def main() -> None:
         )
     except BaseException as error:
         attempt.update("failed", error=repr(error))
-        raise
-    finally:
         print_runtime_log(runtime_log)
+        raise
 
     print(f"Run: {run_directory}")
     print(f"Artifact: {artifact_directory}")
     print(f"Report: {report_directory}")
+    print_runtime_log(runtime_log)
 
 
 if __name__ == "__main__":
