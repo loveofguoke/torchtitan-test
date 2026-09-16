@@ -268,6 +268,11 @@ last pipeline stage as `LOG_RANK`, because that stage owns the real loss.
 Logging rank 0 instead would aggregate the non-loss-stage `-1` placeholders;
 for PP8 this is displayed as `-8` even though the last stage computed a normal
 loss. An explicit `LOG_RANK` environment value still overrides this default.
+The override follows torchrun's `--local-ranks-filter` syntax: both a scalar
+such as `7` and a comma-separated list such as `0,1,2,3,4,5,6,7` are valid.
+The manifest records a scalar as an integer and a rank list as a normalized
+JSON list, so resume compares the actual logging contract without attempting
+to coerce a list to one integer.
 
 Successful topologies are skipped on the next invocation. Incomplete output is
 preserved with a `.failed-<timestamp>` suffix and retried. `--force` removes

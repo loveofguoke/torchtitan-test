@@ -104,6 +104,9 @@ changes recorded by the combination submission-readiness report.
   Failed-run archival and force reset therefore remove the active cache
   generation together with the run. Persistent reuse is explicit, recorded in
   the contract, and isolated by compiler installation, topology, and rank.
+- Pipeline smoke accepts torchrun's scalar or comma-separated `LOG_RANK`
+  filter. The manifest preserves the normalized scalar/list contract so an
+  ambient all-rank logging filter cannot abort topology resume before launch.
 
 ## Required change procedure
 

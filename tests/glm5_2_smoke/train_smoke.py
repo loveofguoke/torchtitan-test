@@ -113,6 +113,18 @@ def _default_log_rank(topology: ParallelTopology) -> int:
     return ranks_per_pipeline_stage * (topology.pipeline_parallel_degree - 1)
 
 
+def _normalize_log_ranks(value: int | str) -> int | list[int]:
+    """Normalize torchrun's scalar or comma-separated local-rank filter."""
+
+    parts = [part.strip() for part in str(value).split(",") if part.strip()]
+    if not parts:
+        raise ValueError("LOG_RANK must contain at least one local rank")
+    ranks = [int(part) for part in parts]
+    if any(rank < 0 for rank in ranks):
+        raise ValueError("LOG_RANK values must be non-negative")
+    return ranks[0] if len(ranks) == 1 else ranks
+
+
 def _distribution_identity(distribution_name: str) -> dict[str, str | None]:
     """Identify installed wheel contents without importing the package."""
     try:
@@ -221,7 +233,7 @@ def _contract(
         "config": config,
     }
     if topology.pipeline_parallel_degree > 1:
-        contract["log_rank"] = int(
+        contract["log_rank"] = _normalize_log_ranks(
             os.environ.get("LOG_RANK", _default_log_rank(topology))
         )
     if graph.mode != "eager":

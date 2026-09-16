@@ -16,6 +16,7 @@ from tests.glm5_2_smoke.train_smoke import (
     _completed,
     _contract,
     _default_log_rank,
+    _normalize_log_ranks,
     _run_device_replays,
     _run_topology,
 )
@@ -115,6 +116,28 @@ def test_default_log_rank_owns_pipeline_loss(
     topology: ParallelTopology, expected_rank: int
 ) -> None:
     assert _default_log_rank(topology) == expected_rank
+
+
+def test_log_rank_contract_accepts_torchrun_rank_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LOG_RANK", "0,1,2,3,4,5,6,7")
+    topology = ParallelTopology("pp8", 8, pipeline_parallel_degree=8)
+
+    contract = _contract(
+        device="npu",
+        topology=topology,
+        steps=2,
+        local_batch_size=8,
+        global_batch_size=64,
+        sequence_length=128,
+        seed=61,
+        module="glm5",
+        config="glm5_debugmodel",
+    )
+
+    assert _normalize_log_ranks("7") == 7
+    assert contract["log_rank"] == list(range(8))
 
 
 def test_completed_smoke_contract_survives_json_round_trip(tmp_path) -> None:
