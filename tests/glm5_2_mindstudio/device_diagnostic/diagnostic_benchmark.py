@@ -316,14 +316,13 @@ def main() -> None:
     try:
         official.mkdir(parents=True, exist_ok=False)
         with runtime_log.open("w", encoding="utf-8") as log:
+            inventory_parts = [f"hostname: {socket.gethostname()}\n"]
             inventory_commands = [
-                ["hostname"],
                 ["npu-smi", "info"],
                 ["npu-smi", "info", "-l"],
                 ["npu-smi", "info", "-m"],
                 ["npu-smi", "info", "-t", "topo"],
             ]
-            inventory_parts = []
             for index, command in enumerate(inventory_commands):
                 output = official / f".inventory_{index}.txt"
                 run_command(command, root=root, log=log, output=output)
