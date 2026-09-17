@@ -113,6 +113,45 @@ class DeviceDiagnosticLifecycleTest(unittest.TestCase):
             )
             self.assertIn("0", summary["suspect_host_devices"])
 
+    def test_summary_indexes_synthetic_ddp_steps_by_mapping_and_rank(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            official = Path(temporary_directory)
+            official.joinpath("single_device.jsonl").write_text(
+                "\n".join(
+                    json.dumps(row)
+                    for row in (
+                        {"benchmark": "bf16_matmul", "physical_device": "0", "tflops": 10},
+                        {"benchmark": "bf16_copy", "physical_device": "0", "gib_per_second": 20},
+                    )
+                ),
+                encoding="utf-8",
+            )
+            official.joinpath("pairwise_all_reduce.jsonl").write_text(
+                json.dumps({"visible_devices": "0,1", "median_ms": 2}),
+                encoding="utf-8",
+            )
+            official.joinpath("all_device_all_reduce.jsonl").write_text(
+                json.dumps({"rank": 0, "median_ms": 2}), encoding="utf-8"
+            )
+            ddp_rows = [
+                {"visible_devices": "0,1", "rank": 0, "physical_device": "0"},
+                {"visible_devices": "0,1", "rank": 1, "physical_device": "1"},
+                {"visible_devices": "1,0", "rank": 0, "physical_device": "1"},
+                {"visible_devices": "1,0", "rank": 1, "physical_device": "0"},
+            ]
+            official.joinpath("synthetic_ddp_step.jsonl").write_text(
+                "\n".join(json.dumps(row) for row in ddp_rows), encoding="utf-8"
+            )
+
+            summary = make_summary(official)
+
+            self.assertEqual(
+                "0", summary["synthetic_ddp_step"]["0,1"]["0"]["physical_device"]
+            )
+            self.assertEqual(
+                "0", summary["synthetic_ddp_step"]["1,0"]["1"]["physical_device"]
+            )
+
     def _complete_generation(
         self,
         root: Path,

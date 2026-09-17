@@ -15,6 +15,21 @@ bash tests/glm5_2_mindstudio/device_diagnostic/run_diagnostics.sh \
   --launch-batch 100
 ```
 
+To compare the known `0,1` and `6,7` DDP behavior without loading a model, add
+ordered mappings in both directions:
+
+```bash
+bash tests/glm5_2_mindstudio/device_diagnostic/run_diagnostics.sh \
+  --devices 0,1,6,7 \
+  --ddp-pairs '0,1;1,0;6,7;7,6' \
+  --single-device-rounds 5
+```
+
+The synthetic DDP stage separately synchronizes a fixed BF16 Matmul and HCCL
+AllReduce. Its per-rank rows identify whether a delay follows a physical device,
+the logical rank, computation, communication, or host enqueue. It deliberately
+does not include model, data loader, autograd, optimizer, or TorchTitan logic.
+
 Rerunning the same command skips a complete generation. If the selected repeat
 is incomplete or failed, it is archived automatically and retried. Use
 `--repeat 2` only when a second retained measurement is intentional, and use

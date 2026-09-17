@@ -160,6 +160,10 @@ def make_summary(official: Path) -> dict[str, Any]:
     device_rows = read_json_lines(official / "single_device.jsonl")
     pair_rows = read_json_lines(official / "pairwise_all_reduce.jsonl")
     all_device_rows = read_json_lines(official / "all_device_all_reduce.jsonl")
+    ddp_step_path = official / "synthetic_ddp_step.jsonl"
+    ddp_step_rows = (
+        read_json_lines(ddp_step_path) if ddp_step_path.is_file() else []
+    )
 
     device_samples: dict[str, dict[str, list[float]]] = {}
     for row in device_rows:
@@ -280,6 +284,14 @@ def make_summary(official: Path) -> dict[str, Any]:
             str(row["rank"]): float(row["median_ms"])
             for row in all_device_rows
         },
+        "synthetic_ddp_step": {
+            str(row["visible_devices"]): {
+                str(candidate["rank"]): candidate
+                for candidate in ddp_step_rows
+                if candidate["visible_devices"] == row["visible_devices"]
+            }
+            for row in ddp_step_rows
+        },
         "suspect_compute_devices": sorted(
             device
             for device, metrics in device_metrics.items()
@@ -333,13 +345,33 @@ def main() -> None:
     parser.add_argument("--iterations", type=int, default=50)
     parser.add_argument("--single-device-rounds", type=int, default=1)
     parser.add_argument("--launch-batch", type=int, default=100)
+    parser.add_argument(
+        "--ddp-pairs",
+        default="",
+        help="Ordered two-device mappings separated by semicolons, for example 0,1;1,0",
+    )
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
     devices = [part.strip() for part in args.devices.split(",") if part.strip()]
+    ddp_pairs = [
+        [device.strip() for device in pair.split(",")]
+        for pair in args.ddp_pairs.split(";")
+        if pair.strip()
+    ]
+    if any(len(pair) != 2 or len(set(pair)) != 2 for pair in ddp_pairs):
+        raise ValueError("--ddp-pairs requires ordered unique device pairs")
     if len(devices) < 2 or len(set(devices)) != len(devices):
         raise ValueError("--devices requires at least two unique physical device IDs")
+    unknown_ddp_devices = sorted(
+        {device for pair in ddp_pairs for device in pair} - set(devices)
+    )
+    if unknown_ddp_devices:
+        raise ValueError(
+            "--ddp-pairs devices must also appear in --devices: "
+            + ",".join(unknown_ddp_devices)
+        )
     if args.repeat < 1:
         raise ValueError("--repeat must be positive")
 
@@ -354,6 +386,7 @@ def main() -> None:
         "iterations": args.iterations,
         "single_device_rounds": args.single_device_rounds,
         "launch_batch": args.launch_batch,
+        "ddp_pairs": ddp_pairs,
     }
     digest = hashlib.sha256(
         json.dumps(identity, sort_keys=True).encode("utf-8")
@@ -521,6 +554,34 @@ def main() -> None:
                 output=official / "all_device_all_reduce.jsonl",
                 environment=environment,
             )
+
+            if ddp_pairs:
+                ddp_parts = []
+                for pair_devices in ddp_pairs:
+                    pair = ",".join(pair_devices)
+                    environment = dict(os.environ)
+                    environment["ASCEND_RT_VISIBLE_DEVICES"] = pair
+                    output = official / f".ddp_step_{'_'.join(pair_devices)}.jsonl"
+                    run_command(
+                        [
+                            sys.executable, "-m", "torch.distributed.run",
+                            "--standalone", "--nproc-per-node=2",
+                            str(script_directory / "ddp_step_benchmark.py"),
+                            "--matrix-size", str(args.matrix_size),
+                            "--collective-size-mib", str(args.collective_size_mib),
+                            "--warmup", str(args.warmup),
+                            "--iterations", str(args.iterations),
+                        ],
+                        root=root,
+                        log=log,
+                        output=output,
+                        environment=environment,
+                    )
+                    ddp_parts.append(output.read_text(encoding="utf-8"))
+                    output.unlink()
+                (official / "synthetic_ddp_step.jsonl").write_text(
+                    "".join(ddp_parts), encoding="utf-8"
+                )
 
         summary = make_summary(official)
         write_report(report_directory, summary)
