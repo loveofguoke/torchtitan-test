@@ -63,6 +63,12 @@ def print_runtime_log(log_path: Path) -> None:
     print(f"Runtime log: {display_repository_path(log_path)}", flush=True)
 
 
+def print_output_path(label: str, path: Path) -> None:
+    """Print a clickable repository-relative experiment output path."""
+
+    print(f"{label}: {display_repository_path(path)}", flush=True)
+
+
 def write_experiment_overview(
     directory: Path,
     *,
@@ -390,7 +396,7 @@ def reset_output_generation(
     if existing_paths:
         print(f"Removed {label} outputs for forced rerun:", flush=True)
         for path in existing_paths:
-            print(f"  {path}", flush=True)
+            print(f"  {display_repository_path(path)}", flush=True)
     else:
         print(f"No existing {label} outputs required removal.", flush=True)
 

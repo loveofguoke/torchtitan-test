@@ -132,6 +132,6 @@ fi
 } >"$REPORT_FILE"
 
 echo "Smoke graph-suite result: $RESULT"
-echo "Smoke graph-suite report: $REPORT_FILE"
-echo "Smoke graph-suite runtime log: $RUNTIME_LOG"
+echo "Smoke graph-suite report: $(display_repository_path "$REPORT_FILE")"
+echo "Smoke graph-suite runtime log: $(display_repository_path "$RUNTIME_LOG")"
 exit "$STATUS"

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from tests.glm5_2_common.topology import ParallelTopology, select_topologies
+from tests.glm5_2_common.cli import print_output_path
 
 from .artifacts import PrecisionArtifactError, PrecisionArtifactReader
 from .report import compare_and_write_report, precision_label
@@ -412,7 +413,7 @@ def run_topology_suite_cli(
             for repeat in repeats:
                 artifact = _artifact_directory(root, config, role, endpoint, repeat)
                 if artifact in seen:
-                    print(f"Reuse shared {role} capture for {name}: {artifact}")
+                    print_output_path(f"Reuse shared {role} capture for {name}", artifact)
                     continue
                 seen.add(artifact)
                 path = capture_endpoint(

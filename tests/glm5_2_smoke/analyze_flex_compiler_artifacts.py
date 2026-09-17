@@ -9,6 +9,11 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from tests.glm5_2_common.cli import print_output_path  # noqa: E402
 
 
 TEXT_SUFFIXES = {".cpp", ".json", ".log", ".py", ".txt"}
@@ -280,8 +285,8 @@ def main() -> int:
     markdown_path = args.capture_root / "compiler_comparison.md"
     json_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     _write_markdown(markdown_path, report)
-    print(f"Compiler comparison JSON: {json_path}", flush=True)
-    print(f"Compiler comparison report: {markdown_path}", flush=True)
+    print_output_path("Compiler comparison JSON", json_path)
+    print_output_path("Compiler comparison report", markdown_path)
     return 0
 
 

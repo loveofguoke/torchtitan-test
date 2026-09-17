@@ -14,6 +14,7 @@ from tests.glm5_2_common.cli import (
     RunAttempt,
     archive_previous_output,
     assert_run_not_active,
+    print_output_path,
     reset_output_generation,
 )
 from tests.glm5_2_common.naming import config_digest
@@ -305,7 +306,7 @@ def run_graph_visualization(
         experiment_digest=digest,
         fixture_generation_id=generation,
     ):
-        print(f"Skip completed graph visualization: {artifact_directory}", flush=True)
+        print_output_path("Skip completed graph visualization", artifact_directory)
         return _write_report(
             root=root,
             report_directory=report_directory,

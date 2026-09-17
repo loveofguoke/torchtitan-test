@@ -34,6 +34,7 @@ from tests.glm5_2_common.cli import (
     LoggedProcessError,
     RunAttempt,
     assert_run_not_active,
+    print_output_path,
     print_runtime_log,
     reset_output_generation,
     write_experiment_overview,
@@ -617,7 +618,9 @@ def _adopt_legacy_performance_output(
     manifest = rename_value(manifest)
     manifest["run_name"] = destination_name
     _write_json(destination / "manifest.json", manifest)
-    print(f"Adopted matching legacy output:\n  {legacy}\n  -> {destination}")
+    print("Adopted matching legacy output:")
+    print_output_path("  source", legacy)
+    print_output_path("  destination", destination)
     return destination
 
 
@@ -1079,7 +1082,7 @@ def capture(
                 f"completed capture uses different settings: {artifact_directory}; "
                 "pass --force or choose a distinct script name"
             )
-        print(f"Skip completed performance capture: {artifact_directory}")
+        print_output_path("Skip completed performance capture", artifact_directory)
         return run_directory, artifact_directory
     if force:
         reset_output_generation(
@@ -1097,7 +1100,7 @@ def capture(
         print(f"Archived incomplete run before retry: {recovered}")
     if artifact_directory.exists() and not force:
         recovered = _recover_partial_run(artifact_directory)
-        print(f"Archived incomplete artifact before retry: {recovered}")
+        print_output_path("Archived incomplete artifact before retry", recovered)
 
     run_directory.mkdir(parents=True, exist_ok=False)
     attempt = RunAttempt.start(
@@ -1241,7 +1244,7 @@ def capture(
         run_directory=run_directory,
         artifact_directory=artifact_directory,
     )
-    print(f"Captured performance artifact: {artifact_directory}")
+    print_output_path("Captured performance artifact", artifact_directory)
     return run_directory, artifact_directory
 
 
@@ -2458,7 +2461,7 @@ def _prepare_analysis_stage(
             and state.get("context", {}).get("identity") == context["identity"]
             and _analysis_stage_outputs_complete(run_directory, stage)
         ):
-            print(f"Skip completed performance {stage} analysis: {state_path}")
+            print_output_path(f"Skip completed performance {stage} analysis", state_path)
             return None, False
         if (
             state.get("status") == "completed"
@@ -2524,7 +2527,7 @@ def _prepare_analysis_stage(
                 state_name=state_name,
             )
             attempt.update("completed", adopted_legacy_output=True)
-            print(f"Adopted completed legacy {stage} output: {state_path}")
+            print_output_path(f"Adopted completed legacy {stage} output", state_path)
             return None, False
         raise FileExistsError(
             f"{stage} output exists without matching stage provenance; pass "
@@ -2668,7 +2671,7 @@ def analyze(
         run_name = str(manifest["run_name"])
         run_directory = run_parent / run_name
         manifest_path = artifact_directory / "manifest.json"
-        print(f"Using compatible capture manifest: {manifest_path}")
+        print_output_path("Using compatible capture manifest", manifest_path)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     report_path = (
         _scoped_parent(root, config.report_root, config.topology)
@@ -2887,7 +2890,7 @@ def analyze(
         report=str(report_path),
         analysis=str(artifact_directory / "analysis.json"),
     )
-    print(f"Performance report: {report_path}")
+    print_output_path("Performance report", report_path)
     return report_path
 
 
@@ -3618,4 +3621,4 @@ def run_profiler_cli(
             multiple_presets=len(selected_presets) > 1,
         )
         _write_suite_report(index, reports)
-        print(f"Performance suite report: {index}")
+        print_output_path("Performance suite report", index)

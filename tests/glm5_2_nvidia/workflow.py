@@ -16,6 +16,8 @@ from typing import Any
 from tests.glm5_2_common.cli import (
     LoggedProcessError,
     RunAttempt,
+    display_repository_path,
+    print_output_path,
     print_runtime_log,
     reset_output_generation,
     write_experiment_overview,
@@ -268,7 +270,7 @@ def _capture(
         and record.get("contract") == contract
         and report.is_file()
     ):
-        print(f"Skip completed Nsight Systems capture: {artifact_dir}")
+        print_output_path("Skip completed Nsight Systems capture", artifact_dir)
         return
     if artifact_dir.exists() or run_dir.exists():
         reset_output_generation(
@@ -373,7 +375,7 @@ def _capture(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     attempt.update("completed")
-    print(f"Nsight Systems capture: {report}")
+    print_output_path("Nsight Systems capture", report)
 
 
 def _analyze(
@@ -402,7 +404,7 @@ def _analyze(
         and all(path.is_file() for path in expected)
         and (diagnosis_dir / "diagnosis.json").is_file()
     ):
-        print(f"Skip completed Nsight Systems analysis: {artifact_dir}")
+        print_output_path("Skip completed Nsight Systems analysis", artifact_dir)
         return
     stats_dir.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
@@ -451,7 +453,7 @@ def _analyze(
                 result.returncode, command, log_path=stats_log
             )
         output.write_text(result.stdout, encoding="utf-8")
-        print(f"Nsight Systems statistic: {output}")
+        print_output_path("Nsight Systems statistic", output)
         print_runtime_log(stats_log)
     diagnosis = diagnose(stats_dir, diagnosis_dir)
     print(f"NVIDIA automatic diagnosis: {diagnosis['markdown']}")
@@ -496,7 +498,7 @@ def _write_report(
         f"<h2>Statistics</h2><ul>{rows}</ul>",
         encoding="utf-8",
     )
-    print(f"Nsight Systems report: {report_path}")
+    print_output_path("Nsight Systems report", report_path)
 
 
 def run_cli() -> int:
@@ -674,9 +676,9 @@ def run_cli() -> int:
                     {
                         "topology": topology.name,
                         "contract": contract,
-                        "run": str(run),
-                        "artifact": str(artifact),
-                        "report": str(report),
+                        "run": display_repository_path(run),
+                        "artifact": display_repository_path(artifact),
+                        "report": display_repository_path(report),
                     },
                     indent=2,
                 )

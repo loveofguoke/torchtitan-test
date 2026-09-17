@@ -12,6 +12,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tests.glm5_2_performance.config import profiler_presets  # noqa: E402
+from tests.glm5_2_common.cli import display_repository_path  # noqa: E402
 from tests.glm5_2_performance.dynamic_profile import (  # noqa: E402
     build_dynamic_profile_config,
     write_dynamic_profile_config,
@@ -83,8 +84,11 @@ def main() -> None:
         )
     destination = write_dynamic_profile_config(args.config_dir, config)
     state = "enabled" if config["is_valid"] else "disabled"
-    print(f"Dynamic profiler configuration ({state}): {destination.resolve()}")
-    print(f"export PROF_CONFIG_PATH={args.config_dir.resolve()}")
+    print(
+        f"Dynamic profiler configuration ({state}): "
+        f"{display_repository_path(destination)}"
+    )
+    print(f"export PROF_CONFIG_PATH={display_repository_path(args.config_dir)}")
 
 
 if __name__ == "__main__":

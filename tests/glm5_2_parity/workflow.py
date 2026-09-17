@@ -31,6 +31,7 @@ from tests.glm5_2_common.cli import (
     RunAttempt,
     archive_previous_output,
     assert_run_not_active,
+    print_output_path,
     print_runtime_log,
     reset_output_generation,
 )
@@ -658,7 +659,7 @@ def run_offline_cli(
                 scenario_config_digest=scenario_config_digest,
                 fixture_digest=fixture_value,
             ):
-                print(f"Skip completed parity capture: {actual_artifact}")
+                print_output_path("Skip completed parity capture", actual_artifact)
                 return
             actual_manifest = _completed_artifact_manifest(actual_artifact)
             if (
@@ -698,7 +699,7 @@ def run_offline_cli(
                 scenario_config_digest=scenario_config_digest,
                 fixture_digest=fixture_value,
             ):
-                print(f"Skip completed parity capture: {expected_artifact}")
+                print_output_path("Skip completed parity capture", expected_artifact)
                 return
             expected_manifest = _completed_artifact_manifest(expected_artifact)
             if (

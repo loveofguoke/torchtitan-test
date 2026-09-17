@@ -24,6 +24,7 @@ from tests.glm5_2_common.cli import (
     archive_previous_output,
     assert_run_not_active,
     display_repository_path,
+    print_output_path,
     print_runtime_log,
     reset_output_generation,
     write_experiment_overview,
@@ -216,7 +217,11 @@ def _adopt_legacy_accuracy_storage(
             _assert_tree_not_active(legacy)
         destination.parent.mkdir(parents=True, exist_ok=True)
         legacy.rename(destination)
-        print(f"Adopted matching legacy accuracy output:\n  {legacy}\n  -> {destination}")
+        print(
+            "Adopted matching legacy accuracy output:\n"
+            f"  {display_repository_path(legacy)}\n"
+            f"  -> {display_repository_path(destination)}"
+        )
 
 
 def _fixture_manifest(root: Path, config: MindStudioExperimentConfig) -> dict[str, Any]:
@@ -1234,7 +1239,7 @@ def capture_official(
         experiment_digest=digest,
         fixture_generation_id=generation,
     ):
-        print(f"Skip completed official capture: {artifact_directory}", flush=True)
+        print_output_path("Skip completed official capture", artifact_directory)
         return artifact_directory
     toolchain: dict[str, Any] | None = None
     toolchain_identity: dict[str, Any] | None = None
@@ -1352,7 +1357,7 @@ def capture_official(
         _assert_tree_not_active(report_directory)
     for stale in stale_paths:
         archived = archive_previous_output(stale)
-        print(f"Retry incomplete output; archived: {archived}", flush=True)
+        print_output_path("Retry incomplete output; archived", archived)
     if report_directory.exists():
         archived = archive_previous_output(report_directory)
         print(
@@ -2403,7 +2408,7 @@ def compare_prechecks(
             repeat=repeat,
             fixture_generation_id=generation,
         )
-        print(f"Pre-check HTML report: {report}", flush=True)
+        print_output_path("Pre-check HTML report", report)
     return compare_root
 
 
@@ -3264,7 +3269,7 @@ def run_mindstudio_cli(
                 dry_run=args.dry_run,
                 entry_command=[sys.executable, *sys.argv],
             )
-            print(f"Official artifact: {path}")
+            print_output_path("Official artifact", path)
         return
 
     if args.precheck:
@@ -3335,7 +3340,7 @@ def run_mindstudio_cli(
                 resume_csv=args.precheck_resume_csv,
                 dry_run=args.dry_run,
             )
-            print(f"Precision pre-check report: {path}")
+            print_output_path("Precision pre-check report", path)
         return
 
     if args.precheck_compare:
@@ -3416,7 +3421,7 @@ def run_mindstudio_cli(
                 enable_layer_mapping=args.enable_layer_mapping,
                 dry_run=args.dry_run,
             )
-            print(f"Hierarchical graph report: {path}")
+            print_output_path("Hierarchical graph report", path)
         return
 
     if args.trend:
@@ -3542,7 +3547,7 @@ def run_mindstudio_cli(
                     },
                 )
             if not args.dry_run:
-                print(f"First-overflow report: {output_directory}")
+                print_output_path("First-overflow report", output_directory)
         return
 
     if (
@@ -3588,4 +3593,4 @@ def run_mindstudio_cli(
         rows=rows,
         supplemental_report_patterns=(),
     )
-    print(f"MindStudio report: {path}")
+    print_output_path("MindStudio report", path)

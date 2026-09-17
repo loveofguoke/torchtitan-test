@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from tests.glm5_2_common.cli import (
+    display_repository_path,
     LoggedProcessError,
     RunAttempt,
     replace_topology,
@@ -43,6 +44,14 @@ def test_logged_process_error_starts_repository_log_at_checkout_name() -> None:
 
     assert str(error).endswith(
         "runtime log: torchtitan-test/smoke_runs/single/runtime.log"
+    )
+
+
+def test_repository_output_starts_at_checkout_name() -> None:
+    repository_root = Path(__file__).resolve().parents[2]
+
+    assert display_repository_path(repository_root / "reports" / "result.json") == (
+        "torchtitan-test/reports/result.json"
     )
 
 

@@ -23,6 +23,7 @@ from tests.glm5_2_common.cli import (  # noqa: E402
     RunAttempt,
     archive_previous_output,
     assert_run_not_active,
+    print_output_path,
     print_runtime_log,
     reset_output_generation,
     write_experiment_overview,
@@ -124,7 +125,7 @@ def prepare_generation(
         report,
         experiment_digest=experiment_digest,
     ):
-        print(f"Skip completed device diagnostic: {artifact}")
+        print_output_path("Skip completed device diagnostic", artifact)
         print_runtime_log(run / "runtime.log")
         return False
     if not any(path.exists() for path in selected):
@@ -482,9 +483,9 @@ def main() -> None:
         print_runtime_log(runtime_log)
         raise
 
-    print(f"Run: {run_directory}")
-    print(f"Artifact: {artifact_directory}")
-    print(f"Report: {report_directory}")
+    print_output_path("Run", run_directory)
+    print_output_path("Artifact", artifact_directory)
+    print_output_path("Report", report_directory)
     print_runtime_log(runtime_log)
 
 

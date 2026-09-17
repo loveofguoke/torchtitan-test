@@ -34,6 +34,7 @@ from tests.glm5_2_common.cli import (
     RunAttempt,
     archive_previous_output,
     assert_run_not_active,
+    display_repository_path,
     print_runtime_log,
     reset_output_generation,
     run_all_topologies,
@@ -389,7 +390,11 @@ def _adopt_legacy_stability_outputs(
             continue
         parent.mkdir(parents=True, exist_ok=True)
         source.rename(destination)
-        print(f"Adopted matching legacy output:\n  {source}\n  -> {destination}")
+        print(
+            "Adopted matching legacy output:\n"
+            f"  {display_repository_path(source)}\n"
+            f"  -> {display_repository_path(destination)}"
+        )
     report_directory = root / "stability_reports" / suite_name / topology_slug
     old_summary = report_directory / f"{legacy_member_name}.json"
     new_summary = report_directory / f"{member_name}.json"
@@ -636,7 +641,7 @@ def main() -> int:
         ):
             print(
                 f"Skip completed stability topology: {topology.name}\n"
-                f"Report: {report_path}",
+                f"Report: {display_repository_path(report_path)}",
                 flush=True,
             )
             return 0
@@ -855,7 +860,11 @@ def main() -> int:
         return_code=return_code,
         report=str(report_path),
     )
-    print(f"Stability status: {status}\nReport: {report_path}", flush=True)
+    print(
+        f"Stability status: {status}\n"
+        f"Report: {display_repository_path(report_path)}",
+        flush=True,
+    )
     print_runtime_log(runtime_log)
     return 0 if status == "PASS" else 2 if status == "INSUFFICIENT_DURATION" else 1
 

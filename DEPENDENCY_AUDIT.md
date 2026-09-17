@@ -100,6 +100,11 @@ changes recorded by the combination submission-readiness report.
   terminals can recognize them as clickable workspace paths; external logs
   remain absolute. A nonzero subprocess exception includes the same display
   path in its final line so long tracebacks cannot hide the log location.
+- Every user-facing repository-owned run, artifact, report, fixture, state,
+  and profiler output path follows the same `torchtitan-test/...` display
+  contract. Absolute paths remain in manifests and provenance metadata; they
+  must not leak into terminal result links merely because internal storage
+  uses resolved `Path` objects.
 - Device diagnostics follow the same contract under
   `mindstudio_runs/performance/device_diagnostic/`: complete generations skip,
   incomplete generations archive and retry, and `--force` replaces only the

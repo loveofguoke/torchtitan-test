@@ -7,9 +7,14 @@ import argparse
 import json
 import os
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import torch
 from torch.nn.attention.flex_attention import AuxRequest
+
+from tests.glm5_2_common.cli import print_output_path  # noqa: E402
 
 import torchtitanturbo  # noqa: F401
 from torchtitan.models.common.attention import FlexAttention
@@ -220,7 +225,7 @@ def replay(
     )
     if verbose:
         print(json.dumps(result, indent=2), flush=True)
-    print(f"Replay result: {result_path}", flush=True)
+    print_output_path("Replay result", result_path)
     return result
 
 
@@ -254,7 +259,7 @@ def main() -> int:
         "calls": [],
     }
     _write_summary(summary_path, summary)
-    print(f"Replay summary initialized: {summary_path}", flush=True)
+    print_output_path("Replay summary initialized", summary_path)
     for capture_directory in args.capture_directories:
         item = replay(
             capture_directory,
@@ -296,7 +301,7 @@ def main() -> int:
         )
     summary["status"] = "completed"
     _write_summary(summary_path, summary)
-    print(f"Replay summary: {summary_path}", flush=True)
+    print_output_path("Replay summary", summary_path)
     return 0
 
 

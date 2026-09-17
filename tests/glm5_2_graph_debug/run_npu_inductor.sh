@@ -8,6 +8,15 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 PROJECT_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
 WORKSPACE_ROOT=$(dirname -- "$PROJECT_ROOT")
 
+display_repository_path() {
+    local path=$1
+    if [[ "$path" == "$PROJECT_ROOT"/* ]]; then
+        printf '%s/%s\n' "$(basename -- "$PROJECT_ROOT")" "${path#"$PROJECT_ROOT"/}"
+    else
+        printf '%s\n' "$path"
+    fi
+}
+
 ACTION=${1:-smoke}
 if [[ $# -gt 0 ]]; then
     shift
@@ -320,6 +329,6 @@ training steps, compiler diagnostics, and any exception traceback.
 EOF
 
 echo "Graph-mode result: $RESULT"
-echo "Graph-mode report: $REPORT_FILE"
-echo "Graph-mode runtime log: $RUNTIME_LOG"
+echo "Graph-mode report: $(display_repository_path "$REPORT_FILE")"
+echo "Graph-mode runtime log: $(display_repository_path "$RUNTIME_LOG")"
 exit "$STATUS"

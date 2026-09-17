@@ -22,6 +22,7 @@ from typing import Any, Sequence
 
 from tests.glm5_2_common.cli import (
     archive_previous_output,
+    print_output_path,
     replace_topology,
     reset_output_generation,
 )
@@ -172,7 +173,9 @@ def adopt_legacy_checkpoint_outputs(
             continue
         parent.mkdir(parents=True, exist_ok=True)
         source.rename(destination)
-        print(f"Adopted matching legacy output:\n  {source}\n  -> {destination}")
+        print("Adopted matching legacy output:")
+        print_output_path("  source", source)
+        print_output_path("  destination", destination)
     report_directory = root / "checkpoint_reports" / suite_name / topology_slug
     old_summary = report_directory / f"{legacy_member_name}.json"
     new_summary = report_directory / f"{member_name}.json"
@@ -401,5 +404,5 @@ def run_checkpoint_topology_suite(
     report_path, suite_passed = _write_suite_report(
         root, suite_name=suite_name, members=members
     )
-    print(f"Checkpoint topology suite report: {report_path}", flush=True)
+    print_output_path("Checkpoint topology suite report", report_path)
     return 0 if suite_passed and not any(return_codes) else 1

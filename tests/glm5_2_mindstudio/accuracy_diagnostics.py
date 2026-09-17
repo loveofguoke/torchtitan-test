@@ -19,6 +19,7 @@ from tests.glm5_2_common.cli import (
     RunAttempt,
     archive_previous_output,
     assert_run_not_active,
+    print_output_path,
 )
 from tests.glm5_2_common.naming import config_digest, slug
 from tests.glm5_2_common.topology import select_topologies, standard_topologies
@@ -719,7 +720,7 @@ def compare_repeats(
     )
     if complete_path.is_file():
         if json.loads(complete_path.read_text(encoding="utf-8")) == completion:
-            print(f"Skip completed repeat comparison: {output_root}")
+            print_output_path("Skip completed repeat comparison", output_root)
             return output_root
         raise FileExistsError(
             "repeat comparison output belongs to different inputs: "
@@ -864,7 +865,7 @@ def analyze_training_observation(
     assert_run_not_active(output_root, state_name="observation_state.json")
     if complete_path.is_file():
         if json.loads(complete_path.read_text(encoding="utf-8")) == completion:
-            print(f"Skip completed training observation: {output_root}")
+            print_output_path("Skip completed training observation", output_root)
             return output_root
         if not force:
             raise FileExistsError(
@@ -1587,4 +1588,4 @@ def run_diagnostic_cli(
     else:
         print(json.dumps(value, indent=2, sort_keys=True))
         report = _case_root(repository_root, args.case_id) / "README.md"
-        print(f"Diagnostic report: {report}")
+        print_output_path("Diagnostic report", report)

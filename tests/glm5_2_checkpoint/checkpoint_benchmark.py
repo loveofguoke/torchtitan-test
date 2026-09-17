@@ -40,6 +40,7 @@ from tests.glm5_2_common.cli import (
     RunAttempt,
     archive_previous_output,
     assert_run_not_active,
+    display_repository_path,
     print_runtime_log,
     reset_output_generation,
 )
@@ -1416,7 +1417,7 @@ def main() -> int:
         ):
             print(
                 f"Skip completed checkpoint topology: {topology.name}\n"
-                f"Report: {report_path}",
+                f"Report: {display_repository_path(report_path)}",
                 flush=True,
             )
             return 0
@@ -1849,7 +1850,7 @@ def main() -> int:
     )
     print(
         f"Checkpoint resume status: {'PASS' if passed else 'FAIL'}\n"
-        f"Report: {report_path}",
+        f"Report: {display_repository_path(report_path)}",
         flush=True,
     )
     return 0 if passed else 1

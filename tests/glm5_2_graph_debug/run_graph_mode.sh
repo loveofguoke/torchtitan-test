@@ -95,8 +95,8 @@ PY
         echo "- Runtime log: \`$RUNTIME_LOG\`"
     } >"$REPORT_FILE"
     echo "Graph-mode environment result: PASSED"
-    echo "Graph-mode environment report: $REPORT_FILE"
-    echo "Graph-mode environment runtime log: $RUNTIME_LOG"
+    echo "Graph-mode environment report: $(display_repository_path "$REPORT_FILE")"
+    echo "Graph-mode environment runtime log: $(display_repository_path "$RUNTIME_LOG")"
     exit 0
 fi
 
@@ -241,6 +241,6 @@ fi
 } >"$REPORT_FILE"
 
 echo "Graph-mode launcher result: $RESULT"
-echo "Graph-mode launcher report: $REPORT_FILE"
-echo "Graph-mode launcher runtime log: $RUNTIME_LOG"
+echo "Graph-mode launcher report: $(display_repository_path "$REPORT_FILE")"
+echo "Graph-mode launcher runtime log: $(display_repository_path "$RUNTIME_LOG")"
 exit "$STATUS"

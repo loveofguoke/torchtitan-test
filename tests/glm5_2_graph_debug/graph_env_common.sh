@@ -17,6 +17,15 @@ GRAPH_ENV_SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 PROJECT_ROOT=$(cd -- "$GRAPH_ENV_SCRIPT_DIR/../.." && pwd)
 WORKSPACE_ROOT=$(dirname -- "$PROJECT_ROOT")
 
+display_repository_path() {
+    local path=$1
+    if [[ "$path" == "$PROJECT_ROOT"/* ]]; then
+        printf '%s/%s\n' "$(basename -- "$PROJECT_ROOT")" "${path#"$PROJECT_ROOT"/}"
+    else
+        printf '%s\n' "$path"
+    fi
+}
+
 graph_env_usage() {
     cat <<'EOF'
 Shared graph environment variables:

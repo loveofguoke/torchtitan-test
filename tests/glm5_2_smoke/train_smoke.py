@@ -31,6 +31,7 @@ from tests.glm5_2_common.cli import (  # noqa: E402
     LoggedProcessError,
     RunAttempt,
     assert_run_not_active,
+    print_output_path,
     print_runtime_log,
     reset_output_generation,
 )
@@ -503,7 +504,7 @@ def _run_device_replays(
     (capture_root / "replay_summary.json").write_text(
         json.dumps(summary, indent=2) + "\n", encoding="utf-8"
     )
-    print(f"FlexAttention device replay summary: {summary_path}")
+    print_output_path("FlexAttention device replay summary", summary_path)
     return summary
 
 
@@ -558,7 +559,7 @@ def _run_topology(
         npu_compiler_identity=npu_compiler_identity,
     )
     if not force and _completed(run_directory, contract):
-        print(f"Skip completed topology {topology.name}: {run_directory}")
+        print_output_path(f"Skip completed topology {topology.name}", run_directory)
         return run_directory
     if force and run_directory.exists():
         reset_output_generation(
@@ -786,13 +787,13 @@ def _run_topology(
             )
             summary_path = capture_root / "replay_summary.json"
             if summary_path.is_file():
-                print(f"FlexAttention replay summary: {summary_path}")
+                print_output_path("FlexAttention replay summary", summary_path)
     if result.returncode:
         print_runtime_log(runtime_log)
         raise LoggedProcessError(
             result.returncode, command, log_path=runtime_log
         )
-    print(f"Passed smoke topology {topology.name}: {run_directory}")
+    print_output_path(f"Passed smoke topology {topology.name}", run_directory)
     print_runtime_log(runtime_log)
     return run_directory
 
@@ -976,7 +977,7 @@ def main() -> int:
         )
     results = {topologies[name].slug: {"status": "not_run"} for name in selected}
     _write_suite_report(suite_root, results)
-    print(f"Smoke report: {suite_root / 'README.md'}")
+    print_output_path("Smoke report", suite_root / "README.md")
     for name in selected:
         slug = topologies[name].slug
         try:

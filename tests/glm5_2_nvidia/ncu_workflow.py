@@ -14,6 +14,8 @@ from typing import Any
 from tests.glm5_2_common.cli import (
     LoggedProcessError,
     RunAttempt,
+    display_repository_path,
+    print_output_path,
     print_runtime_log,
     reset_output_generation,
     write_experiment_overview,
@@ -69,7 +71,7 @@ def _completed(manifest_path: Path, report_dir: Path, contract: dict[str, Any]) 
 
 def _run(command: list[str], log: Path, env: dict[str, str]) -> None:
     log.parent.mkdir(parents=True, exist_ok=True)
-    print(f"Runtime log: {log.resolve()}")
+    print_runtime_log(log)
     with log.open("w", encoding="utf-8") as stream:
         stream.write("Command: " + subprocess.list2cmdline(command) + "\n\n")
         process = subprocess.Popen(
@@ -127,10 +129,21 @@ def run_cli() -> int:
     manifest_path = artifact_dir / "manifest.json"
     report_pattern = report_dir / "profile-%i"
     if args.dry_run:
-        print(json.dumps({"contract": contract, "run": str(run_dir), "artifact": str(artifact_dir), "report_pattern": str(report_pattern) + ".ncu-rep"}, indent=2))
+        print(
+            json.dumps(
+                {
+                    "contract": contract,
+                    "run": display_repository_path(run_dir),
+                    "artifact": display_repository_path(artifact_dir),
+                    "report_pattern": display_repository_path(report_pattern)
+                    + ".ncu-rep",
+                },
+                indent=2,
+            )
+        )
         return 0
     if not args.force and _completed(manifest_path, report_dir, contract):
-        print(f"Skip completed Nsight Compute profile: {report_dir}")
+        print_output_path("Skip completed Nsight Compute profile", report_dir)
         return 0
     if run_dir.exists() or artifact_dir.exists():
         reset_output_generation((run_dir, artifact_dir), active_run_directories=(run_dir,), label="Nsight Compute profile")
@@ -173,5 +186,5 @@ def run_cli() -> int:
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     attempt.update("completed")
     for report in reports:
-        print(f"Nsight Compute report: {report}")
+        print_output_path("Nsight Compute report", report)
     return 0

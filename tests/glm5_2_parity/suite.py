@@ -50,6 +50,8 @@ from typing import Any, Callable, Iterator
 import torch
 import torch.nn.functional as F
 
+from tests.glm5_2_common.cli import print_output_path
+
 from torchtitan.models.common.linear import Linear
 from torchtitan.models.common.moe import TokenChoiceTopKRouter
 from torchtitan.models.glm5 import (
@@ -6254,7 +6256,7 @@ class Glm5ParitySuite(
                 )
         del canonical_state, batches, model
         output = writer.write()
-        print(f"GLM-5.2 parity fixture: {output}")
+        print_output_path("GLM-5.2 parity fixture", output)
         print(f"fixture digest: {fixture_digest}")
 
     def _run_capture_suite(self) -> None:
@@ -6318,7 +6320,7 @@ class Glm5ParitySuite(
                 )
             output = self.capture_writer.write()
         except Exception:
-            print(f"GLM-5 parity runtime log retained at: {log_path}")
+            print_output_path("GLM-5 parity runtime log retained at", log_path)
             raise
         else:
             log_path.unlink()
@@ -6838,7 +6840,7 @@ class Glm5ParitySuite(
             )
         output = self._offline_report_path(actual, expected)
         report.write(output)
-        print(f"GLM-5 offline parity report: {output}")
+        print_output_path("GLM-5 offline parity report", output)
         actual.close()
         expected.close()
         if report.failed:
@@ -8277,6 +8279,6 @@ class Glm5ParitySuite(
             total_bytes=total_bytes,
         )
         suite_report.write(report_path)
-        print(f"GLM-5 parity report: {report_path}")
+        print_output_path("GLM-5 parity report", report_path)
         if suite_report.failed:
             raise AssertionError(suite_report.failure_message())

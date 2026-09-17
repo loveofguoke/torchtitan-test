@@ -38,6 +38,7 @@ from tests.glm5_2_common.cli import (
     archive_previous_output,
     assert_run_not_active,
     display_repository_path,
+    print_output_path,
     process_is_running,
     print_runtime_log,
     reset_output_generation,
@@ -651,7 +652,11 @@ def _adopt_legacy_directory(
                 if "training_contract.json" in files:
                     files["training_contract.json"] = sha256_file(contract_path)
                     _write_json(manifest_path, manifest)
-        print(f"Adopted matching legacy output:\n  {source}\n  -> {destination}")
+        print(
+            "Adopted matching legacy output:\n"
+            f"  {display_repository_path(source)}\n"
+            f"  -> {display_repository_path(destination)}"
+        )
     return destination
 
 
@@ -755,7 +760,11 @@ def _report_directory(root: Path, config: FormalExperimentConfig) -> Path:
         if source.is_dir():
             parent.mkdir(parents=True, exist_ok=True)
             source.rename(destination)
-            print(f"Adopted matching legacy output:\n  {source}\n  -> {destination}")
+            print(
+                "Adopted matching legacy output:\n"
+                f"  {display_repository_path(source)}\n"
+                f"  -> {display_repository_path(destination)}"
+            )
             break
     return destination
 
@@ -982,7 +991,7 @@ def prepare_fixture(
             except (KeyError, OSError, RuntimeError, TypeError, ValueError):
                 pass
             else:
-                print(f"Reuse completed fixture: {fixture_directory}", flush=True)
+                print_output_path("Reuse completed fixture", fixture_directory)
                 return fixture_directory
         if force:
             previous_generation = None
@@ -1233,7 +1242,7 @@ def capture_endpoint(
         except (KeyError, OSError, TypeError, ValueError, PrecisionArtifactError):
             artifact_complete = False
         if artifact_complete and not force:
-            print(f"Skip completed capture: {artifact_directory}")
+            print_output_path("Skip completed capture", artifact_directory)
             return artifact_directory
     checkpoint_path = _seed_checkpoint_path(fixture_directory)
     token_plan_path = _token_plan_path(fixture_directory)
@@ -1735,4 +1744,4 @@ def run_formal_cli(
         from .report import compare_and_write_report
 
         path = compare_and_write_report(root, config)
-        print(f"Precision report: {path}")
+        print_output_path("Precision report", path)

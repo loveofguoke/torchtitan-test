@@ -26,6 +26,7 @@ from tests.glm5_2_common.cli import (
     LoggedProcessError,
     RunAttempt,
     assert_run_not_active,
+    print_output_path,
     print_runtime_log,
     reset_output_generation,
     write_experiment_overview,
@@ -53,7 +54,9 @@ def _categorized_run(category: str, relative: Path) -> Path:
         assert_run_not_active(legacy)
         destination.parent.mkdir(parents=True, exist_ok=True)
         legacy.rename(destination)
-        print(f"Adopted matching legacy {category} output:\n  {legacy}\n  -> {destination}")
+        print(f"Adopted matching legacy {category} output:")
+        print_output_path("  source", legacy)
+        print_output_path("  destination", destination)
     elif legacy.exists() and destination.exists():
         raise RuntimeError(
             f"both legacy and categorized {category} outputs exist: "
@@ -231,7 +234,7 @@ def run_operator_cli(argv: Sequence[str] | None = None) -> int:
         print(f"Skip completed msOpProf capture: {run}")
         return 0
     command = operator_command(args, output)
-    print(f"Official operator output: {output}")
+    print_output_path("Official operator output", output)
     print("Command: " + shlex.join(command))
     if args.dry_run:
         return 0
@@ -254,7 +257,7 @@ def run_operator_cli(argv: Sequence[str] | None = None) -> int:
     except BaseException as error:
         attempt.update("failed", error=repr(error))
         raise
-    print(f"MindStudio Insight operator import: {output}")
+    print_output_path("MindStudio Insight operator import", output)
     return 0
 
 
@@ -388,7 +391,7 @@ def run_memory_cli(argv: Sequence[str] | None = None) -> int:
             f"--level={args.level}",
             f"--output={output}",
         ]
-        print(f"Official memory comparison output: {output}")
+        print_output_path("Official memory comparison output", output)
         print("Command: " + shlex.join(command))
         if args.dry_run:
             return 0
@@ -411,7 +414,7 @@ def run_memory_cli(argv: Sequence[str] | None = None) -> int:
         except BaseException as error:
             attempt.update("failed", error=repr(error))
             raise
-        print(f"msMemScope comparison output: {output}")
+        print_output_path("msMemScope comparison output", output)
         return 0
     selected_names = select_topologies(
         available=tuple(topologies),
@@ -444,7 +447,7 @@ def run_memory_cli(argv: Sequence[str] | None = None) -> int:
             continue
         command = memory_command(args, output, topology)
         print(f"Starting msMemScope capture: topology={topology.slug}")
-        print(f"Official memory output: {output}")
+        print_output_path("Official memory output", output)
         print("Command: " + shlex.join(command))
         if args.dry_run:
             continue
@@ -479,5 +482,5 @@ def run_memory_cli(argv: Sequence[str] | None = None) -> int:
         except BaseException as error:
             attempt.update("failed", error=repr(error))
             raise
-        print(f"MindStudio Insight memory import: {output}")
+        print_output_path("MindStudio Insight memory import", output)
     return 0
