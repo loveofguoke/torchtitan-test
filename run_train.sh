@@ -27,12 +27,21 @@ if [[ -z "$RUN_LOG" ]]; then
 fi
 mkdir -p "$(dirname -- "$RUN_LOG")"
 RUN_LOG=$(cd -- "$(dirname -- "$RUN_LOG")" && pwd)/$(basename -- "$RUN_LOG")
+display_path() {
+    local path=$1
+    if [[ "$path" == "$SCRIPT_DIR"/* ]]; then
+        printf '%s/%s' "$(basename -- "$SCRIPT_DIR")" "${path#"$SCRIPT_DIR"/}"
+    else
+        printf '%s' "$path"
+    fi
+}
+RUN_LOG_DISPLAY=$(display_path "$RUN_LOG")
 exec > >(tee "$RUN_LOG") 2>&1
 
 run_exit_log() {
     status=$?
     echo "Training exit status: $status"
-    echo "Runtime log: $RUN_LOG"
+    echo "Runtime log: $RUN_LOG_DISPLAY"
 }
 trap run_exit_log EXIT
 
@@ -60,7 +69,7 @@ case "$DEVICE" in
 esac
 
 echo "TorchTitan backend: $DEVICE"
-echo "Runtime log: $RUN_LOG"
+echo "Runtime log: $RUN_LOG_DISPLAY"
 echo "Invocation directory: $INVOCATION_CWD"
 echo "Repository directory: $SCRIPT_DIR"
 echo "Module: $MODULE"

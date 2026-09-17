@@ -292,7 +292,7 @@ def _preserve_failed_run(path: Path) -> None:
         target = path.with_name(f"{path.name}.failed-{stamp}-{suffix}")
         suffix += 1
     path.rename(target)
-    print(f"Preserved incomplete run: {target}")
+    print_output_path("Preserved incomplete run", target)
 
 
 def _automatic_replay_captures(capture_root: Path) -> list[Path]:
@@ -411,9 +411,10 @@ def _run_device_replays(
             "--compact",
         ]
         print(
-            f"Running FlexAttention replay {name} on npu:{logical_device}: "
-            f"{replay_log}"
+            f"Running FlexAttention replay {name} on npu:{logical_device}",
+            flush=True,
         )
+        print_output_path("FlexAttention replay log", replay_log)
         with replay_log.open("w", encoding="utf-8") as stream:
             result = subprocess.run(
                 command,
@@ -782,9 +783,9 @@ def _run_topology(
                 json.dumps(record, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-            print(
-                "FlexAttention replay log: "
-                f"{capture_root / 'device_replay_summary.json'}"
+            print_output_path(
+                "FlexAttention device replay summary",
+                capture_root / "device_replay_summary.json",
             )
             summary_path = capture_root / "replay_summary.json"
             if summary_path.is_file():
@@ -1013,7 +1014,7 @@ def main() -> int:
             else:
                 results[slug] = {"status": "incomplete"}
             _write_suite_report(suite_root, results)
-    print(f"Smoke suite passed: {suite_root}")
+    print_output_path("Smoke suite passed", suite_root)
     return 0
 
 
