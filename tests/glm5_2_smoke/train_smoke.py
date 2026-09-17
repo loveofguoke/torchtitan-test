@@ -257,6 +257,7 @@ def _contract(
             npu_compiler_identity
         )
         contract.setdefault("npu_compiler", {})["cache_policy"] = compiler_cache
+        contract.setdefault("npu_compiler", {})["cache_scope"] = "run-shared"
     if nonfinite_diagnostics:
         contract["nonfinite_diagnostics"] = {
             "rank": diagnostic_rank,
@@ -831,8 +832,9 @@ def main() -> int:
         choices=("fresh", "reuse"),
         default="fresh",
         help=(
-            "use fresh run-local rank caches by default, or explicitly reuse "
-            "rank caches for the same compiler installation and topology"
+            "use one fresh run-local cache shared by ranks by default, or "
+            "explicitly reuse a persistent cache for the same compiler "
+            "installation and topology"
         ),
     )
     parser.add_argument(

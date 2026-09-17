@@ -10,17 +10,16 @@ from pathlib import Path
 from typing import MutableMapping
 
 
-def configure_rank_local_compiler_cache(
+def configure_compiler_cache(
     environment: MutableMapping[str, str] | None = None,
 ) -> tuple[Path, Path] | None:
-    """Route Inductor and Triton caches below the current distributed rank."""
+    """Route Inductor and Triton to one cache shared by this experiment run."""
     environment = os.environ if environment is None else environment
     configured_root = environment.get("TORCHTITAN_COMPILER_CACHE_ROOT")
     if not configured_root:
         return None
 
-    rank = environment.get("RANK", environment.get("LOCAL_RANK", "0"))
-    cache_root = Path(configured_root) / f"rank{rank}"
+    cache_root = Path(configured_root)
     inductor_cache = cache_root / "inductor"
     triton_cache = cache_root / "triton"
     inductor_cache.mkdir(parents=True, exist_ok=True)

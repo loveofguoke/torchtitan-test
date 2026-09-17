@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.glm5_2_common.cli import LoggedProcessError
-from tests.glm5_2_common.compiler_cache import configure_rank_local_compiler_cache
+from tests.glm5_2_common.compiler_cache import configure_compiler_cache
 from tests.glm5_2_common.topology import ParallelTopology
 from tests.glm5_2_graph.config import GraphFeatureConfig
 from tests.glm5_2_smoke.analyze_flex_compiler_artifacts import analyze
@@ -162,15 +162,15 @@ def test_completed_smoke_contract_survives_json_round_trip(tmp_path) -> None:
     assert _completed(tmp_path, contract)
 
 
-def test_compiler_cache_is_rank_local(tmp_path) -> None:
+def test_compiler_cache_is_shared_within_one_run(tmp_path) -> None:
     environment = {
         "TORCHTITAN_COMPILER_CACHE_ROOT": str(tmp_path / "compiler_cache"),
         "RANK": "3",
     }
 
-    cache_paths = configure_rank_local_compiler_cache(environment)
+    cache_paths = configure_compiler_cache(environment)
 
-    expected_root = tmp_path / "compiler_cache" / "rank3"
+    expected_root = tmp_path / "compiler_cache"
     assert cache_paths == (
         expected_root / "inductor",
         expected_root / "triton",
@@ -540,6 +540,7 @@ def test_npu_nonfinite_diagnostics_are_recorded_and_routed_to_run(
         run_directory / "compiler_cache"
     )
     assert manifest["contract"]["npu_compiler"]["cache_policy"] == "fresh"
+    assert manifest["contract"]["npu_compiler"]["cache_scope"] == "run-shared"
     assert manifest["contract"]["nonfinite_diagnostics"] == {
         "rank": 6,
         "layer": "layers.6.attention.inner_attention",

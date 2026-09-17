@@ -6,7 +6,7 @@ import os
 import sys
 
 from tests.glm5_2_common.compiler_cache import (
-    configure_rank_local_compiler_cache,
+    configure_compiler_cache,
 )
 
 
@@ -43,7 +43,7 @@ def _configure_nonfinite_compiler_diagnostics() -> None:
         os.environ["TRITON_CACHE_DIR"] = str(triton_cache)
 
 
-configure_rank_local_compiler_cache()
+configure_compiler_cache()
 _configure_nonfinite_compiler_diagnostics()
 
 import torchtitanturbo  # noqa: F401

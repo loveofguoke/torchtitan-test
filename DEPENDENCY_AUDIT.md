@@ -109,10 +109,11 @@ changes recorded by the combination submission-readiness report.
   `mindstudio_runs/performance/device_diagnostic/`: complete generations skip,
   incomplete generations archive and retry, and `--force` replaces only the
   selected repeat.
-- NPU smoke defaults to fresh run-local and rank-local Inductor/Triton caches.
-  Failed-run archival and force reset therefore remove the active cache
-  generation together with the run. Persistent reuse is explicit, recorded in
-  the contract, and isolated by compiler installation, topology, and rank.
+- NPU smoke defaults to fresh run-local Inductor/Triton caches shared by ranks.
+  Failed-run archival and force reset remove the active cache generation with
+  the run, while pipeline stages can reuse identical kernels inside one
+  generation. Persistent reuse is explicit, recorded in the contract, and
+  isolated by compiler installation and topology.
 - Pipeline smoke accepts torchrun's scalar or comma-separated `LOG_RANK`
   filter. The manifest preserves the normalized scalar/list contract so an
   ambient all-rank logging filter cannot abort topology resume before launch.

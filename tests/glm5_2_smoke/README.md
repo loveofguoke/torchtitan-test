@@ -55,14 +55,16 @@ python tests/glm5_2_smoke/train_smoke.py \
   --device npu --topology all
 ```
 
-NPU smoke uses fresh run-local, rank-local Inductor and Triton caches by
-default. A retry first archives the failed run directory, so stale autotune
-failures and compiled artifacts cannot enter the new attempt; different ranks
-also cannot race through one shared cache. Pass `--compiler-cache reuse` only
-when persistent cache reuse is intentional. Reuse remains isolated by exact
-Torch, TorchNPU, Triton, CANN installation identity, topology, and rank. The
-cache policy and compiler installation identity are recorded in every topology
-manifest.
+NPU smoke uses one fresh run-local Inductor cache and one fresh run-local
+Triton cache shared by all ranks. A retry first archives the failed run
+directory, so stale autotune failures and compiled artifacts cannot enter the
+new attempt, while identical kernels produced by multiple ranks can reuse the
+same content-addressed artifacts. This matches PyTorch's normal local-process
+cache scope and avoids recompiling every pipeline stage. Pass
+`--compiler-cache reuse` only when persistent cache reuse is intentional.
+Reuse remains isolated by exact Torch, TorchNPU, Triton, CANN installation
+identity and topology. The cache policy and compiler installation identity are
+recorded in every topology manifest.
 
 For the CP8 FlexAttention backward investigation, select TorchNPU's two
 lowering paths explicitly. This does not enable whole-model compilation:
@@ -296,7 +298,7 @@ interrupted, rerun without `--force` to continue from its incomplete member.
 | `--graph` | Execution mode: `eager`, `inductor`, or `npugraphs`. Compiled choices are NPU-only. | `eager` |
 | `--compile-loss` | Compile both `model` and `loss`; without it only `model` is compiled. NPUGraph currently rejects this option. | disabled |
 | `--compiler-diagnostics` | Set the shared compiler diagnostic environment for graph breaks, recompiles, and dynamic-shape events. | disabled |
-| `--compiler-cache` | Use fresh run-local, rank-local NPU compiler caches, or explicitly `reuse` persistent caches for the same compiler installation and topology. | `fresh` |
+| `--compiler-cache` | Use one fresh run-local NPU compiler cache shared by ranks, or explicitly `reuse` a persistent cache for the same compiler installation and topology. | `fresh` |
 | `--nonfinite-diagnostics` | Capture GLM FlexAttention inputs, saved-output lifetime evidence, and the independent FP32 backward DELTA reference. NPU only. | disabled |
 | `--diagnostic-compiler-cache` | Choose `shared` or rank-local `per-rank` Inductor/Triton caches while non-finite diagnostics are active. | `per-rank` |
 | `--diagnostic-flex-dsdp` | Enable anomaly-triggered device prints for DELTA, dP, dS, dQ, and dK inside the TorchNPU FlexAttention backward kernels. Requires the diagnostic TorchNPU source patch and `--nonfinite-diagnostics`. | disabled |
