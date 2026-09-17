@@ -64,6 +64,55 @@ class DeviceDiagnosticLifecycleTest(unittest.TestCase):
             self.assertNotIn("matmul_vs_median", summary["device_metrics"]["1"])
             self.assertNotIn("metadata-only", summary["device_metrics"])
 
+    def test_summary_aggregates_rounds_and_host_latency(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            official = Path(temporary_directory)
+            rows = []
+            for device, matmul, enqueue in (
+                ("0", (10.0, 12.0), (2.0, 2.2)),
+                ("1", (20.0, 22.0), (1.0, 1.1)),
+            ):
+                for round_index in range(2):
+                    rows.extend(
+                        (
+                            {
+                                "benchmark": "bf16_matmul",
+                                "physical_device": device,
+                                "tflops": matmul[round_index],
+                            },
+                            {
+                                "benchmark": "bf16_copy",
+                                "physical_device": device,
+                                "gib_per_second": 100.0,
+                            },
+                            {
+                                "benchmark": "host_launch",
+                                "physical_device": device,
+                                "enqueue_us_per_op": enqueue[round_index],
+                                "synchronized_us_per_op": enqueue[round_index],
+                            },
+                        )
+                    )
+            official.joinpath("single_device.jsonl").write_text(
+                "\n".join(json.dumps(row) for row in rows), encoding="utf-8"
+            )
+            official.joinpath("pairwise_all_reduce.jsonl").write_text(
+                json.dumps({"visible_devices": "0,1", "median_ms": 2}),
+                encoding="utf-8",
+            )
+            official.joinpath("all_device_all_reduce.jsonl").write_text(
+                json.dumps({"rank": 0, "median_ms": 2}), encoding="utf-8"
+            )
+
+            summary = make_summary(official)
+
+            self.assertEqual(11.0, summary["device_metrics"]["0"]["matmul_tflops"])
+            self.assertEqual(
+                [10.0, 12.0],
+                summary["device_metrics"]["0"]["round_values"]["matmul_tflops"],
+            )
+            self.assertIn("0", summary["suspect_host_devices"])
+
     def _complete_generation(
         self,
         root: Path,

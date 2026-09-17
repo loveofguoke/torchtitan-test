@@ -161,18 +161,37 @@ def make_summary(official: Path) -> dict[str, Any]:
     pair_rows = read_json_lines(official / "pairwise_all_reduce.jsonl")
     all_device_rows = read_json_lines(official / "all_device_all_reduce.jsonl")
 
-    device_metrics: dict[str, dict[str, float]] = {}
+    device_samples: dict[str, dict[str, list[float]]] = {}
     for row in device_rows:
         if row.get("benchmark") == "bf16_matmul":
             device = str(row["physical_device"])
-            device_metrics.setdefault(device, {})
-            device_metrics[device]["matmul_tflops"] = float(row["tflops"])
+            device_samples.setdefault(device, {}).setdefault(
+                "matmul_tflops", []
+            ).append(float(row["tflops"]))
         elif row.get("benchmark") == "bf16_copy":
             device = str(row["physical_device"])
-            device_metrics.setdefault(device, {})
-            device_metrics[device]["copy_gib_per_second"] = float(
-                row["gib_per_second"]
+            device_samples.setdefault(device, {}).setdefault(
+                "copy_gib_per_second", []
+            ).append(float(row["gib_per_second"]))
+        elif row.get("benchmark") == "host_launch":
+            device = str(row["physical_device"])
+            samples = device_samples.setdefault(device, {})
+            samples.setdefault("host_enqueue_us_per_op", []).append(
+                float(row["enqueue_us_per_op"])
             )
+            samples.setdefault("host_synchronized_us_per_op", []).append(
+                float(row["synchronized_us_per_op"])
+            )
+
+    device_metrics: dict[str, dict[str, Any]] = {
+        device: {
+            metric: statistics.median(values)
+            for metric, values in samples.items()
+        }
+        for device, samples in device_samples.items()
+    }
+    for device, samples in device_samples.items():
+        device_metrics[device]["round_values"] = samples
 
     required_device_metrics = {"matmul_tflops", "copy_gib_per_second"}
     incomplete_devices = {
@@ -198,6 +217,24 @@ def make_summary(official: Path) -> dict[str, Any]:
         )
     matmul_median = statistics.median(matmul_values)
     copy_median = statistics.median(copy_values)
+    host_enqueue_values = [
+        metrics["host_enqueue_us_per_op"]
+        for metrics in device_metrics.values()
+        if "host_enqueue_us_per_op" in metrics
+    ]
+    host_synchronized_values = [
+        metrics["host_synchronized_us_per_op"]
+        for metrics in device_metrics.values()
+        if "host_synchronized_us_per_op" in metrics
+    ]
+    host_enqueue_median = (
+        statistics.median(host_enqueue_values) if host_enqueue_values else None
+    )
+    host_synchronized_median = (
+        statistics.median(host_synchronized_values)
+        if host_synchronized_values
+        else None
+    )
     for metrics in device_metrics.values():
         if "matmul_tflops" in metrics:
             metrics["matmul_vs_median"] = (
@@ -206,6 +243,18 @@ def make_summary(official: Path) -> dict[str, Any]:
         if "copy_gib_per_second" in metrics:
             metrics["copy_vs_median"] = (
                 metrics["copy_gib_per_second"] / copy_median
+            )
+        if host_enqueue_median is not None and "host_enqueue_us_per_op" in metrics:
+            metrics["host_enqueue_vs_median"] = (
+                metrics["host_enqueue_us_per_op"] / host_enqueue_median
+            )
+        if (
+            host_synchronized_median is not None
+            and "host_synchronized_us_per_op" in metrics
+        ):
+            metrics["host_synchronized_vs_median"] = (
+                metrics["host_synchronized_us_per_op"]
+                / host_synchronized_median
             )
 
     pair_metrics: dict[str, float] = {}
@@ -240,9 +289,16 @@ def make_summary(official: Path) -> dict[str, Any]:
         "suspect_pairs": sorted(
             pair for pair, ratio in pair_ratios.items() if ratio > 1.2
         ),
+        "suspect_host_devices": sorted(
+            device
+            for device, metrics in device_metrics.items()
+            if metrics.get("host_enqueue_vs_median", 1.0) > 1.2
+            or metrics.get("host_synchronized_vs_median", 1.0) > 1.2
+        ),
         "thresholds": {
             "device_throughput_vs_median": 0.9,
             "pair_latency_vs_median": 1.2,
+            "host_latency_vs_median": 1.2,
         },
     }
 
@@ -257,6 +313,7 @@ def write_report(report: Path, summary: dict[str, Any]) -> None:
         "",
         f"- Suspect compute devices: `{summary['suspect_compute_devices']}`",
         f"- Devices with incomplete measurements: `{summary['incomplete_devices']}`",
+        f"- Suspect host-path devices: `{summary['suspect_host_devices']}`",
         f"- Suspect HCCL pairs: `{summary['suspect_pairs']}`",
         f"- Median pair latency: `{summary['pair_median_ms']:.3f} ms`",
         "",
@@ -274,6 +331,8 @@ def main() -> None:
     parser.add_argument("--collective-size-mib", type=int, default=256)
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--iterations", type=int, default=50)
+    parser.add_argument("--single-device-rounds", type=int, default=1)
+    parser.add_argument("--launch-batch", type=int, default=100)
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
@@ -293,6 +352,8 @@ def main() -> None:
         "collective_size_mib": args.collective_size_mib,
         "warmup": args.warmup,
         "iterations": args.iterations,
+        "single_device_rounds": args.single_device_rounds,
+        "launch_batch": args.launch_batch,
     }
     digest = hashlib.sha256(
         json.dumps(identity, sort_keys=True).encode("utf-8")
@@ -380,26 +441,42 @@ def main() -> None:
 
             single_output = official / "single_device.jsonl"
             single_parts = []
-            for device in devices:
-                environment = dict(os.environ)
-                environment["ASCEND_RT_VISIBLE_DEVICES"] = device
-                output = official / f".single_device_{device}.jsonl"
-                run_command(
-                    [
-                        sys.executable,
-                        str(script_directory / "device_benchmark.py"),
-                        "--matrix-size", str(args.matrix_size),
-                        "--memory-mib", str(args.memory_mib),
-                        "--warmup", str(args.warmup),
-                        "--iterations", str(args.iterations),
-                    ],
-                    root=root,
-                    log=log,
-                    output=output,
-                    environment=environment,
+            for round_index in range(args.single_device_rounds):
+                offset = round_index % len(devices)
+                round_devices = devices[offset:] + devices[:offset]
+                if round_index % 2:
+                    round_devices.reverse()
+                print(
+                    "Single-device round "
+                    f"{round_index + 1}/{args.single_device_rounds}: "
+                    + ",".join(round_devices),
+                    flush=True,
                 )
-                single_parts.append(output.read_text(encoding="utf-8"))
-                output.unlink()
+                for device in round_devices:
+                    environment = dict(os.environ)
+                    environment["ASCEND_RT_VISIBLE_DEVICES"] = device
+                    output = (
+                        official
+                        / f".single_round_{round_index}_device_{device}.jsonl"
+                    )
+                    run_command(
+                        [
+                            sys.executable,
+                            str(script_directory / "device_benchmark.py"),
+                            "--matrix-size", str(args.matrix_size),
+                            "--memory-mib", str(args.memory_mib),
+                            "--warmup", str(args.warmup),
+                            "--iterations", str(args.iterations),
+                            "--round-index", str(round_index),
+                            "--launch-batch", str(args.launch_batch),
+                        ],
+                        root=root,
+                        log=log,
+                        output=output,
+                        environment=environment,
+                    )
+                    single_parts.append(output.read_text(encoding="utf-8"))
+                    output.unlink()
             single_output.write_text("".join(single_parts), encoding="utf-8")
 
             pair_output = official / "pairwise_all_reduce.jsonl"

@@ -4,11 +4,15 @@ This diagnostic follows the MindStudio performance output lifecycle. It
 separates per-device compute/HBM behavior, every two-device HCCL pair, and the
 full visible-device collective.
 
-Run only while no training job is using the selected NPUs:
+Use at least three interleaved single-device rounds when diagnosing a suspected
+slow card. Run once during known contention only as an explicitly labelled busy
+baseline, then repeat while no training job is using the selected NPUs:
 
 ```bash
 cd /path/to/torchtitan-test
-bash tests/glm5_2_mindstudio/device_diagnostic/run_diagnostics.sh
+bash tests/glm5_2_mindstudio/device_diagnostic/run_diagnostics.sh \
+  --single-device-rounds 5 \
+  --launch-batch 100
 ```
 
 Rerunning the same command skips a complete generation. If the selected repeat
@@ -39,6 +43,12 @@ Interpretation:
 
 - A device slow in both standalone tests points to compute, HBM, throttling,
   ECC, or resource contention.
+- A high `host_enqueue_vs_median` with normal Matmul and Copy points toward
+  host scheduling, CPU affinity, the framework enqueue path, or contention.
+- A normal enqueue ratio but high `host_synchronized_vs_median` points toward
+  device execution or queue-drain latency rather than Python launch overhead.
+- Per-round raw values distinguish a device-stable regression from test-order
+  drift and transient contention; do not diagnose hardware from one round.
 - Normal standalone results plus slow pairs involving one physical device
   point to HCCS/HCCL or link routing.
 - Normal standalone and pairwise results plus a slow full collective point to
