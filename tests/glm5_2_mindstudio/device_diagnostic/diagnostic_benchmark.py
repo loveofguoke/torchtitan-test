@@ -14,6 +14,7 @@ import socket
 import statistics
 import subprocess
 import sys
+import threading
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
@@ -56,20 +57,44 @@ def run_command(
     log.flush()
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("w", encoding="utf-8") as output_file:
-        process = subprocess.run(
+        process = subprocess.Popen(
             command,
             cwd=root,
             env=environment,
             text=True,
-            stdout=output_file,
-            stderr=log,
-            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=1,
         )
-    log.write(f"[exit code: {process.returncode}]\n")
+        assert process.stdout is not None
+        assert process.stderr is not None
+
+        def copy_stdout() -> None:
+            for line in process.stdout:
+                output_file.write(line)
+                output_file.flush()
+                sys.stdout.write(line)
+                sys.stdout.flush()
+
+        def copy_stderr() -> None:
+            for line in process.stderr:
+                log.write(line)
+                log.flush()
+                sys.stderr.write(line)
+                sys.stderr.flush()
+
+        stdout_thread = threading.Thread(target=copy_stdout)
+        stderr_thread = threading.Thread(target=copy_stderr)
+        stdout_thread.start()
+        stderr_thread.start()
+        returncode = process.wait()
+        stdout_thread.join()
+        stderr_thread.join()
+    log.write(f"[exit code: {returncode}]\n")
     log.flush()
-    if process.returncode:
+    if returncode:
         raise LoggedProcessError(
-            process.returncode,
+            returncode,
             command,
             log_path=Path(log.name),
         )

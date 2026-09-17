@@ -416,14 +416,21 @@ def _run_device_replays(
         )
         print_output_path("FlexAttention replay log", replay_log)
         with replay_log.open("w", encoding="utf-8") as stream:
-            result = subprocess.run(
+            process = subprocess.Popen(
                 command,
                 cwd=root,
                 env=replay_environment,
-                stdout=stream,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                check=False,
+                text=True,
+                bufsize=1,
             )
+            assert process.stdout is not None
+            for line in process.stdout:
+                print(line, end="", flush=True)
+                stream.write(line)
+                stream.flush()
+            return_code = process.wait()
         result_path = job_root / "replay_result.json"
         replay_result = None
         if result_path.is_file():
@@ -438,7 +445,7 @@ def _run_device_replays(
                 "capture_rank": _capture_rank(capture_directory),
                 "logical_device": logical_device,
                 "physical_device": visible_devices.split(",")[logical_device].strip(),
-                "return_code": result.returncode,
+                "return_code": return_code,
                 "log": str(replay_log),
                 "summary": str(summary_path),
                 "result": str(result_path),
@@ -741,14 +748,21 @@ def _run_topology(
                 str(capture_root),
             ]
             with comparison_log.open("w", encoding="utf-8") as stream:
-                comparison_result = subprocess.run(
+                comparison_process = subprocess.Popen(
                     comparison_command,
                     cwd=root,
                     env=environment,
-                    stdout=stream,
+                    stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
-                    check=False,
+                    text=True,
+                    bufsize=1,
                 )
+                assert comparison_process.stdout is not None
+                for line in comparison_process.stdout:
+                    print(line, end="", flush=True)
+                    stream.write(line)
+                    stream.flush()
+                comparison_return_code = comparison_process.wait()
             record["nonfinite_replay"] = {
                 "return_code": max(
                     (job["return_code"] for job in device_replays["jobs"]),
@@ -757,7 +771,7 @@ def _run_topology(
                 "log": str(capture_root / "device_replay_summary.json"),
                 "capture_count": len(capture_directories),
                 "device_replays": device_replays,
-                "compiler_comparison_return_code": comparison_result.returncode,
+                "compiler_comparison_return_code": comparison_return_code,
                 "compiler_comparison_log": str(comparison_log),
                 "compiler_comparison": str(
                     capture_root / "compiler_comparison.json"

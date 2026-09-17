@@ -246,9 +246,11 @@ class DeviceDiagnosticLifecycleTest(unittest.TestCase):
                     force=False,
                 )
 
-    @patch("subprocess.run")
-    def test_subprocess_failure_identifies_runtime_log(self, run) -> None:
-        run.return_value.returncode = 9
+    @patch("subprocess.Popen")
+    def test_subprocess_failure_identifies_runtime_log(self, popen) -> None:
+        popen.return_value.stdout = iter(())
+        popen.return_value.stderr = iter(())
+        popen.return_value.wait.return_value = 9
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             log_path = root / "mindstudio_runs/performance/device_diagnostic/runtime.log"
