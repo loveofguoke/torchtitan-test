@@ -102,6 +102,21 @@ uses the observed range for that topology so a persistent curve offset remains
 visible. `loss_step_plots.json` records the source artifacts and generated plot
 paths.
 
+For a four-panel figure matching the detailed precision-alignment presentation
+(loss, global grad norm, running loss error, and running grad-norm error), run:
+
+```bash
+python3 -m tests.glm5_2_precision.plot_distributed_gpu_npu_alignment \
+  --artifact-root precision_artifacts \
+  --output-root precision_reports/distributed-gpu-npu-alignment
+```
+
+This produces one self-contained SVG for each of the eight long-run distributed
+topologies and requires no plotting package. Both repeats are averaged on each
+platform. The lower error panels retain the old 1% and +/-5% visual guides for
+diagnosis, but clearly label them as non-gating under the V2 convergence
+standard.
+
 ## Compact result summary
 
 After the per-topology reports have been generated, their key decision values
