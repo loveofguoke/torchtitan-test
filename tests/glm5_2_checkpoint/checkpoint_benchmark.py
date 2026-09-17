@@ -29,7 +29,6 @@ import signal
 import shutil
 import subprocess
 import sys
-import threading
 import time
 import uuid
 from typing import Any
@@ -405,22 +404,11 @@ def _run_process(
             command,
             cwd=root,
             env=process_environment,
-            stdout=subprocess.PIPE,
+            stdout=stream,
             stderr=subprocess.STDOUT,
             text=True,
-            bufsize=1,
             start_new_session=os.name == "posix",
         )
-        assert process.stdout is not None
-
-        def stream_output() -> None:
-            for line in process.stdout:
-                print(line, end="", flush=True)
-                stream.write(line)
-                stream.flush()
-
-        output_thread = threading.Thread(target=stream_output)
-        output_thread.start()
         signal_sent = None
         try:
             if launcher_signal is not None:
@@ -456,7 +444,6 @@ def _run_process(
                 reap_children=reap_children,
                 process_token=process_token,
             )
-            output_thread.join()
             stream.write(
                 "\nProcess cleanup: "
                 + json.dumps(cleanup, sort_keys=True)

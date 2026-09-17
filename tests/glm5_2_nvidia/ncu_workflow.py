@@ -75,19 +75,9 @@ def _run(command: list[str], log: Path, env: dict[str, str]) -> None:
     with log.open("w", encoding="utf-8") as stream:
         stream.write("Command: " + subprocess.list2cmdline(command) + "\n\n")
         process = subprocess.Popen(
-            command,
-            cwd=_root(),
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+            command, cwd=_root(), env=env, stdout=stream,
+            stderr=subprocess.STDOUT, text=True,
         )
-        assert process.stdout is not None
-        for line in process.stdout:
-            print(line, end="", flush=True)
-            stream.write(line)
-            stream.flush()
         return_code = process.wait()
     print_runtime_log(log)
     if return_code:

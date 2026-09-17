@@ -729,22 +729,16 @@ def _run_process(
             stream.write(f"{key}: {value}\n")
         stream.write("\nCommand: " + " ".join(command) + "\n\n")
         stream.flush()
-        process = subprocess.Popen(
+        process = subprocess.run(
             list(command),
             cwd=root,
             env=environment,
-            stdout=subprocess.PIPE,
+            stdout=stream,
             stderr=subprocess.STDOUT,
             text=True,
-            bufsize=1,
+            check=False,
         )
-        assert process.stdout is not None
-        for line in process.stdout:
-            print(line, end="", flush=True)
-            stream.write(line)
-            stream.flush()
-        returncode = process.wait()
-    if returncode:
+    if process.returncode:
         print(
             "Process failed; runtime log: "
             f"{display_repository_path(log_path)}",
@@ -754,7 +748,7 @@ def _run_process(
         if lines:
             print("\n".join(lines[-80:]), file=sys.stderr)
         print_runtime_log(log_path)
-        raise LoggedProcessError(returncode, command, log_path=log_path)
+        raise LoggedProcessError(process.returncode, command, log_path=log_path)
     print_runtime_log(log_path)
 
 

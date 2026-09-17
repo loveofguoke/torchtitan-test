@@ -25,7 +25,6 @@ import shutil
 import signal
 import subprocess
 import sys
-import threading
 import time
 from typing import Any
 
@@ -724,22 +723,11 @@ def main() -> int:
             command,
             cwd=root,
             env=environment,
-            stdout=subprocess.PIPE,
+            stdout=log,
             stderr=subprocess.STDOUT,
             text=True,
-            bufsize=1,
             start_new_session=os.name != "nt",
         )
-        assert process.stdout is not None
-
-        def stream_output() -> None:
-            for line in process.stdout:
-                print(line, end="", flush=True)
-                log.write(line)
-                log.flush()
-
-        output_thread = threading.Thread(target=stream_output)
-        output_thread.start()
         try:
             while process.poll() is None:
                 time.sleep(5)
@@ -769,7 +757,6 @@ def main() -> int:
             interrupted = True
             _stop_process(process)
         return_code = process.wait()
-        output_thread.join()
     ended = time.monotonic()
     ended_at = datetime.now(timezone.utc)
     records = _read_metrics(metrics_path)

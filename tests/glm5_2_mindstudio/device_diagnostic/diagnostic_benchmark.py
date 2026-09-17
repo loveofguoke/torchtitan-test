@@ -56,11 +56,13 @@ def run_command(
     log.write(f"\n$ {rendered}\n")
     log.flush()
     output.parent.mkdir(parents=True, exist_ok=True)
+    process_environment = dict(os.environ if environment is None else environment)
+    process_environment["PYTHONUNBUFFERED"] = "1"
     with output.open("w", encoding="utf-8") as output_file:
         process = subprocess.Popen(
             command,
             cwd=root,
-            env=environment,
+            env=process_environment,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

@@ -949,23 +949,17 @@ def _run_process(
             log.write("\n")
         log.write("Command: " + " ".join(command) + "\n\n")
         log.flush()
-        process = subprocess.Popen(
+        process = subprocess.run(
             list(command),
             cwd=root,
             env=environment,
-            stdout=subprocess.PIPE,
+            stdout=log,
             stderr=subprocess.STDOUT,
             text=True,
-            bufsize=1,
+            check=False,
         )
-        assert process.stdout is not None
-        for line in process.stdout:
-            print(line, end="", flush=True)
-            log.write(line)
-            log.flush()
-        returncode = process.wait()
     print_runtime_log(log_path)
-    if returncode:
+    if process.returncode:
         print(
             "Process failed; runtime log: "
             f"{display_repository_path(log_path)}",
@@ -978,7 +972,7 @@ def _run_process(
         if lines:
             print("Last 80 log lines:", file=sys.stderr)
             print("\n".join(lines[-80:]), file=sys.stderr)
-        raise LoggedProcessError(returncode, command, log_path=log_path)
+        raise LoggedProcessError(process.returncode, command, log_path=log_path)
 
 
 def prepare_fixture(
