@@ -155,24 +155,50 @@ def make_summary(official: Path) -> dict[str, Any]:
 
     device_metrics: dict[str, dict[str, float]] = {}
     for row in device_rows:
-        device = str(row["physical_device"])
-        device_metrics.setdefault(device, {})
-        if row["benchmark"] == "bf16_matmul":
+        if row.get("benchmark") == "bf16_matmul":
+            device = str(row["physical_device"])
+            device_metrics.setdefault(device, {})
             device_metrics[device]["matmul_tflops"] = float(row["tflops"])
-        elif row["benchmark"] == "bf16_copy":
+        elif row.get("benchmark") == "bf16_copy":
+            device = str(row["physical_device"])
+            device_metrics.setdefault(device, {})
             device_metrics[device]["copy_gib_per_second"] = float(
                 row["gib_per_second"]
             )
 
-    matmul_median = statistics.median(
-        metrics["matmul_tflops"] for metrics in device_metrics.values()
-    )
-    copy_median = statistics.median(
-        metrics["copy_gib_per_second"] for metrics in device_metrics.values()
-    )
+    required_device_metrics = {"matmul_tflops", "copy_gib_per_second"}
+    incomplete_devices = {
+        device: sorted(required_device_metrics - metrics.keys())
+        for device, metrics in device_metrics.items()
+        if required_device_metrics - metrics.keys()
+    }
+    matmul_values = [
+        metrics["matmul_tflops"]
+        for metrics in device_metrics.values()
+        if "matmul_tflops" in metrics
+    ]
+    copy_values = [
+        metrics["copy_gib_per_second"]
+        for metrics in device_metrics.values()
+        if "copy_gib_per_second" in metrics
+    ]
+    if not matmul_values or not copy_values:
+        raise ValueError(
+            "single-device diagnostic produced no usable "
+            f"{'matmul' if not matmul_values else 'copy'} measurements; "
+            f"missing metrics by device: {incomplete_devices}"
+        )
+    matmul_median = statistics.median(matmul_values)
+    copy_median = statistics.median(copy_values)
     for metrics in device_metrics.values():
-        metrics["matmul_vs_median"] = metrics["matmul_tflops"] / matmul_median
-        metrics["copy_vs_median"] = metrics["copy_gib_per_second"] / copy_median
+        if "matmul_tflops" in metrics:
+            metrics["matmul_vs_median"] = (
+                metrics["matmul_tflops"] / matmul_median
+            )
+        if "copy_gib_per_second" in metrics:
+            metrics["copy_vs_median"] = (
+                metrics["copy_gib_per_second"] / copy_median
+            )
 
     pair_metrics: dict[str, float] = {}
     for row in pair_rows:
@@ -189,6 +215,7 @@ def make_summary(official: Path) -> dict[str, Any]:
         "schema": "torchtitan.glm5_2.device_diagnostic_summary",
         "schema_version": 1,
         "device_metrics": device_metrics,
+        "incomplete_devices": incomplete_devices,
         "pair_median_ms": pair_median,
         "pair_median_ms_by_devices": pair_metrics,
         "pair_latency_vs_median": pair_ratios,
@@ -199,8 +226,8 @@ def make_summary(official: Path) -> dict[str, Any]:
         "suspect_compute_devices": sorted(
             device
             for device, metrics in device_metrics.items()
-            if metrics["matmul_vs_median"] < 0.9
-            or metrics["copy_vs_median"] < 0.9
+            if metrics.get("matmul_vs_median", 1.0) < 0.9
+            or metrics.get("copy_vs_median", 1.0) < 0.9
         ),
         "suspect_pairs": sorted(
             pair for pair, ratio in pair_ratios.items() if ratio > 1.2
@@ -221,6 +248,7 @@ def write_report(report: Path, summary: dict[str, Any]) -> None:
         "Triage thresholds identify candidates, not hardware pass/fail criteria.",
         "",
         f"- Suspect compute devices: `{summary['suspect_compute_devices']}`",
+        f"- Devices with incomplete measurements: `{summary['incomplete_devices']}`",
         f"- Suspect HCCL pairs: `{summary['suspect_pairs']}`",
         f"- Median pair latency: `{summary['pair_median_ms']:.3f} ms`",
         "",

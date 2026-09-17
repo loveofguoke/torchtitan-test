@@ -13,12 +13,39 @@ from unittest.mock import patch
 from tests.glm5_2_mindstudio.artifacts import output_index
 from tests.glm5_2_mindstudio.device_diagnostic.diagnostic_benchmark import (
     generation_complete,
+    make_summary,
     prepare_generation,
     run_command,
 )
 
 
 class DeviceDiagnosticLifecycleTest(unittest.TestCase):
+    def test_summary_preserves_incomplete_device_measurements(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            official = Path(temporary_directory)
+            rows = [
+                {"benchmark": "bf16_matmul", "physical_device": "0", "tflops": 10},
+                {"benchmark": "bf16_copy", "physical_device": "0", "gib_per_second": 20},
+                {"benchmark": "bf16_copy", "physical_device": "1", "gib_per_second": 18},
+                {"benchmark": "environment", "physical_device": "metadata-only"},
+            ]
+            official.joinpath("single_device.jsonl").write_text(
+                "\n".join(json.dumps(row) for row in rows), encoding="utf-8"
+            )
+            official.joinpath("pairwise_all_reduce.jsonl").write_text(
+                json.dumps({"visible_devices": "0,1", "median_ms": 2}),
+                encoding="utf-8",
+            )
+            official.joinpath("all_device_all_reduce.jsonl").write_text(
+                json.dumps({"rank": 0, "median_ms": 2}), encoding="utf-8"
+            )
+
+            summary = make_summary(official)
+
+            self.assertEqual({"1": ["matmul_tflops"]}, summary["incomplete_devices"])
+            self.assertNotIn("matmul_vs_median", summary["device_metrics"]["1"])
+            self.assertNotIn("metadata-only", summary["device_metrics"])
+
     def _complete_generation(
         self,
         root: Path,
