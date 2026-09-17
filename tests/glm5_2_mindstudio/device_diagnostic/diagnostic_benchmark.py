@@ -50,20 +50,20 @@ def run_command(
     environment: dict[str, str] | None = None,
 ) -> None:
     rendered = shlex.join(command)
+    print(f"Running device diagnostic stage: {output.name}", flush=True)
     log.write(f"\n$ {rendered}\n")
     log.flush()
-    process = subprocess.run(
-        command,
-        cwd=root,
-        env=environment,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(process.stdout, encoding="utf-8")
-    log.write(process.stderr)
+    with output.open("w", encoding="utf-8") as output_file:
+        process = subprocess.run(
+            command,
+            cwd=root,
+            env=environment,
+            text=True,
+            stdout=output_file,
+            stderr=log,
+            check=False,
+        )
     log.write(f"[exit code: {process.returncode}]\n")
     log.flush()
     if process.returncode:
@@ -344,6 +344,7 @@ def main() -> None:
     try:
         official.mkdir(parents=True, exist_ok=False)
         with runtime_log.open("w", encoding="utf-8") as log:
+            print_runtime_log(runtime_log)
             inventory_parts = [f"hostname: {socket.gethostname()}\n"]
             inventory_commands = [
                 ["npu-smi", "info"],

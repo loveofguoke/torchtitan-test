@@ -143,8 +143,6 @@ class DeviceDiagnosticLifecycleTest(unittest.TestCase):
     @patch("subprocess.run")
     def test_subprocess_failure_identifies_runtime_log(self, run) -> None:
         run.return_value.returncode = 9
-        run.return_value.stdout = ""
-        run.return_value.stderr = "failed\n"
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             log_path = root / "mindstudio_runs/performance/device_diagnostic/runtime.log"
@@ -158,6 +156,7 @@ class DeviceDiagnosticLifecycleTest(unittest.TestCase):
                         output=root / "stdout.txt",
                     )
             self.assertIn(str(log_path.resolve()), str(caught.exception))
+            self.assertTrue((root / "stdout.txt").is_file())
 
 
 if __name__ == "__main__":
