@@ -15,11 +15,29 @@ from tests.glm5_2_mindstudio.device_diagnostic.diagnostic_benchmark import (
     generation_complete,
     make_summary,
     prepare_generation,
+    read_json_lines,
     run_command,
 )
 
 
 class DeviceDiagnosticLifecycleTest(unittest.TestCase):
+    def test_json_measurement_after_npu_warning_is_parsed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "measurements.jsonl"
+            measurement = {
+                "benchmark": "bf16_matmul",
+                "physical_device": "0",
+                "tflops": 123.0,
+            }
+            path.write_text(
+                "[W NPUCachingAllocator.cpp] Warning: allocation "
+                + json.dumps(measurement)
+                + "\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual([measurement], read_json_lines(path))
+
     def test_summary_preserves_incomplete_device_measurements(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             official = Path(temporary_directory)

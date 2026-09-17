@@ -141,8 +141,15 @@ def read_json_lines(path: Path) -> list[dict[str, Any]]:
     rows = []
     for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
-        if stripped.startswith("{"):
-            rows.append(json.loads(stripped))
+        object_start = stripped.find("{")
+        if object_start < 0:
+            continue
+        try:
+            row, _remainder = json.JSONDecoder().raw_decode(stripped[object_start:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
     if not rows:
         raise ValueError(f"no JSON measurement rows found in {path}")
     return rows
