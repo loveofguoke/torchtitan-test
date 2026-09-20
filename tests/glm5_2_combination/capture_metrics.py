@@ -14,9 +14,38 @@ performance tooling without one feature secretly configuring another.
 from __future__ import annotations
 
 import os
+import sys
+
+
+def _install_comm_timeout_override() -> None:
+    """Forward the graph launcher's process-group timeout to TorchTitan."""
+
+    raw_timeout = os.environ.get("TORCHTITAN_COMM_INIT_TIMEOUT_SECONDS")
+    if raw_timeout is None:
+        return
+    try:
+        timeout_seconds = int(raw_timeout)
+    except ValueError as error:
+        raise ValueError(
+            "TORCHTITAN_COMM_INIT_TIMEOUT_SECONDS must be a positive integer; "
+            f"got {raw_timeout!r}"
+        ) from error
+    if timeout_seconds <= 0:
+        raise ValueError(
+            "TORCHTITAN_COMM_INIT_TIMEOUT_SECONDS must be a positive integer; "
+            f"got {raw_timeout!r}"
+        )
+    if not any(
+        argument == "--comm.init_timeout_seconds"
+        or argument.startswith("--comm.init_timeout_seconds=")
+        for argument in sys.argv
+    ):
+        sys.argv.append(f"--comm.init_timeout_seconds={timeout_seconds}")
 
 
 def main() -> None:
+    _install_comm_timeout_override()
+
     from tests.glm5_2_graph.visualization import configure_graph_diagnostics
 
     configure_graph_diagnostics()
