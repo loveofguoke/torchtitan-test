@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pr46489-distributed-topology-eager-vs-inductor-self-consistency-npu-hsdp2x4-vs-npu-hsdp2x4-mixed-bfloat16-random-seed-steps5-global-batch64-seq128-seed80 precision report</title>
+<style>
+:root{--pass:#17803d;--fail:#b42318;--ink:#17202a;--muted:#64748b;--line:#d8dee9;--panel:#f8fafc;}
+*{box-sizing:border-box} body{font:14px/1.45 system-ui,sans-serif;color:var(--ink);margin:0;background:#fff}
+main{max-width:1500px;margin:auto;padding:24px} h1,h2,h3{scroll-margin-top:58px}
+.hero{padding:22px;border:1px solid var(--line);background:var(--panel);border-radius:12px}
+.overall{display:inline-block;padding:6px 13px;border-radius:999px;color:#fff;font-weight:800;background:var(--pass)}
+nav{position:sticky;top:0;z-index:20;background:#fff;border-bottom:1px solid var(--line);padding:10px 24px}
+nav a{margin-right:18px;color:#155eef;text-decoration:none} section{margin:28px 0}
+table{border-collapse:separate;border-spacing:0;width:100%;border:1px solid var(--line);border-radius:8px;overflow:visible}
+th,td{padding:9px 10px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);vertical-align:top;text-align:left}
+th:last-child,td:last-child{border-right:0} tr:last-child td{border-bottom:0}
+thead th{position:sticky;top:41px;z-index:10;background:#eef2f7} pre{white-space:pre-wrap;margin:0;font-size:12px}
+.status{display:inline-block;padding:3px 8px;border-radius:999px;color:#fff;font-weight:700} .status.pass{background:var(--pass)} .status.fail{background:var(--fail)}
+.chart-card{border:1px solid var(--line);border-radius:10px;padding:12px;margin:18px 0;overflow-x:auto} svg{width:100%;min-width:760px;height:auto;overflow:visible}
+.grid{stroke:#e5e7eb;stroke-width:1} .axis{stroke:#64748b;stroke-width:1.2} .series{fill:none;stroke-width:2} .series.reference{stroke:#155eef} .series.candidate{stroke:#e34a33}
+.bars rect{fill:#7c3aed;opacity:.8} .legend{color:var(--muted)} .legend span{display:inline-block;width:22px;border-top:3px solid;margin:0 7px 3px 18px} .reference-line{border-color:#155eef!important} .candidate-line{border-color:#e34a33!important}
+.warmup{fill:#f59e0b;opacity:.13} .warmup-boundary{stroke:#d97706;stroke-width:1.4;stroke-dasharray:5 4} .warmup-label{fill:#92400e;font-weight:700} .note{color:var(--muted)} details{margin:10px 0} summary{cursor:pointer;font-weight:700}
+</style></head><body>
+<nav><a href="#summary">Summary</a><a href="#repeat-diagnostics">Repeat diagnostics</a><a href="#contract">Training contract</a><a href="#candidate-1">Candidate 1</a><a href="#candidate-2">Candidate 2</a></nav>
+<main><section class="hero" id="summary"><h1>Formal GLM 5.2 precision benchmark</h1>
+<p><span class="overall">PASS</span></p>
+<p><b>Scenario:</b> pr46489-distributed-topology-eager-vs-inductor-self-consistency-npu-hsdp2x4-vs-npu-hsdp2x4-mixed-bfloat16-random-seed-steps5-global-batch64-seq128-seed80<br><b>Experiment:</b> self_consistency<br>
+<b>Reference:</b> hsdp2x4-eager-reference-eager (npu, hsdp2x4)<br>
+<b>Candidate:</b> hsdp2x4-inductor-candidate-inductor (npu, hsdp2x4)</p>
+<p>Formal decisions use full-precision JSONL loss and global grad norm. Console-rounded values and exploratory traces never decide this result.</p></section>
+<section id="repeat-diagnostics"><h2>Repeat-run diagnostics</h2>
+<p class="note">Bitwise repeatability is reported separately. It is diagnostic and
+does not affect PASS/FAIL for BF16 migration-tolerance experiments. It becomes a
+formal requirement only when strict zero-error self-consistency is configured.</p>
+
+    <table><thead><tr><th>Endpoint</th><th>Runs</th><th>Series</th>
+    <th>Bitwise-changed steps</th><th>First difference</th><th>Max absolute</th>
+    <th>Mean absolute</th><th>Mean absolute relative</th></tr></thead>
+    <tbody><tr><td>hsdp2x4-eager-reference-eager</td><td>run 1 vs run 2</td><td>loss</td><td>0/5</td><td>none</td><td>0</td><td>0</td><td>0.000000%</td></tr><tr><td>hsdp2x4-eager-reference-eager</td><td>run 1 vs run 2</td><td>global grad norm</td><td>0/5</td><td>none</td><td>0</td><td>0</td><td>0.000000%</td></tr></tbody></table>
+
+    <table><thead><tr><th>Endpoint</th><th>Runs</th><th>Series</th>
+    <th>Bitwise-changed steps</th><th>First difference</th><th>Max absolute</th>
+    <th>Mean absolute</th><th>Mean absolute relative</th></tr></thead>
+    <tbody><tr><td>hsdp2x4-inductor-candidate-inductor</td><td>run 1 vs run 2</td><td>loss</td><td>0/5</td><td>none</td><td>0</td><td>0</td><td>0.000000%</td></tr><tr><td>hsdp2x4-inductor-candidate-inductor</td><td>run 1 vs run 2</td><td>global grad norm</td><td>0/5</td><td>none</td><td>0</td><td>0</td><td>0.000000%</td></tr></tbody></table></section>
+<section id="contract"><h2>Training contract</h2>
+    <table><thead><tr><th>Training contract</th><th>Reference</th><th>Candidate</th>
+    </tr></thead><tbody><tr><td>checkpoint_sha256</td><td><pre>&quot;409caf541f0993a3092aaf0ae3785d53e7f5f210b7f1413cca5d15ea2c4604de&quot;</pre></td><td><pre>&quot;409caf541f0993a3092aaf0ae3785d53e7f5f210b7f1413cca5d15ea2c4604de&quot;</pre></td></tr><tr><td>data_sha256</td><td><pre>{
+  &quot;fixed_token_plan&quot;: &quot;b6f00e8a01980089ae597b5c684a2e7438e86b61adf91c921ae0ba0ea55c4d32&quot;,
+  &quot;tests/assets/c4_test&quot;: &quot;6f6b045f62deb7647584eacad88c97c7ddcbb5712a2b8e4a302147f7e38d46e8&quot;,
+  &quot;tests/assets/tokenizer&quot;: &quot;db349dfb02fc8c9b90adf72731df51d5cbb738e37bcd658aae560f31cd643828&quot;
+}</pre></td><td><pre>{
+  &quot;fixed_token_plan&quot;: &quot;b6f00e8a01980089ae597b5c684a2e7438e86b61adf91c921ae0ba0ea55c4d32&quot;,
+  &quot;tests/assets/c4_test&quot;: &quot;6f6b045f62deb7647584eacad88c97c7ddcbb5712a2b8e4a302147f7e38d46e8&quot;,
+  &quot;tests/assets/tokenizer&quot;: &quot;db349dfb02fc8c9b90adf72731df51d5cbb738e37bcd658aae560f31cd643828&quot;
+}</pre></td></tr><tr><td>endpoint_args</td><td><pre>[]</pre></td><td><pre>[
+  &quot;--compile.enable&quot;,
+  &quot;--compile.components=model&quot;,
+  &quot;--compile.backend=inductor&quot;
+]</pre></td></tr><tr><td>fixture_generation_id</td><td><pre>&quot;0f89e4c248c9431fba2f49ac7dd49985&quot;</pre></td><td><pre>&quot;0f89e4c248c9431fba2f49ac7dd49985&quot;</pre></td></tr><tr><td>scenario_name</td><td><pre>&quot;self-npu-bf16-random-s5-b64-seq128-seed80-eager-inductor-precision-no-prof-d966776c&quot;</pre></td><td><pre>&quot;self-npu-bf16-random-s5-b64-seq128-seed80-eager-inductor-precision-no-prof-d966776c&quot;</pre></td></tr><tr><td>token_plan</td><td><pre>{
+  &quot;global_batch_size&quot;: 64,
+  &quot;manifest_sha256&quot;: &quot;b6f00e8a01980089ae597b5c684a2e7438e86b61adf91c921ae0ba0ea55c4d32&quot;,
+  &quot;mapping&quot;: &quot;optimizer-step-global-slot-v1&quot;,
+  &quot;sequence_length&quot;: 128,
+  &quot;step_series_sha256&quot;: &quot;484d9d2484e6de01252321d28a8aa0d3fda0343c5e166b5e74c423b259cf4273&quot;,
+  &quot;steps&quot;: 5
+}</pre></td><td><pre>{
+  &quot;global_batch_size&quot;: 64,
+  &quot;manifest_sha256&quot;: &quot;b6f00e8a01980089ae597b5c684a2e7438e86b61adf91c921ae0ba0ea55c4d32&quot;,
+  &quot;mapping&quot;: &quot;optimizer-step-global-slot-v1&quot;,
+  &quot;sequence_length&quot;: 128,
+  &quot;step_series_sha256&quot;: &quot;484d9d2484e6de01252321d28a8aa0d3fda0343c5e166b5e74c423b259cf4273&quot;,
+  &quot;steps&quot;: 5
+}</pre></td></tr><tr><td>topology</td><td><pre>{
+  &quot;batch_schedule&quot;: {
+    &quot;gradient_accumulation_steps&quot;: 1,
+    &quot;pipeline_microbatches&quot;: 8
+  },
+  &quot;context_parallel_degree&quot;: 1,
+  &quot;data_parallel_replicate_degree&quot;: 2,
+  &quot;data_parallel_shard_degree&quot;: 4,
+  &quot;enable_sequence_parallel&quot;: true,
+  &quot;expert_parallel_degree&quot;: 1,
+  &quot;extra_args&quot;: [],
+  &quot;input_contract&quot;: {
+    &quot;context_parallel_degree&quot;: 1,
+    &quot;dp_world_size&quot;: 8,
+    &quot;global_batch_size&quot;: 64,
+    &quot;mapping&quot;: &quot;optimizer-step-global-slot-v1&quot;,
+    &quot;pipeline_parallel_degree&quot;: 1,
+    &quot;steps&quot;: 5,
+    &quot;token_plan_step_series_sha256&quot;: &quot;484d9d2484e6de01252321d28a8aa0d3fda0343c5e166b5e74c423b259cf4273&quot;,
+    &quot;training_local_batch_size&quot;: 8,
+    &quot;valid&quot;: true,
+    &quot;validated_global_ranks&quot;: [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ]
+  },
+  &quot;name&quot;: &quot;hsdp2x4&quot;,
+  &quot;pipeline_parallel_degree&quot;: 1,
+  &quot;pipeline_parallel_microbatch_size&quot;: 1,
+  &quot;pipeline_parallel_schedule&quot;: &quot;1F1B&quot;,
+  &quot;tensor_parallel_degree&quot;: 1,
+  &quot;world_size&quot;: 8
+}</pre></td><td><pre>{
+  &quot;batch_schedule&quot;: {
+    &quot;gradient_accumulation_steps&quot;: 1,
+    &quot;pipeline_microbatches&quot;: 8
+  },
+  &quot;context_parallel_degree&quot;: 1,
+  &quot;data_parallel_replicate_degree&quot;: 2,
+  &quot;data_parallel_shard_degree&quot;: 4,
+  &quot;enable_sequence_parallel&quot;: true,
+  &quot;expert_parallel_degree&quot;: 1,
+  &quot;extra_args&quot;: [],
+  &quot;input_contract&quot;: {
+    &quot;context_parallel_degree&quot;: 1,
+    &quot;dp_world_size&quot;: 8,
+    &quot;global_batch_size&quot;: 64,
+    &quot;mapping&quot;: &quot;optimizer-step-global-slot-v1&quot;,
+    &quot;pipeline_parallel_degree&quot;: 1,
+    &quot;steps&quot;: 5,
+    &quot;token_plan_step_series_sha256&quot;: &quot;484d9d2484e6de01252321d28a8aa0d3fda0343c5e166b5e74c423b259cf4273&quot;,
+    &quot;training_local_batch_size&quot;: 8,
+    &quot;valid&quot;: true,
+    &quot;validated_global_ranks&quot;: [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ]
+  },
+  &quot;name&quot;: &quot;hsdp2x4&quot;,
+  &quot;pipeline_parallel_degree&quot;: 1,
+  &quot;pipeline_parallel_microbatch_size&quot;: 1,
+  &quot;pipeline_parallel_schedule&quot;: &quot;1F1B&quot;,
+  &quot;tensor_parallel_degree&quot;: 1,
+  &quot;world_size&quot;: 8
+}</pre></td></tr><tr><td>training</td><td><pre>{
+  &quot;checkpoint_kind&quot;: &quot;random_seed&quot;,
+  &quot;config&quot;: &quot;glm5_debugmodel&quot;,
+  &quot;converged_checkpoint&quot;: null,
+  &quot;data_paths&quot;: [
+    &quot;tests/assets/c4_test&quot;,
+    &quot;tests/assets/tokenizer&quot;
+  ],
+  &quot;deterministic&quot;: true,
+  &quot;deterministic_warn_only&quot;: false,
+  &quot;exploratory_steps&quot;: [],
+  &quot;extra_args&quot;: [],
+  &quot;fixed_global_batches&quot;: false,
+  &quot;global_batch_size&quot;: 64,
+  &quot;local_batch_size&quot;: 8,
+  &quot;mixed_precision_param&quot;: &quot;bfloat16&quot;,
+  &quot;mixed_precision_reduce&quot;: &quot;float32&quot;,
+  &quot;module&quot;: &quot;glm5&quot;,
+  &quot;seed&quot;: 80,
+  &quot;sequence_length&quot;: 128,
+  &quot;steps&quot;: 5,
+  &quot;training_dtype&quot;: &quot;float32&quot;
+}</pre></td><td><pre>{
+  &quot;checkpoint_kind&quot;: &quot;random_seed&quot;,
+  &quot;config&quot;: &quot;glm5_debugmodel&quot;,
+  &quot;converged_checkpoint&quot;: null,
+  &quot;data_paths&quot;: [
+    &quot;tests/assets/c4_test&quot;,
+    &quot;tests/assets/tokenizer&quot;
+  ],
+  &quot;deterministic&quot;: true,
+  &quot;deterministic_warn_only&quot;: false,
+  &quot;exploratory_steps&quot;: [],
+  &quot;extra_args&quot;: [],
+  &quot;fixed_global_batches&quot;: false,
+  &quot;global_batch_size&quot;: 64,
+  &quot;local_batch_size&quot;: 8,
+  &quot;mixed_precision_param&quot;: &quot;bfloat16&quot;,
+  &quot;mixed_precision_reduce&quot;: &quot;float32&quot;,
+  &quot;module&quot;: &quot;glm5&quot;,
+  &quot;seed&quot;: 80,
+  &quot;sequence_length&quot;: 128,
+  &quot;steps&quot;: 5,
+  &quot;training_dtype&quot;: &quot;float32&quot;
+}</pre></td></tr></tbody></table>
+<h2>Runtime and source metadata</h2>
+    <table><thead><tr><th>Runtime metadata</th><th>Reference</th><th>Candidate</th>
+    </tr></thead><tbody><tr><td>capture_attempt_id</td><td><pre>&quot;f088ef7bae3843919ac8069380ba1c86&quot;</pre></td><td><pre>&quot;6560db7988d7488c91a0cd851f55bb98&quot;</pre></td></tr><tr><td>device_type</td><td><pre>&quot;npu&quot;</pre></td><td><pre>&quot;npu&quot;</pre></td></tr><tr><td>endpoint_name</td><td><pre>&quot;hsdp2x4-eager-reference-eager&quot;</pre></td><td><pre>&quot;hsdp2x4-inductor-candidate-inductor&quot;</pre></td></tr><tr><td>experiment_kind</td><td><pre>&quot;self_consistency&quot;</pre></td><td><pre>&quot;self_consistency&quot;</pre></td></tr><tr><td>node_rank</td><td><pre>0</pre></td><td><pre>0</pre></td></tr><tr><td>repeat</td><td><pre>1</pre></td><td><pre>1</pre></td></tr><tr><td>role</td><td><pre>&quot;reference&quot;</pre></td><td><pre>&quot;candidate&quot;</pre></td></tr><tr><td>source</td><td><pre>{
+  &quot;packages&quot;: {
+    &quot;torch&quot;: &quot;2.14.0.dev20260805+cpu&quot;,
+    &quot;torch_npu&quot;: &quot;2.14.0&quot;,
+    &quot;torchtitan&quot;: &quot;0.2.2&quot;,
+    &quot;torchtitanturbo&quot;: &quot;0.1.0&quot;
+  },
+  &quot;runtime&quot;: {
+    &quot;cann_version_files&quot;: [
+      {
+        &quot;path&quot;: &quot;/usr/local/Ascend/cann-9.1.0/compiler/version.info&quot;,
+        &quot;sha256&quot;: &quot;f20359296d5a7127f841aa35f4a788137f444dc36d72641e948cb9e39e47e4f4&quot;
+      }
+    ],
+    &quot;environment&quot;: {
+      &quot;ASCEND_HOME_PATH&quot;: &quot;/usr/local/Ascend/cann-9.1.0&quot;,
+      &quot;ASCEND_OPP_PATH&quot;: &quot;/usr/local/Ascend/cann-9.1.0/opp&quot;,
+      &quot;ASCEND_TOOLKIT_HOME&quot;: &quot;/usr/local/Ascend/cann-9.1.0&quot;,
+      &quot;GRAPH_CANN_ROOT&quot;: &quot;/usr/local/Ascend/cann-9.1.0&quot;,
+      &quot;GRAPH_CONDA_ENV&quot;: &quot;/root/miniconda3/envs/torchtitan-0803-graph-adapt&quot;,
+      &quot;TORCHINDUCTOR_NPU_BACKEND&quot;: &quot;default&quot;
+    },
+    &quot;python_executable&quot;: &quot;/root/miniconda3/envs/torchtitan-0803-graph-adapt/bin/python&quot;,
+    &quot;python_version&quot;: &quot;3.12.13&quot;
+  },
+  &quot;sources&quot;: {
+    &quot;torch_npu&quot;: {
+      &quot;branch&quot;: &quot;fix/pt214-flex-attention-protocol&quot;,
+      &quot;commit&quot;: &quot;eeded0663bb6eebd98ed65dc31ae499d1d3932c9&quot;,
+      &quot;root&quot;: &quot;/workspace/h50064611/torch-npu-upstream&quot;,
+      &quot;status&quot;: &quot;&quot;
+    },
+    &quot;torchtitan&quot;: {
+      &quot;branch&quot;: &quot;unavailable: Command &#x27;[&#x27;git&#x27;, &#x27;-C&#x27;, &#x27;/workspace/torchtitan-glm5&#x27;, &#x27;branch&#x27;, &#x27;--show-current&#x27;]&#x27; returned non-zero exit status 128.&quot;,
+      &quot;commit&quot;: &quot;unavailable: Command &#x27;[&#x27;git&#x27;, &#x27;-C&#x27;, &#x27;/workspace/torchtitan-glm5&#x27;, &#x27;rev-parse&#x27;, &#x27;HEAD&#x27;]&#x27; returned non-zero exit status 128.&quot;,
+      &quot;root&quot;: &quot;/workspace/torchtitan-glm5&quot;,
+      &quot;status&quot;: &quot;unavailable: Command &#x27;[&#x27;git&#x27;, &#x27;-C&#x27;, &#x27;/workspace/torchtitan-glm5&#x27;, &#x27;status&#x27;, &#x27;--short&#x27;, &#x27;--untracked-files=normal&#x27;]&#x27; returned non-zero exit status 128.&quot;
+    },
+    &quot;torchtitan_test&quot;: {
+      &quot;branch&quot;: &quot;test/distributed-npu-parity&quot;,
+      &quot;commit&quot;: &quot;7f4e522091558bd551e60e89d4e779dff0d54bc3&quot;,
+      &quot;root&quot;: &quot;/workspace/h50064611/torchtitan-test&quot;,
+      &quot;status&quot;: &quot;M README.md\n M tests/glm5_2_combination/workflow.py\n M tests/glm5_2_graph_debug/graph_env_common.sh\n M tests/glm5_2_performance/explorations/reports/2-card/ddp2/experiment.md\n M tests/glm5_2_performance/explorations/reports/2-card/index.md\n M tests/glm5_2_performance/explorations/runs/4-card/fsdp4/npu-fsdp4-bf16-s20-l8-b64-seq128-seed61-distributed-r1-965e89d3/readme.md\n M tests/glm5_2_performance/explorations/runs/4-card/fsdp4/npu-fsdp4-bf16-s20-l8-b64-seq128-seed61-distributed-r2-49400b80/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/cp8/npu-cp8-bf16-s20-l8-b64-seq128-seed61-distributed-r1-d80e36ca/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/ddp8/npu-ddp8-bf16-s20-l8-b64-seq128-seed61-distributed-profiler-off-r1-270760c1/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/ep8/npu-ep8-bf16-s20-l8-b64-seq128-seed61-distributed-r1-17dbf09f/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/ep8/npu-ep8-bf16-s20-l8-b64-seq128-seed61-distributed-r2-7d87cd5f/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/ep8/npu-ep8-bf16-s20-l8-b64-seq128-seed61-distributed-r3-8f7adec9/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/fsdp2-cp4/npu-fsdp2-cp4-bf16-s20-l8-b64-seq128-seed61-distributed-r1-7bed3060/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/fsdp2-pp4/npu-fsdp2-pp4-bf16-s20-l8-b64-seq128-seed61-distributed-r1-283c59b2/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/fsdp2-tp2-pp2/npu-fsdp2-tp2-pp2-bf16-s20-l8-b64-seq128-seed61-distributed-r1-3f710e94/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/fsdp2-tp4-ep8/npu-fsdp2-tp4-ep8-bf16-s20-l8-b64-seq128-seed61-distributed-r1-bf02b5d0/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/fsdp2-tp4/npu-fsdp2-tp4-bf16-s20-l8-b64-seq128-seed61-distributed-r1-754de573/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/fsdp4-tp2/npu-fsdp4-tp2-bf16-s20-l8-b64-seq128-seed61-distributed-r1-49448ffb/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/pp8/npu-pp8-bf16-s20-l8-b64-seq128-seed61-distributed-r1-cab841c5/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/tp2-cp4/npu-tp2-cp4-bf16-s20-l8-b64-seq128-seed61-distributed-r1-7c32d3ee/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/tp8/npu-tp8-bf16-s30-l8-b64-seq128-seed61-overview-r31-dbbcd393/readme.md\n M tests/glm5_2_precision/workflow.py\n M tests/unit_tests/test_glm5_2_precision.py\n?? .deps/\n?? .deps_spmd/\n?? batch_runs/\n?? combination_reports/\n?? compiler_patch_ablation_debug/\n?? fsdp8-bf16-s10-npu-bundle.tar.gz\n?? fsdp8-bf16-s1000-npu-bundle.tar.gz\n?? fsdp8-bf16-s400-noclip-npu-bundle.tar.gz\n?? fsdp8-bf16-s400-noclip-npu-bundle.tar.gz.part-00\n?? fsdp8-bf16-s400-noclip-npu-bundle.tar.gz.part-01\n?? fsdp8-bf16-s400-noclip-npu-bundle.tar.gz.part-02\n?? fsdp8-bf16-s400-noclip-npu-bundle.tar.gz.part-03\n?? fsdp8-bf16-s400-noclip-npu-bundle.tar.gz.part-04\n?? fsdp8-bf16-s400-noclip-npu-bundle.tar.gz.part-05\n?? fsdp8-bf16-s400-noclip-npu-bundle.tar.gz.part-06\n?? fsdp8-bf16-s400-noclip-npu-bundle.tar.gz.part-07\n?? msprobe_tensorboard_framework_20260907/\n?? msprobe_tensorboard_official_20260907/\n?? npu-ddp8-attention-seed-trace.tar.gz\n?? npu-ddp8-fp32-step1-sampled-trace.tar.gz\n?? npu-ddp8-s1600-sampled-trace.tar.gz\n?? npu-ddp8-wq-a-fp32-trace.tar.gz\n?? npu-long-matrix-s5000-b64-artifacts.tar.gz\n?? npu_eager_mindstudio_artifacts/\n?? npu_eager_mindstudio_fixtures/\n?? npu_eager_mindstudio_reports/\n?? npu_eager_mindstudio_runs/\n?? performance_reports/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r260-766ecc9b.html\n?? performance_reports/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r261-c9892579.html\n?? performance_reports/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r262-d35192b4.html\n?? performance_reports/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r280-6dcbac5a.html\n?? performance_reports/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r281-58866528.html\n?? performance_reports/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r282-281cb58c.html\n?? performance_reports/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r313-e4493352.html\n?? performance_reports/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r223-4daf1829.html\n?? performance_reports/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r230-75886305.html\n?? performance_reports/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-r9-59245529.html\n?? performance_reports/host-rank-skew-aba-localrank-r280-r282.json\n?? performance_reports/host-rank-skew-aba-localrank-r280-r282.md\n?? performance_reports/host-rank-skew-aba-r260-r262.json\n?? performance_reports/host-rank-skew-aba-r260-r262.md\n?? performance_reports/host-rank-skew-r212-device-profile.md\n?? performance_reports/host-rank-skew-r230-clean.md\n?? performance_reports/host-rank-skew-r9.md\n?? performance_reports/rank-localization-final-20260920.md\n?? performance_reports/rank-localization-interim-20260920.md\n?? precision_attention_seed_diagnostic_artifacts/\n?? precision_attention_seed_diagnostic_runs/\n?? precision_diagnostic_artifacts/\n?? precision_diagnostic_runs/\n?? precision_no_clip_artifacts/\n?? precision_no_clip_fixtures/\n?? precision_no_clip_runs/\n?? precision_reports/\n?? precision_router_fix_diagnostic_artifacts/\n?? precision_router_fix_diagnostic_runs/\n?? precision_router_fix_s1600_diagnostic_artifacts/\n?? precision_router_fix_s1600_diagnostic_runs/\n?? precision_shared_fixture_smoke_artifacts/\n?? precision_shared_fixture_smoke_runs/\n?? precision_shared_fixtures/\n?? precision_short_matrix_artifacts/\n?? precision_short_matrix_fixtures/\n?? precision_short_matrix_runs/\n?? precision_sp_mode_artifacts/\n?? precision_sp_mode_fixtures/\n?? precision_sp_mode_reports/\n?? precision_sp_mode_runs/\n?? precision_step1_diagnostic_artifacts/\n?? precision_step1_diagnostic_runs/\n?? precision_wq_a_fp32_diagnostic_artifacts/\n?? precision_wq_a_fp32_diagnostic_runs/\n?? shared-fixture-s5000-b64-npu.tar.gz\n?? shared-fixture-s5000-b64-npu.tar.gz.part-00\n?? shared-fixture-s5000-b64-npu.tar.gz.part-01\n?? shared-fixture-s5000-b64-npu.tar.gz.part-02\n?? shared-fixture-s5000-b64-npu.tar.gz.part-03\n?? shared-fixture-s5000-b64-npu.tar.gz.part-04\n?? shared-fixture-s5000-b64-npu.tar.gz.part-05\n?? shared-fixture-s5000-b64-npu.tar.gz.part-06\n?? shared-fixture-s5000-b64-npu.tar.gz.part-07\n?? shared-fixture-s5000-b64-npu.tar.gz.shard7-retry\n?? short-matrix-s10-npu-bundle.tar.gz\n?? short-matrix-s10-npu-bundle.tar.gz.part-00\n?? short-matrix-s10-npu-bundle.tar.gz.part-01\n?? short-matrix-s10-npu-bundle.tar.gz.part-02\n?? short-matrix-s10-npu-bundle.tar.gz.part-03\n?? short-matrix-s10-npu-bundle.tar.gz.part-04\n?? short-matrix-s10-npu-bundle.tar.gz.part-05\n?? short-matrix-s10-npu-bundle.tar.gz.part-06\n?? short-matrix-s10-npu-bundle.tar.gz.part-07\n?? tensorboard_graph_precision_20260907/\n?? tests/glm5_2_combination/distributed_single_step_benchmark.py\n?? tests/glm5_2_combination/run_npu_distributed_single_step.sh\n?? tests/glm5_2_graph_debug/BF16_FUSION_LOCALIZATION_20260827.md\n?? tests/glm5_2_graph_debug/BLOCK_FIXED_ROUTE_SINGLE_PASS_UNPATCHED_SEED61_70_RESULTS_20260901.md\n?? tests/glm5_2_graph_debug/BLOCK_ROUTE_SINGLE_PASS_UNPATCHED_SEED61_70_RESULTS_20260901.md\n?? tests/glm5_2_graph_debug/BLOCK_SINGLE_PASS_PATCHED_SEED61_70_RESULTS_20260902.md\n?? tests/glm5_2_graph_debug/BLOCK_SINGLE_PASS_RESULTS_20260831.md\n?? tests/glm5_2_graph_debug/BLOCK_SINGLE_PASS_UNPATCHED_RESULTS_20260831.md\n?? tests/glm5_2_graph_debug/BLOCK_SINGLE_PASS_UNPATCHED_SEED61_70_RESULTS_20260901.md\n?? tests/glm5_2_graph_debug/BLOCK_SINGLE_PASS_UNPATCHED_SEED62_RESULTS_20260901.md\n?? tests/glm5_2_graph_debug/COMPILER_PATCH_ABLATION_SEED63_20260902.md\n?? tests/glm5_2_graph_debug/FORMAL_BF16_COMPILER_PATCH_RESULTS_20260827.md\n?? tests/glm5_2_graph_debug/MINIMAL_BF16_COMPILER_REGRESSIONS_20260827.md\n?? tests/glm5_2_graph_debug/SINGLE_CARD_DETERMINISTIC_RESULTS_20260827.md\n?? tests/glm5_2_graph_debug/analyze_compiler_patch_ablation.py\n?? tests/glm5_2_graph_debug/analyze_patched_block_fixed_route_sweep.py\n?? tests/glm5_2_graph_debug/analyze_patched_block_seed_sweep.py\n?? tests/glm5_2_graph_debug/analyze_unpatched_block_fixed_route_sweep.py\n?? tests/glm5_2_graph_debug/analyze_unpatched_block_route_sweep.py\n?? tests/glm5_2_graph_debug/analyze_unpatched_block_seed_sweep.py\n?? tests/glm5_2_graph_debug/bf16_block_fixed_route_patch_ablation_probe.py\n?? tests/glm5_2_graph_debug/bf16_block_fixed_route_single_pass_patched_probe.py\n?? tests/glm5_2_graph_debug/bf16_block_fixed_route_single_pass_unpatched_probe.py\n?? tests/glm5_2_graph_debug/bf16_block_materialization_ablation_probe.py\n?? tests/glm5_2_graph_debug/bf16_block_route_single_pass_unpatched_probe.py\n?? tests/glm5_2_graph_debug/bf16_block_single_pass_patched_probe.py\n?? tests/glm5_2_graph_debug/bf16_block_single_pass_probe.py\n?? tests/glm5_2_graph_debug/bf16_block_single_pass_unpatched_probe.py\n?? tests/glm5_2_graph_debug/bf16_block_trace_probe.py\n?? tests/glm5_2_graph_debug/bf16_ffn_materialize_training_probe.py\n?? tests/glm5_2_graph_debug/bf16_formal_compiler_patch_probe.py\n?? tests/glm5_2_graph_debug/bf16_internal_block_trace_probe.py\n?? tests/glm5_2_graph_debug/bf16_same_cache_replay.py\n?? tests/glm5_2_graph_debug/block_materialization_ablation.py\n?? tests/glm5_2_graph_debug/block_performance_benchmark.py\n?? tests/glm5_2_graph_debug/block_single_pass.py\n?? tests/glm5_2_graph_debug/block_trace.py\n?? tests/glm5_2_graph_debug/compiler_patch_ablation.py\n?? tests/glm5_2_graph_debug/ddp2_eager_inductor_precision_benchmark.py\n?? tests/glm5_2_graph_debug/deterministic_long_probe.py\n?? tests/glm5_2_graph_debug/distributed_topology_eager_inductor_precision_benchmark.py\n?? tests/glm5_2_graph_debug/dtensor_complex_probe.py\n?? tests/glm5_2_graph_debug/export_tensorboard.py\n?? tests/glm5_2_graph_debug/ffn_materialize_patch.py\n?? tests/glm5_2_graph_debug/flex_attention_shape_localization.py\n?? tests/glm5_2_graph_debug/formal_bf16_patch_scope_control.py\n?? tests/glm5_2_graph_debug/internal_block_trace.py\n?? tests/glm5_2_graph_debug/launch_block1_performance_when_free.sh\n?? tests/glm5_2_graph_debug/launch_block1_warm_repeats_when_free.sh\n?? tests/glm5_2_graph_debug/launch_full_single_step_when_free.sh\n?? tests/glm5_2_graph_debug/launch_minimal_chained_residual_campaign.sh\n?? tests/glm5_2_graph_debug/launch_residual_rounding_barrier_campaign.sh\n?? tests/glm5_2_graph_debug/mindstudio_compile_accuracy.py\n?? tests/glm5_2_graph_debug/minimal_bf16_rounding_regressions.py\n?? tests/glm5_2_graph_debug/minimal_chained_residual_localization.py\n?? tests/glm5_2_graph_debug/patched_block_fixed_route_seed61_70.json\n?? tests/glm5_2_graph_debug/patched_block_seed61_70_summary.json\n?? tests/glm5_2_graph_debug/patched_torchtitanturbo.py\n?? tests/glm5_2_graph_debug/residual_rounding_barrier.py\n?? tests/glm5_2_graph_debug/retrofit_mindstudio_block_report.py\n?? tests/glm5_2_graph_debug/run_attention_tensor_probe.py\n?? tests/glm5_2_graph_debug/run_block1_performance.sh\n?? tests/glm5_2_graph_debug/run_block1_performance_warm_repeats.sh\n?? tests/glm5_2_graph_debug/run_block_alignment_followup.sh\n?? tests/glm5_2_graph_debug/run_block_alignment_followup_exclusive.sh\n?? tests/glm5_2_graph_debug/run_block_materialization_localization.sh\n?? tests/glm5_2_graph_debug/run_compiler_patch_ablation_seed63.sh\n?? tests/glm5_2_graph_debug/run_compiler_patch_priority12.sh\n?? tests/glm5_2_graph_debug/run_ddp2_eager_inductor_precision_ab.sh\n?? tests/glm5_2_graph_debug/run_distributed_topology_eager_inductor_precision_ab.sh\n?? tests/glm5_2_graph_debug/run_distributed_topology_precision_campaign.sh\n?? tests/glm5_2_graph_debug/run_ffn_tensor_probe.py\n?? tests/glm5_2_graph_debug/run_flex_attention_shape_localization.sh\n?? tests/glm5_2_graph_debug/run_full_single_step_accuracy.sh\n?? tests/glm5_2_graph_debug/run_indexer_tensor_probe.py\n?? tests/glm5_2_graph_debug/run_minimal_chained_residual_localization.sh\n?? tests/glm5_2_graph_debug/run_patched_block_fixed_route_seed_sweep.sh\n?? tests/glm5_2_graph_debug/run_patched_block_seed_sweep.sh\n?? tests/glm5_2_graph_debug/run_residual_rounding_barrier_exclusive_window.sh\n?? tests/glm5_2_graph_debug/run_standalone_block0_exclusive_window.sh\n?? tests/glm5_2_graph_debug/run_standalone_block0_replay.sh\n?? tests/glm5_2_graph_debug/run_torch_npu_source_test.py\n?? tests/glm5_2_graph_debug/run_unpatched_block_fixed_route_seed_sweep.sh\n?? tests/glm5_2_graph_debug/run_unpatched_block_route_seed_sweep.sh\n?? tests/glm5_2_graph_debug/run_unpatched_block_seed_sweep.sh\n?? tests/glm5_2_graph_debug/standalone_block_performance.py\n?? tests/glm5_2_graph_debug/standalone_block_replay.py\n?? tests/glm5_2_graph_debug/standalone_full_step_accuracy.py\n?? tests/glm5_2_graph_debug/summarize_full_single_step_accuracy.py\n?? tests/glm5_2_graph_debug/torch_npu_source_overlay/\n?? tests/glm5_2_graph_debug/unpatched_block_fixed_route_seed61_70.json\n?? tests/glm5_2_graph_debug/unpatched_block_route_seed61_70.json\n?? tests/glm5_2_graph_debug/unpatched_block_seed61_70_summary.json\n?? tests/glm5_2_graph_debug/unpatched_torchtitanturbo.py\n?? tests/glm5_2_graph_debug/vetted_benchmark_audit/\n?? tests/glm5_2_performance/experiments/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r260-766ecc9b/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r261-c9892579/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r262-d35192b4/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r263-6ea333f7/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r270-0019ab0e/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r280-6dcbac5a/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r281-58866528/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r282-281cb58c/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r283-0af7210c/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r300-c352bfd9/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r310-71851af1/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r311-c0a29c1a/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r312-428ddeaa/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r313-e4493352/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r314-9956276b/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r320-541b41a1/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s20-l8-b16-seq128-seed61-distributed-profiler-off-r1-014e7e28/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s20-l8-b16-seq128-seed61-distributed-profiler-off-r2-e197d000/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r220-dffaad5b/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r223-4daf1829/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r230-75886305/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r232-63cf2cda/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r240-6134f04c/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-dev6-7-shapes-r210-2a60d766/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-dev6-7-shapes-r211-c9946dd8/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-dev6-7-shapes-r212-b467263c/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-dev7-6-profiler-off-r231-64bf15c7/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-profiler-off-r3-89dab072/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-profiler-off-r4-ecea4f14/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-profiler-off-r6-8ee06858/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-profiler-off-r7-245ae52f/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-profiler-off-r8-fade32bd/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-r5-1606b617/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-r9-59245529/\n?? tests/glm5_2_precision/bin/\n?? tests/glm5_2_precision/failed_topologies_1000_benchmark.py\n?? tests/glm5_2_precision/run_npu_failed_topologies_1000.sh\n?? tests/glm5_2_precision/run_npu_self_alignment_budget4.sh\n?? tests/glm5_2_precision/run_npu_sp_mode_smoke.sh\n?? tests/glm5_2_precision/sp_mode_smoke_benchmark.py\n?? tests/unit_tests/test_glm5_2_block_materialization_ablation.py\n?? tests/unit_tests/test_glm5_2_block_performance_benchmark.py\n?? tests/unit_tests/test_glm5_2_block_single_pass.py\n?? tests/unit_tests/test_glm5_2_compiler_patch_ablation.py\n?? tests/unit_tests/test_glm5_2_graph_precision_tensorboard.py\n?? tests/unit_tests/test_glm5_2_minimal_chained_residual_localization.py\n?? tests/unit_tests/test_glm5_2_residual_rounding_barrier.py\n?? tests/unit_tests/test_host_rank_skew_experiment.py\n?? tests/unit_tests/test_host_rank_skew_triplet_analysis.py\n?? torch_compile_debug/&quot;
+    },
+    &quot;torchtitanturbo&quot;: {
+      &quot;branch&quot;: &quot;fix/glm5-distributed&quot;,
+      &quot;commit&quot;: &quot;4af0147c0d6457edf503896f8272c915ca634bb7&quot;,
+      &quot;root&quot;: &quot;/workspace/h50064611/TorchTitanTurbo&quot;,
+      &quot;status&quot;: &quot;&quot;
+    }
+  }
+}</pre></td><td><pre>{
+  &quot;packages&quot;: {
+    &quot;torch&quot;: &quot;2.14.0.dev20260805+cpu&quot;,
+    &quot;torch_npu&quot;: &quot;2.14.0&quot;,
+    &quot;torchtitan&quot;: &quot;0.2.2&quot;,
+    &quot;torchtitanturbo&quot;: &quot;0.1.0&quot;
+  },
+  &quot;runtime&quot;: {
+    &quot;cann_version_files&quot;: [
+      {
+        &quot;path&quot;: &quot;/usr/local/Ascend/cann-9.1.0/compiler/version.info&quot;,
+        &quot;sha256&quot;: &quot;f20359296d5a7127f841aa35f4a788137f444dc36d72641e948cb9e39e47e4f4&quot;
+      }
+    ],
+    &quot;environment&quot;: {
+      &quot;ASCEND_HOME_PATH&quot;: &quot;/usr/local/Ascend/cann-9.1.0&quot;,
+      &quot;ASCEND_OPP_PATH&quot;: &quot;/usr/local/Ascend/cann-9.1.0/opp&quot;,
+      &quot;ASCEND_TOOLKIT_HOME&quot;: &quot;/usr/local/Ascend/cann-9.1.0&quot;,
+      &quot;GRAPH_CANN_ROOT&quot;: &quot;/usr/local/Ascend/cann-9.1.0&quot;,
+      &quot;GRAPH_CONDA_ENV&quot;: &quot;/root/miniconda3/envs/torchtitan-0803-graph-adapt&quot;,
+      &quot;TORCHINDUCTOR_NPU_BACKEND&quot;: &quot;default&quot;
+    },
+    &quot;python_executable&quot;: &quot;/root/miniconda3/envs/torchtitan-0803-graph-adapt/bin/python&quot;,
+    &quot;python_version&quot;: &quot;3.12.13&quot;
+  },
+  &quot;sources&quot;: {
+    &quot;torch_npu&quot;: {
+      &quot;branch&quot;: &quot;fix/pt214-flex-attention-protocol&quot;,
+      &quot;commit&quot;: &quot;eeded0663bb6eebd98ed65dc31ae499d1d3932c9&quot;,
+      &quot;root&quot;: &quot;/workspace/h50064611/torch-npu-upstream&quot;,
+      &quot;status&quot;: &quot;&quot;
+    },
+    &quot;torchtitan&quot;: {
+      &quot;branch&quot;: &quot;unavailable: Command &#x27;[&#x27;git&#x27;, &#x27;-C&#x27;, &#x27;/workspace/torchtitan-glm5&#x27;, &#x27;branch&#x27;, &#x27;--show-current&#x27;]&#x27; returned non-zero exit status 128.&quot;,
+      &quot;commit&quot;: &quot;unavailable: Command &#x27;[&#x27;git&#x27;, &#x27;-C&#x27;, &#x27;/workspace/torchtitan-glm5&#x27;, &#x27;rev-parse&#x27;, &#x27;HEAD&#x27;]&#x27; returned non-zero exit status 128.&quot;,
+      &quot;root&quot;: &quot;/workspace/torchtitan-glm5&quot;,
+      &quot;status&quot;: &quot;unavailable: Command &#x27;[&#x27;git&#x27;, &#x27;-C&#x27;, &#x27;/workspace/torchtitan-glm5&#x27;, &#x27;status&#x27;, &#x27;--short&#x27;, &#x27;--untracked-files=normal&#x27;]&#x27; returned non-zero exit status 128.&quot;
+    },
+    &quot;torchtitan_test&quot;: {
+      &quot;branch&quot;: &quot;test/distributed-npu-parity&quot;,
+      &quot;commit&quot;: &quot;7f4e522091558bd551e60e89d4e779dff0d54bc3&quot;,
+      &quot;root&quot;: &quot;/workspace/h50064611/torchtitan-test&quot;,
+      &quot;status&quot;: &quot;M README.md\n M tests/glm5_2_combination/workflow.py\n M tests/glm5_2_graph_debug/graph_env_common.sh\n M tests/glm5_2_performance/explorations/reports/2-card/ddp2/experiment.md\n M tests/glm5_2_performance/explorations/reports/2-card/index.md\n M tests/glm5_2_performance/explorations/runs/4-card/fsdp4/npu-fsdp4-bf16-s20-l8-b64-seq128-seed61-distributed-r1-965e89d3/readme.md\n M tests/glm5_2_performance/explorations/runs/4-card/fsdp4/npu-fsdp4-bf16-s20-l8-b64-seq128-seed61-distributed-r2-49400b80/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/cp8/npu-cp8-bf16-s20-l8-b64-seq128-seed61-distributed-r1-d80e36ca/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/ddp8/npu-ddp8-bf16-s20-l8-b64-seq128-seed61-distributed-profiler-off-r1-270760c1/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/ep8/npu-ep8-bf16-s20-l8-b64-seq128-seed61-distributed-r1-17dbf09f/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/ep8/npu-ep8-bf16-s20-l8-b64-seq128-seed61-distributed-r2-7d87cd5f/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/ep8/npu-ep8-bf16-s20-l8-b64-seq128-seed61-distributed-r3-8f7adec9/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/fsdp2-cp4/npu-fsdp2-cp4-bf16-s20-l8-b64-seq128-seed61-distributed-r1-7bed3060/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/fsdp2-pp4/npu-fsdp2-pp4-bf16-s20-l8-b64-seq128-seed61-distributed-r1-283c59b2/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/fsdp2-tp2-pp2/npu-fsdp2-tp2-pp2-bf16-s20-l8-b64-seq128-seed61-distributed-r1-3f710e94/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/fsdp2-tp4-ep8/npu-fsdp2-tp4-ep8-bf16-s20-l8-b64-seq128-seed61-distributed-r1-bf02b5d0/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/fsdp2-tp4/npu-fsdp2-tp4-bf16-s20-l8-b64-seq128-seed61-distributed-r1-754de573/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/fsdp4-tp2/npu-fsdp4-tp2-bf16-s20-l8-b64-seq128-seed61-distributed-r1-49448ffb/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/pp8/npu-pp8-bf16-s20-l8-b64-seq128-seed61-distributed-r1-cab841c5/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/tp2-cp4/npu-tp2-cp4-bf16-s20-l8-b64-seq128-seed61-distributed-r1-7c32d3ee/readme.md\n M tests/glm5_2_performance/explorations/runs/8-card/tp8/npu-tp8-bf16-s30-l8-b64-seq128-seed61-overview-r31-dbbcd393/readme.md\n M tests/glm5_2_precision/workflow.py\n M tests/unit_tests/test_glm5_2_precision.py\n?? .deps/\n?? .deps_spmd/\n?? batch_runs/\n?? combination_reports/\n?? compiler_patch_ablation_debug/\n?? fsdp8-bf16-s10-npu-bundle.tar.gz\n?? fsdp8-bf16-s1000-npu-bundle.tar.gz\n?? fsdp8-bf16-s400-noclip-npu-bundle.tar.gz\n?? fsdp8-bf16-s400-noclip-npu-bundle.tar.gz.part-00\n?? fsdp8-bf16-s400-noclip-npu-bundle.tar.gz.part-01\n?? fsdp8-bf16-s400-noclip-npu-bundle.tar.gz.part-02\n?? fsdp8-bf16-s400-noclip-npu-bundle.tar.gz.part-03\n?? fsdp8-bf16-s400-noclip-npu-bundle.tar.gz.part-04\n?? fsdp8-bf16-s400-noclip-npu-bundle.tar.gz.part-05\n?? fsdp8-bf16-s400-noclip-npu-bundle.tar.gz.part-06\n?? fsdp8-bf16-s400-noclip-npu-bundle.tar.gz.part-07\n?? msprobe_tensorboard_framework_20260907/\n?? msprobe_tensorboard_official_20260907/\n?? npu-ddp8-attention-seed-trace.tar.gz\n?? npu-ddp8-fp32-step1-sampled-trace.tar.gz\n?? npu-ddp8-s1600-sampled-trace.tar.gz\n?? npu-ddp8-wq-a-fp32-trace.tar.gz\n?? npu-long-matrix-s5000-b64-artifacts.tar.gz\n?? npu_eager_mindstudio_artifacts/\n?? npu_eager_mindstudio_fixtures/\n?? npu_eager_mindstudio_reports/\n?? npu_eager_mindstudio_runs/\n?? performance_reports/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r260-766ecc9b.html\n?? performance_reports/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r261-c9892579.html\n?? performance_reports/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r262-d35192b4.html\n?? performance_reports/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r280-6dcbac5a.html\n?? performance_reports/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r281-58866528.html\n?? performance_reports/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r282-281cb58c.html\n?? performance_reports/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r313-e4493352.html\n?? performance_reports/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r223-4daf1829.html\n?? performance_reports/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r230-75886305.html\n?? performance_reports/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-r9-59245529.html\n?? performance_reports/host-rank-skew-aba-localrank-r280-r282.json\n?? performance_reports/host-rank-skew-aba-localrank-r280-r282.md\n?? performance_reports/host-rank-skew-aba-r260-r262.json\n?? performance_reports/host-rank-skew-aba-r260-r262.md\n?? performance_reports/host-rank-skew-r212-device-profile.md\n?? performance_reports/host-rank-skew-r230-clean.md\n?? performance_reports/host-rank-skew-r9.md\n?? performance_reports/rank-localization-final-20260920.md\n?? performance_reports/rank-localization-interim-20260920.md\n?? precision_attention_seed_diagnostic_artifacts/\n?? precision_attention_seed_diagnostic_runs/\n?? precision_diagnostic_artifacts/\n?? precision_diagnostic_runs/\n?? precision_no_clip_artifacts/\n?? precision_no_clip_fixtures/\n?? precision_no_clip_runs/\n?? precision_reports/\n?? precision_router_fix_diagnostic_artifacts/\n?? precision_router_fix_diagnostic_runs/\n?? precision_router_fix_s1600_diagnostic_artifacts/\n?? precision_router_fix_s1600_diagnostic_runs/\n?? precision_shared_fixture_smoke_artifacts/\n?? precision_shared_fixture_smoke_runs/\n?? precision_shared_fixtures/\n?? precision_short_matrix_artifacts/\n?? precision_short_matrix_fixtures/\n?? precision_short_matrix_runs/\n?? precision_sp_mode_artifacts/\n?? precision_sp_mode_fixtures/\n?? precision_sp_mode_reports/\n?? precision_sp_mode_runs/\n?? precision_step1_diagnostic_artifacts/\n?? precision_step1_diagnostic_runs/\n?? precision_wq_a_fp32_diagnostic_artifacts/\n?? precision_wq_a_fp32_diagnostic_runs/\n?? shared-fixture-s5000-b64-npu.tar.gz\n?? shared-fixture-s5000-b64-npu.tar.gz.part-00\n?? shared-fixture-s5000-b64-npu.tar.gz.part-01\n?? shared-fixture-s5000-b64-npu.tar.gz.part-02\n?? shared-fixture-s5000-b64-npu.tar.gz.part-03\n?? shared-fixture-s5000-b64-npu.tar.gz.part-04\n?? shared-fixture-s5000-b64-npu.tar.gz.part-05\n?? shared-fixture-s5000-b64-npu.tar.gz.part-06\n?? shared-fixture-s5000-b64-npu.tar.gz.part-07\n?? shared-fixture-s5000-b64-npu.tar.gz.shard7-retry\n?? short-matrix-s10-npu-bundle.tar.gz\n?? short-matrix-s10-npu-bundle.tar.gz.part-00\n?? short-matrix-s10-npu-bundle.tar.gz.part-01\n?? short-matrix-s10-npu-bundle.tar.gz.part-02\n?? short-matrix-s10-npu-bundle.tar.gz.part-03\n?? short-matrix-s10-npu-bundle.tar.gz.part-04\n?? short-matrix-s10-npu-bundle.tar.gz.part-05\n?? short-matrix-s10-npu-bundle.tar.gz.part-06\n?? short-matrix-s10-npu-bundle.tar.gz.part-07\n?? tensorboard_graph_precision_20260907/\n?? tests/glm5_2_combination/distributed_single_step_benchmark.py\n?? tests/glm5_2_combination/run_npu_distributed_single_step.sh\n?? tests/glm5_2_graph_debug/BF16_FUSION_LOCALIZATION_20260827.md\n?? tests/glm5_2_graph_debug/BLOCK_FIXED_ROUTE_SINGLE_PASS_UNPATCHED_SEED61_70_RESULTS_20260901.md\n?? tests/glm5_2_graph_debug/BLOCK_ROUTE_SINGLE_PASS_UNPATCHED_SEED61_70_RESULTS_20260901.md\n?? tests/glm5_2_graph_debug/BLOCK_SINGLE_PASS_PATCHED_SEED61_70_RESULTS_20260902.md\n?? tests/glm5_2_graph_debug/BLOCK_SINGLE_PASS_RESULTS_20260831.md\n?? tests/glm5_2_graph_debug/BLOCK_SINGLE_PASS_UNPATCHED_RESULTS_20260831.md\n?? tests/glm5_2_graph_debug/BLOCK_SINGLE_PASS_UNPATCHED_SEED61_70_RESULTS_20260901.md\n?? tests/glm5_2_graph_debug/BLOCK_SINGLE_PASS_UNPATCHED_SEED62_RESULTS_20260901.md\n?? tests/glm5_2_graph_debug/COMPILER_PATCH_ABLATION_SEED63_20260902.md\n?? tests/glm5_2_graph_debug/FORMAL_BF16_COMPILER_PATCH_RESULTS_20260827.md\n?? tests/glm5_2_graph_debug/MINIMAL_BF16_COMPILER_REGRESSIONS_20260827.md\n?? tests/glm5_2_graph_debug/SINGLE_CARD_DETERMINISTIC_RESULTS_20260827.md\n?? tests/glm5_2_graph_debug/analyze_compiler_patch_ablation.py\n?? tests/glm5_2_graph_debug/analyze_patched_block_fixed_route_sweep.py\n?? tests/glm5_2_graph_debug/analyze_patched_block_seed_sweep.py\n?? tests/glm5_2_graph_debug/analyze_unpatched_block_fixed_route_sweep.py\n?? tests/glm5_2_graph_debug/analyze_unpatched_block_route_sweep.py\n?? tests/glm5_2_graph_debug/analyze_unpatched_block_seed_sweep.py\n?? tests/glm5_2_graph_debug/bf16_block_fixed_route_patch_ablation_probe.py\n?? tests/glm5_2_graph_debug/bf16_block_fixed_route_single_pass_patched_probe.py\n?? tests/glm5_2_graph_debug/bf16_block_fixed_route_single_pass_unpatched_probe.py\n?? tests/glm5_2_graph_debug/bf16_block_materialization_ablation_probe.py\n?? tests/glm5_2_graph_debug/bf16_block_route_single_pass_unpatched_probe.py\n?? tests/glm5_2_graph_debug/bf16_block_single_pass_patched_probe.py\n?? tests/glm5_2_graph_debug/bf16_block_single_pass_probe.py\n?? tests/glm5_2_graph_debug/bf16_block_single_pass_unpatched_probe.py\n?? tests/glm5_2_graph_debug/bf16_block_trace_probe.py\n?? tests/glm5_2_graph_debug/bf16_ffn_materialize_training_probe.py\n?? tests/glm5_2_graph_debug/bf16_formal_compiler_patch_probe.py\n?? tests/glm5_2_graph_debug/bf16_internal_block_trace_probe.py\n?? tests/glm5_2_graph_debug/bf16_same_cache_replay.py\n?? tests/glm5_2_graph_debug/block_materialization_ablation.py\n?? tests/glm5_2_graph_debug/block_performance_benchmark.py\n?? tests/glm5_2_graph_debug/block_single_pass.py\n?? tests/glm5_2_graph_debug/block_trace.py\n?? tests/glm5_2_graph_debug/compiler_patch_ablation.py\n?? tests/glm5_2_graph_debug/ddp2_eager_inductor_precision_benchmark.py\n?? tests/glm5_2_graph_debug/deterministic_long_probe.py\n?? tests/glm5_2_graph_debug/distributed_topology_eager_inductor_precision_benchmark.py\n?? tests/glm5_2_graph_debug/dtensor_complex_probe.py\n?? tests/glm5_2_graph_debug/export_tensorboard.py\n?? tests/glm5_2_graph_debug/ffn_materialize_patch.py\n?? tests/glm5_2_graph_debug/flex_attention_shape_localization.py\n?? tests/glm5_2_graph_debug/formal_bf16_patch_scope_control.py\n?? tests/glm5_2_graph_debug/internal_block_trace.py\n?? tests/glm5_2_graph_debug/launch_block1_performance_when_free.sh\n?? tests/glm5_2_graph_debug/launch_block1_warm_repeats_when_free.sh\n?? tests/glm5_2_graph_debug/launch_full_single_step_when_free.sh\n?? tests/glm5_2_graph_debug/launch_minimal_chained_residual_campaign.sh\n?? tests/glm5_2_graph_debug/launch_residual_rounding_barrier_campaign.sh\n?? tests/glm5_2_graph_debug/mindstudio_compile_accuracy.py\n?? tests/glm5_2_graph_debug/minimal_bf16_rounding_regressions.py\n?? tests/glm5_2_graph_debug/minimal_chained_residual_localization.py\n?? tests/glm5_2_graph_debug/patched_block_fixed_route_seed61_70.json\n?? tests/glm5_2_graph_debug/patched_block_seed61_70_summary.json\n?? tests/glm5_2_graph_debug/patched_torchtitanturbo.py\n?? tests/glm5_2_graph_debug/residual_rounding_barrier.py\n?? tests/glm5_2_graph_debug/retrofit_mindstudio_block_report.py\n?? tests/glm5_2_graph_debug/run_attention_tensor_probe.py\n?? tests/glm5_2_graph_debug/run_block1_performance.sh\n?? tests/glm5_2_graph_debug/run_block1_performance_warm_repeats.sh\n?? tests/glm5_2_graph_debug/run_block_alignment_followup.sh\n?? tests/glm5_2_graph_debug/run_block_alignment_followup_exclusive.sh\n?? tests/glm5_2_graph_debug/run_block_materialization_localization.sh\n?? tests/glm5_2_graph_debug/run_compiler_patch_ablation_seed63.sh\n?? tests/glm5_2_graph_debug/run_compiler_patch_priority12.sh\n?? tests/glm5_2_graph_debug/run_ddp2_eager_inductor_precision_ab.sh\n?? tests/glm5_2_graph_debug/run_distributed_topology_eager_inductor_precision_ab.sh\n?? tests/glm5_2_graph_debug/run_distributed_topology_precision_campaign.sh\n?? tests/glm5_2_graph_debug/run_ffn_tensor_probe.py\n?? tests/glm5_2_graph_debug/run_flex_attention_shape_localization.sh\n?? tests/glm5_2_graph_debug/run_full_single_step_accuracy.sh\n?? tests/glm5_2_graph_debug/run_indexer_tensor_probe.py\n?? tests/glm5_2_graph_debug/run_minimal_chained_residual_localization.sh\n?? tests/glm5_2_graph_debug/run_patched_block_fixed_route_seed_sweep.sh\n?? tests/glm5_2_graph_debug/run_patched_block_seed_sweep.sh\n?? tests/glm5_2_graph_debug/run_residual_rounding_barrier_exclusive_window.sh\n?? tests/glm5_2_graph_debug/run_standalone_block0_exclusive_window.sh\n?? tests/glm5_2_graph_debug/run_standalone_block0_replay.sh\n?? tests/glm5_2_graph_debug/run_torch_npu_source_test.py\n?? tests/glm5_2_graph_debug/run_unpatched_block_fixed_route_seed_sweep.sh\n?? tests/glm5_2_graph_debug/run_unpatched_block_route_seed_sweep.sh\n?? tests/glm5_2_graph_debug/run_unpatched_block_seed_sweep.sh\n?? tests/glm5_2_graph_debug/standalone_block_performance.py\n?? tests/glm5_2_graph_debug/standalone_block_replay.py\n?? tests/glm5_2_graph_debug/standalone_full_step_accuracy.py\n?? tests/glm5_2_graph_debug/summarize_full_single_step_accuracy.py\n?? tests/glm5_2_graph_debug/torch_npu_source_overlay/\n?? tests/glm5_2_graph_debug/unpatched_block_fixed_route_seed61_70.json\n?? tests/glm5_2_graph_debug/unpatched_block_route_seed61_70.json\n?? tests/glm5_2_graph_debug/unpatched_block_seed61_70_summary.json\n?? tests/glm5_2_graph_debug/unpatched_torchtitanturbo.py\n?? tests/glm5_2_graph_debug/vetted_benchmark_audit/\n?? tests/glm5_2_performance/experiments/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r260-766ecc9b/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r261-c9892579/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r262-d35192b4/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r263-6ea333f7/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r270-0019ab0e/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r280-6dcbac5a/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r281-58866528/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r282-281cb58c/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r283-0af7210c/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r300-c352bfd9/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r310-71851af1/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r311-c0a29c1a/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r312-428ddeaa/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r313-e4493352/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r314-9956276b/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s15-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r320-541b41a1/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s20-l8-b16-seq128-seed61-distributed-profiler-off-r1-014e7e28/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s20-l8-b16-seq128-seed61-distributed-profiler-off-r2-e197d000/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r220-dffaad5b/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r223-4daf1829/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r230-75886305/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r232-63cf2cda/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-dev6-7-profiler-off-r240-6134f04c/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-dev6-7-shapes-r210-2a60d766/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-dev6-7-shapes-r211-c9946dd8/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-dev6-7-shapes-r212-b467263c/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-dev7-6-profiler-off-r231-64bf15c7/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-profiler-off-r3-89dab072/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-profiler-off-r4-ecea4f14/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-profiler-off-r6-8ee06858/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-profiler-off-r7-245ae52f/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-profiler-off-r8-fade32bd/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-r5-1606b617/\n?? tests/glm5_2_performance/explorations/runs/2-card/ddp2/npu-ddp2-bf16-s30-l8-b64-seq128-seed61-distributed-r9-59245529/\n?? tests/glm5_2_precision/bin/\n?? tests/glm5_2_precision/failed_topologies_1000_benchmark.py\n?? tests/glm5_2_precision/run_npu_failed_topologies_1000.sh\n?? tests/glm5_2_precision/run_npu_self_alignment_budget4.sh\n?? tests/glm5_2_precision/run_npu_sp_mode_smoke.sh\n?? tests/glm5_2_precision/sp_mode_smoke_benchmark.py\n?? tests/unit_tests/test_glm5_2_block_materialization_ablation.py\n?? tests/unit_tests/test_glm5_2_block_performance_benchmark.py\n?? tests/unit_tests/test_glm5_2_block_single_pass.py\n?? tests/unit_tests/test_glm5_2_compiler_patch_ablation.py\n?? tests/unit_tests/test_glm5_2_graph_precision_tensorboard.py\n?? tests/unit_tests/test_glm5_2_minimal_chained_residual_localization.py\n?? tests/unit_tests/test_glm5_2_residual_rounding_barrier.py\n?? tests/unit_tests/test_host_rank_skew_experiment.py\n?? tests/unit_tests/test_host_rank_skew_triplet_analysis.py\n?? torch_compile_debug/&quot;
+    },
+    &quot;torchtitanturbo&quot;: {
+      &quot;branch&quot;: &quot;fix/glm5-distributed&quot;,
+      &quot;commit&quot;: &quot;4af0147c0d6457edf503896f8272c915ca634bb7&quot;,
+      &quot;root&quot;: &quot;/workspace/h50064611/TorchTitanTurbo&quot;,
+      &quot;status&quot;: &quot;&quot;
+    }
+  }
+}</pre></td></tr></tbody></table></section>
+
+            <section id="candidate-1">
+              <h2>Candidate repeat 1</h2>
+              <h3>Formal decision criteria</h3>
+
+    <table><thead><tr><th>Result</th><th>Criterion</th><th>Observed</th>
+    <th>Required</th><th>Meaning</th></tr></thead><tbody><tr><td><span class="status pass">PASS</span></td><td>Observation count</td><td>5 steps</td><td>&gt;= 5 steps</td><td>The observation window includes warmup and retained steps.</td></tr><tr><td><span class="status pass">PASS</span></td><td>First loss</td><td>mean absolute=2.38418579e-05; mean absolute relative=0.000296%</td><td>mean absolute &lt;= 0.005 OR mean absolute relative &lt;= 0.500%</td><td>The first logged training step is checked before warmup removal.</td></tr><tr><td><span class="status pass">PASS</span></td><td>All retained loss steps</td><td>mean absolute=0.000689601898; mean absolute relative=0.012457%</td><td>mean absolute &lt;= 0.01 OR mean absolute relative &lt;= 1.000%</td><td>The configured warmup and outlier policy is applied first.</td></tr><tr><td><span class="status pass">PASS</span></td><td>Global grad norm</td><td>mean relative=0.055527%</td><td>[-5.000%, 5.000%]</td><td>Global grad norm may fluctuate, so signed mean relative error is used.</td></tr></tbody></table>
+              <h3>Error metrics</h3>
+    <table><thead><tr><th>Series</th><th>Steps</th><th>Normal</th>
+    <th>Mean absolute</th><th>Mean relative</th><th>Mean absolute relative</th>
+    <th>Max absolute</th><th>Absolute-error distribution</th></tr></thead>
+    <tbody><tr><td>loss</td><td>5</td><td>0.0005402565</td><td>0.000689601898</td><td>0.010201%</td><td>0.012457%</td><td>0.0016374588</td><td>P50=0.000373363495, P90=0.00149650574, P99=0.00162336349, P99.9=0.00163604927, P99.99=0.00163731785</td></tr><tr><td>global grad norm</td><td>5</td><td>0.00137498379</td><td>0.00139524937</td><td>0.055527%</td><td>0.056852%</td><td>0.00411343575</td><td>P50=0.000309467316, P90=0.00346074104, P99=0.00404816628, P99.9=0.0041069088, P99.99=0.00411278305</td></tr></tbody></table>
+
+    <h3>Historical customer standards (reference only)</h3>
+    <p class="note">These examples provide context and do not affect the formal
+    migration PASS/FAIL result above.</p>
+    <table><thead><tr><th>Source</th><th>Reference standard</th><th>Observed</th>
+    </tr></thead><tbody><tr><td>Customer 1</td><td>Random init: single-card mean absolute &lt; 0.01; 8-card &lt; 0.03; multi-node &lt; 0.05. Converged MoE: every-step max absolute &lt; 0.01.</td><td>mean absolute=0.000689601898; max absolute=0.0016374588</td></tr><tr><td>Customer 2</td><td>1000-step loss mean relative error &lt; 0.2%.</td><td>mean relative=0.010201%</td></tr><tr><td>Customer 3</td><td>After warmup: cumulative mean absolute &lt; 0.005; P99 &lt;= 0.01, P99.9 &lt;= 0.01, P99.99 &lt;= 0.05.</td><td>mean absolute=0.000689601898; P99=0.00162336349; P99.9=0.00163604927; P99.99=0.00163731785</td></tr><tr><td>Customer 4</td><td>5000 steps or 12 hours: mean absolute &lt;= 0.01-0.02 OR mean relative &lt;= 1%; warmup and up to 0.5% outliers may be excluded.</td><td>mean absolute=0.000689601898; mean relative=0.010201%</td></tr></tbody></table>
+
+    <section class="chart-card">
+      <h3>Training loss</h3>
+      <div class="legend"><span class="reference-line"></span>hsdp2x4-eager-reference-eager
+      <span class="candidate-line"></span>hsdp2x4-inductor-candidate-inductor repeat 1</div>
+      <svg viewBox="0 0 960 330" role="img" aria-label="Training loss">
+
+        <line x1="110" y1="45.00" x2="925" y2="45.00" class="grid"/><text x="102" y="49.00" text-anchor="end">8.31225128</text><line x1="110" y1="102.50" x2="925" y2="102.50" class="grid"/><text x="102" y="106.50" text-anchor="end">7.42479322</text><line x1="110" y1="160.00" x2="925" y2="160.00" class="grid"/><text x="102" y="164.00" text-anchor="end">6.53733516</text><line x1="110" y1="217.50" x2="925" y2="217.50" class="grid"/><text x="102" y="221.50" text-anchor="end">5.6498771</text><line x1="110" y1="275.00" x2="925" y2="275.00" class="grid"/><text x="102" y="279.00" text-anchor="end">4.76241903</text>
+        <line x1="110" y1="275" x2="925" y2="275" class="axis"/>
+        <polyline points="110.00,60.86 313.75,85.83 517.50,154.72 721.25,217.99 925.00,259.05" class="series reference"/>
+        <polyline points="110.00,60.86 313.75,85.84 517.50,154.70 721.25,218.10 925.00,259.14" class="series candidate"/>
+        <text x="110" y="315">step 1</text>
+        <text x="925" y="315" text-anchor="end">step 5</text>
+      </svg>
+    </section>
+
+    <section class="chart-card">
+      <h3>Global grad norm</h3>
+      <div class="legend"><span class="reference-line"></span>hsdp2x4-eager-reference-eager
+      <span class="candidate-line"></span>hsdp2x4-inductor-candidate-inductor repeat 1</div>
+      <svg viewBox="0 0 960 330" role="img" aria-label="Global grad norm">
+
+        <line x1="110" y1="45.00" x2="925" y2="45.00" class="grid"/><text x="102" y="49.00" text-anchor="end">2.58628708</text><line x1="110" y1="102.50" x2="925" y2="102.50" class="grid"/><text x="102" y="106.50" text-anchor="end">2.25139537</text><line x1="110" y1="160.00" x2="925" y2="160.00" class="grid"/><text x="102" y="164.00" text-anchor="end">1.91650367</text><line x1="110" y1="217.50" x2="925" y2="217.50" class="grid"/><text x="102" y="221.50" text-anchor="end">1.58161196</text><line x1="110" y1="275.00" x2="925" y2="275.00" class="grid"/><text x="102" y="279.00" text-anchor="end">1.24672026</text>
+        <line x1="110" y1="275" x2="925" y2="275" class="axis"/>
+        <polyline points="110.00,259.13 313.75,226.31 517.50,118.87 721.25,63.33 925.00,60.86" class="series reference"/>
+        <polyline points="110.00,259.14 313.75,226.30 517.50,118.92 721.25,63.76 925.00,61.57" class="series candidate"/>
+        <text x="110" y="315">step 1</text>
+        <text x="925" y="315" text-anchor="end">step 5</text>
+      </svg>
+    </section>
+
+    <section class="chart-card">
+      <h3>Loss absolute-error distribution</h3>
+      <svg viewBox="0 0 900 260" role="img" aria-label="Loss absolute-error distribution">
+        <line x1="65" y1="215" x2="880" y2="215" class="axis"/>
+        <g class="bars"><rect x="66.00" y="35.00" width="99.88" height="180.00"/><rect x="167.88" y="125.00" width="99.88" height="90.00"/><rect x="269.75" y="215.00" width="99.88" height="0.00"/><rect x="371.62" y="215.00" width="99.88" height="0.00"/><rect x="473.50" y="215.00" width="99.88" height="0.00"/><rect x="575.38" y="215.00" width="99.88" height="0.00"/><rect x="677.25" y="125.00" width="99.88" height="90.00"/><rect x="779.12" y="125.00" width="99.88" height="90.00"/></g>
+        <text x="65" y="245">0</text>
+        <text x="880" y="245" text-anchor="end">0.0016374588</text>
+        <text x="450.0" y="257" text-anchor="middle">absolute error</text>
+      </svg>
+    </section>
+
+    <section class="chart-card">
+      <h3>Global grad norm absolute-error distribution</h3>
+      <svg viewBox="0 0 900 260" role="img" aria-label="Global grad norm absolute-error distribution">
+        <line x1="65" y1="215" x2="880" y2="215" class="axis"/>
+        <g class="bars"><rect x="66.00" y="35.00" width="99.88" height="180.00"/><rect x="167.88" y="215.00" width="99.88" height="0.00"/><rect x="269.75" y="215.00" width="99.88" height="0.00"/><rect x="371.62" y="215.00" width="99.88" height="0.00"/><rect x="473.50" y="155.00" width="99.88" height="60.00"/><rect x="575.38" y="215.00" width="99.88" height="0.00"/><rect x="677.25" y="215.00" width="99.88" height="0.00"/><rect x="779.12" y="155.00" width="99.88" height="60.00"/></g>
+        <text x="65" y="245">0</text>
+        <text x="880" y="245" text-anchor="end">0.00411343575</text>
+        <text x="450.0" y="257" text-anchor="middle">absolute error</text>
+      </svg>
+    </section>
+              <p>Dropped outlier steps: none</p>
+            </section>
+            <section id="candidate-2">
+              <h2>Candidate repeat 2</h2>
+              <h3>Formal decision criteria</h3>
+
+    <table><thead><tr><th>Result</th><th>Criterion</th><th>Observed</th>
+    <th>Required</th><th>Meaning</th></tr></thead><tbody><tr><td><span class="status pass">PASS</span></td><td>Observation count</td><td>5 steps</td><td>&gt;= 5 steps</td><td>The observation window includes warmup and retained steps.</td></tr><tr><td><span class="status pass">PASS</span></td><td>First loss</td><td>mean absolute=2.38418579e-05; mean absolute relative=0.000296%</td><td>mean absolute &lt;= 0.005 OR mean absolute relative &lt;= 0.500%</td><td>The first logged training step is checked before warmup removal.</td></tr><tr><td><span class="status pass">PASS</span></td><td>All retained loss steps</td><td>mean absolute=0.000689601898; mean absolute relative=0.012457%</td><td>mean absolute &lt;= 0.01 OR mean absolute relative &lt;= 1.000%</td><td>The configured warmup and outlier policy is applied first.</td></tr><tr><td><span class="status pass">PASS</span></td><td>Global grad norm</td><td>mean relative=0.055527%</td><td>[-5.000%, 5.000%]</td><td>Global grad norm may fluctuate, so signed mean relative error is used.</td></tr></tbody></table>
+              <h3>Error metrics</h3>
+    <table><thead><tr><th>Series</th><th>Steps</th><th>Normal</th>
+    <th>Mean absolute</th><th>Mean relative</th><th>Mean absolute relative</th>
+    <th>Max absolute</th><th>Absolute-error distribution</th></tr></thead>
+    <tbody><tr><td>loss</td><td>5</td><td>0.0005402565</td><td>0.000689601898</td><td>0.010201%</td><td>0.012457%</td><td>0.0016374588</td><td>P50=0.000373363495, P90=0.00149650574, P99=0.00162336349, P99.9=0.00163604927, P99.99=0.00163731785</td></tr><tr><td>global grad norm</td><td>5</td><td>0.00137498379</td><td>0.00139524937</td><td>0.055527%</td><td>0.056852%</td><td>0.00411343575</td><td>P50=0.000309467316, P90=0.00346074104, P99=0.00404816628, P99.9=0.0041069088, P99.99=0.00411278305</td></tr></tbody></table>
+
+    <h3>Historical customer standards (reference only)</h3>
+    <p class="note">These examples provide context and do not affect the formal
+    migration PASS/FAIL result above.</p>
+    <table><thead><tr><th>Source</th><th>Reference standard</th><th>Observed</th>
+    </tr></thead><tbody><tr><td>Customer 1</td><td>Random init: single-card mean absolute &lt; 0.01; 8-card &lt; 0.03; multi-node &lt; 0.05. Converged MoE: every-step max absolute &lt; 0.01.</td><td>mean absolute=0.000689601898; max absolute=0.0016374588</td></tr><tr><td>Customer 2</td><td>1000-step loss mean relative error &lt; 0.2%.</td><td>mean relative=0.010201%</td></tr><tr><td>Customer 3</td><td>After warmup: cumulative mean absolute &lt; 0.005; P99 &lt;= 0.01, P99.9 &lt;= 0.01, P99.99 &lt;= 0.05.</td><td>mean absolute=0.000689601898; P99=0.00162336349; P99.9=0.00163604927; P99.99=0.00163731785</td></tr><tr><td>Customer 4</td><td>5000 steps or 12 hours: mean absolute &lt;= 0.01-0.02 OR mean relative &lt;= 1%; warmup and up to 0.5% outliers may be excluded.</td><td>mean absolute=0.000689601898; mean relative=0.010201%</td></tr></tbody></table>
+
+    <section class="chart-card">
+      <h3>Training loss</h3>
+      <div class="legend"><span class="reference-line"></span>hsdp2x4-eager-reference-eager
+      <span class="candidate-line"></span>hsdp2x4-inductor-candidate-inductor repeat 2</div>
+      <svg viewBox="0 0 960 330" role="img" aria-label="Training loss">
+
+        <line x1="110" y1="45.00" x2="925" y2="45.00" class="grid"/><text x="102" y="49.00" text-anchor="end">8.31225128</text><line x1="110" y1="102.50" x2="925" y2="102.50" class="grid"/><text x="102" y="106.50" text-anchor="end">7.42479322</text><line x1="110" y1="160.00" x2="925" y2="160.00" class="grid"/><text x="102" y="164.00" text-anchor="end">6.53733516</text><line x1="110" y1="217.50" x2="925" y2="217.50" class="grid"/><text x="102" y="221.50" text-anchor="end">5.6498771</text><line x1="110" y1="275.00" x2="925" y2="275.00" class="grid"/><text x="102" y="279.00" text-anchor="end">4.76241903</text>
+        <line x1="110" y1="275" x2="925" y2="275" class="axis"/>
+        <polyline points="110.00,60.86 313.75,85.83 517.50,154.72 721.25,217.99 925.00,259.05" class="series reference"/>
+        <polyline points="110.00,60.86 313.75,85.84 517.50,154.70 721.25,218.10 925.00,259.14" class="series candidate"/>
+        <text x="110" y="315">step 1</text>
+        <text x="925" y="315" text-anchor="end">step 5</text>
+      </svg>
+    </section>
+
+    <section class="chart-card">
+      <h3>Global grad norm</h3>
+      <div class="legend"><span class="reference-line"></span>hsdp2x4-eager-reference-eager
+      <span class="candidate-line"></span>hsdp2x4-inductor-candidate-inductor repeat 2</div>
+      <svg viewBox="0 0 960 330" role="img" aria-label="Global grad norm">
+
+        <line x1="110" y1="45.00" x2="925" y2="45.00" class="grid"/><text x="102" y="49.00" text-anchor="end">2.58628708</text><line x1="110" y1="102.50" x2="925" y2="102.50" class="grid"/><text x="102" y="106.50" text-anchor="end">2.25139537</text><line x1="110" y1="160.00" x2="925" y2="160.00" class="grid"/><text x="102" y="164.00" text-anchor="end">1.91650367</text><line x1="110" y1="217.50" x2="925" y2="217.50" class="grid"/><text x="102" y="221.50" text-anchor="end">1.58161196</text><line x1="110" y1="275.00" x2="925" y2="275.00" class="grid"/><text x="102" y="279.00" text-anchor="end">1.24672026</text>
+        <line x1="110" y1="275" x2="925" y2="275" class="axis"/>
+        <polyline points="110.00,259.13 313.75,226.31 517.50,118.87 721.25,63.33 925.00,60.86" class="series reference"/>
+        <polyline points="110.00,259.14 313.75,226.30 517.50,118.92 721.25,63.76 925.00,61.57" class="series candidate"/>
+        <text x="110" y="315">step 1</text>
+        <text x="925" y="315" text-anchor="end">step 5</text>
+      </svg>
+    </section>
+
+    <section class="chart-card">
+      <h3>Loss absolute-error distribution</h3>
+      <svg viewBox="0 0 900 260" role="img" aria-label="Loss absolute-error distribution">
+        <line x1="65" y1="215" x2="880" y2="215" class="axis"/>
+        <g class="bars"><rect x="66.00" y="35.00" width="99.88" height="180.00"/><rect x="167.88" y="125.00" width="99.88" height="90.00"/><rect x="269.75" y="215.00" width="99.88" height="0.00"/><rect x="371.62" y="215.00" width="99.88" height="0.00"/><rect x="473.50" y="215.00" width="99.88" height="0.00"/><rect x="575.38" y="215.00" width="99.88" height="0.00"/><rect x="677.25" y="125.00" width="99.88" height="90.00"/><rect x="779.12" y="125.00" width="99.88" height="90.00"/></g>
+        <text x="65" y="245">0</text>
+        <text x="880" y="245" text-anchor="end">0.0016374588</text>
+        <text x="450.0" y="257" text-anchor="middle">absolute error</text>
+      </svg>
+    </section>
+
+    <section class="chart-card">
+      <h3>Global grad norm absolute-error distribution</h3>
+      <svg viewBox="0 0 900 260" role="img" aria-label="Global grad norm absolute-error distribution">
+        <line x1="65" y1="215" x2="880" y2="215" class="axis"/>
+        <g class="bars"><rect x="66.00" y="35.00" width="99.88" height="180.00"/><rect x="167.88" y="215.00" width="99.88" height="0.00"/><rect x="269.75" y="215.00" width="99.88" height="0.00"/><rect x="371.62" y="215.00" width="99.88" height="0.00"/><rect x="473.50" y="155.00" width="99.88" height="60.00"/><rect x="575.38" y="215.00" width="99.88" height="0.00"/><rect x="677.25" y="215.00" width="99.88" height="0.00"/><rect x="779.12" y="155.00" width="99.88" height="60.00"/></g>
+        <text x="65" y="245">0</text>
+        <text x="880" y="245" text-anchor="end">0.00411343575</text>
+        <text x="450.0" y="257" text-anchor="middle">absolute error</text>
+      </svg>
+    </section>
+              <p>Dropped outlier steps: none</p>
+            </section></main></body></html>

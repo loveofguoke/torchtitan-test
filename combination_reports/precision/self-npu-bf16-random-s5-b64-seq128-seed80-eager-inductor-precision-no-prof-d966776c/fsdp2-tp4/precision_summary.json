@@ -1,0 +1,174 @@
+{
+  "candidate_reproducible_grad_norm": true,
+  "candidate_reproducible_loss": true,
+  "candidate_runs": [
+    {
+      "criteria": [
+        {
+          "explanation": "The observation window includes warmup and retained steps.",
+          "name": "Observation count",
+          "observed": "5 steps",
+          "passed": true,
+          "required": ">= 5 steps"
+        },
+        {
+          "explanation": "The first logged training step is checked before warmup removal.",
+          "name": "First loss",
+          "observed": "mean absolute=4.19616699e-05; mean absolute relative=0.000520%",
+          "passed": true,
+          "required": "mean absolute <= 0.005 OR mean absolute relative <= 0.500%"
+        },
+        {
+          "explanation": "The configured warmup and outlier policy is applied first.",
+          "name": "All retained loss steps",
+          "observed": "mean absolute=0.000643730164; mean absolute relative=0.012401%",
+          "passed": true,
+          "required": "mean absolute <= 0.01 OR mean absolute relative <= 1.000%"
+        },
+        {
+          "explanation": "Global grad norm may fluctuate, so signed mean relative error is used.",
+          "name": "Global grad norm",
+          "observed": "mean relative=0.764728%",
+          "passed": true,
+          "required": "[-5.000%, 5.000%]"
+        }
+      ],
+      "grad_norm_metrics": {
+        "absolute": 0.018689823150634766,
+        "count": 5,
+        "max_absolute": 0.04533243179321289,
+        "normal": 0.01864767074584961,
+        "quantiles": {
+          "0.5": 0.018346786499023438,
+          "0.9": 0.038806056976318365,
+          "0.99": 0.044679794311523434,
+          "0.999": 0.045267168045043944,
+          "0.9999": 0.04532590541839599
+        },
+        "relative_absolute": 0.007678762637226491,
+        "relative_normal": 0.007647281245435585
+      },
+      "loss_metrics": {
+        "absolute": 0.0006437301635742188,
+        "count": 5,
+        "max_absolute": 0.0028090476989746094,
+        "normal": 0.000479888916015625,
+        "quantiles": {
+          "0.5": 6.151199340820312e-05,
+          "0.9": 0.0018071174621582032,
+          "0.99": 0.002708854675292969,
+          "0.999": 0.002799028396606445,
+          "0.9999": 0.002808045768737793
+        },
+        "relative_absolute": 0.0001240119652726541,
+        "relative_normal": 0.00010020838041148012
+      },
+      "passed": true,
+      "repeat": 1
+    },
+    {
+      "criteria": [
+        {
+          "explanation": "The observation window includes warmup and retained steps.",
+          "name": "Observation count",
+          "observed": "5 steps",
+          "passed": true,
+          "required": ">= 5 steps"
+        },
+        {
+          "explanation": "The first logged training step is checked before warmup removal.",
+          "name": "First loss",
+          "observed": "mean absolute=4.19616699e-05; mean absolute relative=0.000520%",
+          "passed": true,
+          "required": "mean absolute <= 0.005 OR mean absolute relative <= 0.500%"
+        },
+        {
+          "explanation": "The configured warmup and outlier policy is applied first.",
+          "name": "All retained loss steps",
+          "observed": "mean absolute=0.000643730164; mean absolute relative=0.012401%",
+          "passed": true,
+          "required": "mean absolute <= 0.01 OR mean absolute relative <= 1.000%"
+        },
+        {
+          "explanation": "Global grad norm may fluctuate, so signed mean relative error is used.",
+          "name": "Global grad norm",
+          "observed": "mean relative=0.764728%",
+          "passed": true,
+          "required": "[-5.000%, 5.000%]"
+        }
+      ],
+      "grad_norm_metrics": {
+        "absolute": 0.018689823150634766,
+        "count": 5,
+        "max_absolute": 0.04533243179321289,
+        "normal": 0.01864767074584961,
+        "quantiles": {
+          "0.5": 0.018346786499023438,
+          "0.9": 0.038806056976318365,
+          "0.99": 0.044679794311523434,
+          "0.999": 0.045267168045043944,
+          "0.9999": 0.04532590541839599
+        },
+        "relative_absolute": 0.007678762637226491,
+        "relative_normal": 0.007647281245435585
+      },
+      "loss_metrics": {
+        "absolute": 0.0006437301635742188,
+        "count": 5,
+        "max_absolute": 0.0028090476989746094,
+        "normal": 0.000479888916015625,
+        "quantiles": {
+          "0.5": 6.151199340820312e-05,
+          "0.9": 0.0018071174621582032,
+          "0.99": 0.002708854675292969,
+          "0.999": 0.002799028396606445,
+          "0.9999": 0.002808045768737793
+        },
+        "relative_absolute": 0.0001240119652726541,
+        "relative_normal": 0.00010020838041148012
+      },
+      "passed": true,
+      "repeat": 2
+    }
+  ],
+  "experiment_kind": "self_consistency",
+  "passed": true,
+  "reference_reproducible_grad_norm": true,
+  "reference_reproducible_loss": true,
+  "repeat_diagnostics": [
+    {
+      "decides_formal_result": false,
+      "explanation": "Repeated reference runs verify deterministic reproducibility.",
+      "name": "Reference repeat loss zero error",
+      "observed": "identical",
+      "passed": true,
+      "required": "bitwise-identical float series"
+    },
+    {
+      "decides_formal_result": false,
+      "explanation": "Repeated reference runs verify deterministic reproducibility.",
+      "name": "Reference repeat global grad norm zero error",
+      "observed": "identical",
+      "passed": true,
+      "required": "bitwise-identical float series"
+    },
+    {
+      "decides_formal_result": false,
+      "explanation": "Repeated candidate runs verify deterministic reproducibility.",
+      "name": "Candidate repeat loss zero error",
+      "observed": "identical",
+      "passed": true,
+      "required": "bitwise-identical float series"
+    },
+    {
+      "decides_formal_result": false,
+      "explanation": "Repeated candidate runs verify deterministic reproducibility.",
+      "name": "Candidate repeat global grad norm zero error",
+      "observed": "identical",
+      "passed": true,
+      "required": "bitwise-identical float series"
+    }
+  ],
+  "scenario_name": "pr46489-distributed-topology-eager-vs-inductor-self-consistency-npu-fsdp2-tp4-vs-npu-fsdp2-tp4-mixed-bfloat16-random-seed-steps5-global-batch64-seq128-seed80",
+  "strict_reproducibility_required": false
+}
