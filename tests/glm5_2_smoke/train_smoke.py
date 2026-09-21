@@ -209,6 +209,7 @@ def _contract(
     config: str,
     graph: GraphFeatureConfig = GraphFeatureConfig(),
     compiler_cache: str = "fresh",
+    gradient_diagnostics: bool = False,
     nonfinite_diagnostics: bool = False,
     diagnostic_compiler_cache: str = "per-rank",
     diagnostic_flex_dsdp: bool = False,
@@ -258,6 +259,11 @@ def _contract(
         )
         contract.setdefault("npu_compiler", {})["cache_policy"] = compiler_cache
         contract.setdefault("npu_compiler", {})["cache_scope"] = "run-shared"
+    if gradient_diagnostics:
+        contract["gradient_diagnostics"] = {
+            "schema_version": 1,
+            "max_nonfinite_parameters": 32,
+        }
     if nonfinite_diagnostics:
         contract["nonfinite_diagnostics"] = {
             "rank": diagnostic_rank,
@@ -526,6 +532,7 @@ def _run_topology(
     config: str,
     graph: GraphFeatureConfig = GraphFeatureConfig(),
     compiler_cache: str = "fresh",
+    gradient_diagnostics: bool = False,
     nonfinite_diagnostics: bool = False,
     diagnostic_compiler_cache: str = "per-rank",
     diagnostic_flex_dsdp: bool = False,
@@ -552,6 +559,7 @@ def _run_topology(
         config=config,
         graph=graph,
         compiler_cache=compiler_cache,
+        gradient_diagnostics=gradient_diagnostics,
         nonfinite_diagnostics=nonfinite_diagnostics,
         diagnostic_compiler_cache=diagnostic_compiler_cache,
         diagnostic_flex_dsdp=diagnostic_flex_dsdp,
@@ -626,6 +634,15 @@ def _run_topology(
             )
         compiler_cache_root.mkdir(parents=True, exist_ok=True)
         environment["TORCHTITAN_COMPILER_CACHE_ROOT"] = str(compiler_cache_root)
+    if gradient_diagnostics:
+        environment.update(
+            {
+                "TORCHTITAN_DIAGNOSE_GRADIENTS": "1",
+                "TORCHTITAN_GRADIENT_DIAGNOSTIC_DIR": str(
+                    run_directory / "gradient_diagnostics"
+                ),
+            }
+        )
     if nonfinite_diagnostics:
         environment.update(
             {
@@ -839,6 +856,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--gradient-diagnostics",
+        action="store_true",
+        help=(
+            "record compact per-rank non-finite parameter-gradient summaries; "
+            "does not enable FlexAttention capture or device replay"
+        ),
+    )
+    parser.add_argument(
         "--nonfinite-diagnostics",
         action="store_true",
         help=(
@@ -896,6 +921,8 @@ def main() -> int:
     device = _device(args.device)
     if args.nonfinite_diagnostics and device != "npu":
         parser.error("--nonfinite-diagnostics is available only for NPU runs")
+    if args.gradient_diagnostics and device != "npu":
+        parser.error("--gradient-diagnostics is available only for NPU runs")
     if args.diagnostic_flex_dsdp and not args.nonfinite_diagnostics:
         parser.error("--diagnostic-flex-dsdp requires --nonfinite-diagnostics")
     if (
@@ -958,6 +985,8 @@ def main() -> int:
         suite_name += f"-flex-{graph.npu_flexattention_mask_mode}"
     if device == "npu" and args.compiler_cache == "reuse":
         suite_name += "-cache-reuse"
+    if args.gradient_diagnostics:
+        suite_name += "-gradient-diag"
     if args.nonfinite_diagnostics:
         suite_name += f"-nonfinite-r{args.diagnostic_rank}"
         if args.diagnostic_compiler_cache == "shared":
@@ -999,6 +1028,7 @@ def main() -> int:
                 config=args.config,
                 graph=graph,
                 compiler_cache=args.compiler_cache,
+                gradient_diagnostics=args.gradient_diagnostics,
                 nonfinite_diagnostics=args.nonfinite_diagnostics,
                 diagnostic_compiler_cache=args.diagnostic_compiler_cache,
                 diagnostic_flex_dsdp=args.diagnostic_flex_dsdp,

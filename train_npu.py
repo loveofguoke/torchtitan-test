@@ -49,6 +49,101 @@ _configure_nonfinite_compiler_diagnostics()
 import torchtitanturbo  # noqa: F401
 
 
+def _install_gradient_diagnostics() -> None:
+    """Write compact parameter-gradient evidence without Flex replay."""
+    if os.environ.get("TORCHTITAN_DIAGNOSE_GRADIENTS") != "1":
+        return
+
+    from pathlib import Path
+
+    import torch
+    import torch.distributed as dist
+
+    from torchtitan.distributed import utils as dist_utils
+    from torchtitan.trainer import Trainer
+
+    original_clip_grad_norm = dist_utils.clip_grad_norm_
+    original_trainer_init = Trainer.__init__
+    parameter_names: dict[int, str] = {}
+    step_index = 0
+
+    def trainer_init_with_gradient_diagnostics(self, *args, **kwargs):
+        original_trainer_init(self, *args, **kwargs)
+        for part_index, model_part in enumerate(self.model_parts):
+            for name, parameter in model_part.named_parameters():
+                parameter_names[id(parameter)] = f"model_parts.{part_index}.{name}"
+
+    Trainer.__init__ = trainer_init_with_gradient_diagnostics
+
+    def clip_grad_norm_with_gradient_diagnostics(parameters, *args, **kwargs):
+        nonlocal step_index
+        parameters = list(parameters)
+        grad_norm = original_clip_grad_norm(parameters, *args, **kwargs)
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        nonfinite_parameters = []
+        parameters_with_grad = 0
+        for index, parameter in enumerate(parameters):
+            gradient = parameter.grad
+            if gradient is None:
+                continue
+            parameters_with_grad += 1
+            local_gradient = (
+                gradient.to_local() if hasattr(gradient, "to_local") else gradient
+            )
+            finite = torch.isfinite(local_gradient)
+            if bool(finite.all().item()):
+                continue
+            nonfinite_parameters.append(
+                {
+                    "parameter_index": index,
+                    "fqn": parameter_names.get(id(parameter), "unknown"),
+                    "parameter_shape": list(parameter.shape),
+                    "gradient_shape": list(local_gradient.shape),
+                    "dtype": str(local_gradient.dtype),
+                    "numel": local_gradient.numel(),
+                    "finite_count": int(finite.sum().item()),
+                    "nan_count": int(torch.isnan(local_gradient).sum().item()),
+                    "posinf_count": int(torch.isposinf(local_gradient).sum().item()),
+                    "neginf_count": int(torch.isneginf(local_gradient).sum().item()),
+                }
+            )
+
+        payload = {
+            "schema_version": 1,
+            "rank": rank,
+            "step_index": step_index,
+            "grad_norm": float(grad_norm.detach().float().cpu().item()),
+            "grad_norm_finite": bool(torch.isfinite(grad_norm).all().item()),
+            "parameters_with_grad": parameters_with_grad,
+            "nonfinite_parameter_count": len(nonfinite_parameters),
+            "nonfinite_parameters": nonfinite_parameters[:32],
+            "nonfinite_parameters_truncated": len(nonfinite_parameters) > 32,
+        }
+        output_root = Path(os.environ["TORCHTITAN_GRADIENT_DIAGNOSTIC_DIR"])
+        output_root.mkdir(parents=True, exist_ok=True)
+        output_path = output_root / f"rank{rank}-step{step_index}.json"
+        output_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        print(
+            f"[gradient-diagnostic] rank={rank} step={step_index} "
+            f"grad_norm_finite={payload['grad_norm_finite']} "
+            f"nonfinite_parameter_count={len(nonfinite_parameters)} "
+            f"first_nonfinite_gradient="
+            f"{nonfinite_parameters[0] if nonfinite_parameters else None} "
+            f"path={output_path}",
+            flush=True,
+        )
+        step_index += 1
+        return grad_norm
+
+    dist_utils.clip_grad_norm_ = clip_grad_norm_with_gradient_diagnostics
+
+
+_install_gradient_diagnostics()
+
+
 def _install_nonfinite_gradient_diagnostics() -> None:
     """Log the first non-finite gradient before TorchTitan aborts a step."""
     if os.environ.get("TORCHTITAN_DIAGNOSE_NONFINITE") != "1":

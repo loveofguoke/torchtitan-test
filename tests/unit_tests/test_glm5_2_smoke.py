@@ -551,6 +551,46 @@ def test_npu_nonfinite_diagnostics_are_recorded_and_routed_to_run(
     }
 
 
+def test_npu_gradient_diagnostics_are_recorded_without_flex_replay(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    environments: list[dict[str, str]] = []
+
+    def run(_command, **kwargs):
+        environments.append(kwargs["env"])
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("tests.glm5_2_smoke.train_smoke.subprocess.run", run)
+    run_directory = _run_topology(
+        root=tmp_path,
+        suite_root=tmp_path / "smoke_runs",
+        device="npu",
+        visible_devices="0,1",
+        topology=ParallelTopology("ddp2", 2, data_parallel_replicate_degree=2),
+        steps=1,
+        local_batch_size=1,
+        global_batch_size=2,
+        sequence_length=8,
+        seed=61,
+        module="glm5",
+        config="glm5_debugmodel",
+        gradient_diagnostics=True,
+        force=False,
+    )
+
+    environment = environments[0]
+    assert environment["TORCHTITAN_DIAGNOSE_GRADIENTS"] == "1"
+    assert environment["TORCHTITAN_GRADIENT_DIAGNOSTIC_DIR"] == str(
+        run_directory / "gradient_diagnostics"
+    )
+    assert "TORCHTITAN_DIAGNOSE_NONFINITE" not in environment
+    manifest = json.loads((run_directory / "manifest.json").read_text())
+    assert manifest["contract"]["gradient_diagnostics"] == {
+        "schema_version": 1,
+        "max_nonfinite_parameters": 32,
+    }
+
+
 def test_gpu_smoke_reserves_compiled_graph_interface(tmp_path) -> None:
     with pytest.raises(NotImplementedError, match="only NPU endpoints"):
         _run_topology(
