@@ -167,12 +167,63 @@ def process_is_running(pid: int) -> bool:
     return True
 
 
-def assert_run_not_active(
+def _linux_process_start_ticks(pid: int) -> str | None:
+    """Return Linux /proc start ticks so reused PIDs are not mistaken as owners."""
+
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        fields = stat.rsplit(")", 1)[1].split()
+        return fields[19]
+    except (IndexError, ValueError):
+        return None
+
+
+def _linux_boot_id() -> str | None:
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text(
+            encoding="utf-8"
+        ).strip()
+    except OSError:
+        return None
+
+
+def _owner_is_running(payload: dict[str, Any]) -> bool:
+    try:
+        pid = int(payload.get("pid", -1))
+    except (TypeError, ValueError):
+        return False
+    if not process_is_running(pid):
+        return False
+
+    expected_boot_id = payload.get("boot_id")
+    actual_boot_id = _linux_boot_id()
+    if (
+        expected_boot_id is not None
+        and actual_boot_id is not None
+        and expected_boot_id != actual_boot_id
+    ):
+        return False
+
+    expected_start_ticks = payload.get("process_start_ticks")
+    actual_start_ticks = _linux_process_start_ticks(pid)
+    if (
+        expected_start_ticks is not None
+        and actual_start_ticks is not None
+        and str(expected_start_ticks) != actual_start_ticks
+    ):
+        return False
+    return True
+
+
+def active_run_pid(
     path: Path,
     *,
     state_name: str | None = None,
-) -> None:
-    """Refuse to replace a run whose recorded orchestrator is still alive."""
+) -> int | None:
+    """Return the live owner of a run, validating its process identity."""
 
     state_names = (
         (state_name,)
@@ -185,33 +236,37 @@ def assert_run_not_active(
         if lock_path.is_file():
             try:
                 lock = json.loads(lock_path.read_text(encoding="utf-8"))
-                lock_pid = int(lock.get("pid", -1))
             except (OSError, TypeError, ValueError) as error:
                 raise RuntimeError(
                     f"run lock is unreadable and cannot be replaced safely: "
                     f"{lock_path}"
                 ) from error
-            if process_is_running(lock_pid):
-                raise RuntimeError(
-                    f"run is still active with orchestrator PID {lock_pid}: "
-                    f"{path}; stop that process before retrying or forcing "
-                    "the experiment"
-                )
+            if _owner_is_running(lock):
+                return int(lock["pid"])
         if not state_path.is_file():
             continue
         try:
             state = json.loads(state_path.read_text(encoding="utf-8"))
-            pid = int(state.get("pid", -1))
         except (OSError, TypeError, ValueError):
             continue
-        if (
-            state.get("status") == "running"
-            and process_is_running(pid)
-        ):
-            raise RuntimeError(
-                f"run is still active with orchestrator PID {pid}: {path}; "
-                "stop that process before retrying or forcing the experiment"
-            )
+        if state.get("status") == "running" and _owner_is_running(state):
+            return int(state["pid"])
+    return None
+
+
+def assert_run_not_active(
+    path: Path,
+    *,
+    state_name: str | None = None,
+) -> None:
+    """Refuse to replace a run whose recorded orchestrator is still alive."""
+
+    pid = active_run_pid(path, state_name=state_name)
+    if pid is not None:
+        raise RuntimeError(
+            f"run is still active with orchestrator PID {pid}: {path}; "
+            "stop that process before retrying or forcing the experiment"
+        )
 
 
 @dataclass
@@ -243,6 +298,8 @@ class RunAttempt:
                 "schema_version": 1,
                 "attempt_id": self.attempt_id,
                 "pid": self.pid,
+                "boot_id": _linux_boot_id(),
+                "process_start_ticks": _linux_process_start_ticks(self.pid),
             },
             sort_keys=True,
         ).encode("utf-8") + b"\n"
@@ -343,6 +400,8 @@ class RunAttempt:
             "status": status,
             "attempt_id": self.attempt_id,
             "pid": self.pid,
+            "boot_id": _linux_boot_id(),
+            "process_start_ticks": _linux_process_start_ticks(self.pid),
             "context": self.context,
             **values,
         }

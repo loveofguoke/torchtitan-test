@@ -60,6 +60,7 @@ from tests.glm5_2_mindstudio.workflow import (
     _validate_compile_outputs,
     _validate_monitor_execution,
     _validate_monitor_outputs,
+    _wait_for_active_capture,
     _write_launch_contract,
     capture_official,
     compare_official,
@@ -988,6 +989,28 @@ class TestMindStudioReport(unittest.TestCase):
 
 
 class TestMindStudioLifecycle(unittest.TestCase):
+    def test_duplicate_capture_waits_for_existing_owner(self) -> None:
+        run = Path("run")
+        runtime_log = run / "runtime.log"
+        with (
+            patch(
+                "tests.glm5_2_mindstudio.workflow.active_run_pid",
+                side_effect=(321, 321, None),
+            ),
+            patch("tests.glm5_2_mindstudio.workflow.time.sleep") as sleep,
+            patch(
+                "tests.glm5_2_mindstudio.workflow.print_runtime_log"
+            ) as print_log,
+        ):
+            waited = _wait_for_active_capture(
+                run,
+                runtime_log=runtime_log,
+            )
+
+        self.assertTrue(waited)
+        sleep.assert_called_once_with(1)
+        print_log.assert_called_once_with(runtime_log)
+
     def test_portable_compatibility_ignores_install_paths_not_package_code(self):
         from tests.glm5_2_mindstudio.workflow import _portable_capture_compatibility
         a = {"msprobe_executable_sha256": "a", "installed_msprobe": {

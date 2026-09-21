@@ -167,6 +167,28 @@ def test_run_attempt_lock_is_exclusive_even_inside_one_process(
     second.update("completed")
 
 
+def test_run_owner_identity_rejects_reused_pid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.glm5_2_common import cli
+
+    monkeypatch.setattr(cli, "process_is_running", lambda pid: True)
+    monkeypatch.setattr(cli, "_linux_boot_id", lambda: "same-boot")
+    monkeypatch.setattr(
+        cli,
+        "_linux_process_start_ticks",
+        lambda pid: "new-process",
+    )
+
+    assert not cli._owner_is_running(
+        {
+            "pid": 12345,
+            "boot_id": "same-boot",
+            "process_start_ticks": "old-process",
+        }
+    )
+
+
 def test_force_reset_recovers_a_dead_owner_lock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

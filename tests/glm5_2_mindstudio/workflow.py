@@ -14,6 +14,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, Literal, Sequence
@@ -21,6 +22,7 @@ from typing import Any, Literal, Sequence
 from tests.glm5_2_common.cli import (
     LoggedProcessError,
     RunAttempt,
+    active_run_pid,
     archive_previous_output,
     assert_run_not_active,
     display_repository_path,
@@ -1077,6 +1079,27 @@ def _assert_tree_not_active(path: Path) -> None:
         assert_run_not_active(state_path.parent, state_name=state_path.name)
 
 
+def _wait_for_active_capture(
+    run_directory: Path,
+    *,
+    runtime_log: Path,
+) -> bool:
+    """Wait for an identical concurrent capture instead of racing its output."""
+
+    pid = active_run_pid(run_directory)
+    if pid is None:
+        return False
+    print(
+        f"Official capture is already running with orchestrator PID {pid}; "
+        "waiting for it to finish.",
+        flush=True,
+    )
+    print_runtime_log(runtime_log)
+    while active_run_pid(run_directory) is not None:
+        time.sleep(1)
+    return True
+
+
 def reset_selected_outputs(
     root: Path,
     config: MindStudioExperimentConfig,
@@ -1237,6 +1260,12 @@ def capture_official(
     run_directory, artifact_directory, report_directory = _paths(
         root, config, topology, role, repeat
     )
+    runtime_log = run_directory / "runtime.log"
+    if not dry_run:
+        _wait_for_active_capture(
+            run_directory,
+            runtime_log=runtime_log,
+        )
     if not dry_run and _capture_is_complete(
         artifact_directory,
         experiment_digest=digest,
@@ -1258,7 +1287,6 @@ def capture_official(
         )
     official_output = artifact_directory / "official"
     input_contract = run_directory / "input_contract"
-    runtime_log = run_directory / "runtime.log"
     environment = os.environ.copy()
     environment.update(endpoint.environment)
     environment_overrides = {
