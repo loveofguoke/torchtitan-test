@@ -55,6 +55,22 @@ def test_repository_output_starts_at_checkout_name() -> None:
     )
 
 
+def test_repository_output_recognizes_alternate_mount_root(tmp_path: Path) -> None:
+    alternate = (
+        tmp_path
+        / "home"
+        / "owner"
+        / "torchtitan-test"
+        / "mindstudio_runs"
+        / "accuracy"
+        / "runtime.log"
+    )
+
+    assert display_repository_path(alternate) == (
+        "torchtitan-test/mindstudio_runs/accuracy/runtime.log"
+    )
+
+
 def test_experiment_overview_is_human_and_machine_readable(tmp_path: Path) -> None:
     write_experiment_overview(
         tmp_path,

@@ -34,7 +34,17 @@ def display_repository_path(path: Path) -> str:
     try:
         relative = resolved.relative_to(REPOSITORY_ROOT)
     except ValueError:
-        return str(resolved)
+        # Containers can expose one checkout through multiple bind-mount roots
+        # (for example, /workspace/... and /home/...). Path.resolve() cannot
+        # identify that aliasing, so recover the repository boundary by name.
+        matching_indices = [
+            index
+            for index, part in enumerate(resolved.parts)
+            if part.casefold() == REPOSITORY_ROOT.name.casefold()
+        ]
+        if not matching_indices:
+            return str(resolved)
+        relative = Path(*resolved.parts[matching_indices[-1] + 1 :])
     return (Path(REPOSITORY_ROOT.name) / relative).as_posix()
 
 
