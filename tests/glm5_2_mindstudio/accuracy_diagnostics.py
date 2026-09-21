@@ -21,15 +21,12 @@ from tests.glm5_2_common.cli import (
     assert_run_not_active,
     print_output_path,
 )
-from tests.glm5_2_common.naming import config_digest, slug
+from tests.glm5_2_common.naming import config_digest
 from tests.glm5_2_common.topology import select_topologies, standard_topologies
 from tests.glm5_2_mindstudio.artifacts import (
     artifact_is_complete,
     sha256_file,
     write_json,
-)
-from tests.glm5_2_mindstudio.configuration_check_benchmark import (
-    CONFIG as CONFIG_CHECK_CONFIG,
 )
 from tests.glm5_2_mindstudio.migration_benchmark import (
     CONFIG as MIGRATION_CONFIG,
@@ -118,37 +115,24 @@ def _python_command(script: str, *arguments: str) -> str:
 
 
 def _experiment_storage_name(topologies: Sequence[str]) -> str:
-    training = MIGRATION_CONFIG.training
-    topology_name = "-".join(topologies)
-    contract = {
-        "model": "glm5-2",
-        "workflow": "migration",
-        "reference": MIGRATION_CONFIG.reference.device_type,
-        "candidate": MIGRATION_CONFIG.candidate.device_type,
-        "topologies": list(topologies),
-        "training": {
-            key: value
-            for key, value in asdict(training).items()
-            if key != "steps"
-        },
-    }
-    prefix = slug(
-        f"glm5-2-migration-{MIGRATION_CONFIG.reference.device_type}-"
-        f"{MIGRATION_CONFIG.candidate.device_type}-{topology_name}-"
-        f"{MIGRATION_CONFIG.precision_name}-random-"
-        f"b{training.global_batch_size}-seq{training.sequence_length}-"
-        f"seed{training.seed}"
-    )
-    return f"{prefix}-{config_digest(contract)}"
+    # Topology and diagnosis choices are child scopes of the fixed migration
+    # contract. They must not replace the canonical experiment identity.
+    del topologies
+    return MIGRATION_CONFIG.storage_name
 
 
 def _case_root(repository_root: Path, case_id: str) -> Path:
     accuracy_root = repository_root / MIGRATION_CONFIG.artifact_root
-    direct = accuracy_root / case_id
+    direct = (
+        accuracy_root
+        / MIGRATION_CONFIG.storage_name
+        / "diagnoses"
+        / case_id
+    )
     if (direct / "case.json").is_file():
         return direct
     matches = []
-    for candidate in accuracy_root.glob("*/case.json"):
+    for candidate in accuracy_root.glob("*/diagnoses/*/case.json"):
         try:
             value = json.loads(candidate.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -180,6 +164,8 @@ def _write_case(repository_root: Path, value: dict[str, Any]) -> Path:
         repository_root
         / MIGRATION_CONFIG.artifact_root
         / value["experiment"]["storage_name"]
+        / "diagnoses"
+        / value["case_id"]
         / "case.json"
     )
     write_json(path, value)
@@ -209,6 +195,8 @@ def create_case(
         repository_root
         / MIGRATION_CONFIG.artifact_root
         / experiment_name
+        / "diagnoses"
+        / case_id
         / "case.json"
     )
     if path.exists():
@@ -244,9 +232,12 @@ def create_case(
         "experiment": {
             "storage_name": experiment_name,
             "stages": {
-                "dump": MIGRATION_CONFIG.output_subdirectory,
-                "configuration_check": CONFIG_CHECK_CONFIG.output_subdirectory,
-                "monitor": "diagnostics/monitor/<configuration>",
+                "inputs": "<topology>/inputs/<fixture-profile>",
+                "dump": "<topology>/captures/<dump-profile>",
+                "configuration_check": (
+                    "<topology>/checklist/configuration-check"
+                ),
+                "monitor": "<topology>/observations/monitor/<monitor-profile>",
             },
         },
         "stages": {
@@ -479,8 +470,6 @@ def _migration_command(
         "tests/glm5_2_mindstudio/accuracy_benchmark.py",
         "--stage",
         "dump",
-        "--experiment",
-        value["experiment"]["storage_name"],
         *arguments,
         *_selected_topology_args(value),
         "--repeat",
@@ -493,8 +482,6 @@ def _monitor_command(value: dict[str, Any], *arguments: str) -> str:
         "tests/glm5_2_mindstudio/accuracy_benchmark.py",
         "--stage",
         "monitor",
-        "--experiment",
-        value["experiment"]["storage_name"],
         *arguments,
         *_selected_topology_args(value),
         "--repeat",
@@ -510,16 +497,12 @@ def _checklist_plan(value: dict[str, Any]) -> dict[str, Any]:
         "goal": "Prove that both endpoints execute the same experiment contract.",
         "commands": [
             _python_command(
-                script, "--stage", "dump", "--experiment",
-                value["experiment"]["storage_name"],
-                "--data", *topology_args,
+                script, "--stage", "dump", "--data", *topology_args,
             ),
             _python_command(
                 script,
                 "--stage",
                 "config-check",
-                "--experiment",
-                value["experiment"]["storage_name"],
                 "--capture",
                 "reference",
                 *topology_args,
@@ -528,8 +511,6 @@ def _checklist_plan(value: dict[str, Any]) -> dict[str, Any]:
                 script,
                 "--stage",
                 "config-check",
-                "--experiment",
-                value["experiment"]["storage_name"],
                 "--capture",
                 "candidate",
                 *topology_args,
@@ -538,8 +519,6 @@ def _checklist_plan(value: dict[str, Any]) -> dict[str, Any]:
                 script,
                 "--stage",
                 "config-check",
-                "--experiment",
-                value["experiment"]["storage_name"],
                 "--compare",
                 *topology_args,
             ),
@@ -658,6 +637,7 @@ def compare_repeats(
             / config.artifact_root
             / config.output_relative_root
             / topology.slug
+            / config.operation_relative_root
         )
         baseline = artifact_root / f"{role}-r{baseline_repeat}"
         target = artifact_root / f"{role}-r{target_repeat}"
@@ -825,12 +805,14 @@ def analyze_training_observation(
         reference = (
             run_root
             / topology.slug
+            / config.operation_relative_root
             / f"reference-r{value['repeat']}"
             / "training_metrics.jsonl"
         )
         candidate = (
             run_root
             / topology.slug
+            / config.operation_relative_root
             / f"candidate-r{value['repeat']}"
             / "training_metrics.jsonl"
         )

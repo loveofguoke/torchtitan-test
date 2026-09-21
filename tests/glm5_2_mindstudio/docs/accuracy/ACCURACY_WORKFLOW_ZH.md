@@ -18,18 +18,25 @@ GPU/NPU 官方比对      accuracy_benchmark.py --stage dump --compare
 eager/compile 比对    compile_accuracy_benchmark.py
 ```
 
-各类官方能力通过 `--experiment <实验ID>` 共用一个精度实验根。训练步数、问题 step、
-dump task/level 和 Monitor 配置只定义根目录下的操作 scope，不能定义整个实验。
+各类官方能力共用一个由固定实验合同生成的精度实验根，例如
+`migration-cuda-npu-bf16-random-s2-b64-seq128-seed61-ffb9c634`。训练步数、
+问题 step、dump task/level、Monitor 配置和诊断 case 只定义根目录下的操作 scope，
+不能定义或替代整个实验。`--experiment` 仅用于把此前以人工别名保存的匹配数据迁入
+规范实验根；新实验无需传入该参数。
 `migration_benchmark.py`、
 `configuration_check_benchmark.py`、`training_monitor_benchmark.py` 仅作为兼容入口保留。
-不传 `--experiment` 时仍使用旧目录合同，已有成功采集可以断点续跑。
+已有人工别名目录会按字节不变的方式移动到新层级，完整采集仍可断点续跑，无需重采。
 
 ```text
 mindstudio_{fixtures,runs,artifacts,reports}/accuracy/<experiment-id>/
-├── checklist/configuration-check/         # 训练前合同检查
-├── captures/<dump-profile>/               # 任意 step/task/level 的 msProbe 采集
-├── observations/monitor/<monitor-profile>/# 任意长度的训练状态监测
-└── case.json                              # 诊断状态（artifact 根目录）
+└── <topology>/
+    ├── inputs/<fixture-profile>/              # checkpoint、token plan、fixture
+    ├── checklist/configuration-check/         # 训练前合同检查
+    ├── captures/<dump-profile>/               # 任意 step/task/level 的 msProbe 采集
+    └── observations/monitor/<monitor-profile>/# 任意长度的训练状态监测
+
+mindstudio_artifacts/accuracy/<experiment-id>/diagnoses/<case-id>/
+└── case.json                                  # 诊断控制面，不另建实验根
 ```
 
 这些阶段不是把 5000 step 全量 dump。Monitor V2 负责低开销长程筛查；发现异常

@@ -40,7 +40,7 @@ mindstudio_runs/                  # 原始运行根目录，按 accuracy/perform
 mindstudio_artifacts/accuracy/    # 精度官方 raw + manifest/hash/complete
 mindstudio_artifacts/performance/system/ # 系统性能轻量状态
 mindstudio_reports/accuracy/      # 精度 compare、摘要与中文入口
-mindstudio_artifacts/accuracy/<experiment-id>/case.json # 诊断控制面
+mindstudio_artifacts/accuracy/<experiment-id>/diagnoses/<case-id>/case.json # 诊断控制面
 mindstudio_reports/performance/system/ # 系统性能报告
 ```
 

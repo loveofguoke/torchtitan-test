@@ -189,7 +189,7 @@ def _write_fixture_and_capture(
     role: str,
 ) -> Path:
     topology = config.candidate.topology
-    fixture = _fixture_directory(root, config)
+    fixture = _fixture_directory(root, config, topology)
     fixture.mkdir(parents=True, exist_ok=True)
     write_json(fixture / "fixture.json", {"generation_id": "fixture-a"})
     _, artifact, _ = _paths(
@@ -2292,7 +2292,7 @@ class TestMindStudioLifecycle(unittest.TestCase):
         topology = config.candidate.topology
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            fixture = _fixture_directory(root, config)
+            fixture = _fixture_directory(root, config, topology)
             reference_run, reference_artifact, report = _paths(
                 root, config, topology, "reference", 1
             )

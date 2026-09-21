@@ -74,7 +74,7 @@ def _load_capture(
     from .workflow import _experiment_digest, _fixture_manifest
 
     artifact = _capture_artifact(root, config, topology, role, repeat)
-    fixture = _fixture_manifest(root, config)
+    fixture = _fixture_manifest(root, config, topology)
     generation = str(fixture["generation_id"])
     if not artifact_is_complete(
         artifact,

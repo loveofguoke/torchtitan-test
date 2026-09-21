@@ -31,7 +31,7 @@ python tests/glm5_2_mindstudio/accuracy_diagnostic_benchmark.py init glm5-first-
 输出位于：
 
 ```text
-mindstudio_artifacts/accuracy/<case-id>/
+mindstudio_artifacts/accuracy/<experiment-id>/diagnoses/<case-id>/
 ├── case.json       # 唯一状态源
 ├── next_plan.json  # 当前阶段的机器可读 recipe
 └── README.md       # 阶段、证据、第一现场、假设和下一命令
@@ -71,8 +71,8 @@ manifest 未变化就跳过，失败产物则归档后重试。原有 r1 不会�
 python tests/glm5_2_mindstudio/accuracy_diagnostic_benchmark.py record glm5-first-loss-001 \
   --stage checklist \
   --conclusion pass \
-  --evidence mindstudio_reports/accuracy/<case-id>/checklist/configuration-check \
-  --evidence mindstudio_fixtures/accuracy/<case-id>/fixtures/<fixture-profile>/fixture.json \
+  --evidence mindstudio_reports/accuracy/<experiment-id>/<topology>/checklist/configuration-check \
+  --evidence mindstudio_fixtures/accuracy/<experiment-id>/<topology>/inputs/<fixture-profile>/fixture.json \
   --notes "Reviewed all rank sheets; CUDA/NPU-only packages are expected differences."
 ```
 
@@ -99,7 +99,7 @@ python tests/glm5_2_mindstudio/accuracy_diagnostic_benchmark.py training-observa
 长稳和尖刺场景使用 `--workflow monitor`。每个拓扑生成：
 
 ```text
-mindstudio_artifacts/accuracy/<case-id>/03_observe/<workflow>/<topology>/
+mindstudio_artifacts/accuracy/<experiment-id>/diagnoses/<case-id>/03_observe/<workflow>/<topology>/
 ├── training_metrics_compare.csv
 ├── summary.json
 ├── loss.svg

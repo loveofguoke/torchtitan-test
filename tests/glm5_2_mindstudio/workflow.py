@@ -90,16 +90,31 @@ def _paths(
     role: Role,
     repeat: int,
 ) -> tuple[Path, Path, Path]:
-    relative = config.output_relative_root / topology.slug / f"{role}-r{repeat}"
+    relative = config.output_relative_root / topology.slug
+    if config.output_subdirectory is not None:
+        relative /= config.output_subdirectory
+    relative /= f"{role}-r{repeat}"
     return (
         root / config.run_root / relative,
         root / config.artifact_root / relative,
-        root / config.report_root / config.output_relative_root / topology.slug,
+        root
+        / config.report_root
+        / config.output_relative_root
+        / topology.slug
+        / config.operation_relative_root,
     )
 
 
-def _fixture_directory(root: Path, config: MindStudioExperimentConfig) -> Path:
-    return root / config.fixture_root / config.fixture_relative_root
+def _fixture_directory(
+    root: Path,
+    config: MindStudioExperimentConfig,
+    topology: ParallelTopology,
+) -> Path:
+    return (
+        root
+        / config.fixture_root
+        / config.topology_fixture_relative_root(topology)
+    )
 
 
 def _output_root(
@@ -117,13 +132,16 @@ def _stage_scoped_config(
 ) -> MindStudioExperimentConfig:
     """Place diagnostic variants below one canonical accuracy experiment."""
 
-    if experiment_name is not None:
-        config = replace(config, experiment_storage_name=experiment_name)
+    if experiment_name is not None or config.experiment_storage_name is not None:
+        config = replace(
+            config,
+            experiment_storage_name=base_config.storage_name,
+        )
         fixture_profile = (
             f"s{config.training.steps}-"
             f"{config_digest(asdict(config.training), length=8)}"
         )
-        fixture_subdirectory = f"fixtures/{fixture_profile}"
+        fixture_subdirectory = f"inputs/{fixture_profile}"
         if config.workflow == "config-check":
             return replace(
                 config,
@@ -184,17 +202,83 @@ def _stage_scoped_config(
 
 
 def _adopt_legacy_accuracy_storage(
-    root: Path, config: MindStudioExperimentConfig
+    root: Path,
+    config: MindStudioExperimentConfig,
+    *,
+    topologies: Sequence[ParallelTopology],
+    legacy_storage_name: str | None,
 ) -> None:
-    """Move matching pre-category official outputs under ``accuracy/``.
+    """Move matching accuracy outputs into the canonical topology-first tree.
 
-    The storage name already binds the complete experiment identity.  Moving
-    that exact directory changes only navigation and preserves every captured
-    byte, so historical official runs remain resumable without recollection.
+    Historical named experiments placed the operation before the topology and
+    stored inputs outside the topology. Adopt only the selected topology and
+    operation so completed captures remain resumable without recollection.
     """
 
-    if config.fixture_subdirectory is not None:
-        _formal_fixture_directory(root, config.formal_fixture_config())
+    def adopt(source: Path, destination: Path) -> None:
+        if source == destination or not source.exists():
+            return
+        if destination.exists():
+            raise RuntimeError(
+                "both legacy and canonical MindStudio accuracy outputs exist; "
+                f"refusing to mix them: {source} and {destination}"
+            )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        source.rename(destination)
+        print(
+            "Adopted matching legacy accuracy output:\n"
+            f"  {display_repository_path(source)}\n"
+            f"  -> {display_repository_path(destination)}"
+        )
+
+    legacy_names = tuple(
+        dict.fromkeys(
+            name
+            for name in (legacy_storage_name, config.storage_name)
+            if name is not None
+        )
+    )
+    for topology in topologies:
+        destination_fixture = _fixture_directory(root, config, topology)
+        for legacy_name in legacy_names:
+            if config.fixture_subdirectory is not None:
+                old_subdirectory = config.fixture_subdirectory.replace(
+                    "inputs/", "fixtures/", 1
+                )
+                adopt(
+                    root / config.fixture_root / legacy_name / old_subdirectory,
+                    destination_fixture,
+                )
+                adopt(
+                    root
+                    / config.fixture_root
+                    / f"{legacy_name}-{old_subdirectory.replace('/', '-')}",
+                    destination_fixture,
+                )
+        _formal_fixture_directory(
+            root,
+            config.formal_fixture_config(topology),
+        )
+
+        for configured_root in (
+            config.run_root,
+            config.artifact_root,
+            config.report_root,
+        ):
+            destination = (
+                root
+                / configured_root
+                / config.storage_name
+                / topology.slug
+                / config.operation_relative_root
+            )
+            for legacy_name in legacy_names:
+                source = root / configured_root / legacy_name
+                if config.output_subdirectory is not None:
+                    source /= config.output_subdirectory
+                source /= topology.slug
+                adopt(source, destination)
+
     if (
         config.output_subdirectory is not None
         or config.fixture_subdirectory is not None
@@ -229,8 +313,12 @@ def _adopt_legacy_accuracy_storage(
         )
 
 
-def _fixture_manifest(root: Path, config: MindStudioExperimentConfig) -> dict[str, Any]:
-    path = _fixture_directory(root, config) / "fixture.json"
+def _fixture_manifest(
+    root: Path,
+    config: MindStudioExperimentConfig,
+    topology: ParallelTopology,
+) -> dict[str, Any]:
+    path = _fixture_directory(root, config, topology) / "fixture.json"
     if not path.is_file():
         raise FileNotFoundError(f"fixture is missing; run --data first: {path}")
     return json.loads(path.read_text(encoding="utf-8"))
@@ -1045,22 +1133,18 @@ def _formal_config(
     config: MindStudioExperimentConfig,
     topology: ParallelTopology,
 ):
-    formal = config.formal_fixture_config()
-    return replace(
-        formal,
-        reference=replace(config.reference, topology=topology),
-        candidate=replace(config.candidate, topology=topology),
-    )
+    return config.formal_fixture_config(topology)
 
 
 def prepare_shared_fixture(
     root: Path,
     config: MindStudioExperimentConfig,
     *,
+    topology: ParallelTopology,
     endpoint: TrainingEndpoint,
     force: bool,
 ) -> Path:
-    formal = _formal_config(config, ParallelTopology("single", 1))
+    formal = _formal_config(config, topology)
     return prepare_fixture(root, formal, endpoint=endpoint, force=force)
 
 
@@ -1110,14 +1194,16 @@ def reset_selected_outputs(
 ) -> None:
     paths: list[Path] = []
     if include_fixture:
-        paths.append(_fixture_directory(root, config))
-        paths.extend(
-            (
-                _output_root(root, config.run_root, config),
-                _output_root(root, config.artifact_root, config),
-                _output_root(root, config.report_root, config),
+        for topology in topologies:
+            paths.append(_fixture_directory(root, config, topology))
+            operation = topology.slug / config.operation_relative_root
+            paths.extend(
+                (
+                    _output_root(root, config.run_root, config) / operation,
+                    _output_root(root, config.artifact_root, config) / operation,
+                    _output_root(root, config.report_root, config) / operation,
+                )
             )
-        )
     else:
         roles: tuple[Role, ...] = (role,) if role is not None else (
             "reference",
@@ -1254,7 +1340,7 @@ def capture_official(
         raise ValueError(f"repeat must be in [1, {endpoint.repeats}]")
     formal = _formal_config(config, topology)
     checkpoint_path, token_plan_path = resolve_fixture_inputs(root, formal)
-    fixture = _fixture_manifest(root, config)
+    fixture = _fixture_manifest(root, config, topology)
     generation = str(fixture["generation_id"])
     digest = _experiment_digest(config, topology, role)
     run_directory, artifact_directory, report_directory = _paths(
@@ -1417,7 +1503,9 @@ def capture_official(
             "repeat": repeat,
             "training": asdict(config.training),
             "official_tool_config": official_config,
-            "fixture_directory": str(_fixture_directory(root, config).resolve()),
+            "fixture_directory": str(
+                _fixture_directory(root, config, topology).resolve()
+            ),
             "runtime_log": str(runtime_log.resolve()),
             "official_output": str(official_output.resolve()),
         },
@@ -1611,7 +1699,7 @@ def _require_precheck_capture(
             "precision pre-check requires an API-level L1 or mix capture"
         )
     _, artifact, _ = _paths(root, config, topology, role, repeat)
-    fixture = _fixture_manifest(root, config)
+    fixture = _fixture_manifest(root, config, topology)
     generation = str(fixture["generation_id"])
     digest = _experiment_digest(config, topology, role)
     if not artifact_is_complete(
@@ -2477,7 +2565,7 @@ def compare_official(
         root, config, topology, "candidate", repeat
     )
     del reference_run, candidate_run
-    fixture = _fixture_manifest(root, config)
+    fixture = _fixture_manifest(root, config, topology)
     generation = str(fixture["generation_id"])
     selected_artifacts: dict[Role, Path] = {"candidate": candidate_artifact}
     if config.workflow != "compile":
@@ -2853,7 +2941,10 @@ def run_mindstudio_cli(
     parser.add_argument("--topologies")
     parser.add_argument(
         "--experiment",
-        help="diagnostic experiment ID; all selected operations become child scopes",
+        help=(
+            "legacy display alias used only to adopt matching existing outputs; "
+            "the canonical experiment root is derived from the fixed contract"
+        ),
     )
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--data-device", choices=("cuda", "npu"))
@@ -3197,8 +3288,20 @@ def run_mindstudio_cli(
         config = replace(config, reference=select_codegen(config.reference),
                          candidate=select_codegen(config.candidate))
     root = _root(script_path)
+    selected_names = select_topologies(
+        available=tuple(registry),
+        topology=args.topology if args.topologies is None else None,
+        topologies=args.topologies,
+        default=("single",),
+    )
+    selected = tuple(registry[name] for name in selected_names)
     if not args.dry_run:
-        _adopt_legacy_accuracy_storage(root, config)
+        _adopt_legacy_accuracy_storage(
+            root,
+            config,
+            topologies=selected,
+            legacy_storage_name=args.experiment,
+        )
         write_experiment_overview(
             _output_root(root, config.run_root, config),
             title=f"GLM5.2 MindStudio {config.workflow} experiment",
@@ -3219,20 +3322,15 @@ def run_mindstudio_cli(
                     "topology": config.candidate.topology.name,
                     "repeats": config.candidate.repeats,
                 },
-                "fixture_directory": str(
-                    _fixture_directory(root, config).resolve()
-                ),
+                "fixture_directories": {
+                    topology.slug: str(
+                        _fixture_directory(root, config, topology).resolve()
+                    )
+                    for topology in selected
+                },
             },
             entry_command=[sys.executable, *sys.argv],
         )
-
-    selected_names = select_topologies(
-        available=tuple(registry),
-        topology=args.topology if args.topologies is None else None,
-        topologies=args.topologies,
-        default=("single",),
-    )
-    selected = tuple(registry[name] for name in selected_names)
     if args.data:
         if not config.owns_fixture:
             parser.error(
@@ -3249,9 +3347,12 @@ def run_mindstudio_cli(
                         "endpoint_environment_keys": sorted(
                             endpoint.environment
                         ),
-                        "fixture": str(
-                            _fixture_directory(root, config).resolve()
-                        ),
+                        "fixtures": {
+                            topology.slug: str(
+                                _fixture_directory(root, config, topology).resolve()
+                            )
+                            for topology in selected
+                        },
                     },
                     indent=2,
                     sort_keys=True,
@@ -3266,13 +3367,15 @@ def run_mindstudio_cli(
                 role=None,
                 include_fixture=True,
             )
-        path = prepare_shared_fixture(
-            root,
-            config,
-            endpoint=endpoint,
-            force=False,
-        )
-        print_output_path("Prepared MindStudio fixture", path)
+        for topology in selected:
+            path = prepare_shared_fixture(
+                root,
+                config,
+                topology=topology,
+                endpoint=endpoint,
+                force=False,
+            )
+            print_output_path("Prepared MindStudio fixture", path)
         return
 
     if args.capture:

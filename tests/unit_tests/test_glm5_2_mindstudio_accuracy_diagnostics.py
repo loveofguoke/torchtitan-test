@@ -56,13 +56,17 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
             MONITOR_CONFIG.storage_name,
         )
         self.assertEqual(
-            Path(MIGRATION_CONFIG.storage_name) / "diagnostics/configuration-check",
+            Path(MIGRATION_CONFIG.storage_name),
             CONFIG_CHECK_CONFIG.output_relative_root,
+        )
+        self.assertEqual(
+            Path("diagnostics/configuration-check"),
+            CONFIG_CHECK_CONFIG.operation_relative_root,
         )
         monitor = _stage_scoped_config(MONITOR_CONFIG, MIGRATION_CONFIG)
         self.assertEqual(
             Path(MIGRATION_CONFIG.storage_name),
-            monitor.output_relative_root.parents[2],
+            monitor.output_relative_root,
         )
 
     def test_unified_accuracy_entry_removes_only_its_stage_option(self) -> None:
@@ -89,8 +93,8 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
             MIGRATION_CONFIG,
             experiment,
         )
-        self.assertEqual(experiment, short.storage_name)
-        self.assertEqual(experiment, long.storage_name)
+        self.assertEqual(MIGRATION_CONFIG.storage_name, short.storage_name)
+        self.assertEqual(MIGRATION_CONFIG.storage_name, long.storage_name)
         self.assertTrue(short.output_subdirectory.startswith("captures/"))
         self.assertTrue(long.output_subdirectory.startswith("observations/monitor/"))
         self.assertNotEqual(short.fixture_subdirectory, long.fixture_subdirectory)
@@ -104,9 +108,13 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
+            topology = scoped.candidate.topology
             self.assertEqual(
-                _fixture_directory(root, scoped),
-                _formal_fixture_directory(root, scoped.formal_fixture_config()),
+                _fixture_directory(root, scoped, topology),
+                _formal_fixture_directory(
+                    root,
+                    scoped.formal_fixture_config(topology),
+                ),
             )
 
     def test_named_experiment_adopts_flattened_fixture_path(self) -> None:
@@ -116,13 +124,15 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
             MIGRATION_CONFIG,
             experiment,
         )
-        formal = scoped.formal_fixture_config()
+        topology = scoped.candidate.topology
+        formal = scoped.formal_fixture_config(topology)
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             legacy = (
                 root
                 / formal.fixture_root
-                / scoped.fixture_relative_root.as_posix().replace("/", "-")
+                / experiment
+                / scoped.fixture_subdirectory.replace("inputs/", "fixtures/", 1)
             )
             legacy.mkdir(parents=True)
             (legacy / "fixture.json").write_text(
@@ -130,14 +140,59 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            _adopt_legacy_accuracy_storage(root, scoped)
+            _adopt_legacy_accuracy_storage(
+                root,
+                scoped,
+                topologies=(topology,),
+                legacy_storage_name=experiment,
+            )
             destination = _formal_fixture_directory(root, formal)
 
-            self.assertEqual(_fixture_directory(root, scoped), destination)
+            self.assertEqual(
+                _fixture_directory(root, scoped, topology),
+                destination,
+            )
             self.assertTrue((destination / "fixture.json").is_file())
             self.assertFalse(legacy.exists())
 
-    def test_diagnostic_root_name_keeps_contract_but_excludes_steps(self) -> None:
+    def test_named_experiment_adopts_operation_below_topology(self) -> None:
+        experiment = "glm5-debug-bf16-b64-seq128-seed61"
+        scoped = _stage_scoped_config(
+            CONFIG_CHECK_CONFIG,
+            MIGRATION_CONFIG,
+            experiment,
+        )
+        topology = scoped.candidate.topology
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            legacy = (
+                root
+                / scoped.artifact_root
+                / experiment
+                / scoped.operation_relative_root
+                / topology.slug
+            )
+            legacy.mkdir(parents=True)
+            (legacy / "candidate-r1").mkdir()
+
+            _adopt_legacy_accuracy_storage(
+                root,
+                scoped,
+                topologies=(topology,),
+                legacy_storage_name=experiment,
+            )
+            destination = (
+                root
+                / scoped.artifact_root
+                / MIGRATION_CONFIG.storage_name
+                / topology.slug
+                / scoped.operation_relative_root
+            )
+
+            self.assertTrue((destination / "candidate-r1").is_dir())
+            self.assertFalse(legacy.exists())
+
+    def test_diagnostic_case_lives_below_canonical_experiment(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             path = create_case(
                 Path(temporary_directory),
@@ -148,10 +203,12 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                 repeat=1,
                 notes="",
             )
-            name = path.parent.name
-            self.assertIn("glm5-2-migration-cuda-npu-fsdp8-bf16", name)
-            self.assertIn("b64-seq128-seed61", name)
-            self.assertNotIn("-s2-", name)
+            self.assertEqual("display-alias", path.parent.name)
+            self.assertEqual("diagnoses", path.parent.parent.name)
+            self.assertEqual(
+                MIGRATION_CONFIG.storage_name,
+                path.parent.parent.parent.name,
+            )
 
     def test_forcing_scoped_stage_preserves_default_dump(self) -> None:
         topology = MIGRATION_CONFIG.candidate.topology
@@ -206,6 +263,37 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
             self.assertFalse(scoped_run.exists())
             self.assertFalse(scoped_artifact.exists())
             self.assertFalse(scoped_report.exists())
+
+    def test_topology_precedes_every_accuracy_operation_scope(self) -> None:
+        topology = MIGRATION_CONFIG.candidate.topology
+        scoped = _stage_scoped_config(
+            CONFIG_CHECK_CONFIG,
+            MIGRATION_CONFIG,
+            None,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            run, artifact, report = _paths(
+                root,
+                scoped,
+                topology,
+                "candidate",
+                1,
+            )
+            relative = (
+                Path(MIGRATION_CONFIG.storage_name)
+                / topology.slug
+                / "checklist/configuration-check"
+            )
+            self.assertEqual(
+                root / scoped.run_root / relative / "candidate-r1",
+                run,
+            )
+            self.assertEqual(
+                root / scoped.artifact_root / relative / "candidate-r1",
+                artifact,
+            )
+            self.assertEqual(root / scoped.report_root / relative, report)
 
     def test_training_metrics_generate_csv_summary_and_charts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -263,7 +351,7 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                 repeat=1,
                 notes="",
             )
-            experiment = case_path.parent.name
+            experiment = MIGRATION_CONFIG.storage_name
             config = _stage_scoped_config(
                 MONITOR_CONFIG,
                 MIGRATION_CONFIG,
@@ -271,7 +359,13 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
             )
             run_root = root / config.run_root / config.output_relative_root
             for role, loss in (("reference", 1.0), ("candidate", 1.02)):
-                path = run_root / "single" / f"{role}-r1" / "training_metrics.jsonl"
+                path = (
+                    run_root
+                    / "single"
+                    / config.operation_relative_root
+                    / f"{role}-r1"
+                    / "training_metrics.jsonl"
+                )
                 path.parent.mkdir(parents=True)
                 path.write_text(
                     json.dumps(
@@ -351,7 +445,7 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                 repeat=1,
                 notes="",
             )
-            experiment = case_path.parent.name
+            experiment = MIGRATION_CONFIG.storage_name
             config = replace(
                 MIGRATION_CONFIG,
                 dump=replace(
@@ -370,6 +464,7 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                 / config.artifact_root
                 / config.output_relative_root
                 / "single"
+                / config.operation_relative_root
             )
             for repeat_value in (1, 2):
                 artifact = artifact_root / f"candidate-r{repeat_value}"

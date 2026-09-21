@@ -5,11 +5,12 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
 from tests.glm5_2_common.naming import config_name, slug
+from tests.glm5_2_common.topology import ParallelTopology
 from tests.glm5_2_precision.workflow import (
     FormalExperimentConfig,
     FormalTrainingConfig,
@@ -328,10 +329,11 @@ class MindStudioExperimentConfig:
 
     @property
     def output_relative_root(self) -> Path:
-        root = Path(self.storage_name)
-        if self.output_subdirectory is not None:
-            root /= self.output_subdirectory
-        return root
+        return Path(self.storage_name)
+
+    @property
+    def operation_relative_root(self) -> Path:
+        return Path(self.output_subdirectory or "")
 
     @property
     def fixture_relative_root(self) -> Path:
@@ -340,8 +342,22 @@ class MindStudioExperimentConfig:
             root /= self.fixture_subdirectory
         return root
 
-    def formal_fixture_config(self) -> FormalExperimentConfig:
+    def topology_fixture_relative_root(
+        self,
+        topology: ParallelTopology,
+    ) -> Path:
+        root = Path(self.storage_name) / topology.slug
+        if self.fixture_subdirectory is not None:
+            root /= self.fixture_subdirectory
+        return root
+
+    def formal_fixture_config(
+        self,
+        topology: ParallelTopology | None = None,
+    ) -> FormalExperimentConfig:
         """Build the existing fixed-input producer without reusing its verdict."""
+
+        topology = topology or self.candidate.topology
 
         return FormalExperimentConfig(
             name=self.name,
@@ -350,14 +366,14 @@ class MindStudioExperimentConfig:
                 if self.workflow in {"config-check", "migration", "monitor"}
                 else "self_consistency"
             ),
-            reference=self.reference,
-            candidate=self.candidate,
+            reference=replace(self.reference, topology=topology),
+            candidate=replace(self.candidate, topology=topology),
             training=self.training,
             fixture_root=self.fixture_root,
             artifact_root=self.artifact_root,
             report_root=self.report_root,
             run_root=self.run_root,
-            fixture_name=self.fixture_relative_root.as_posix(),
+            fixture_name=self.topology_fixture_relative_root(topology).as_posix(),
             storage_name_override=self.storage_base_name,
             topology_subdirectory=True,
         )
