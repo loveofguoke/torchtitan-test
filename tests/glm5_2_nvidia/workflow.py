@@ -446,7 +446,7 @@ def _analyze(
             + result.stderr,
             encoding="utf-8",
         )
-        print(f"Nsight Systems statistic log: {stats_log}")
+        print_output_path("Nsight Systems statistic log", stats_log)
         if result.returncode:
             print_runtime_log(stats_log)
             raise LoggedProcessError(
@@ -456,7 +456,7 @@ def _analyze(
         print_output_path("Nsight Systems statistic", output)
         print_runtime_log(stats_log)
     diagnosis = diagnose(stats_dir, diagnosis_dir)
-    print(f"NVIDIA automatic diagnosis: {diagnosis['markdown']}")
+    print_output_path("NVIDIA automatic diagnosis", Path(diagnosis["markdown"]))
     manifest["analysis_status"] = "completed"
     manifest["sqlite"] = str(sqlite_path)
     manifest["statistics"] = [str(path) for path in expected]

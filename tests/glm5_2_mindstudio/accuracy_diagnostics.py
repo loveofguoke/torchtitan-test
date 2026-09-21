@@ -1514,7 +1514,7 @@ def run_diagnostic_cli(
             repeat=args.repeat,
             notes=args.notes,
         )
-        print(f"Diagnostic case: {path}")
+        print_output_path("Diagnostic case", path)
         _print_plan(_load_case(repository_root, args.case_id))
         return
     if args.action == "record":
@@ -1534,7 +1534,7 @@ def run_diagnostic_cli(
             },
             symptom=args.symptom,
         )
-        print(f"Diagnostic case: {path}")
+        print_output_path("Diagnostic case", path)
         _print_plan(_load_case(repository_root, args.case_id))
         return
     if args.action == "compare-repeats":
@@ -1545,7 +1545,7 @@ def run_diagnostic_cli(
             baseline_repeat=args.baseline_repeat,
             target_repeat=args.target_repeat,
         )
-        print(f"Repeat comparison: {path}")
+        print_output_path("Repeat comparison", path)
         return
     if args.action == "training-observation":
         path = analyze_training_observation(
@@ -1558,7 +1558,7 @@ def run_diagnostic_cli(
             spike_relative_threshold=args.spike_relative_threshold,
             force=args.force,
         )
-        print(f"Training observation: {path}")
+        print_output_path("Training observation", path)
         return
     if args.action == "hypothesis":
         if args.hypothesis_action == "add":
@@ -1577,10 +1577,13 @@ def run_diagnostic_cli(
                 evidence=args.evidence,
                 notes=args.notes,
             )
-        print(f"Diagnostic case: {path}")
+        print_output_path("Diagnostic case", path)
         return
     if args.action == "close":
-        print(f"Diagnostic case: {close_case(repository_root, case_id=args.case_id)}")
+        print_output_path(
+            "Diagnostic case",
+            close_case(repository_root, case_id=args.case_id),
+        )
         return
     value = _load_case(repository_root, args.case_id)
     if args.action == "plan":

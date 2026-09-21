@@ -3241,7 +3241,7 @@ def run_mindstudio_cli(
             endpoint=endpoint,
             force=False,
         )
-        print(f"Prepared MindStudio fixture: {path}")
+        print_output_path("Prepared MindStudio fixture", path)
         return
 
     if args.capture:

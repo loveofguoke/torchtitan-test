@@ -1056,7 +1056,7 @@ def prepare_fixture(
         *config.training.extra_args,
     ]
     token_generation_log = fixture_directory / "token_generation.log"
-    print(f"Token-plan generation log: {token_generation_log}", flush=True)
+    print_output_path("Token-plan generation log", token_generation_log)
     _run_process(
         token_plan_command,
         root=root,
@@ -1116,7 +1116,7 @@ def prepare_fixture(
             ]
         )
         seed_generation_log = fixture_directory / "seed_generation.log"
-        print(f"Seed-checkpoint generation log: {seed_generation_log}", flush=True)
+        print_output_path("Seed-checkpoint generation log", seed_generation_log)
         _run_process(
             command,
             root=root,
@@ -1711,7 +1711,7 @@ def run_formal_cli(
             endpoint=fixture_endpoint,
             force=args.force,
         )
-        print(f"Prepared fixture: {path}")
+        print_output_path("Prepared fixture", path)
     elif args.capture:
         endpoint = config.reference if args.capture == "reference" else config.candidate
         repeats = tuple(
@@ -1739,7 +1739,7 @@ def run_formal_cli(
                     f"Repeat {repeat} completed; this node does not own the metrics artifact."
                 )
             else:
-                print(f"Captured repeat {repeat}: {path}")
+                print_output_path(f"Captured repeat {repeat}", path)
     else:
         from .report import compare_and_write_report
 

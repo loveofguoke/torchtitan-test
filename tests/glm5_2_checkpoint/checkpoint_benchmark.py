@@ -41,6 +41,7 @@ from tests.glm5_2_common.cli import (
     archive_previous_output,
     assert_run_not_active,
     display_repository_path,
+    print_output_path,
     print_runtime_log,
     reset_output_generation,
 )
@@ -1381,7 +1382,7 @@ def main() -> int:
             endpoint=endpoint,
             force=args.force,
         )
-        print(f"Prepared checkpoint fixture: {path}", flush=True)
+        print_output_path("Prepared checkpoint fixture", path)
         return 0
     fixture_generation_id = None
     if fixture_manifest.is_file():
