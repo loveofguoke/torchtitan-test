@@ -39,6 +39,7 @@ from tests.glm5_2_common.topology import (
 from tests.glm5_2_precision.workflow import (
     FormalTrainingConfig,
     TrainingEndpoint,
+    _fixture_directory as _formal_fixture_directory,
     fixed_input_environment,
     prepare_fixture,
     resolve_fixture_inputs,
@@ -190,6 +191,8 @@ def _adopt_legacy_accuracy_storage(
     byte, so historical official runs remain resumable without recollection.
     """
 
+    if config.fixture_subdirectory is not None:
+        _formal_fixture_directory(root, config.formal_fixture_config())
     if (
         config.output_subdirectory is not None
         or config.fixture_subdirectory is not None

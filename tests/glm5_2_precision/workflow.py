@@ -321,7 +321,11 @@ class FormalExperimentConfig:
         """Return the experiment identity of synchronized inputs."""
 
         if self.fixture_name is not None:
-            return _slug(self.fixture_name)
+            return "/".join(
+                _slug(part)
+                for part in Path(self.fixture_name).parts
+                if part not in {"", "."}
+            )
         return self.storage_name
 
 
@@ -532,6 +536,12 @@ def _legacy_fixture_names(config: FormalExperimentConfig) -> tuple[str, ...]:
     return tuple(
         dict.fromkeys(
             (
+                *(
+                    (_slug(config.fixture_name),)
+                    if config.fixture_name is not None
+                    and _slug(config.fixture_name) != config.fixture_storage_name
+                    else ()
+                ),
                 config.storage_base_name,
                 generic_digested,
                 old_generated,
@@ -632,7 +642,7 @@ def _adopt_legacy_directory(
         )
     if matches:
         source = matches[0]
-        parent.mkdir(parents=True, exist_ok=True)
+        destination.parent.mkdir(parents=True, exist_ok=True)
         source.rename(destination)
         fixture_manifest = destination / "fixture.json"
         if fixture_manifest.is_file():

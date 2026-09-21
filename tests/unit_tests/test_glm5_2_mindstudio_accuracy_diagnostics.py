@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 import json
 from pathlib import Path
 import tempfile
@@ -34,9 +34,14 @@ from tests.glm5_2_mindstudio.training_monitor_benchmark import (
 )
 from tests.glm5_2_mindstudio.training_observation import compare_training_metrics
 from tests.glm5_2_mindstudio.workflow import (
+    _adopt_legacy_accuracy_storage,
+    _fixture_directory,
     _paths,
     _stage_scoped_config,
     reset_selected_outputs,
+)
+from tests.glm5_2_precision.workflow import (
+    _fixture_directory as _formal_fixture_directory,
 )
 
 
@@ -89,6 +94,48 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
         self.assertTrue(short.output_subdirectory.startswith("captures/"))
         self.assertTrue(long.output_subdirectory.startswith("observations/monitor/"))
         self.assertNotEqual(short.fixture_subdirectory, long.fixture_subdirectory)
+
+    def test_named_experiment_fixture_path_is_shared_with_formal_producer(self) -> None:
+        experiment = "glm5-debug-bf16-b64-seq128-seed61"
+        scoped = _stage_scoped_config(
+            MIGRATION_CONFIG,
+            MIGRATION_CONFIG,
+            experiment,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            self.assertEqual(
+                _fixture_directory(root, scoped),
+                _formal_fixture_directory(root, scoped.formal_fixture_config()),
+            )
+
+    def test_named_experiment_adopts_flattened_fixture_path(self) -> None:
+        experiment = "glm5-debug-bf16-b64-seq128-seed61"
+        scoped = _stage_scoped_config(
+            MIGRATION_CONFIG,
+            MIGRATION_CONFIG,
+            experiment,
+        )
+        formal = scoped.formal_fixture_config()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            legacy = (
+                root
+                / formal.fixture_root
+                / scoped.fixture_relative_root.as_posix().replace("/", "-")
+            )
+            legacy.mkdir(parents=True)
+            (legacy / "fixture.json").write_text(
+                json.dumps({"training": asdict(formal.training)}),
+                encoding="utf-8",
+            )
+
+            _adopt_legacy_accuracy_storage(root, scoped)
+            destination = _formal_fixture_directory(root, formal)
+
+            self.assertEqual(_fixture_directory(root, scoped), destination)
+            self.assertTrue((destination / "fixture.json").is_file())
+            self.assertFalse(legacy.exists())
 
     def test_diagnostic_root_name_keeps_contract_but_excludes_steps(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
