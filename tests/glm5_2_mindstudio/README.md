@@ -610,27 +610,36 @@ backend 必须以目标服务器的 `torch.compiler.list_backends()` 和最小 s
 
 官方标准精度流程把“训练前配置检查”放在 dump/compare 之前。当前仓库使用
 `ConfigChecker` dynamic 模式为每个 rank 生成配置包，再逐 rank 调用官方
-`msprobe config_check` 比较。先生成与 migration 相同语义的共享 fixture：
+`msprobe config_check` 比较。配置检查复用 dump 阶段拥有的规范 fixture。跨服务器
+固定按 NPU 生成 fixture/candidate、full upload、GPU full download/reference/compare
+执行，不能在两台服务器分别生成输入。
+
+NPU：
 
 ```bash
-export CUDA_VISIBLE_DEVICES=7
-python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
-  --data --data-device cuda --topology single
-```
-
-然后执行两端 capture 和离线 compare：
-
-```bash
-export CUDA_VISIBLE_DEVICES=7
-python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
-  --capture reference --topology single
-
 export ASCEND_RT_VISIBLE_DEVICES=4
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
+  --data --data-device npu --topology single
 python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
   --capture candidate --topology single
 
+EXPERIMENT='migration-cuda-npu-bf16-random-s2-b64-seq128-seed61-ffb9c634'
+python release_artifacts.py upload "$EXPERIMENT" --content full
+```
+
+GPU：
+
+```bash
+EXPERIMENT='migration-cuda-npu-bf16-random-s2-b64-seq128-seed61-ffb9c634'
+python release_artifacts.py download "$EXPERIMENT" \
+  --backend wget --insecure --overwrite
+
+export CUDA_VISIBLE_DEVICES=7
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
+  --capture reference --topology single
 python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
   --compare --topology single
+python release_artifacts.py upload "$EXPERIMENT" --content full
 ```
 
 配置检查只回答环境、参数、模型等配置是否存在影响精度的差异，不替代模块/API
@@ -641,18 +650,25 @@ python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
 完整 all-topology 配置检查命令如下：
 
 ```bash
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
-  --data --data-device cuda --topology all
-python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
-  --capture reference --topology all
-
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
+  --data --data-device npu --topology all
 python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
   --capture candidate --topology all
 
+EXPERIMENT='migration-cuda-npu-bf16-random-s2-b64-seq128-seed61-ffb9c634'
+python release_artifacts.py upload "$EXPERIMENT" --content full
+
+# 以下在 GPU 服务器执行。
+python release_artifacts.py download "$EXPERIMENT" \
+  --backend wget --insecure --overwrite
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
+  --capture reference --topology all
+
 python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
   --compare --topology all
+python release_artifacts.py upload "$EXPERIMENT" --content full
 ```
 
 ## 7. 官方训练状态监控

@@ -489,6 +489,28 @@ def _monitor_command(value: dict[str, Any], *arguments: str) -> str:
     )
 
 
+def _release_upload_command(value: dict[str, Any]) -> str:
+    return _python_command(
+        "release_artifacts.py",
+        "upload",
+        value["experiment"]["storage_name"],
+        "--content",
+        "full",
+    )
+
+
+def _release_download_command(value: dict[str, Any]) -> str:
+    return _python_command(
+        "release_artifacts.py",
+        "download",
+        value["experiment"]["storage_name"],
+        "--backend",
+        "wget",
+        "--insecure",
+        "--overwrite",
+    )
+
+
 def _checklist_plan(value: dict[str, Any]) -> dict[str, Any]:
     topology_args = _selected_topology_args(value)
     script = "tests/glm5_2_mindstudio/accuracy_benchmark.py"
@@ -496,9 +518,28 @@ def _checklist_plan(value: dict[str, Any]) -> dict[str, Any]:
         "stage": "checklist",
         "goal": "Prove that both endpoints execute the same experiment contract.",
         "commands": [
+            # NPU owns the initial fixed inputs and candidate capture.
             _python_command(
-                script, "--stage", "dump", "--data", *topology_args,
+                script,
+                "--stage",
+                "dump",
+                "--data",
+                "--data-device",
+                "npu",
+                *topology_args,
             ),
+            _python_command(
+                script,
+                "--stage",
+                "config-check",
+                "--capture",
+                "candidate",
+                *topology_args,
+            ),
+            _release_upload_command(value),
+            # GPU restores the exact inputs plus the NPU candidate, then adds
+            # the reference capture and performs the local offline compare.
+            _release_download_command(value),
             _python_command(
                 script,
                 "--stage",
@@ -511,17 +552,14 @@ def _checklist_plan(value: dict[str, Any]) -> dict[str, Any]:
                 script,
                 "--stage",
                 "config-check",
-                "--capture",
-                "candidate",
-                *topology_args,
-            ),
-            _python_command(
-                script,
-                "--stage",
-                "config-check",
                 "--compare",
                 *topology_args,
             ),
+            _release_upload_command(value),
+        ],
+        "execution_hosts": [
+            "NPU: commands 1-3",
+            "GPU: commands 4-7",
         ],
         "inspect": [
             "Review every rank's config-check summary and detailed sheets.",
@@ -584,6 +622,7 @@ def _reproduce_plan(value: dict[str, Any]) -> dict[str, Any]:
                 "2",
             ),
         ],
+        "execution_hosts": ["NPU: commands 1-4"],
         "inspect": [
             "Repeat the selected endpoint with the same fixture and compare "
             "Loss/Grad Norm.",
@@ -905,14 +944,16 @@ def _observe_plan(value: dict[str, Any]) -> dict[str, Any]:
             _monitor_command(
                 value,
                 "--capture",
-                "reference",
+                "candidate",
                 "--training-steps",
                 "100",
             ),
+            _release_upload_command(value),
+            _release_download_command(value),
             _monitor_command(
                 value,
                 "--capture",
-                "candidate",
+                "reference",
                 "--training-steps",
                 "100",
             ),
@@ -939,6 +980,7 @@ def _observe_plan(value: dict[str, Any]) -> dict[str, Any]:
                 "--training-steps",
                 "100",
             ),
+            _release_upload_command(value),
         ]
         inspect = [
             "Choose the reproduction window explicitly; 100 is a placeholder, "
@@ -947,11 +989,14 @@ def _observe_plan(value: dict[str, Any]) -> dict[str, Any]:
             "Use the trend database to identify the earliest sustained "
             "step/rank/layer drift.",
         ]
+        execution_hosts = ["NPU: commands 1-3", "GPU: commands 4-9"]
     else:
         commands = [
             _migration_command(value, "--data", "--data-device", "npu"),
-            _migration_command(value, "--capture", "reference", "--level", "mix"),
             _migration_command(value, "--capture", "candidate", "--level", "mix"),
+            _release_upload_command(value),
+            _release_download_command(value),
+            _migration_command(value, "--capture", "reference", "--level", "mix"),
             _migration_command(value, "--compare", "--level", "mix"),
             _migration_command(value, "--graph-visualize", "--level", "mix"),
             _python_command(
@@ -961,6 +1006,7 @@ def _observe_plan(value: dict[str, Any]) -> dict[str, Any]:
                 "--workflow",
                 "migration",
             ),
+            _release_upload_command(value),
         ]
         inspect = [
             "Find the earliest differentiating step, rank, forward/backward "
@@ -968,6 +1014,7 @@ def _observe_plan(value: dict[str, Any]) -> dict[str, Any]:
             "Distinguish an already-different input from a normal-input "
             "abnormal output.",
         ]
+        execution_hosts = ["NPU: commands 1-3", "GPU: commands 4-9"]
     return {
         "stage": "observe",
         "goal": (
@@ -975,6 +1022,7 @@ def _observe_plan(value: dict[str, Any]) -> dict[str, Any]:
             "incident window."
         ),
         "commands": commands,
+        "execution_hosts": execution_hosts,
         "inspect": inspect,
         "decision": (
             "Record normal, abnormal, or inconclusive with whole-training evidence."
@@ -1046,6 +1094,7 @@ def _localize_plan(value: dict[str, Any]) -> dict[str, Any]:
             "If input is first abnormal, follow stack evidence upstream.",
             "If normal input creates an abnormal output, verify that API.",
         ]
+        execution_hosts = ["NPU: commands 1-4"]
     elif (
         symptom == "unstable"
         or value["stages"]["reproduce"]["conclusion"] == "unstable"
@@ -1108,6 +1157,7 @@ def _localize_plan(value: dict[str, Any]) -> dict[str, Any]:
             "Inspect regular corruption boundaries before escalating to "
             "profiler or sanitizer.",
         ]
+        execution_hosts = ["NPU: commands 1-4"]
     else:
         commands = [
             _migration_command(
@@ -1124,17 +1174,19 @@ def _localize_plan(value: dict[str, Any]) -> dict[str, Any]:
             _migration_command(
                 value,
                 "--capture",
-                "reference",
+                "candidate",
                 "--dump-task",
                 "statistics",
                 "--level",
                 "L1",
                 *common,
             ),
+            _release_upload_command(value),
+            _release_download_command(value),
             _migration_command(
                 value,
                 "--capture",
-                "candidate",
+                "reference",
                 "--dump-task",
                 "statistics",
                 "--level",
@@ -1150,6 +1202,7 @@ def _localize_plan(value: dict[str, Any]) -> dict[str, Any]:
                 "L1",
                 *common,
             ),
+            _release_upload_command(value),
         ]
         inspect = [
             "Narrow --scope or --module-or-api after the first module is known.",
@@ -1157,6 +1210,7 @@ def _localize_plan(value: dict[str, Any]) -> dict[str, Any]:
             "For a later Loss difference, include previous backward plus "
             "current forward.",
         ]
+        execution_hosts = ["NPU: commands 1-3", "GPU: commands 4-7"]
     return {
         "stage": "localize",
         "goal": (
@@ -1164,6 +1218,7 @@ def _localize_plan(value: dict[str, Any]) -> dict[str, Any]:
             "the whole model."
         ),
         "commands": commands,
+        "execution_hosts": execution_hosts,
         "inspect": inspect,
         "decision": (
             "Record localized only with step, rank, phase, module/API, and "
@@ -1202,11 +1257,15 @@ def _verify_plan(value: dict[str, Any]) -> dict[str, Any]:
                 "npu",
                 *common,
             ),
-            _migration_command(value, "--capture", "reference", *common),
             _migration_command(value, "--capture", "candidate", *common),
-            _migration_command(value, "--compare", "--tensor-log", *common),
             _migration_command(value, "--precheck", "candidate", *common),
+            _release_upload_command(value),
+            _release_download_command(value),
+            _migration_command(value, "--capture", "reference", *common),
+            _migration_command(value, "--compare", "--tensor-log", *common),
+            _release_upload_command(value),
         ],
+        "execution_hosts": ["NPU: commands 1-4", "GPU: commands 5-8"],
         "inspect": [
             "Replay the real input against device and CPU high-precision references.",
             "Run one-variable A/B: FP32, move only this API to CPU, or "
@@ -1233,9 +1292,12 @@ def _validate_plan(value: dict[str, Any]) -> dict[str, Any]:
                 "--level",
                 "mix",
             ),
-            _migration_command(value, "--capture", "reference", "--level", "mix"),
             _migration_command(value, "--capture", "candidate", "--level", "mix"),
+            _release_upload_command(value),
+            _release_download_command(value),
+            _migration_command(value, "--capture", "reference", "--level", "mix"),
             _migration_command(value, "--compare", "--level", "mix"),
+            _release_upload_command(value),
             _monitor_command(
                 value,
                 "--data",
@@ -1247,17 +1309,26 @@ def _validate_plan(value: dict[str, Any]) -> dict[str, Any]:
             _monitor_command(
                 value,
                 "--capture",
-                "reference",
-                "--training-steps",
-                "100",
-            ),
-            _monitor_command(
-                value,
-                "--capture",
                 "candidate",
                 "--training-steps",
                 "100",
             ),
+            _release_upload_command(value),
+            _release_download_command(value),
+            _monitor_command(
+                value,
+                "--capture",
+                "reference",
+                "--training-steps",
+                "100",
+            ),
+            _release_upload_command(value),
+        ],
+        "execution_hosts": [
+            "NPU: commands 1-3",
+            "GPU: commands 4-7",
+            "NPU: commands 8-10",
+            "GPU: commands 11-13",
         ],
         "inspect": [
             "Recheck the suspect API and the original first-incident window.",

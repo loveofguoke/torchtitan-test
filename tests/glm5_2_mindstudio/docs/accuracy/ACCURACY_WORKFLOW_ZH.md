@@ -226,15 +226,24 @@ schema 并补配置验证和测试。
 
 以下命令均从 `torchtitan-test` 根目录执行。
 
-### 5.1 生成固定实验输入
+跨服务器实验固定采用一条完整的数据流，不能把两端 capture 命令脱离同步步骤单独执行：
 
-```bash
-export CUDA_VISIBLE_DEVICES=7
-python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
-  --data --data-device cuda --topology single
+```text
+NPU 生成唯一 fixture（checkpoint + token plan）
+  -> NPU candidate capture
+  -> GitHub Release full upload
+  -> GPU full download
+  -> GPU reference capture
+  -> GPU 本地 compare / visualization
+  -> GPU full upload，保存汇合后的完整实验
 ```
 
-也可以在 NPU 端生成：
+`full` 是继续实验所需的无损同步；`analysis` 仅供查看报告，不能用于另一端继续 capture。
+后续 L0/L1/tensor、Monitor 和问题 step 下钻都复用这个规则：产生新 candidate 后从
+NPU 上传，在 GPU 下载并完成 reference 与离线分析。Release 已存在时 upload 使用
+`--clobber` 更新同一个规范实验，不创建第二个实验 ID。
+
+### 5.1 生成固定实验输入
 
 ```bash
 export ASCEND_RT_VISIBLE_DEVICES=4
@@ -252,30 +261,40 @@ python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
 
 msProbe 不负责生成训练数据。它只观察使用这份契约的训练。
 
-### 5.2 GPU reference
-
-```bash
-export CUDA_VISIBLE_DEVICES=7
-python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
-  --capture reference --topology single
-```
-
-### 5.3 NPU candidate
+### 5.2 NPU candidate 与第一次同步
 
 ```bash
 export ASCEND_RT_VISIBLE_DEVICES=4
 python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --capture candidate --topology single
+
+EXPERIMENT='migration-cuda-npu-bf16-random-s2-b64-seq128-seed61-ffb9c634'
+python release_artifacts.py upload "$EXPERIMENT" --content full
 ```
 
-两端 capture 可以在不同服务器执行。同步时保留完整 artifact 相对目录，不能只
-复制一个 `dump.json` 后丢失 manifest、工具版本和附件 hash。
+### 5.3 GPU 恢复输入并采集 reference
+
+```bash
+EXPERIMENT='migration-cuda-npu-bf16-random-s2-b64-seq128-seed61-ffb9c634'
+python release_artifacts.py download "$EXPERIMENT" \
+  --backend wget --insecure --overwrite
+
+export CUDA_VISIBLE_DEVICES=7
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
+  --capture reference --topology single
+```
+
+下载得到的 NPU candidate 与本机生成的 GPU reference 位于同一规范实验根、同一
+topology 和同一 capture profile。不能只复制 `dump.json`，否则会丢失 manifest、
+fixture generation、工具版本和附件 hash。
 
 ### 5.4 compare
 
 ```bash
 python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
   --compare --topology single
+
+python release_artifacts.py upload "$EXPERIMENT" --content full
 ```
 
 adapter 解析所选 step/rank 的官方输出，再运行等价于：
@@ -647,21 +666,27 @@ msprobe config_check \
   -o <report/rankN>
 ```
 
-完整命令：
+完整命令遵循同一条 NPU -> Release -> GPU 汇合路径：
 
 ```bash
-export CUDA_VISIBLE_DEVICES=7
-python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
-  --data --data-device cuda --topology single
-python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
-  --capture reference --topology single
-
 export ASCEND_RT_VISIBLE_DEVICES=4
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
+  --data --data-device npu --topology single
 python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
   --capture candidate --topology single
 
+EXPERIMENT='migration-cuda-npu-bf16-random-s2-b64-seq128-seed61-ffb9c634'
+python release_artifacts.py upload "$EXPERIMENT" --content full
+
+# 以下在 GPU 服务器执行。
+python release_artifacts.py download "$EXPERIMENT" \
+  --backend wget --insecure --overwrite
+export CUDA_VISIBLE_DEVICES=7
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
+  --capture reference --topology single
 python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
   --compare --topology single
+python release_artifacts.py upload "$EXPERIMENT" --content full
 ```
 
 分布式时不能只看 rank0。每个 rank 可能拥有不同 PP stage、DTensor shard 或环境，

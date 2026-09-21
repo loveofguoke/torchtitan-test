@@ -515,7 +515,18 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                 notes="",
             )
             value = json.loads(case_path.read_text(encoding="utf-8"))
-            self.assertEqual("checklist", build_plan(value)["stage"])
+            checklist = build_plan(value)
+            self.assertEqual("checklist", checklist["stage"])
+            commands = checklist["commands"]
+            self.assertIn("--capture candidate", commands[1])
+            self.assertIn("release_artifacts.py upload", commands[2])
+            self.assertIn("release_artifacts.py download", commands[3])
+            self.assertIn("--capture reference", commands[4])
+            self.assertIn("--compare", commands[5])
+            self.assertEqual(
+                ["NPU: commands 1-3", "GPU: commands 4-7"],
+                checklist["execution_hosts"],
+            )
             self.assertTrue((case_path.parent / "README.md").is_file())
 
             record_stage(
