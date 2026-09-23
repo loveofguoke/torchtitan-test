@@ -390,6 +390,11 @@ def main() -> None:
     _install_training_metrics_capture()
     if mode == "config-check":
         _install_config_checker()
+    elif mode == "baseline":
+        # Whole-training observation deliberately installs no msProbe hook.
+        # Fixed inputs, deterministic setup, the normal Trainer, and the
+        # project-owned metrics recorder are the complete baseline contract.
+        pass
     elif mode == "dump":
         _install_dump_capture()
     elif mode == "compile":
@@ -398,7 +403,8 @@ def main() -> None:
         _install_training_monitor()
     else:
         raise ValueError(
-            f"{MODE_ENV} must be config-check, dump, compile, or monitor, "
+            f"{MODE_ENV} must be config-check, baseline, dump, compile, or "
+            "monitor, "
             f"got {mode!r}"
         )
 

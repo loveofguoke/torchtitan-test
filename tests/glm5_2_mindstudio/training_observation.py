@@ -57,6 +57,23 @@ def read_training_metrics(path: Path) -> dict[int, dict[str, float]]:
     return records
 
 
+def _first_nonfinite_metrics(path: Path) -> dict[str, int]:
+    """Return the first observed NaN/Inf step for every logged metric."""
+
+    first: dict[str, int] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        payload = json.loads(line)
+        step = int(payload["step"])
+        for name, raw_value in payload["metrics"].items():
+            try:
+                value = _number(raw_value)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not math.isfinite(value):
+                first.setdefault(str(name), step)
+    return dict(sorted(first.items()))
+
+
 def _relative_error(reference: float, candidate: float) -> float:
     if not math.isfinite(reference) or not math.isfinite(candidate):
         return math.nan
@@ -254,19 +271,40 @@ def compare_training_metrics(
             ),
         ),
     )
+    first_observed_step = min(reference)
+    first_loss_difference = _first_step(
+        rows,
+        lambda row: math.isfinite(row["loss_relative_error"])
+        and row["loss_relative_error"] > loss_relative_threshold,
+    )
+    if _first_nonfinite_metrics(candidate_path):
+        symptom = "candidate-nan-or-inf"
+    elif first_loss_difference == first_observed_step:
+        symptom = "first-step-loss-difference"
+    elif first_loss_difference is not None:
+        symptom = "later-window-loss-difference"
+    else:
+        symptom = "no-loss-difference-observed"
     summary = {
         "schema": "torchtitan.glm5_2.mindstudio_training_observation",
         "schema_version": 1,
         "reference": str(reference_path.resolve()),
         "candidate": str(candidate_path.resolve()),
         "step_count": len(rows),
+        "observation": {
+            "first_step": first_observed_step,
+            "last_step": max(reference),
+            "diagnostic_symptom": symptom,
+            "reference_first_nonfinite_metrics": _first_nonfinite_metrics(
+                reference_path
+            ),
+            "candidate_first_nonfinite_metrics": _first_nonfinite_metrics(
+                candidate_path
+            ),
+        },
         "loss": {
             "guidance_relative_threshold": loss_relative_threshold,
-            "first_step_above_threshold": _first_step(
-                rows,
-                lambda row: math.isfinite(row["loss_relative_error"])
-                and row["loss_relative_error"] > loss_relative_threshold,
-            ),
+            "first_step_above_threshold": first_loss_difference,
             "mean_relative_error": _finite_mean(
                 row["loss_relative_error"] for row in rows
             ),
@@ -316,6 +354,8 @@ def compare_training_metrics(
             "classification; it is not a universal delivery verdict.",
             "Grad Norm and spike thresholds are diagnostic settings and are "
             "evaluated only when explicitly provided.",
+            "The diagnostic symptom selects the next investigation branch; "
+            "it is not a delivery PASS/FAIL verdict.",
         ],
     }
     summary_path = output_directory / "summary.json"

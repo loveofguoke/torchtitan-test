@@ -40,6 +40,9 @@ from tests.glm5_2_mindstudio.msprobe_adapter import (
 from tests.glm5_2_mindstudio.training_monitor_benchmark import (
     CONFIG as MONITOR_CONFIG,
 )
+from tests.glm5_2_mindstudio.training_baseline_benchmark import (
+    CONFIG as BASELINE_CONFIG,
+)
 from tests.glm5_2_mindstudio.training_observation import compare_training_metrics
 from tests.glm5_2_mindstudio.workflow import (
     _experiment_digest,
@@ -477,11 +480,11 @@ def _migration_command(
     )
 
 
-def _monitor_command(value: dict[str, Any], *arguments: str) -> str:
+def _baseline_command(value: dict[str, Any], *arguments: str) -> str:
     return _python_command(
         "tests/glm5_2_mindstudio/accuracy_benchmark.py",
         "--stage",
-        "monitor",
+        "baseline",
         *arguments,
         *_selected_topology_args(value),
         "--repeat",
@@ -813,6 +816,23 @@ def analyze_training_observation(
         output_root = (
             _case_root(repository_root, case_id) / "03_observe/migration"
         )
+    elif workflow == "baseline":
+        steps = (
+            BASELINE_CONFIG.training.steps
+            if training_steps is None
+            else training_steps
+        )
+        if steps < 1:
+            raise ValueError("training steps must be positive")
+        config = replace(
+            BASELINE_CONFIG,
+            training=replace(BASELINE_CONFIG.training, steps=steps),
+        )
+        output_root = (
+            _case_root(repository_root, case_id)
+            / "03_observe/baseline"
+            / f"s{steps}"
+        )
     else:
         steps = (
             MONITOR_CONFIG.training.steps
@@ -930,91 +950,57 @@ def analyze_training_observation(
 
 
 def _observe_plan(value: dict[str, Any]) -> dict[str, Any]:
-    symptom = value["symptom"]
-    if symptom in {"long-term-loss", "spike", "downstream-metric", "unknown"}:
-        commands = [
-            _monitor_command(
-                value,
-                "--data",
-                "--data-device",
-                "npu",
-                "--training-steps",
-                "100",
-            ),
-            _monitor_command(
-                value,
-                "--capture",
-                "candidate",
-                "--training-steps",
-                "100",
-            ),
-            _release_upload_command(value),
-            _release_download_command(value),
-            _monitor_command(
-                value,
-                "--capture",
-                "reference",
-                "--training-steps",
-                "100",
-            ),
-            _monitor_command(
-                value,
-                "--trend",
-                "reference",
-                "--training-steps",
-                "100",
-            ),
-            _monitor_command(
-                value,
-                "--trend",
-                "candidate",
-                "--training-steps",
-                "100",
-            ),
-            _python_command(
-                "tests/glm5_2_mindstudio/accuracy_diagnostic_benchmark.py",
-                "training-observation",
-                value["case_id"],
-                "--workflow",
-                "monitor",
-                "--training-steps",
-                "100",
-            ),
-            _release_upload_command(value),
-        ]
-        inspect = [
-            "Choose the reproduction window explicitly; 100 is a placeholder, "
-            "not a standard.",
-            "Compare Loss, Grad Norm, NaN/Inf, spikes, and the task metric.",
-            "Use the trend database to identify the earliest sustained "
-            "step/rank/layer drift.",
-        ]
-        execution_hosts = ["NPU: commands 1-3", "GPU: commands 4-9"]
-    else:
-        commands = [
-            _migration_command(value, "--data", "--data-device", "npu"),
-            _migration_command(value, "--capture", "candidate", "--level", "mix"),
-            _release_upload_command(value),
-            _release_download_command(value),
-            _migration_command(value, "--capture", "reference", "--level", "mix"),
-            _migration_command(value, "--compare", "--level", "mix"),
-            _migration_command(value, "--graph-visualize", "--level", "mix"),
-            _python_command(
-                "tests/glm5_2_mindstudio/accuracy_diagnostic_benchmark.py",
-                "training-observation",
-                value["case_id"],
-                "--workflow",
-                "migration",
-            ),
-            _release_upload_command(value),
-        ]
-        inspect = [
-            "Find the earliest differentiating step, rank, forward/backward "
-            "phase, and module.",
-            "Distinguish an already-different input from a normal-input "
-            "abnormal output.",
-        ]
-        execution_hosts = ["NPU: commands 1-3", "GPU: commands 4-9"]
+    commands = [
+        _baseline_command(
+            value,
+            "--data",
+            "--data-device",
+            "npu",
+            "--training-steps",
+            "100",
+        ),
+        _baseline_command(
+            value,
+            "--capture",
+            "candidate",
+            "--training-steps",
+            "100",
+        ),
+        _release_upload_command(value),
+        _release_download_command(value),
+        _baseline_command(
+            value,
+            "--capture",
+            "reference",
+            "--training-steps",
+            "100",
+        ),
+        _baseline_command(
+            value,
+            "--compare",
+            "--training-steps",
+            "100",
+        ),
+        _python_command(
+            "tests/glm5_2_mindstudio/accuracy_diagnostic_benchmark.py",
+            "training-observation",
+            value["case_id"],
+            "--workflow",
+            "baseline",
+            "--training-steps",
+            "100",
+        ),
+        _release_upload_command(value),
+    ]
+    inspect = [
+        "Choose the reproduction window explicitly; 100 is a placeholder, "
+        "not a standard.",
+        "Inspect NaN/Inf first, then first-step Loss, then later Loss/Grad "
+        "Norm drift or spikes.",
+        "Enable Monitor or dump only after the baseline identifies the next "
+        "diagnostic branch and incident window.",
+    ]
+    execution_hosts = ["NPU: commands 1-3", "GPU: commands 4-8"]
     return {
         "stage": "observe",
         "goal": (
@@ -1298,7 +1284,7 @@ def _validate_plan(value: dict[str, Any]) -> dict[str, Any]:
             _migration_command(value, "--capture", "reference", "--level", "mix"),
             _migration_command(value, "--compare", "--level", "mix"),
             _release_upload_command(value),
-            _monitor_command(
+            _baseline_command(
                 value,
                 "--data",
                 "--data-device",
@@ -1306,7 +1292,7 @@ def _validate_plan(value: dict[str, Any]) -> dict[str, Any]:
                 "--training-steps",
                 "100",
             ),
-            _monitor_command(
+            _baseline_command(
                 value,
                 "--capture",
                 "candidate",
@@ -1315,10 +1301,16 @@ def _validate_plan(value: dict[str, Any]) -> dict[str, Any]:
             ),
             _release_upload_command(value),
             _release_download_command(value),
-            _monitor_command(
+            _baseline_command(
                 value,
                 "--capture",
                 "reference",
+                "--training-steps",
+                "100",
+            ),
+            _baseline_command(
+                value,
+                "--compare",
                 "--training-steps",
                 "100",
             ),
@@ -1328,7 +1320,7 @@ def _validate_plan(value: dict[str, Any]) -> dict[str, Any]:
             "NPU: commands 1-3",
             "GPU: commands 4-7",
             "NPU: commands 8-10",
-            "GPU: commands 11-13",
+            "GPU: commands 11-14",
         ],
         "inspect": [
             "Recheck the suspect API and the original first-incident window.",
@@ -1497,7 +1489,7 @@ def run_diagnostic_cli(
     observation = subparsers.add_parser("training-observation")
     observation.add_argument("case_id")
     observation.add_argument(
-        "--workflow", choices=("migration", "monitor"), required=True
+        "--workflow", choices=("baseline", "migration", "monitor"), required=True
     )
     observation.add_argument("--training-steps", type=int)
     observation.add_argument("--loss-relative-threshold", type=float, default=0.01)

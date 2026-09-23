@@ -89,14 +89,15 @@ python tests/glm5_2_mindstudio/accuracy_diagnostic_benchmark.py plan glm5-first-
 
 ### 2.1 整网曲线和现象摘要
 
-完成 reference/candidate capture 后，当前 `observe` recipe 会自动给出：
+完成无 dump 的 reference/candidate baseline 后，当前 `observe` recipe 会自动给出：
 
 ```bash
 python tests/glm5_2_mindstudio/accuracy_diagnostic_benchmark.py training-observation \
-  glm5-first-loss-001 --workflow migration
+  glm5-first-loss-001 --workflow baseline --training-steps 100
 ```
 
-长稳和尖刺场景使用 `--workflow monitor`。每个拓扑生成：
+所有现象先从 baseline 分类；只有 baseline 表明需要更多层/参数/优化器状态时才使用
+`--workflow monitor`。每个拓扑生成：
 
 ```text
 mindstudio_artifacts/accuracy/<experiment-id>/diagnoses/<case-id>/03_observe/<workflow>/<topology>/
@@ -107,14 +108,15 @@ mindstudio_artifacts/accuracy/<experiment-id>/diagnoses/<case-id>/03_observe/<wo
 └── relative_error.svg
 ```
 
-`summary.json` 给出双方首个非有限值、Loss 首个超过指导阈值的 step、平均相对误差
-和可选尖刺位置。Loss 默认 `1%` 只用于复现官方案例中的现象分类，不会自动把整个
+`summary.json` 给出双方所有数值指标的首个非有限值、Loss 首个超过指导阈值的
+step、平均相对误差和可选尖刺位置。先判 NaN/Inf，再判首 Step，最后判后续窗口。
+Loss 默认 `1%` 只用于复现官方案例中的现象分类，不会自动把整个
 实验判为通过或失败。官方没有给出统一 Grad Norm 和尖刺阈值，因此默认只画曲线；
 需要项目阈值时显式传入：
 
 ```bash
 python tests/glm5_2_mindstudio/accuracy_diagnostic_benchmark.py training-observation \
-  glm5-first-loss-001 --workflow monitor \
+  glm5-first-loss-001 --workflow baseline --training-steps 100 \
   --grad-norm-relative-threshold 0.05 \
   --spike-relative-threshold 0.20
 ```

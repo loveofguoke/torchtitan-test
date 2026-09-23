@@ -75,6 +75,7 @@ from .msprobe_adapter import (
     write_compare_invocation,
 )
 from .report import write_report_index
+from .training_observation import compare_training_metrics, read_training_metrics
 
 
 Role = Literal["reference", "candidate"]
@@ -149,6 +150,16 @@ def _stage_scoped_config(
                 output_subdirectory="checklist/configuration-check",
                 fixture_subdirectory=fixture_subdirectory,
             )
+        if config.workflow == "baseline":
+            profile = (
+                f"s{config.training.steps}-"
+                f"{config_digest(asdict(config.training), length=8)}"
+            )
+            return replace(
+                config,
+                output_subdirectory=f"observations/baseline/{profile}",
+                fixture_subdirectory=fixture_subdirectory,
+            )
         if config.workflow == "migration":
             profile = (
                 f"{config.dump.task}-{config.dump.level}-"
@@ -183,6 +194,15 @@ def _stage_scoped_config(
         return replace(
             config,
             output_subdirectory=f"diagnostics/dump/{profile}",
+        )
+    if config.workflow == "baseline":
+        profile = (
+            f"s{config.training.steps}-"
+            f"{config_digest(asdict(config.training), length=8)}"
+        )
+        return replace(
+            config,
+            output_subdirectory=f"observations/baseline/{profile}",
         )
     if config.workflow == "monitor":
         identity = {
@@ -1410,6 +1430,13 @@ def capture_official(
             "collection": "dynamic",
             "framework": "pytorch",
         }
+    elif config.workflow == "baseline":
+        environment["GLM5_MINDSTUDIO_MODE"] = "baseline"
+        official_config = {
+            "workflow": "baseline",
+            "collection": "whole_training_metrics",
+            "instrumentation": "none",
+        }
     elif config.workflow == "migration":
         environment["GLM5_MINDSTUDIO_MODE"] = "dump"
         official_config = config.dump.official_config(official_output)
@@ -1559,6 +1586,11 @@ def capture_official(
                 pattern="config_check_rank{rank}.zip",
                 world_size=topology.world_size,
             )
+        elif config.workflow == "baseline":
+            metrics_path = run_directory / "training_metrics.jsonl"
+            read_training_metrics(metrics_path)
+            official_output.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(metrics_path, official_output / metrics_path.name)
         elif config.workflow == "migration":
             _validate_dump_outputs(
                 official_output,
@@ -2668,6 +2700,14 @@ def compare_official(
                         output=compare_directory / f"rank{rank}",
                     )
                 )
+        elif config.workflow == "baseline":
+            commands.append(
+                [
+                    "compare-training-metrics",
+                    str(reference_artifact / "official/training_metrics.jsonl"),
+                    str(candidate_artifact / "official/training_metrics.jsonl"),
+                ]
+            )
         elif config.workflow == "migration":
             multiple_steps = len(config.dump.steps) > 1
             for step in config.dump.steps:
@@ -2799,6 +2839,21 @@ def compare_official(
                 + "\n",
                 encoding="utf-8",
             )
+        elif config.workflow == "baseline":
+            summary_path = compare_training_metrics(
+                reference_path=(
+                    reference_artifact / "official/training_metrics.jsonl"
+                ),
+                candidate_path=(
+                    candidate_artifact / "official/training_metrics.jsonl"
+                ),
+                output_directory=compare_directory,
+            )
+            runtime_log.write_text(
+                "Compared uninstrumented whole-training Loss and Grad Norm.\n"
+                f"Diagnostic summary: {summary_path}\n",
+                encoding="utf-8",
+            )
         elif config.workflow == "migration":
             multiple_steps = len(config.dump.steps) > 1
             for step in config.dump.steps:
@@ -2886,6 +2941,17 @@ def compare_official(
                 encoding="utf-8",
             )
         summary = summarize_official_results(compare_directory)
+        if config.workflow == "baseline":
+            observation = json.loads(
+                (compare_directory / "summary.json").read_text(encoding="utf-8")
+            )
+            summary["training_observation"] = observation
+            summary["note"] = (
+                "Baseline comparison classifies the observed training symptom "
+                "and selects the next diagnostic branch. It does not define a "
+                "universal delivery PASS/FAIL verdict."
+            )
+            write_json(compare_directory / "official_summary.json", summary)
         write_json(
             comparison_state_path,
             {
@@ -3079,13 +3145,13 @@ def run_mindstudio_cli(
     args = parser.parse_args()
 
     if (
-        base_config.workflow == "monitor"
+        base_config.workflow in {"baseline", "monitor"}
         and args.training_steps is None
         and not args.doctor
         and not args.list_topologies
     ):
         parser.error(
-            "the official Monitor workflow requires an explicit "
+            "the baseline/Monitor workflow requires an explicit "
             "--training-steps reproduction window"
         )
 
@@ -3181,8 +3247,11 @@ def run_mindstudio_cli(
         dump = replace(dump, extra_info=False)
     training = config.training
     if args.training_steps is not None:
-        if config.workflow != "monitor":
-            parser.error("--training-steps is supported only by monitor workflow")
+        if config.workflow not in {"baseline", "monitor"}:
+            parser.error(
+                "--training-steps is supported only by baseline and monitor "
+                "workflows"
+            )
         if args.training_steps < 1:
             parser.error("--training-steps must be positive")
         training = replace(training, steps=args.training_steps)

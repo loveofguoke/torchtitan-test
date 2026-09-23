@@ -5,7 +5,8 @@
 
 ```text
 训练问题复现与配置 CheckList
-  -> msProbe 配置检查、Monitor V2、模块/API/编译精度采集与比较
+  -> 无 dump 正常训练，先判断 NaN/Inf、首 Step 和长稳 Loss/Grad Norm
+  -> 按现象选择 Monitor V2、模块/API/编译精度采集与比较
   -> msProf 或 Ascend PyTorch Profiler 性能采集
   -> msprof-analyze advisor / cluster / compare
   -> MindStudio Insight Summary / Timeline / Communication / Operator / Memory
@@ -32,11 +33,12 @@ schedule 窗口时切到 Ascend PyTorch Profiler。系统调优、单算子调�
 | --- | --- | --- |
 | 工具源码 checkout、安装计划、版本/路径 doctor | 已实现 | `tools/bootstrap_mindstudio_toolchain.py`、`toolchain.py` |
 | 固定 token plan 和 seed checkpoint | 已实现 | 每个 benchmark 的 `--data` |
-| GPU/NPU 完整精度流程 | 已实现统一入口 | `accuracy_benchmark.py --stage {dump,config-check,monitor}`；旧入口保留兼容 |
+| GPU/NPU 完整精度流程 | 已实现统一入口 | `accuracy_benchmark.py --stage {config-check,baseline,monitor,dump}`；旧入口保留兼容 |
 | 同一 GPU 官方链路自检 | 已实现 | `self_consistency_benchmark.py` |
 | 官方离线 `msprobe compare` | 已实现 | `accuracy_benchmark.py --stage dump --compare` |
 | NPU eager/compile 模块前向与反向比较 | 已实现 | `compile_accuracy_benchmark.py` |
 | GPU/NPU 训练前配置检查与逐 rank compare | 已实现 | `accuracy_benchmark.py --stage config-check` |
+| 无工具 hook 的正常训练与现象分类 | 已实现 | `accuracy_benchmark.py --stage baseline`，输出 Loss/Grad Norm/NaN/Inf 证据与曲线 |
 | API 精度预检与两端预检结果比对 | 已实现 | `--precheck`、`--precheck-compare` |
 | 长程训练状态监控 | 已实现，step 数按问题复现窗口显式指定 | `accuracy_benchmark.py --stage monitor` |
 | 分级图可视化与 TensorBoard 索引 | 已实现 | migration 完成 L0/mix capture 后执行 `--graph-visualize` |
@@ -57,7 +59,7 @@ schedule 窗口时切到 Ascend PyTorch Profiler。系统调优、单算子调�
 1. 本 README：安装、命令、参数、目录与边界；
 2. [源码安装与环境检查](docs/toolchain/SOURCE_INSTALL_ZH.md)：环境分层、源码工具安装、doctor；
 3. [GPU 采集与内网离线比较环境](docs/toolchain/GPU_COLLECTION_AND_OFFLINE_ANALYSIS_ZH.md)：Nsys、基础 msProbe、msprof-analyze 与单向数据汇合；
-4. [GPU/NPU 模块与 API 精度流程](docs/accuracy/ACCURACY_WORKFLOW_ZH.md)：官方五阶段、预检、指标与结果判读；
+4. [GPU/NPU 精度流程](docs/accuracy/ACCURACY_WORKFLOW_ZH.md)：正常训练、现象分类、按需工具定位与结果判读；
 5. [eager/compile 精度流程](docs/accuracy/COMPILE_ACCURACY_WORKFLOW_ZH.md)：single-pass、FSDP2、多卡限制；
 6. [官方文档与能力矩阵](docs/toolchain/OFFICIAL_DOCUMENTATION_MATRIX_ZH.md)：官方章节、GLM 入口、产物和支持状态逐项对应；
 7. [官方工具链全景](docs/toolchain/OFFICIAL_TOOLCHAIN_ZH.md)：训练、图编译、性能、推理、算子工具的职责；
@@ -671,13 +673,68 @@ python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
 python release_artifacts.py upload "$EXPERIMENT" --content full
 ```
 
-## 7. 官方训练状态监控
+## 7. 正常训练现象观察与按需监控
+
+标准流程不是一开始 dump。完成配置检查后，先运行无 PrecisionDebugger、无 Monitor
+hook 的 baseline。它仍使用统一 checkpoint、token plan 和确定性设置，但模型训练走
+正常 TorchTitan 路径，只额外把 Trainer 已经上报的数值指标写入 JSONL：
+
+```bash
+# NPU：准备足够覆盖观察窗口的输入，并运行正常训练
+export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage baseline \
+  --data --data-device npu --topology single --training-steps 500
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage baseline \
+  --capture candidate --topology single --training-steps 500
+
+# GPU 同步 full 实验数据后运行标杆；汇合后生成曲线和现象摘要
+export CUDA_VISIBLE_DEVICES=0
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage baseline \
+  --capture reference --topology single --training-steps 500
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage baseline \
+  --compare --topology single --training-steps 500
+```
+
+`--compare` 输出 Loss、Grad Norm 和相对误差曲线，并列出所有已记录数值指标第一次
+出现 NaN/Inf 的 step。先判断 NaN/溢出，再判断首 Step Loss，最后判断前期对齐后的
+长稳漂移或尖刺。`500` 只是本次观察窗口，不是官方固定标准；命令必须覆盖实际问题。
+
+只有 baseline 发现长程异常但第一现场不明确时，才运行 Monitor V2；发现明确异常
+step 后，才对少量 step 运行 L0/L1/mix/tensor dump。
+
+### 7.1 官方训练状态监控
 
 Monitor V2 是长时间、低开销的异常筛查，不应让短时 L0/L1 dump capture 跑数百
 step。官方没有固定 5000-step 标准；命令必须用 `--training-steps` 明确覆盖预期的
 问题复现窗口。默认从 rank 0 的 `weight_grad` 开始；module、optimizer、param 和
 cc 按问题现象显式开启。在 TorchTitan 完成一次 optimizer step
 后手动调用一次 `mon.step()`；配置固定 `patch_optimizer_step=false`，避免重复计步。
+
+Monitor 保存的是所选对象的 `norm/mean/min/max/nans` 等统计量趋势，不是完整
+Tensor。`--monitor-start-step`、`--monitor-stop-step`（exclusive）和
+`--monitor-step-interval` 可以只监控问题窗口；例如已知异常约在 step 360，可以先
+覆盖 300--400，而不必从 step 0 完整 dump。默认启用的 `weight_grad` 同时记录
+`scope=unreduced` 和 `scope=reduced`：前者来自反向阶段，后者来自
+`optimizer.step()` 前。它们是两个采集时点，不能在所有并行拓扑下机械解释成某一个
+collective 的严格前后；应结合 FSDP/DDP hook、梯度累积、裁剪和其他梯度处理判断。
+
+官方语义与字段说明见 [msProbe Monitor V2](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msProbe/docs/zh/user_guide/monitor_v2_instruct.md)，项目中的完整选择方法、产物解读和定点 dump 衔接见
+[精度工作流 9.3 节](docs/accuracy/ACCURACY_WORKFLOW_ZH.md#93-训练状态监控)。
+
+长稳 Loss 跑飞且 Grad Norm 先异常时，可只采梯度统计：
+
+```bash
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage monitor \
+  --capture candidate --topology fsdp8 \
+  --training-steps 401 \
+  --monitor-start-step 300 --monitor-stop-step 401 \
+  --monitor-step-interval 1 \
+  --monitor-ops norm,mean,min,max,nans
+```
+
+该命令不会保存每一步的完整梯度 Tensor。先从 Monitor CSV 找到首个异常
+step/rank/parameter，再对窄 step、rank 和 module 执行 L0/L1 statistics 或 tensor
+dump。
 
 ```bash
 # 生成一次共享 fixture

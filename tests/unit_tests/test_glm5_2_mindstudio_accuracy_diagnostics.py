@@ -16,6 +16,9 @@ from tests.glm5_2_mindstudio.configuration_check_benchmark import (
     CONFIG as CONFIG_CHECK_CONFIG,
 )
 from tests.glm5_2_mindstudio.accuracy_benchmark import _select_stage
+from tests.glm5_2_mindstudio.training_baseline_benchmark import (
+    CONFIG as BASELINE_CONFIG,
+)
 from tests.glm5_2_mindstudio.migration_benchmark import CONFIG as MIGRATION_CONFIG
 
 from tests.glm5_2_mindstudio.accuracy_diagnostics import (
@@ -56,12 +59,26 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
             MONITOR_CONFIG.storage_name,
         )
         self.assertEqual(
+            MIGRATION_CONFIG.storage_name,
+            BASELINE_CONFIG.storage_name,
+        )
+        self.assertEqual(
             Path(MIGRATION_CONFIG.storage_name),
             CONFIG_CHECK_CONFIG.output_relative_root,
         )
         self.assertEqual(
             Path("diagnostics/configuration-check"),
             CONFIG_CHECK_CONFIG.operation_relative_root,
+        )
+        baseline = _stage_scoped_config(BASELINE_CONFIG, MIGRATION_CONFIG)
+        self.assertEqual(
+            Path(MIGRATION_CONFIG.storage_name),
+            baseline.output_relative_root,
+        )
+        self.assertTrue(
+            baseline.operation_relative_root.as_posix().startswith(
+                "observations/baseline/s100-"
+            )
         )
         monitor = _stage_scoped_config(MONITOR_CONFIG, MIGRATION_CONFIG)
         self.assertEqual(
@@ -76,6 +93,15 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
         self.assertEqual("monitor", stage)
         self.assertEqual(
             ["--capture", "candidate", "--topology", "fsdp8"], remaining
+        )
+
+    def test_unified_accuracy_entry_defaults_to_baseline(self) -> None:
+        stage, remaining = _select_stage(
+            ["--capture", "candidate", "--topology", "single"]
+        )
+        self.assertEqual("baseline", stage)
+        self.assertEqual(
+            ["--capture", "candidate", "--topology", "single"], remaining
         )
 
     def test_named_experiment_contains_variable_operation_scopes(self) -> None:
@@ -328,6 +354,17 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                 spike_relative_threshold=0.4,
             )
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                "candidate-nan-or-inf",
+                summary["observation"]["diagnostic_symptom"],
+            )
+            self.assertEqual(
+                {
+                    "loss_metrics/global_avg_loss": 2,
+                    "loss_metrics/global_max_loss": 2,
+                },
+                summary["observation"]["candidate_first_nonfinite_metrics"],
+            )
             self.assertEqual(1, summary["loss"]["first_step_above_threshold"])
             self.assertEqual(2, summary["loss"]["candidate_nonfinite_step"])
             self.assertEqual([1, 2], summary["loss"]["reference_spike_steps"])
@@ -601,7 +638,7 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                     incident={},
                 )
 
-    def test_symptom_selects_nan_and_monitor_recipes(self) -> None:
+    def test_every_symptom_starts_with_uninstrumented_baseline(self) -> None:
         for case_id, symptom in (
             ("nan-002", "nan-or-overflow"),
             ("long-001", "long-term-loss"),
@@ -636,10 +673,9 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                 plan = build_plan(value)
                 self.assertEqual("observe", plan["stage"])
                 commands = "\n".join(plan["commands"])
-                if symptom == "long-term-loss":
-                    self.assertIn("--stage monitor", commands)
-                else:
-                    self.assertIn("--stage dump", commands)
+                self.assertIn("--stage baseline", commands)
+                self.assertNotIn("--stage monitor", commands)
+                self.assertNotIn("--stage dump", commands)
 
     def test_close_requires_supported_hypothesis_and_all_gates(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

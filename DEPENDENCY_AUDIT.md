@@ -166,6 +166,11 @@ change:
 - Keep official module/API evidence, end-to-end training evidence, performance
   capture evidence, and compile evidence in separate classes. Tool-stage
   completion is never a numerical or performance verdict.
+- Accuracy diagnosis starts with the `baseline` workflow: fixed inputs and
+  deterministic setup, normal TorchTitan training, project-owned per-step
+  metrics, and no PrecisionDebugger or Monitor hook.  NaN/Inf, first-step,
+  and later-window observations select a subsequent Monitor or dump scope;
+  broad dump collection must not replace this initial observation stage.
 - Diagnostic cases are a control plane over existing official workflows. They
   may reference official outputs but must not copy, rename, or synthesize them.
   Configuration check, msProbe dump/compare/visualization, Monitor V2, and
