@@ -301,6 +301,26 @@ def _adopt_legacy_accuracy_storage(
                 / topology.slug
                 / config.operation_relative_root
             )
+            if (
+                config.workflow == "baseline"
+                and config.output_subdirectory is not None
+                and config.output_subdirectory.startswith(
+                    "observations/training/"
+                )
+            ):
+                previous_subdirectory = config.output_subdirectory.replace(
+                    "observations/training/",
+                    "observations/baseline/",
+                    1,
+                )
+                adopt(
+                    root
+                    / configured_root
+                    / config.storage_name
+                    / topology.slug
+                    / previous_subdirectory,
+                    destination,
+                )
             for legacy_name in legacy_names:
                 source = root / configured_root / legacy_name
                 if config.output_subdirectory is not None:

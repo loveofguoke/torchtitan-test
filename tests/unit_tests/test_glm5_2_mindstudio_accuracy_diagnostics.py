@@ -270,6 +270,66 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
             self.assertTrue((destination / "candidate-r1").is_dir())
             self.assertFalse(legacy.exists())
 
+    def test_training_observation_adopts_previous_baseline_directory(self) -> None:
+        experiment = "glm5-debug-bf16-b64-seq128-seed61"
+        scoped = _stage_scoped_config(
+            BASELINE_CONFIG,
+            MIGRATION_CONFIG,
+            experiment,
+        )
+        topology = scoped.candidate.topology
+        previous_subdirectory = scoped.output_subdirectory.replace(
+            "observations/training/",
+            "observations/baseline/",
+            1,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            for configured_root in (
+                scoped.run_root,
+                scoped.artifact_root,
+                scoped.report_root,
+            ):
+                previous = (
+                    root
+                    / configured_root
+                    / scoped.storage_name
+                    / topology.slug
+                    / previous_subdirectory
+                )
+                previous.mkdir(parents=True)
+                (previous / "candidate-r1").mkdir()
+
+            _adopt_legacy_accuracy_storage(
+                root,
+                scoped,
+                topologies=(topology,),
+                legacy_storage_name=experiment,
+            )
+
+            for configured_root in (
+                scoped.run_root,
+                scoped.artifact_root,
+                scoped.report_root,
+            ):
+                destination = (
+                    root
+                    / configured_root
+                    / scoped.storage_name
+                    / topology.slug
+                    / scoped.operation_relative_root
+                )
+                self.assertTrue((destination / "candidate-r1").is_dir())
+                self.assertFalse(
+                    (
+                        root
+                        / configured_root
+                        / scoped.storage_name
+                        / topology.slug
+                        / previous_subdirectory
+                    ).exists()
+                )
+
     def test_diagnostic_case_lives_below_canonical_experiment(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             path = create_case(
