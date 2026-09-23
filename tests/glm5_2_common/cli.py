@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -25,6 +26,8 @@ import uuid
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+PROCESS_TERMINATION_GRACE_SECONDS = 10.0
+MANAGED_PROCESS_GROUP_ENV = "_TORCHTITAN_TEST_MANAGED_PROCESS_GROUP"
 
 
 def display_repository_path(path: Path) -> str:
@@ -77,6 +80,103 @@ def print_output_path(label: str, path: Path) -> None:
     """Print a clickable repository-relative experiment output path."""
 
     print(f"{label}: {display_repository_path(path)}", flush=True)
+
+
+def _terminate_process_tree(
+    process: subprocess.Popen[Any],
+    *,
+    grace_seconds: float = PROCESS_TERMINATION_GRACE_SECONDS,
+    process_group: bool = True,
+) -> None:
+    """Terminate and reap a managed subprocess and all of its descendants."""
+
+    if process.poll() is not None:
+        process.wait()
+        return
+
+    if os.name == "posix" and process_group:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            process.wait()
+            return
+    else:
+        process.terminate()
+
+    try:
+        process.wait(timeout=grace_seconds)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+
+    if os.name == "posix" and process_group:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    else:
+        process.kill()
+    process.wait()
+
+
+def run_managed_process(
+    command: Sequence[str],
+    *,
+    cwd: Path | str | None = None,
+    env: dict[str, str] | None = None,
+    stdout: Any = None,
+    stderr: Any = None,
+    text: bool | None = None,
+    check: bool = False,
+) -> subprocess.CompletedProcess[Any]:
+    """Run a subprocess whose complete process tree follows parent lifetime."""
+
+    popen_arguments: dict[str, Any] = {
+        "cwd": cwd,
+        "env": env,
+        "stdout": stdout,
+        "stderr": stderr,
+        "text": text,
+    }
+    owns_process_group = os.environ.get(MANAGED_PROCESS_GROUP_ENV) != "1"
+    if os.name == "posix" and owns_process_group:
+        # A separate session lets the parent terminate torchrun and every rank
+        # without signalling itself.
+        popen_arguments["start_new_session"] = True
+    elif os.name == "nt" and owns_process_group:
+        popen_arguments["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+
+    process = subprocess.Popen(list(command), **popen_arguments)
+    previous_handlers: dict[int, Any] = {}
+
+    def interrupt(signum: int, _frame: Any) -> None:
+        raise SystemExit(128 + signum)
+
+    # SIGINT already becomes KeyboardInterrupt. Convert termination and shell
+    # hangup into exceptions so cleanup and RunAttempt finalization still run.
+    if os.name == "posix":
+        try:
+            for signum in (signal.SIGTERM, signal.SIGHUP):
+                previous_handlers[signum] = signal.getsignal(signum)
+                signal.signal(signum, interrupt)
+        except ValueError:
+            # Signal handlers can only be installed by the main thread. The
+            # process-group cleanup still covers exceptions in helper threads.
+            previous_handlers.clear()
+
+    try:
+        returncode = process.wait()
+    except BaseException:
+        _terminate_process_tree(process, process_group=owns_process_group)
+        raise
+    finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
+
+    completed = subprocess.CompletedProcess(list(command), returncode)
+    if check and returncode:
+        raise subprocess.CalledProcessError(returncode, list(command))
+    return completed
 
 
 def write_experiment_overview(
@@ -506,7 +606,15 @@ def run_all_topologies(
             *replace_topology(argv, topology),
         ]
         print(f"Starting topology suite member: {topology}", flush=True)
-        process = subprocess.run(command, check=False)
+        child_environment = {
+            **os.environ,
+            MANAGED_PROCESS_GROUP_ENV: "1",
+        }
+        process = run_managed_process(
+            command,
+            env=child_environment,
+            check=False,
+        )
         if process.returncode:
             return process.returncode
     return 0

@@ -917,6 +917,8 @@ Profiler 产物可进入 offline、advisor、cluster、compare 和 Insight 中�
 - 不加 `--force`：跳过 config hash、fixture generation 和附件校验均完整的 capture；
 - 不完整/失败目录：先归档，再重跑该成员；
 - 活跃 PID：拒绝删除或复用，防止杀掉仍在运行的任务；
+- `Ctrl+C`、`SIGTERM`、`SIGHUP`：先终止并回收当前 topology、torchrun 和全部
+  rank，再记录 interrupted 状态；all/topologies 不会留下脱离外层的嵌套进程组；
 - compare：只读完整 artifact；同一实验的 fixture generation 不一致时必须拒绝。
 
 跨服务器最少同步：

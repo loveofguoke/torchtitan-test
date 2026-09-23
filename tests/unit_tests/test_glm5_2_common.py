@@ -2,7 +2,11 @@
 # All rights reserved.
 
 import json
+import os
 from pathlib import Path
+import signal
+import subprocess
+from unittest import mock
 
 import pytest
 
@@ -12,6 +16,7 @@ from tests.glm5_2_common.cli import (
     RunAttempt,
     replace_topology,
     reset_output_generation,
+    run_managed_process,
     write_experiment_overview,
 )
 from tests.glm5_2_common.topology import standard_topologies
@@ -94,6 +99,81 @@ def test_all_topology_runner_replaces_both_cli_forms() -> None:
     assert replace_topology(
         ["--topology=all", "--force"], "cp8"
     ) == ["--force", "--topology=cp8"]
+
+
+def test_managed_process_terminates_tree_when_parent_is_interrupted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.glm5_2_common import cli
+
+    class InterruptedProcess:
+        pid = 12345
+
+        def wait(self, timeout: float | None = None) -> int:
+            raise KeyboardInterrupt
+
+    process = InterruptedProcess()
+    terminate = mock.Mock()
+    monkeypatch.setattr(cli, "_terminate_process_tree", terminate)
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: process)
+
+    with pytest.raises(KeyboardInterrupt):
+        run_managed_process(["trainer"])
+
+    terminate.assert_called_once_with(process, process_group=True)
+
+
+def test_managed_process_does_not_detach_inside_outer_managed_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.glm5_2_common import cli
+
+    class InterruptedProcess:
+        pid = 12345
+
+        def wait(self, timeout: float | None = None) -> int:
+            raise KeyboardInterrupt
+
+    process = InterruptedProcess()
+    terminate = mock.Mock()
+    popen = mock.Mock(return_value=process)
+    monkeypatch.setenv(cli.MANAGED_PROCESS_GROUP_ENV, "1")
+    monkeypatch.setattr(cli, "_terminate_process_tree", terminate)
+    monkeypatch.setattr(subprocess, "Popen", popen)
+
+    with pytest.raises(KeyboardInterrupt):
+        run_managed_process(["trainer"])
+
+    assert "start_new_session" not in popen.call_args.kwargs
+    terminate.assert_called_once_with(process, process_group=False)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process-group signals")
+def test_terminate_process_tree_escalates_and_reaps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.glm5_2_common import cli
+
+    class HungProcess:
+        pid = 12345
+
+        def poll(self) -> None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> int:
+            if timeout is not None:
+                raise subprocess.TimeoutExpired(["trainer"], timeout)
+            return 0
+
+    killpg = mock.Mock()
+    monkeypatch.setattr(os, "killpg", killpg)
+
+    cli._terminate_process_tree(HungProcess(), grace_seconds=0)
+
+    assert killpg.call_args_list == [
+        mock.call(12345, signal.SIGTERM),
+        mock.call(12345, signal.SIGKILL),
+    ]
 
 
 def test_reset_output_generation_removes_selected_members_and_archives(

@@ -93,6 +93,12 @@ changes recorded by the combination submission-readiness report.
 - A fixture generation ID, exact fixture digest, or equivalent immutable
   parity fixture digest must prevent old and new captures from being mixed.
 - An active recorded orchestrator PID blocks both retry and force deletion.
+- Long-running subprocesses are bound to their launcher process group. SIGINT,
+  SIGTERM, or SIGHUP terminates and reaps the active topology, torchrun, and
+  every rank before the lifecycle lock is released. An all-topology child
+  inherits the outer managed group instead of detaching a nested rank group.
+  SIGKILL and machine loss are not catchable; their dead-owner state is
+  detected and retried through the existing interrupted-run contract.
 - Finalizing an already completed training run must preserve the original
   training attempt identity in its artifact metadata.
 - Every subprocess stage records its resolved command and exact log path. It

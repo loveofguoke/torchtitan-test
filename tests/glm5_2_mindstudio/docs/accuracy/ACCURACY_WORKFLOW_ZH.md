@@ -918,6 +918,10 @@ msProbe capture 只运行少量目标 step，因为它要保存模块/API 数据
 - compare 可重复生成，但只接受完整 artifact。
 
 这保证一次中断后的续跑不会把上一次失败残片与本次新结果混搭。
+启动器同时管理完整进程组：`Ctrl+C`、`SIGTERM` 或 SSH/tmux 断开产生的
+`SIGHUP` 会先停止并回收当前 topology、torchrun 和全部 rank，再把本次状态标记为
+`interrupted` 并释放锁。不可捕获的 `SIGKILL` 或主机掉电只能留下 dead-owner
+状态；下一次不加 force 的运行会把该成员视为未完成并重跑，不能将其当作完成结果。
 
 ### 11.3 工具改变必须改变证据
 

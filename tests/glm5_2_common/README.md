@@ -190,7 +190,7 @@ Experiment output is resumed per suite member:
 
 Long-running mutable experiments use the shared `RunAttempt` lifecycle. Each
 run directory contains `run_state.json` with an attempt ID, orchestrator PID,
-context, and `running`/`failed`/`completed` status. Runtime logs record the same
+context, and `running`/`interrupted`/`failed`/`completed` status. Runtime logs record the same
 attempt ID where the experiment owns log creation. Before `--force` removes
 anything, the complete selected range is preflighted for live orchestrators;
 all selected run/artifact/report/input-contract paths and their exact-name
@@ -198,6 +198,14 @@ all selected run/artifact/report/input-contract paths and their exact-name
 absent before the first new process starts. An interrupted command
 is resumed without `--force`: completed members are retained, while incomplete
 members are archived or replaced as one unit.
+
+The launcher also owns the complete subprocess process group. `Ctrl+C`,
+`SIGTERM`, and terminal/SSH `SIGHUP` first stop and reap the active topology,
+`torchrun`, and every rank, then finalize the lifecycle state and release its
+lock. An `all`/`--topologies` child stays in the outer managed group instead of
+creating a detached nested worker group. Uncatchable `SIGKILL` or host loss can
+leave only stale state, not a trusted completion; the next non-force run
+detects the dead owner and retries that incomplete member.
 
 This policy applies to precision (including graph and combination captures),
 performance/profiler, stability, checkpoint, and smoke. Parity artifacts remain

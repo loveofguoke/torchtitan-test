@@ -10,6 +10,7 @@ from .cli import (
     replace_topology,
     reset_output_generation,
     run_all_topologies,
+    run_managed_process,
 )
 from .device import AcceleratorSelection, resolve_accelerator, resolve_device_type
 from .execution import ExecutionPlan, TrainingFeature, compose_execution
@@ -37,6 +38,7 @@ __all__ = [
     "replace_topology",
     "reset_output_generation",
     "run_all_topologies",
+    "run_managed_process",
     "resolve_accelerator",
     "resolve_device_type",
     "select_topologies",

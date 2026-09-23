@@ -28,6 +28,7 @@ from tests.glm5_2_common.cli import (
     display_repository_path,
     print_output_path,
     print_runtime_log,
+    run_managed_process,
     reset_output_generation,
     write_experiment_overview,
 )
@@ -822,7 +823,7 @@ def _run_process(
             stream.write(f"{key}: {value}\n")
         stream.write("\nCommand: " + " ".join(command) + "\n\n")
         stream.flush()
-        process = subprocess.run(
+        process = run_managed_process(
             list(command),
             cwd=root,
             env=environment,
@@ -1612,6 +1613,9 @@ def capture_official(
             },
         )
         attempt.update("completed", artifact=str(artifact_directory.resolve()))
+    except (KeyboardInterrupt, SystemExit) as error:
+        attempt.update("interrupted", error=repr(error))
+        raise
     except BaseException as error:
         attempt.update("failed", error=repr(error))
         raise
