@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import html
+import json
 import os
 from pathlib import Path
 from typing import Any, Sequence
@@ -100,6 +101,174 @@ def _official_diagnostic_entries(
     return entries
 
 
+def _write_baseline_report_index(
+    *,
+    report_directory: Path,
+    experiment_name: str,
+    rows: Sequence[dict[str, Any]],
+) -> Path:
+    """Write a training-observation report without an msProbe verdict."""
+
+    observations: list[dict[str, Any]] = []
+    evidence_names = (
+        "summary.json",
+        "training_metrics_compare.csv",
+        "loss.svg",
+        "grad_norm.svg",
+        "relative_error.svg",
+    )
+    for row in rows:
+        official_summary = Path(row["official_result"])
+        summary = json.loads(official_summary.read_text(encoding="utf-8"))
+        observation = summary.get("training_observation")
+        if not isinstance(observation, dict):
+            observation_path = official_summary.parent / "summary.json"
+            observation = json.loads(observation_path.read_text(encoding="utf-8"))
+        output_directory = official_summary.parent
+        evidence = [
+            path
+            for name in evidence_names
+            if (path := output_directory / name).is_file()
+        ]
+        details = observation["observation"]
+        observations.append(
+            {
+                "topology": str(row["topology"]),
+                "diagnostic_symptom": details["diagnostic_symptom"],
+                "first_step": details["first_step"],
+                "last_step": details["last_step"],
+                "step_count": observation["step_count"],
+                "loss": observation["loss"],
+                "grad_norm": observation["grad_norm"],
+                "reference_first_nonfinite_metrics": details[
+                    "reference_first_nonfinite_metrics"
+                ],
+                "candidate_first_nonfinite_metrics": details[
+                    "candidate_first_nonfinite_metrics"
+                ],
+                "evidence": [str(path.resolve()) for path in evidence],
+                "runtime_log": str(Path(row["runtime_log"]).resolve()),
+            }
+        )
+
+    write_json(
+        report_directory / "report.json",
+        {
+            "schema": "torchtitan.glm5_2.mindstudio_report",
+            "schema_version": 2,
+            "experiment": experiment_name,
+            "workflow": "baseline",
+            "training_observations": observations,
+            "delivery_verdict": None,
+            "meaning": (
+                "Baseline classifies whole-training symptoms. It does not "
+                "define a universal delivery pass/fail verdict."
+            ),
+        },
+    )
+
+    markdown_lines = [
+        f"# {experiment_name}",
+        "",
+        "Workflow: `baseline training observation`",
+        "",
+        "This report compares uninstrumented GPU reference and NPU candidate "
+        "training metrics. It classifies the observed symptom and does not "
+        "define a universal delivery PASS/FAIL verdict.",
+        "",
+        "## Training observations",
+        "",
+        "| Topology | Observed symptom | Window | Mean Loss relative error | "
+        "First Loss step above guidance | Runtime log |",
+        "|---|---|---|---|---|---|",
+    ]
+    html_rows: list[str] = []
+    evidence_sections: list[str] = []
+    for entry in observations:
+        runtime_log = Path(entry["runtime_log"])
+        runtime_link = _relative_link(runtime_log, report_directory)
+        loss = entry["loss"]
+        mean_error = loss.get("mean_relative_error")
+        mean_error_text = "N/A" if mean_error is None else f"{mean_error:.6g}"
+        first_above = loss.get("first_step_above_threshold")
+        first_above_text = "none" if first_above is None else str(first_above)
+        window = f"{entry['first_step']}..{entry['last_step']}"
+        markdown_lines.append(
+            f"| {entry['topology']} | {entry['diagnostic_symptom']} | "
+            f"{window} ({entry['step_count']} steps) | {mean_error_text} | "
+            f"{first_above_text} | [{runtime_log.name}]({runtime_link}) |"
+        )
+        html_rows.append(
+            "<tr>"
+            f"<td>{html.escape(entry['topology'])}</td>"
+            f"<td>{html.escape(entry['diagnostic_symptom'])}</td>"
+            f"<td>{html.escape(window)} ({entry['step_count']} steps)</td>"
+            f"<td>{html.escape(mean_error_text)}</td>"
+            f"<td>{html.escape(first_above_text)}</td>"
+            f'<td><a href="{html.escape(runtime_link)}">runtime log</a></td>'
+            "</tr>"
+        )
+        markdown_lines.extend(("", f"### {entry['topology']} evidence", ""))
+        links: list[str] = []
+        for raw_path in entry["evidence"]:
+            path = Path(raw_path)
+            link = _relative_link(path, report_directory)
+            markdown_lines.append(f"- [{path.name}]({link})")
+            links.append(
+                f'<li><a href="{html.escape(link)}">'
+                f"{html.escape(path.name)}</a></li>"
+            )
+        candidate_nonfinite = entry["candidate_first_nonfinite_metrics"]
+        reference_nonfinite = entry["reference_first_nonfinite_metrics"]
+        markdown_lines.extend(
+            (
+                f"- Candidate first NaN/Inf metrics: "
+                f"`{json.dumps(candidate_nonfinite, sort_keys=True)}`",
+                f"- Reference first NaN/Inf metrics: "
+                f"`{json.dumps(reference_nonfinite, sort_keys=True)}`",
+            )
+        )
+        evidence_sections.append(
+            f"<h3>{html.escape(entry['topology'])} evidence</h3><ul>"
+            + "".join(links)
+            + "</ul>"
+            + "<p>Candidate first NaN/Inf metrics: <code>"
+            + html.escape(json.dumps(candidate_nonfinite, sort_keys=True))
+            + "</code><br>Reference first NaN/Inf metrics: <code>"
+            + html.escape(json.dumps(reference_nonfinite, sort_keys=True))
+            + "</code></p>"
+        )
+
+    markdown_path = report_directory / "README.md"
+    markdown_path.write_text("\n".join(markdown_lines) + "\n", encoding="utf-8")
+    html_path = report_directory / f"{experiment_name}.html"
+    html_path.write_text(
+        "<!doctype html><html><head><meta charset=\"utf-8\">"
+        f"<title>{html.escape(experiment_name)}</title>"
+        "<style>body{font-family:system-ui,sans-serif;margin:32px;color:#172033}"
+        "table{border-collapse:collapse;width:100%;margin-top:20px}"
+        "th,td{border:1px solid #ccd4e0;padding:8px;text-align:left}"
+        "th{background:#eef3fa}code{background:#f4f6f8;padding:2px 4px}"
+        "</style></head><body>"
+        f"<h1>{html.escape(experiment_name)}</h1>"
+        "<p>Workflow: <code>baseline training observation</code>.</p>"
+        "<p>This report compares uninstrumented GPU reference and NPU candidate "
+        "training metrics. It classifies the observed symptom and does not "
+        "define a universal delivery PASS/FAIL verdict.</p>"
+        "<h2>Training observations</h2><table><thead><tr>"
+        "<th>Topology</th><th>Observed symptom</th><th>Window</th>"
+        "<th>Mean Loss relative error</th>"
+        "<th>First Loss step above guidance</th><th>Runtime log</th>"
+        "</tr></thead><tbody>"
+        + "".join(html_rows)
+        + "</tbody></table>"
+        + "".join(evidence_sections)
+        + "</body></html>",
+        encoding="utf-8",
+    )
+    return html_path
+
+
 def write_report_index(
     *,
     repository_root: Path,
@@ -110,6 +279,12 @@ def write_report_index(
     supplemental_report_patterns: Sequence[str],
 ) -> Path:
     report_directory.mkdir(parents=True, exist_ok=True)
+    if workflow == "baseline":
+        return _write_baseline_report_index(
+            report_directory=report_directory,
+            experiment_name=experiment_name,
+            rows=rows,
+        )
     supplemental_reports = _supplemental_entries(
         repository_root,
         supplemental_report_patterns,

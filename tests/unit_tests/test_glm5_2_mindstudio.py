@@ -903,6 +903,81 @@ class TestMindStudioOfficialAdapter(unittest.TestCase):
 
 
 class TestMindStudioReport(unittest.TestCase):
+    def test_baseline_report_presents_observation_evidence_not_msprobe_verdict(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            compare = root / "mindstudio_reports" / "experiment" / "single"
+            compare.mkdir(parents=True)
+            observation = {
+                "step_count": 500,
+                "observation": {
+                    "diagnostic_symptom": "later-window-loss-difference",
+                    "first_step": 0,
+                    "last_step": 499,
+                    "reference_first_nonfinite_metrics": {},
+                    "candidate_first_nonfinite_metrics": {},
+                },
+                "loss": {
+                    "mean_relative_error": 0.0125,
+                    "first_step_above_threshold": 137,
+                },
+                "grad_norm": {"mean_relative_error": 0.02},
+            }
+            write_json(compare / "summary.json", observation)
+            write_json(
+                compare / "official_summary.json",
+                {
+                    "verdict": "later-window-loss-difference",
+                    "status_counts": {},
+                    "training_observation": observation,
+                },
+            )
+            for name in (
+                "training_metrics_compare.csv",
+                "loss.svg",
+                "grad_norm.svg",
+                "relative_error.svg",
+                "runtime.log",
+            ):
+                (compare / name).write_text(name, encoding="utf-8")
+            report_directory = root / "mindstudio_reports" / "experiment"
+
+            output = write_report_index(
+                repository_root=root,
+                report_directory=report_directory,
+                experiment_name="experiment",
+                workflow="baseline",
+                rows=(
+                    {
+                        "topology": "single",
+                        "verdict": "later-window-loss-difference",
+                        "status_counts": {},
+                        "official_result": str(compare / "official_summary.json"),
+                        "runtime_log": str(compare / "runtime.log"),
+                    },
+                ),
+                supplemental_report_patterns=(),
+            )
+
+            report = json.loads(
+                (report_directory / "report.json").read_text(encoding="utf-8")
+            )
+            markdown = (report_directory / "README.md").read_text(
+                encoding="utf-8"
+            )
+            page = output.read_text(encoding="utf-8")
+            self.assertIsNone(report["delivery_verdict"])
+            self.assertEqual(
+                "later-window-loss-difference",
+                report["training_observations"][0]["diagnostic_symptom"],
+            )
+            self.assertIn("loss.svg", markdown)
+            self.assertIn("training_metrics_compare.csv", page)
+            self.assertNotIn("Official msProbe", page)
+            self.assertNotIn("unparsed", page)
+
     def test_report_resolves_supplemental_evidence_and_marks_missing_globs(
         self,
     ) -> None:

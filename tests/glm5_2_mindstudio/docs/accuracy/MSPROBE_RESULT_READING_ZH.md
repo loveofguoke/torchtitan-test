@@ -432,3 +432,190 @@ FSDP 分片。
 本节源码链路与官方说明核对日期为 2026-09-09。源码 checkout 与服务器安装包
 版本不同时，应以服务器 `runtime.log` 中保存的最终命令和实际生成的 rank/step
 索引为准。
+
+## 10. 从 `msprobe compare` 到首个问题节点
+
+官方命令：
+
+```sh
+msprobe compare \
+  -tp "${NPU_DUMP_JSON}" \
+  -gp "${GPU_DUMP_JSON}" \
+  -o "${HOME}/accuracy_compare"
+```
+
+- `-tp/--target_path` 是调试侧数据，本迁移实验中为 NPU `dump.json`。
+- `-gp/--golden_path` 是标杆侧数据，本迁移实验中为 GPU `dump.json`。
+- `-o/--output_path` 是结果目录，默认输出 `compare_result_<timestamp>.csv`。
+- 多卡比较时，两侧路径应指向 `step0` 这种 rank 的父目录，而不是单个 rank 的
+  `dump.json`；工具按 rank 分别生成结果。
+- 可增加 `-da/--diff_analyze` 自动识别首差异节点。它是辅助定位，不替代对输入、
+  输出和调用语义的人工确认。
+
+参数、匹配条件、输出列和 Result 规则以官方
+[PyTorch 场景精度比对](https://github.com/Ascend/msprobe/blob/master/docs/zh/user_guide/accuracy_compare/pytorch_accuracy_compare_instruct.md)
+为准。
+
+### 10.1 unmatched、结构 error 和数值 error 必须分开
+
+默认建立 API 对应关系需同时满足：
+
+1. API 名称一致；名称包含 API 类型、API 名、调用序号和前向/反向方向；
+2. 两端输入和输出 Tensor 数量一致。
+
+因此 `Tensor.matmul.3.forward` 与 `Tensor.matmul.4.forward` 默认可能无法配对，
+即使源码语义相同。仅调用次数不同且位于同一层级时可尝试 `-fm`；两端实现名称或
+模块结构不同则使用 `-dm mapping.yaml` 明确映射，不能用放宽数值阈值代替映射。
+
+三类现象含义不同：
+
+- 一侧名称为空或没有对应记录：节点或参数 `unmatched`，尚未完成数值比较；
+- 两侧名称均存在，但 dtype、shape、requires_grad 或非 Tensor 参数不同：已匹配后
+  发现结构/属性不一致，属于 `error`；
+- 结构一致但数值规则触发：数值 `warning/error`。
+
+所以 unmatched 不是“误差超过阈值”，shape 不同也不能称作 API 根本没有匹配。
+应先解释结构差异，再解释数值差异。
+
+### 10.2 CSV 提供哪些证据
+
+公共列包括名称、dtype、shape、requires_grad、`Result`、`Err_message` 和
+`NPU_Stack_Info`。当前常用的 statistics 模式还包含两侧的 Max、Min、Mean、
+L2 Norm，以及这些统计量的绝对差和相对误差：
+
+```text
+Max diff / Min diff / Mean diff / L2norm diff
+MaxRelativeErr / MinRelativeErr / MeanRelativeErr / NormRelativeErr
+```
+
+若改为完整 tensor 采集，还会得到：
+
+```text
+Cosine / EucDist / MaxAbsErr / MaxRelativeErr
+One Thousandth Err Ratio / Five Thousandth Err Ratio
+```
+
+各指标的用途不是重复的：
+
+- Max/Min 观察极值范围，适合发现溢出、饱和、符号和数量级异常，但容易受离群值影响；
+- Mean 观察整体偏移，正负抵消时可能掩盖元素错误；
+- L2 Norm 观察整个 Tensor 的总体幅度，能发现大量元素共同产生的偏移，但不能证明
+  元素位置和值逐项一致；
+- RelativeErr 消除量纲，便于比较不同尺度的 Tensor，但标杆统计量接近零时会被放大；
+- Cosine 判断完整 Tensor 的方向是否相近，但整体缩放不会降低 Cosine；
+- EucDist 和 MaxAbsErr 分别描述总体逐元素距离与最坏元素绝对误差；
+- 千分之一/千分之五比例描述落入相对误差带的元素占比，只是趋势证据。
+
+统计量是压缩后的“摘要指纹”：明显不同能证明分布、尺度或极值发生变化；四项完全
+相同仍不能证明 Tensor 逐元素相同。需要确认某个候选节点时，应缩小 scope 后切换
+到 tensor 模式做逐元素比较。
+
+### 10.3 Result 是输入到输出的误差放大启发式
+
+当前官方文档列出的常见 `error` 包括：
+
+- NPU 单侧出现 NaN/Inf；
+- dtype、shape、requires_grad 或非 Tensor 参数不一致；
+- statistics 模式下，输入 `NormRelativeErr < 0.1`，但输出
+  `NormRelativeErr > 0.5`；
+- tensor 模式下，输入/参数的千分之一达标比例大于 0.9，而输出低于 0.6。
+
+常见 `warning` 包括：
+
+- statistics 模式下，输出 NormRelativeErr 是输入/参数的 10 倍；
+- tensor 模式下，输入 Cosine 大于 0.9，但从输入到输出下降超过 0.1。
+
+这不是“每个统计列都有一条固定通过线”。核心思想是：如果当前 API 的输入仍然
+较为对齐，而输出突然恶化，那么当前 API 可能是误差首次产生或显著放大的位置。
+Result 是定位启发式，不是整网最终验收结论；安装版本与 master 文档可能变化，
+具体阈值仍须结合安装版本源码、`Err_message` 和任务容差确认。
+
+### 10.4 CSV 的实际阅读顺序
+
+最终目标不是统计有多少行 `error`，而是沿执行链寻找第一个问题节点：
+
+```text
+输入仍然对齐
+  -> 当前 Module/API
+  -> 输出第一次明显不对齐
+```
+
+按以下顺序阅读：
+
+1. 先筛选 `Result`，但同时查看 unmatched，避免把结构差异误判为精度差异。
+2. 查看 `Err_message`，先排除名称映射、Tensor 数量、dtype、shape、
+   requires_grad 和标量参数问题。
+3. 按执行顺序比较输入和输出，而不是按误差百分比从大到小寻找根因。
+4. 如果输入已经不同且输出继续不同，当前节点通常只是传播上游误差，应回到产生该
+   输入的前一个节点。
+5. 如果输入基本一致而输出第一次明显变差，当前 API、权重/参数、dtype、布局或
+   底层算子成为首要候选。
+6. 后续大量红色节点通常只是首差异继续传播，不能逐个当作独立根因。
+7. 先用模块级数据缩小到某层，再在该模块内采集 API 级数据；最后针对候选 API
+   采集完整 tensor，结合 `NPU_Stack_Info` 或 `stack.json` 回到训练源码。
+8. 反向采用同样原则：寻找上游传入梯度仍对齐，但该节点产生的输入梯度或参数梯度
+   首次明显变化的位置。
+
+`-da`、分级可视化和 CSV 都是在帮助寻找同一个目标：**第一个输入仍对齐、输出开始
+异常的节点**。找到它以后还需做相同输入/权重/上游梯度的定点复现，才能区分当前
+算子自身问题、数值敏感性和上游误差传播。
+
+## 11. CSV compare 与分级可视化：同源证据，不同分析视角
+
+`msprobe compare` 和 `msprobe graph_visualize` 使用的是同一批
+PrecisionDebugger 采集结果：
+
+```text
+PrecisionDebugger
+  ├── dump.json       输入输出统计量、dtype、shape 和数值信息
+  ├── construct.json  Module/API 层级结构
+  └── stack.json      API 调用栈
+```
+
+但两者不是“一个负责计算、另一个把现成 CSV 机械画出来”。实际数据链路分别是：
+
+```text
+msprobe compare
+  NPU dump.json + GPU dump.json
+  -> 匹配 API/参数
+  -> 计算指标和 Result
+  -> CSV/JSON 表格
+
+msprobe graph_visualize
+  construct.json 重建两侧层级图
+  + dump.json 组织精度比较
+  + stack.json 添加源码定位信息
+  -> compare_<timestamp>.vis.db
+  -> TensorBoard 交互式双图
+```
+
+数值比较层面，两者使用同类证据：API/模块输入输出匹配，dtype、shape、
+requires_grad，Max、Min、Mean、L2 Norm、相对误差，以及
+pass/warning/error/unmatched 状态。分级可视化额外完成三件事情：
+
+1. 用 `construct.json` 恢复 Module 与 API 的父子关系；
+2. 把比较结果映射到节点状态和颜色；
+3. 把调用栈、输入输出和比较指标集中到节点详情，支持从模型顶层逐层下钻。
+
+因此两个入口的用途不同：
+
+- CSV 适合精确筛选、搜索字段、批量分析，并按执行顺序追踪输入输出；
+- 分级可视化适合从模型顶层收缩到可疑模块，再进入内部 API，直观看误差传播路径；
+- 两者最终都服务于寻找“输入仍然对齐、输出首次明显恶化”的节点。
+
+`.vis.db` 不是从 compare CSV 转换而来。`graph_visualize` 直接读取原始采集目录。
+因此只有有效 `dump.json` 而缺少 `construct.json` 时，普通 compare 仍可能执行，
+但无法正确建立模型层级图；调用定位还依赖 `stack.json`。
+
+采集 level 决定可视化层次：
+
+- `L0`：Module 层级，适合先定位可疑模块；
+- `L1`：API 数据，缺少完整 Module 层级时不能得到预期的逐层模块图；
+- `mix`：同时包含 Module 与 API，最适合从整网逐层下钻至具体 API。
+
+使用界面时必须先确认两侧选择的是相同训练 step 和对应 rank。图可以成功打开不等于
+比较对象具备同一语义；step/rank 选错会让后续数值解释失效。
+
+结论是：**`msprobe compare` 是同一套精度证据的表格分析入口；
+`graph_visualize + TensorBoard` 是加入模型层级、调用栈和交互式下钻后的图分析入口。**
+它们互补，共享一次采集结果，不是两套独立的精度实验。

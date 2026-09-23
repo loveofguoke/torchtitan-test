@@ -2946,6 +2946,10 @@ def compare_official(
                 (compare_directory / "summary.json").read_text(encoding="utf-8")
             )
             summary["training_observation"] = observation
+            summary["verdict"] = observation["observation"][
+                "diagnostic_symptom"
+            ]
+            summary["status_counts"] = {}
             summary["note"] = (
                 "Baseline comparison classifies the observed training symptom "
                 "and selects the next diagnostic branch. It does not define a "
