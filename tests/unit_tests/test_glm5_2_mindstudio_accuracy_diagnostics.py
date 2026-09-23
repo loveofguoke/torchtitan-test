@@ -7,20 +7,15 @@ from __future__ import annotations
 
 from dataclasses import asdict, replace
 import json
+import os
 from pathlib import Path
+import sys
 import tempfile
+import types
 import unittest
 from unittest.mock import patch
 
-from tests.glm5_2_mindstudio.configuration_check_benchmark import (
-    CONFIG as CONFIG_CHECK_CONFIG,
-)
 from tests.glm5_2_mindstudio.accuracy_benchmark import _select_stage
-from tests.glm5_2_mindstudio.training_baseline_benchmark import (
-    CONFIG as BASELINE_CONFIG,
-)
-from tests.glm5_2_mindstudio.migration_benchmark import CONFIG as MIGRATION_CONFIG
-
 from tests.glm5_2_mindstudio.accuracy_diagnostics import (
     _load_case,
     add_hypothesis,
@@ -31,6 +26,16 @@ from tests.glm5_2_mindstudio.accuracy_diagnostics import (
     create_case,
     record_hypothesis,
     record_stage,
+)
+from tests.glm5_2_mindstudio.capture_training import (
+    _install_training_metrics_capture,
+)
+from tests.glm5_2_mindstudio.configuration_check_benchmark import (
+    CONFIG as CONFIG_CHECK_CONFIG,
+)
+from tests.glm5_2_mindstudio.migration_benchmark import CONFIG as MIGRATION_CONFIG
+from tests.glm5_2_mindstudio.training_baseline_benchmark import (
+    CONFIG as BASELINE_CONFIG,
 )
 from tests.glm5_2_mindstudio.training_monitor_benchmark import (
     CONFIG as MONITOR_CONFIG,
@@ -49,6 +54,53 @@ from tests.glm5_2_precision.workflow import (
 
 
 class MindStudioDiagnosticsTest(unittest.TestCase):
+    def test_training_metrics_capture_does_not_require_tensorboard(self) -> None:
+        class BaseLogger:
+            def log(self, metrics, step) -> None:
+                pass
+
+        class LoggerContainer(BaseLogger):
+            def log(self, metrics, step) -> None:
+                pass
+
+        metrics_module = types.ModuleType("torchtitan.components.metrics")
+        metrics_module.BaseLogger = BaseLogger
+        metrics_module.LoggerContainer = LoggerContainer
+        components_module = types.ModuleType("torchtitan.components")
+        components_module.metrics = metrics_module
+        torchtitan_module = types.ModuleType("torchtitan")
+        torchtitan_module.components = components_module
+        modules = {
+            "torchtitan": torchtitan_module,
+            "torchtitan.components": components_module,
+            "torchtitan.components.metrics": metrics_module,
+        }
+        values = {
+            "loss_metrics/global_avg_loss": 1.25,
+            "loss_metrics/global_max_loss": 1.5,
+            "grad_norm": 0.75,
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "training_metrics.jsonl"
+            environment = {
+                "GLM5_MINDSTUDIO_METRICS_PATH": str(path),
+                "RANK": "0",
+                "LOG_RANK": "0",
+            }
+            with patch.dict(sys.modules, modules), patch.dict(
+                os.environ, environment, clear=False
+            ):
+                _install_training_metrics_capture()
+                BaseLogger().log(values, 1)
+                LoggerContainer().log(values, 2)
+
+            records = [
+                json.loads(line)
+                for line in path.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual([1, 2], [record["step"] for record in records])
+            self.assertEqual(values, records[0]["metrics"])
+
     def test_accuracy_stages_share_one_experiment_root(self) -> None:
         self.assertEqual(
             MIGRATION_CONFIG.storage_name,

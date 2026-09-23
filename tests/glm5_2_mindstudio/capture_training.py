@@ -55,16 +55,12 @@ def _install_training_metrics_capture() -> None:
         metrics_path.parent.mkdir(parents=True, exist_ok=True)
         metrics_path.write_text("", encoding="utf-8")
 
-    from torchtitan.components.metrics import TensorBoardLogger
+    from torchtitan.components.metrics import BaseLogger, LoggerContainer
 
-    original_log = TensorBoardLogger.log
-
-    def log_with_jsonl(
-        self: TensorBoardLogger,
+    def append_jsonl(
         metrics: dict[str, Any],
         step: int,
     ) -> None:
-        original_log(self, metrics, step)
         if not enabled:
             return
         values = {
@@ -84,7 +80,30 @@ def _install_training_metrics_capture() -> None:
             stream.write(json.dumps(record, sort_keys=True, separators=(",", ":")))
             stream.write("\n")
 
-    TensorBoardLogger.log = log_with_jsonl
+    original_base_log = BaseLogger.log
+    original_container_log = LoggerContainer.log
+
+    def base_log_with_jsonl(
+        self: BaseLogger,
+        metrics: dict[str, Any],
+        step: int,
+    ) -> None:
+        original_base_log(self, metrics, step)
+        append_jsonl(metrics, step)
+
+    def container_log_with_jsonl(
+        self: LoggerContainer,
+        metrics: dict[str, Any],
+        step: int,
+    ) -> None:
+        original_container_log(self, metrics, step)
+        append_jsonl(metrics, step)
+
+    # MetricsProcessor uses BaseLogger when TensorBoard/WandB are disabled and
+    # LoggerContainer when either backend is enabled.  Patch both common exits
+    # so baseline capture does not depend on an optional logging backend.
+    BaseLogger.log = base_log_with_jsonl
+    LoggerContainer.log = container_log_with_jsonl
 
 
 def _require_path(name: str) -> Path:
