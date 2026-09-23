@@ -28,6 +28,7 @@ from tests.glm5_2_graph.visualization import (
     GRAPH_DIAGNOSTICS_ENV,
     RUN_DIRECTORY_ENV,
     configure_graph_diagnostics,
+    generate_graph_compilation_report,
     inspect_graph_visualizations,
 )
 from tests.glm5_2_performance.analysis import _compiler_diagnostics
@@ -109,6 +110,31 @@ def test_graph_visualization_inventory_covers_trace_fx_ir_and_code(
     assert inventory["fx_graphs"]
     assert inventory["inductor_ir"]
     assert inventory["generated_code"]
+
+
+def test_graph_compilation_report_summarizes_breaks_and_recompiles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "run" / "graph_visualization"
+    trace = root / "rank_0" / "torch_trace" / "trace.log"
+    trace.parent.mkdir(parents=True)
+    trace.write_text(
+        '{"graph_break": {"reason": "unsupported Python"}, "frame_id": 2}\n'
+        '{"recompile": {"reason": "guard_failure"}, "compile_id": "2/1"}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("shutil.which", lambda _: None)
+
+    report = generate_graph_compilation_report(tmp_path / "run")
+
+    assert report["totals"] == {
+        "events": 2,
+        "graph_breaks": 1,
+        "recompiles": 1,
+    }
+    assert Path(report["json"]).is_file()
+    assert Path(report["html"]).is_file()
+    assert report["ranks"]["rank_0"]["graph_breaks"][0]["frame_id"] == 2
 
 
 def test_graph_backends_are_npu_only() -> None:

@@ -43,6 +43,9 @@ from tests.glm5_2_common.topology import (  # noqa: E402
 )
 from tests.glm5_2_common.execution import compose_execution  # noqa: E402
 from tests.glm5_2_graph.config import GraphFeatureConfig  # noqa: E402
+from tests.glm5_2_graph.visualization import (  # noqa: E402
+    generate_graph_compilation_report,
+)
 
 
 def _root() -> Path:
@@ -714,6 +717,17 @@ def _run_topology(
         "visible_devices": visible_devices,
         "error": None if result.returncode == 0 else f"Training exited with code {result.returncode}; see runtime.log",
     }
+    if graph.diagnostics:
+        graph_report = generate_graph_compilation_report(run_directory)
+        record["graph_compilation_report"] = {
+            "json": graph_report["json"],
+            "html": graph_report["html"],
+            "totals": graph_report["totals"],
+        }
+        print_output_path(
+            "Graph compilation report",
+            Path(graph_report["html"]),
+        )
     (run_directory / "manifest.json").write_text(
         json.dumps(record, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",

@@ -589,3 +589,63 @@ tlparse <run>/graph_visualization/rank_0/torch_trace/*.log \
 - [ ] 我使用 profiler-off 多次重复判断加速。
 - [ ] 我检查了每 rank，而不是只看 rank 0。
 - [ ] 我保存了环境版本、三仓 commit、完整命令、日志和原始 trace。
+## 18. 官方图编译观测、链路记录与统一报告
+
+### 18.1 官方工具边界与完整流程
+
+本流程不自造编译器数据：原始事实来自 PyTorch/TorchNPU/Inductor 和运行时工具，项目只生成
+可移植索引。PyTorch 官方建议大模型首先使用
+[`TORCH_TRACE + tlparse`](https://docs.pytorch.org/docs/main/user_guide/torch_compiler/compile/programming_model.observability.html)：
+它展示源码栈、Dynamo frame、graph break、guard、recompile、FX graph 和 Inductor 输出代码。
+小规模定点分析再使用同一官方页面列出的 `TORCH_LOGS`。要求关键函数不得断图时，使用
+[`fullgraph=True`](https://docs.pytorch.org/docs/stable/user_guide/torch_compiler/compile/programming_model.fullgraph_true.html)
+令第一个 graph break 直接失败。运行时可用
+[`Torch-Compiled Region`/`CompiledFunction`](https://docs.pytorch.org/docs/main/user_guide/torch_compiler/torch.compiler_profiling_torch_compile.html)
+在 profiler Chrome trace 中观察编译区域；NPU kernel、stream、通信和 Host/Device 时间线继续
+由 Ascend PyTorch Profiler/MindStudio Insight 负责。
+
+真实转换链路为：
+
+```text
+TorchTitan Python/nn.Module
+  -> TorchDynamo 捕获 Python frame；不支持处产生 graph break/eager island
+  -> Dynamo FX graph
+  -> AOTAutograd 拆分 forward/backward
+  -> decomposition + functionalization
+  -> Inductor scheduler IR、融合、布局与内存规划
+  -> TorchNPU lowering
+  -> Ascend-Triton 模板或 DVM/MLIR codegen
+  -> BiShengIR/CANN 生成设备码
+  -> ACL runtime/stream/task
+  -> MindStudio 时间线中的 NPU kernel
+```
+
+其中映射不是一对一：一个 ATen op 可以被分解，多个 FX node 可以融合成一个 kernel，节点也
+可能被消除、重计算或 fallback。因此报告保留多对多关系，绝不伪造“一个模块对应一个 kernel”。
+
+执行：
+
+```bash
+python tests/glm5_2_smoke/train_smoke.py \
+  --device npu --topology single \
+  --graph inductor --npu-codegen ascend-triton \
+  --module glm5 --config glm5_debugmodel \
+  --steps 2 --local-batch-size 8 --global-batch-size 64 \
+  --sequence-length 128 --compiler-diagnostics --force
+```
+
+训练成功或失败后都会保留官方原始数据，并自动生成：
+
+```text
+<run>/graph_visualization/
+├── rank_<rank>/torch_trace/       # 官方结构化 trace
+├── rank_<rank>/inductor/          # FX、融合前后 IR、output_code
+├── tlparse/                       # 官方 tlparse HTML
+├── compilation_report.json        # rank/break/recompile/产物索引
+└── compilation_report.html        # 统一入口
+```
+
+建议先采集 `single`，再采集 `fsdp2-tp2-pp2`。前者用于读清单卡编译链路，后者验证
+FSDP、TP、PP 组合下每个 rank/stage 的 frame、重编译和生成代码；不需要为了发现同一源码
+断点而对全部拓扑重复产生大体积 trace。结构化 trace 包含模型源码，官方明确警告不要在
+模型敏感时对外分享；它不包含权重。

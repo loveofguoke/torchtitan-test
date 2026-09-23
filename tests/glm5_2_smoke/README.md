@@ -341,6 +341,15 @@ process completes all requested steps with exit code zero. Precision,
 performance, checkpoint equivalence, and long-duration stability are evaluated
 by their dedicated suites.
 
+With `--compiler-diagnostics`, finalization also preserves per-rank official
+`TORCH_TRACE` and Inductor debug artifacts, runs `tlparse` when installed, and
+writes `graph_visualization/compilation_report.{json,html}`. The JSON preserves
+the exact structured graph-break/recompile records and source evidence; the
+HTML is a portable rank summary and entry point to FX, IR, generated code, and
+tlparse. See
+[`VISUALIZATION_GUIDE_ZH.md`](../glm5_2_graph/docs/VISUALIZATION_GUIDE_ZH.md)
+for the end-to-end Dynamo → AOTAutograd → Inductor → TorchNPU → NPU workflow.
+
 Every run writes `runtime.log`, `manifest.json`, and TorchTitan output below:
 
 The topology directory also writes `run_state.json`. Its attempt ID and

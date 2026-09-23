@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+from html import escape
 from typing import Any
 
 
@@ -178,10 +179,139 @@ def inspect_graph_visualizations(run_directory: Path) -> dict[str, Any]:
     }
 
 
+def _trace_events(trace: Path) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for line_number, line in enumerate(
+        trace.read_text(encoding="utf-8", errors="replace").splitlines(), 1
+    ):
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            value["_line"] = line_number
+            events.append(value)
+    return events
+
+
+def _event_text(event: dict[str, Any]) -> str:
+    return json.dumps(event, ensure_ascii=False, sort_keys=True)
+
+
+def analyze_graph_compilation(run_directory: Path) -> dict[str, Any]:
+    """Summarize official structured traces without replacing tlparse."""
+
+    inventory = inspect_graph_visualizations(run_directory)
+    root = Path(inventory["root"])
+    ranks: dict[str, dict[str, Any]] = {}
+    totals = {"events": 0, "graph_breaks": 0, "recompiles": 0}
+    for relative in inventory["structured_traces"]:
+        trace = root / relative
+        rank = next((part for part in trace.parts if part.startswith("rank_")), "rank_unknown")
+        record = ranks.setdefault(
+            rank,
+            {"traces": [], "events": 0, "graph_breaks": [], "recompiles": []},
+        )
+        events = _trace_events(trace)
+        record["traces"].append(relative)
+        record["events"] += len(events)
+        totals["events"] += len(events)
+        for event in events:
+            text = _event_text(event)
+            lowered = text.lower()
+            item = {
+                "trace": relative,
+                "line": event["_line"],
+                "compile_id": event.get("compile_id"),
+                "frame_id": event.get("frame_id"),
+                "payload": event,
+            }
+            if "graph_break" in lowered or "graph break" in lowered:
+                record["graph_breaks"].append(item)
+                totals["graph_breaks"] += 1
+            if "recompile" in lowered or "guard_failure" in lowered:
+                record["recompiles"].append(item)
+                totals["recompiles"] += 1
+    return {
+        "schema_version": 1,
+        "run_directory": str(run_directory.resolve()),
+        "inventory": inventory,
+        "totals": totals,
+        "ranks": ranks,
+        "mapping_semantics": (
+            "Module/source to FX to Inductor IR to generated kernel is generally "
+            "many-to-many because decomposition, fusion, elimination and fallback apply."
+        ),
+    }
+
+
+def generate_graph_compilation_report(run_directory: Path) -> dict[str, Any]:
+    """Write a portable JSON/HTML index beside official compiler artifacts."""
+
+    generate_tlparse_reports(run_directory)
+    report = analyze_graph_compilation(run_directory)
+    root = Path(report["inventory"]["root"])
+    root.mkdir(parents=True, exist_ok=True)
+    json_path = root / "compilation_report.json"
+    html_path = root / "compilation_report.html"
+    json_path.write_text(
+        json.dumps(report, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    rows = []
+    details = []
+    for rank, item in sorted(report["ranks"].items()):
+        rows.append(
+            "<tr>"
+            f"<td>{escape(rank)}</td><td>{item['events']}</td>"
+            f"<td>{len(item['graph_breaks'])}</td>"
+            f"<td>{len(item['recompiles'])}</td>"
+            "</tr>"
+        )
+        for kind in ("graph_breaks", "recompiles"):
+            for event in item[kind]:
+                details.append(
+                    f"<details><summary>{escape(rank)} · {escape(kind)} · "
+                    f"{escape(event['trace'])}:{event['line']}</summary><pre>"
+                    f"{escape(json.dumps(event['payload'], ensure_ascii=False, indent=2))}"
+                    "</pre></details>"
+                )
+    inventory = report["inventory"]
+    html_path.write_text(
+        "<!doctype html><meta charset='utf-8'><title>torch.compile report</title>"
+        "<style>body{font:14px system-ui;margin:2rem;max-width:1100px}"
+        "table{border-collapse:collapse}td,th{padding:.45rem .8rem;border-bottom:1px solid #bbb}"
+        ".flow{display:flex;flex-wrap:wrap;gap:.5rem;margin:1rem 0}.flow span{padding:.5rem;"
+        "border:1px solid #aaa;border-radius:.3rem}</style>"
+        "<h1>torch.compile compilation report</h1>"
+        "<div class='flow'><span>TorchTitan module</span><span>→ Dynamo/FX</span>"
+        "<span>→ AOTAutograd</span><span>→ Inductor IR</span>"
+        "<span>→ TorchNPU lowering</span><span>→ Triton/DVM kernel</span>"
+        "<span>→ NPU runtime</span></div>"
+        f"<p>FX graphs: {len(inventory['fx_graphs'])}; IR files: "
+        f"{len(inventory['inductor_ir'])}; generated code: "
+        f"{len(inventory['generated_code'])}; tlparse reports: "
+        f"{len(inventory['tlparse_reports'])}.</p>"
+        "<table><thead><tr><th>Rank</th><th>Trace events</th>"
+        "<th>Graph-break records</th><th>Recompile records</th></tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table><h2>Break and recompile evidence</h2>"
+        + ("".join(details) if details else "<p>No matching structured events.</p>")
+        + "<p>Open the tlparse index for the complete source stack, guards, FX "
+        "graphs and generated code. Mapping is many-to-many.</p>",
+        encoding="utf-8",
+    )
+    report["json"] = str(json_path)
+    report["html"] = str(html_path)
+    return report
+
+
 __all__ = [
     "GRAPH_DIAGNOSTICS_ENV",
     "RUN_DIRECTORY_ENV",
     "configure_graph_diagnostics",
     "generate_tlparse_reports",
+    "analyze_graph_compilation",
+    "generate_graph_compilation_report",
     "inspect_graph_visualizations",
 ]
