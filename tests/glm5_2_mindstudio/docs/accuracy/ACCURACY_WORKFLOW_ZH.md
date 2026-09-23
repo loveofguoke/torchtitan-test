@@ -209,8 +209,10 @@ tensor list、data mode、同步/异步 dump 和 extra info。例如下面这组
 的实验配置将失真。当前 summary mode 没有暴露 xor；要新增它应先核对目标版本
 schema 并补配置验证和测试。
 
-正式入口支持 `statistics`、`tensor`、`structure`、`overflow_check` 和
-`nan_check`。`acc_check` 不作为 capture task：它由 `--precheck` 对已有 API
+正式采集入口支持 `statistics`、`tensor`、`structure` 和 `nan_check`。
+`overflow_check` 不是 `PrecisionDebugger` 的 capture task，而是由
+`--overflow-check reference|candidate` 对已有 dump 运行的离线分析命令。
+`acc_check` 不作为 capture task：它由 `--precheck` 对已有 API
 信息单独运行。`nan_check` 读取 NPU 寄存器状态，只允许 NPU L1，并由启动器设置
 `INF_NAN_MODE_FORCE_DISABLE=1`；工具链源码构建必须包含 `nan_check` 模块。
 当前 `MsProbeDumpConfig` 没有宣称实现这些模式；需要时先按锁定版本新增显式

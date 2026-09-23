@@ -29,7 +29,6 @@ DumpTask = Literal[
     "statistics",
     "tensor",
     "structure",
-    "overflow_check",
     "nan_check",
 ]
 DumpLevel = Literal["L0", "L1", "L2", "mix"]
@@ -65,6 +64,11 @@ class MsProbeDumpConfig:
     summary_mode: Literal["statistics", "md5", "xor"] = "statistics"
 
     def __post_init__(self) -> None:
+        if self.task not in {"statistics", "tensor", "structure", "nan_check"}:
+            raise ValueError(
+                "msProbe dump task must be statistics, tensor, structure, "
+                "or nan_check"
+            )
         if not self.steps or min(self.steps) < 0:
             raise ValueError("msProbe steps must contain non-negative values")
         if tuple(sorted(set(self.steps))) != self.steps:

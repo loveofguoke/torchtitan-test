@@ -903,7 +903,7 @@ Profiler 产物可进入 offline、advisor、cluster、compare 和 Insight 中�
 | `--topology NAME` | 单个拓扑或 `all` | 默认 `single` |
 | `--topologies a,b` | 显式拓扑集合 | 与 `--topology` 选择语义互斥 |
 | `--data-device cuda|npu` | 指定 fixture 生成端 | 也可只 export 一种可见设备变量 |
-| `--dump-task statistics|tensor|structure|overflow_check|nan_check` | 统计量、完整 tensor、仅结构、软件溢出检查或 NPU 寄存器 NaN/Inf 检查 | 默认 statistics；nan_check 只允许 NPU L1 |
+| `--dump-task statistics|tensor|structure|nan_check` | 统计量、完整 tensor、仅结构或 NPU 寄存器 NaN/Inf 检查 | 默认 statistics；nan_check 只允许 NPU L1；软件溢出传播分析使用独立的 `--overflow-check` |
 | `--level L0|L1|L2|mix` | 模块、API、kernel 或模块+API | 默认 L0；L2 仅在算子级下钻时使用 |
 | `--dump-step N` | msProbe 0-based step | 默认 0；训练日志第一个 step 通常是 1 |
 | `--dump-steps 0,2` | 多个 0-based dump step | 与 `--dump-step` 互斥 |

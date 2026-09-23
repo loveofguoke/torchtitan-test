@@ -630,13 +630,15 @@ class TestMindStudioOfficialAdapter(unittest.TestCase):
         )
 
     def test_dump_tasks_follow_official_constraints(self) -> None:
-        for task in ("statistics", "tensor", "structure", "overflow_check"):
+        for task in ("statistics", "tensor", "structure"):
             config = MsProbeDumpConfig(task=task)  # type: ignore[arg-type]
             self.assertEqual(task, config.official_config(Path("dump"))["task"])
         nan = MsProbeDumpConfig(task="nan_check", level="L1")
         self.assertEqual("nan_check", nan.official_config(Path("dump"))["task"])
         with self.assertRaisesRegex(ValueError, "requires dump level L1"):
             MsProbeDumpConfig(task="nan_check", level="L0")
+        with self.assertRaisesRegex(ValueError, "dump task must be"):
+            MsProbeDumpConfig(task="overflow_check")  # type: ignore[arg-type]
 
     @patch(
         "tests.glm5_2_mindstudio.msprobe_adapter.resolve_tool_executable",

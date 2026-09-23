@@ -34,7 +34,7 @@
 | API 精度预检 | L1 API dump -> acc_check result/details | `accuracy_benchmark.py --stage dump --precheck ROLE` | 单端 API 对 CPU 高精度结果 | SUPPORTED |
 | API 预检比较 | 两端 details -> api_precision_compare | `accuracy_benchmark.py --stage dump --precheck-compare` | `precheck_report.html` 和官方 CSV | SUPPORTED |
 | graph_visualize | L0/mix construct -> `.vis.db` | `accuracy_benchmark.py --stage dump --graph-visualize` | TensorBoard Ascend Graph | SUPPORTED |
-| structure/overflow/nan capture | 结构、软件统计溢出或 NPU 寄存器状态 -> construct/dump | `accuracy_benchmark.py --stage dump --capture ... --dump-task TASK` | construct、首异常节点和 is_nan | SUPPORTED |
+| structure/nan capture 与 overflow analysis | 结构或 NPU 寄存器状态 -> construct/dump；已有 dump -> 首个异常节点 | capture 使用 `--dump-task structure|nan_check`；离线分析使用 `--overflow-check ROLE` | construct、首异常节点和 is_nan | SUPPORTED |
 | TrainerMonitorV2 | 训练模块、优化器、配置 -> 多 step CSV | `accuracy_benchmark.py --stage monitor` | 激活/梯度/权重/优化器状态趋势 | SUPPORTED |
 | 趋势可视化 | 大规模 monitor/dump -> `.trend.db` | `accuracy_benchmark.py --stage dump --trend ROLE` 或 monitor stage 同名入口 | TensorBoard Trend Analyzer | SUPPORTED |
 | [编译精度比对](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msProbe/docs/zh/user_guide/accuracy_compare/pytorch_compile_accuracy_compare_instruct.md) | 同一 NPU 的 eager/compile -> PrecisionChecker CSV | `compile_accuracy_benchmark.py` | 每 rank、model part、module 的 fwd/bwd 结果 | SUPPORTED |

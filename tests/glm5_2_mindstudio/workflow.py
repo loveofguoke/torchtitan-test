@@ -3029,7 +3029,6 @@ def run_mindstudio_cli(
             "statistics",
             "tensor",
             "structure",
-            "overflow_check",
             "nan_check",
         ),
     )
