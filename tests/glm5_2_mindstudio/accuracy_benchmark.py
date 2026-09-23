@@ -29,7 +29,7 @@ from tests.glm5_2_mindstudio.workflow import run_mindstudio_cli  # noqa: E402
 
 STAGE_CONFIGS = {
     "config-check": CONFIG_CHECK_CONFIG,
-    "baseline": BASELINE_CONFIG,
+    "observation": BASELINE_CONFIG,
     "monitor": MONITOR_CONFIG,
     "dump": DUMP_CONFIG,
 }

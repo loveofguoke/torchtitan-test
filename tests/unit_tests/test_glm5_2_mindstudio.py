@@ -49,9 +49,10 @@ from tests.glm5_2_mindstudio.msprobe_adapter import (
 from tests.glm5_2_mindstudio.report import write_report_index
 from tests.glm5_2_mindstudio.workflow import (
     _capture_toolchain_compatibility,
-    _comparison_toolchain_identity,
+    _comparison_directory,
     _comparison_is_current,
     _comparison_output_index,
+    _comparison_toolchain_identity,
     _compile_rank_csv_files,
     _experiment_digest,
     _fixture_directory,
@@ -903,6 +904,17 @@ class TestMindStudioOfficialAdapter(unittest.TestCase):
 
 
 class TestMindStudioReport(unittest.TestCase):
+    def test_baseline_uses_project_comparison_directory(self) -> None:
+        report = Path("report")
+        self.assertEqual(
+            report / "comparison",
+            _comparison_directory(report, "baseline"),
+        )
+        self.assertEqual(
+            report / "official_compare",
+            _comparison_directory(report, "migration"),
+        )
+
     def test_baseline_report_presents_observation_evidence_not_msprobe_verdict(
         self,
     ) -> None:
@@ -936,12 +948,18 @@ class TestMindStudioReport(unittest.TestCase):
             )
             for name in (
                 "training_metrics_compare.csv",
-                "loss.svg",
-                "grad_norm.svg",
-                "relative_error.svg",
                 "runtime.log",
             ):
                 (compare / name).write_text(name, encoding="utf-8")
+            for name in (
+                "loss.svg",
+                "grad_norm.svg",
+                "loss_relative_error.svg",
+                "grad_norm_relative_error.svg",
+            ):
+                (compare / name).write_text(
+                    f'<svg><text>{name}</text></svg>', encoding="utf-8"
+                )
             report_directory = root / "mindstudio_reports" / "experiment"
 
             output = write_report_index(
@@ -975,6 +993,10 @@ class TestMindStudioReport(unittest.TestCase):
             )
             self.assertIn("loss.svg", markdown)
             self.assertIn("training_metrics_compare.csv", page)
+            self.assertIn("Per-step metric comparison", page)
+            self.assertIn("<svg><text>loss.svg</text></svg>", page)
+            self.assertIn("runtime.log", page)
+            self.assertNotIn("href=", page)
             self.assertNotIn("Official msProbe", page)
             self.assertNotIn("unparsed", page)
 

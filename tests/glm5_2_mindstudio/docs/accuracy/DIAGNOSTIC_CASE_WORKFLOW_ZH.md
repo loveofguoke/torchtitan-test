@@ -105,7 +105,8 @@ mindstudio_artifacts/accuracy/<experiment-id>/diagnoses/<case-id>/03_observe/<wo
 ├── summary.json
 ├── loss.svg
 ├── grad_norm.svg
-└── relative_error.svg
+├── loss_relative_error.svg
+└── grad_norm_relative_error.svg
 ```
 
 `summary.json` 给出双方所有数值指标的首个非有限值、Loss 首个超过指导阈值的

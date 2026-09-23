@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import csv
 import html
 import json
 import os
@@ -16,6 +17,43 @@ from .artifacts import write_json
 
 def _relative_link(path: Path, base: Path) -> str:
     return Path(os.path.relpath(path.resolve(), base.resolve())).as_posix()
+
+
+def _embedded_csv_table(path: Path) -> str:
+    with path.open(encoding="utf-8", newline="") as stream:
+        reader = csv.DictReader(stream)
+        fieldnames = reader.fieldnames or []
+        rows = list(reader)
+    header = "".join(f"<th>{html.escape(name)}</th>" for name in fieldnames)
+    body = "".join(
+        "<tr>"
+        + "".join(
+            f"<td>{html.escape(str(row.get(name, '')))}</td>"
+            for name in fieldnames
+        )
+        + "</tr>"
+        for row in rows
+    )
+    return (
+        '<div class="table-scroll"><table class="metrics"><thead><tr>'
+        + header
+        + "</tr></thead><tbody>"
+        + body
+        + "</tbody></table></div>"
+    )
+
+
+def _embedded_text_file(path: Path) -> str:
+    return f"<pre>{html.escape(path.read_text(encoding='utf-8'))}</pre>"
+
+
+def _embedded_svg(path: Path) -> str:
+    payload = path.read_text(encoding="utf-8").strip()
+    if payload.startswith("<?xml"):
+        payload = payload.split("?>", maxsplit=1)[-1].lstrip()
+    if not payload.startswith("<svg"):
+        return f"<pre>{html.escape(payload)}</pre>"
+    return f'<div class="chart">{payload}</div>'
 
 
 def _supplemental_entries(
@@ -115,7 +153,8 @@ def _write_baseline_report_index(
         "training_metrics_compare.csv",
         "loss.svg",
         "grad_norm.svg",
-        "relative_error.svg",
+        "loss_relative_error.svg",
+        "grad_norm_relative_error.svg",
     )
     for row in rows:
         official_summary = Path(row["official_result"])
@@ -157,7 +196,7 @@ def _write_baseline_report_index(
             "schema": "torchtitan.glm5_2.mindstudio_report",
             "schema_version": 2,
             "experiment": experiment_name,
-            "workflow": "baseline",
+            "workflow": "observation",
             "training_observations": observations,
             "delivery_verdict": None,
             "meaning": (
@@ -170,7 +209,7 @@ def _write_baseline_report_index(
     markdown_lines = [
         f"# {experiment_name}",
         "",
-        "Workflow: `baseline training observation`",
+        "Workflow: `training observation`",
         "",
         "This report compares uninstrumented GPU reference and NPU candidate "
         "training metrics. It classifies the observed symptom and does not "
@@ -205,19 +244,16 @@ def _write_baseline_report_index(
             f"<td>{html.escape(window)} ({entry['step_count']} steps)</td>"
             f"<td>{html.escape(mean_error_text)}</td>"
             f"<td>{html.escape(first_above_text)}</td>"
-            f'<td><a href="{html.escape(runtime_link)}">runtime log</a></td>'
+            "<td>embedded below</td>"
             "</tr>"
         )
         markdown_lines.extend(("", f"### {entry['topology']} evidence", ""))
-        links: list[str] = []
+        evidence_by_name: dict[str, Path] = {}
         for raw_path in entry["evidence"]:
             path = Path(raw_path)
             link = _relative_link(path, report_directory)
             markdown_lines.append(f"- [{path.name}]({link})")
-            links.append(
-                f'<li><a href="{html.escape(link)}">'
-                f"{html.escape(path.name)}</a></li>"
-            )
+            evidence_by_name[path.name] = path
         candidate_nonfinite = entry["candidate_first_nonfinite_metrics"]
         reference_nonfinite = entry["reference_first_nonfinite_metrics"]
         markdown_lines.extend(
@@ -228,15 +264,44 @@ def _write_baseline_report_index(
                 f"`{json.dumps(reference_nonfinite, sort_keys=True)}`",
             )
         )
+        chart_sections = "".join(
+            f"<h4>{html.escape(name)}</h4>{_embedded_svg(evidence_by_name[name])}"
+            for name in (
+                "loss.svg",
+                "grad_norm.svg",
+                "loss_relative_error.svg",
+                "grad_norm_relative_error.svg",
+            )
+            if name in evidence_by_name
+        )
+        metrics_table = (
+            _embedded_csv_table(evidence_by_name["training_metrics_compare.csv"])
+            if "training_metrics_compare.csv" in evidence_by_name
+            else "<p>Training metric table is unavailable.</p>"
+        )
+        summary_payload = (
+            _embedded_text_file(evidence_by_name["summary.json"])
+            if "summary.json" in evidence_by_name
+            else "<p>Observation summary is unavailable.</p>"
+        )
+        runtime_payload = _embedded_text_file(runtime_log)
         evidence_sections.append(
-            f"<h3>{html.escape(entry['topology'])} evidence</h3><ul>"
-            + "".join(links)
-            + "</ul>"
+            f"<section><h3>{html.escape(entry['topology'])} evidence</h3>"
+            + chart_sections
             + "<p>Candidate first NaN/Inf metrics: <code>"
             + html.escape(json.dumps(candidate_nonfinite, sort_keys=True))
             + "</code><br>Reference first NaN/Inf metrics: <code>"
             + html.escape(json.dumps(reference_nonfinite, sort_keys=True))
             + "</code></p>"
+            + "<details><summary>Per-step metric comparison</summary>"
+            + metrics_table
+            + "</details>"
+            + "<details><summary>Observation summary JSON</summary>"
+            + summary_payload
+            + "</details>"
+            + "<details><summary>Runtime log</summary>"
+            + runtime_payload
+            + "</details></section>"
         )
 
     markdown_path = report_directory / "README.md"
@@ -248,10 +313,17 @@ def _write_baseline_report_index(
         "<style>body{font-family:system-ui,sans-serif;margin:32px;color:#172033}"
         "table{border-collapse:collapse;width:100%;margin-top:20px}"
         "th,td{border:1px solid #ccd4e0;padding:8px;text-align:left}"
-        "th{background:#eef3fa}code{background:#f4f6f8;padding:2px 4px}"
+        "th{background:#eef3fa;position:sticky;top:0}"
+        "code{background:#f4f6f8;padding:2px 4px}"
+        "details{margin:20px 0;border:1px solid #ccd4e0;padding:12px}"
+        "summary{cursor:pointer;font-weight:700}"
+        "pre{white-space:pre-wrap;word-break:break-word;background:#f6f8fa;"
+        "padding:12px;max-height:520px;overflow:auto}"
+        ".chart{overflow:auto;margin:12px 0 28px}.chart svg{max-width:100%;height:auto}"
+        ".table-scroll{max-height:640px;overflow:auto}.metrics{font-size:12px}"
         "</style></head><body>"
         f"<h1>{html.escape(experiment_name)}</h1>"
-        "<p>Workflow: <code>baseline training observation</code>.</p>"
+        "<p>Workflow: <code>training observation</code>.</p>"
         "<p>This report compares uninstrumented GPU reference and NPU candidate "
         "training metrics. It classifies the observed symptom and does not "
         "define a universal delivery PASS/FAIL verdict.</p>"

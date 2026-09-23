@@ -129,7 +129,7 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
         )
         self.assertTrue(
             baseline.operation_relative_root.as_posix().startswith(
-                "observations/baseline/s100-"
+                "observations/training/s100-"
             )
         )
         monitor = _stage_scoped_config(MONITOR_CONFIG, MIGRATION_CONFIG)
@@ -424,9 +424,23 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                 "training_metrics_compare.csv",
                 "loss.svg",
                 "grad_norm.svg",
-                "relative_error.svg",
+                "loss_relative_error.svg",
+                "grad_norm_relative_error.svg",
             ):
                 self.assertTrue((root / "output" / name).is_file())
+            loss_error_chart = (
+                root / "output" / "loss_relative_error.svg"
+            ).read_text(encoding="utf-8")
+            self.assertIn("Training step", loss_error_chart)
+            self.assertIn("Relative error (%)", loss_error_chart)
+            self.assertIn("Zero-error baseline", loss_error_chart)
+            self.assertIn("Guidance 1%", loss_error_chart)
+            grad_error_chart = (
+                root / "output" / "grad_norm_relative_error.svg"
+            ).read_text(encoding="utf-8")
+            self.assertIn("Gradient Norm Relative Error", grad_error_chart)
+            self.assertIn("no universal acceptance threshold", grad_error_chart)
+            self.assertFalse((root / "output" / "relative_error.svg").exists())
 
     def test_case_training_observation_is_cached(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -725,7 +739,7 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                 plan = build_plan(value)
                 self.assertEqual("observe", plan["stage"])
                 commands = "\n".join(plan["commands"])
-                self.assertIn("--stage baseline", commands)
+                self.assertIn("--stage observation", commands)
                 self.assertNotIn("--stage monitor", commands)
                 self.assertNotIn("--stage dump", commands)
 

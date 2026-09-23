@@ -38,7 +38,7 @@ schedule 窗口时切到 Ascend PyTorch Profiler。系统调优、单算子调�
 | 官方离线 `msprobe compare` | 已实现 | `accuracy_benchmark.py --stage dump --compare` |
 | NPU eager/compile 模块前向与反向比较 | 已实现 | `compile_accuracy_benchmark.py` |
 | GPU/NPU 训练前配置检查与逐 rank compare | 已实现 | `accuracy_benchmark.py --stage config-check` |
-| 无工具 hook 的正常训练与现象分类 | 已实现 | `accuracy_benchmark.py --stage baseline`，输出 Loss/Grad Norm/NaN/Inf 证据与曲线 |
+| 无工具 hook 的正常训练与现象分类 | 已实现 | `accuracy_benchmark.py --stage observation`，输出 Loss/Grad Norm/NaN/Inf 证据与曲线 |
 | API 精度预检与两端预检结果比对 | 已实现 | `--precheck`、`--precheck-compare` |
 | 长程训练状态监控 | 已实现，step 数按问题复现窗口显式指定 | `accuracy_benchmark.py --stage monitor` |
 | 分级图可视化与 TensorBoard 索引 | 已实现 | migration 完成 L0/mix capture 后执行 `--graph-visualize` |
@@ -682,16 +682,16 @@ hook 的 baseline。它仍使用统一 checkpoint、token plan 和确定性设�
 ```bash
 # NPU：准备足够覆盖观察窗口的输入，并运行正常训练
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage baseline \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage observation \
   --data --data-device npu --topology single --training-steps 500
-python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage baseline \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage observation \
   --capture candidate --topology single --training-steps 500
 
 # GPU 同步 full 实验数据后运行标杆；汇合后生成曲线和现象摘要
 export CUDA_VISIBLE_DEVICES=0
-python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage baseline \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage observation \
   --capture reference --topology single --training-steps 500
-python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage baseline \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage observation \
   --compare --topology single --training-steps 500
 ```
 

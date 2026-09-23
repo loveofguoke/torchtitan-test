@@ -10,7 +10,7 @@ hook** 的正常训练，保存逐 step Loss、Grad Norm 和训练日志，再�
 
 ```text
 训练前配置检查       accuracy_benchmark.py --stage config-check
-正常训练现象观察     accuracy_benchmark.py --stage baseline
+正常训练现象观察     accuracy_benchmark.py --stage observation
   ├─ Loss/Grad Norm 是否出现 NaN/Inf？
   ├─ 第一步或前几步 Loss 是否不对齐？
   └─ 前期对齐后，长程 Loss/Grad Norm 是否漂移或尖刺？
@@ -36,7 +36,7 @@ mindstudio_{fixtures,runs,artifacts,reports}/accuracy/<experiment-id>/
 └── <topology>/
     ├── inputs/<fixture-profile>/              # checkpoint、token plan、fixture
     ├── checklist/configuration-check/         # 训练前合同检查
-    ├── observations/baseline/<training-profile>/ # 无工具 hook 的正常训练
+    ├── observations/training/<training-profile>/ # 无工具 hook 的正常训练
     ├── captures/<dump-profile>/               # 任意 step/task/level 的 msProbe 采集
     └── observations/monitor/<monitor-profile>/# 任意长度的训练状态监测
 
@@ -119,7 +119,7 @@ msProbe 的五项工具能力不是整网诊断的起点。结合官方大模型
 | 阶段 | 目的 | 当前实现 |
 | --- | --- | --- |
 | 配置检查 | 找出两端 seed、dtype、优化器、模型、环境等差异 | 已接入 dynamic `ConfigChecker` 和逐 rank 官方 compare |
-| 正常训练 | 在无 dump/Monitor hook 下记录逐 step Loss、Grad Norm 与所有数值日志指标 | 已由 `accuracy_benchmark.py --stage baseline` 接入并生成 JSONL/CSV/JSON/SVG |
+| 正常训练 | 在无 dump/Monitor hook 下记录逐 step Loss、Grad Norm 与所有数值日志指标 | 已由 `accuracy_benchmark.py --stage observation` 接入并生成 JSONL/CSV/JSON/SVG |
 | 训练状态监控 | 监控激活、梯度、权重、优化器及异常状态 | 已由 `accuracy_benchmark.py --stage monitor` 接入 Monitor V2 |
 | 数据采集 | L0/L1/mix，statistics/tensor | 已由 `accuracy_benchmark.py --stage dump` 接入 `PrecisionDebugger` |
 | 精度预检 | 对单端 API 构造单测、比较 CPU 高精度标杆，再比较 GPU/NPU 预检结论 | 已接入 `--precheck`、`--precheck-compare`，逐 step、逐 rank 保存官方结果 |
@@ -709,21 +709,22 @@ python release_artifacts.py upload "$EXPERIMENT" --content full
 ```bash
 # NPU candidate
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage baseline \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage observation \
   --data --data-device npu --topology single --training-steps 500
-python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage baseline \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage observation \
   --capture candidate --topology single --training-steps 500
 
 # 上传 full，GPU 下载后执行 reference
 export CUDA_VISIBLE_DEVICES=0
-python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage baseline \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage observation \
   --capture reference --topology single --training-steps 500
-python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage baseline \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage observation \
   --compare --topology single --training-steps 500
 ```
 
 每端的 `training_metrics.jsonl` 记录 TorchTitan 正常 metrics logger 已产生的全部数值
-指标；比较报告生成 `loss.svg`、`grad_norm.svg`、`relative_error.svg`、逐 step CSV 和
+指标；比较报告生成 `loss.svg`、`grad_norm.svg`、`loss_relative_error.svg`、
+`grad_norm_relative_error.svg`、逐 step CSV 和
 `summary.json`。摘要按官方流程先列出 NaN/Inf 的首次 step，再给出首个超过指导阈值
 的 Loss step。它只做现象分类，不把 1% 指导值冒充所有模型的交付 PASS/FAIL。
 

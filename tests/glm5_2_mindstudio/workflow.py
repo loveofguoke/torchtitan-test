@@ -127,6 +127,14 @@ def _output_root(
     return root / configured_root / config.output_relative_root
 
 
+def _comparison_directory(
+    report_directory: Path,
+    workflow: str,
+) -> Path:
+    name = "comparison" if workflow == "baseline" else "official_compare"
+    return report_directory / name
+
+
 def _stage_scoped_config(
     config: MindStudioExperimentConfig,
     base_config: MindStudioExperimentConfig,
@@ -157,7 +165,7 @@ def _stage_scoped_config(
             )
             return replace(
                 config,
-                output_subdirectory=f"observations/baseline/{profile}",
+                output_subdirectory=f"observations/training/{profile}",
                 fixture_subdirectory=fixture_subdirectory,
             )
         if config.workflow == "migration":
@@ -202,7 +210,7 @@ def _stage_scoped_config(
         )
         return replace(
             config,
-            output_subdirectory=f"observations/baseline/{profile}",
+            output_subdirectory=f"observations/training/{profile}",
         )
     if config.workflow == "monitor":
         identity = {
@@ -1276,7 +1284,7 @@ def reset_compare_outputs(
     active: list[Path] = []
     for topology in topologies:
         _, _, report = _paths(root, config, topology, "reference", repeat)
-        compare = report / "official_compare"
+        compare = _comparison_directory(report, config.workflow)
         paths.append(compare)
         active.append(compare)
     for directory in active:
@@ -1433,7 +1441,7 @@ def capture_official(
     elif config.workflow == "baseline":
         environment["GLM5_MINDSTUDIO_MODE"] = "baseline"
         official_config = {
-            "workflow": "baseline",
+            "workflow": "observation",
             "collection": "whole_training_metrics",
             "instrumentation": "none",
         }
@@ -2675,7 +2683,7 @@ def compare_official(
         },
     }
     comparison_digest = config_digest(comparison_identity, length=64)
-    compare_directory = report_directory / "official_compare"
+    compare_directory = _comparison_directory(report_directory, config.workflow)
     comparison_state_path = compare_directory / "comparison_state.json"
     assert_run_not_active(
         compare_directory,

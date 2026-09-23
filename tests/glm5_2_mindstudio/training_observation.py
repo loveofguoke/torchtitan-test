@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import csv
+from html import escape
 import json
 import math
 from pathlib import Path
@@ -112,10 +113,14 @@ def _svg_chart(
     path: Path,
     *,
     title: str,
+    y_label: str,
     series: tuple[tuple[str, str, list[tuple[int, float]]], ...],
+    reference_lines: tuple[tuple[str, str, float], ...] = (),
+    include_zero: bool = False,
+    subtitle: str | None = None,
 ) -> None:
-    width, height = 960, 480
-    left, top, right, bottom = 80, 55, 25, 60
+    width, height = 1120, 560
+    left, top, right, bottom = 105, 95, 35, 80
     points = [point for _, _, values in series for point in values]
     finite = [(step, value) for step, value in points if math.isfinite(value)]
     if not finite:
@@ -133,29 +138,77 @@ def _svg_chart(
     max_step = max(step for step, _ in finite)
     min_value = min(value for _, value in finite)
     max_value = max(value for _, value in finite)
+    if reference_lines:
+        min_value = min(min_value, *(value for _, _, value in reference_lines))
+        max_value = max(max_value, *(value for _, _, value in reference_lines))
+    if include_zero:
+        min_value = min(min_value, 0.0)
+        max_value = max(max_value, 0.0)
+    raw_span = max_value - min_value
+    padding = max(raw_span * 0.05, abs(max_value) * 0.01, 1e-12)
+    if include_zero and min_value == 0:
+        display_min = 0.0
+    else:
+        display_min = min_value - padding
+    display_max = max_value + padding
     step_span = max(max_step - min_step, 1)
-    value_span = max(max_value - min_value, 1e-12)
+    value_span = max(display_max - display_min, 1e-12)
 
     def point(step: int, value: float) -> tuple[float, float]:
         x = left + (step - min_step) / step_span * (width - left - right)
-        y = top + (max_value - value) / value_span * (height - top - bottom)
+        y = top + (display_max - value) / value_span * (height - top - bottom)
         return x, y
 
     lines = [
         '<svg xmlns="http://www.w3.org/2000/svg" '
         f'width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
         '<rect width="100%" height="100%" fill="white"/>',
-        f'<text x="{left}" y="30" font-size="20">{title}</text>',
+        f'<text x="{width / 2}" y="30" font-size="24" '
+        f'text-anchor="middle" font-weight="700">{escape(title)}</text>',
+    ]
+    if subtitle:
+        lines.append(
+            f'<text x="{width / 2}" y="55" font-size="13" '
+            f'text-anchor="middle" fill="#4b5563">{escape(subtitle)}</text>'
+        )
+    plot_bottom = height - bottom
+    x_tick_count = min(8, max_step - min_step + 1)
+    y_tick_count = 6
+    for index in range(y_tick_count + 1):
+        value = display_min + value_span * index / y_tick_count
+        y = plot_bottom - (plot_bottom - top) * index / y_tick_count
+        lines.extend(
+            [
+                f'<line x1="{left}" y1="{y:.2f}" x2="{width-right}" '
+                f'y2="{y:.2f}" stroke="#d1d5db" stroke-width="1"/>',
+                f'<text x="{left-12}" y="{y+4:.2f}" font-size="12" '
+                f'text-anchor="end">{value:.6g}</text>',
+            ]
+        )
+    for index in range(x_tick_count + 1):
+        step = round(min_step + step_span * index / x_tick_count)
+        x, _ = point(step, display_min)
+        lines.extend(
+            [
+                f'<line x1="{x:.2f}" y1="{top}" x2="{x:.2f}" '
+                f'y2="{plot_bottom}" stroke="#eef0f3" stroke-width="1"/>',
+                f'<text x="{x:.2f}" y="{plot_bottom+24}" font-size="12" '
+                f'text-anchor="middle">{step}</text>',
+            ]
+        )
+    lines.extend(
+        [
         f'<line x1="{left}" y1="{top}" x2="{left}" y2="{height-bottom}" '
         'stroke="#333"/>',
         f'<line x1="{left}" y1="{height-bottom}" x2="{width-right}" '
         f'y2="{height-bottom}" stroke="#333"/>',
-        f'<text x="{left}" y="{height-20}" font-size="12">step {min_step}</text>',
-        f'<text x="{width-right-80}" y="{height-20}" font-size="12">'
-        f'step {max_step}</text>',
-        f'<text x="5" y="{top+8}" font-size="12">{max_value:.6g}</text>',
-        f'<text x="5" y="{height-bottom}" font-size="12">{min_value:.6g}</text>',
-    ]
+            f'<text x="{(left + width - right) / 2}" y="{height-22}" '
+            'font-size="14" text-anchor="middle">Training step</text>',
+            f'<text x="25" y="{(top + plot_bottom) / 2}" font-size="14" '
+            f'text-anchor="middle" transform="rotate(-90 25 '
+            f'{(top + plot_bottom) / 2})">{escape(y_label)}</text>',
+        ]
+    )
     legend_x = left
     for name, color, values in series:
         segments: list[list[str]] = [[]]
@@ -173,12 +226,29 @@ def _svg_chart(
                 )
         lines.extend(
             [
-                f'<line x1="{legend_x}" y1="45" x2="{legend_x+24}" y2="45" '
+                f'<line x1="{legend_x}" y1="75" x2="{legend_x+24}" y2="75" '
                 f'stroke="{color}" stroke-width="3"/>',
-                f'<text x="{legend_x+30}" y="49" font-size="12">{name}</text>',
+                f'<text x="{legend_x+30}" y="79" font-size="12">'
+                f'{escape(name)}</text>',
             ]
         )
         legend_x += 170
+    for name, color, value in reference_lines:
+        _, y = point(min_step, value)
+        lines.append(
+            f'<line x1="{left}" y1="{y:.2f}" x2="{width-right}" '
+            f'y2="{y:.2f}" stroke="{color}" stroke-width="2" '
+            'stroke-dasharray="8 6"/>'
+        )
+        lines.extend(
+            [
+                f'<line x1="{legend_x}" y1="75" x2="{legend_x+24}" y2="75" '
+                f'stroke="{color}" stroke-width="2" stroke-dasharray="8 6"/>',
+                f'<text x="{legend_x+30}" y="79" font-size="12">'
+                f'{escape(name)}</text>',
+            ]
+        )
+        legend_x += 190
     lines.append("</svg>")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -238,45 +308,82 @@ def compare_training_metrics(
     ]
     _svg_chart(
         output_directory / "loss.svg",
-        title="Loss: reference vs candidate",
+        title="Training Loss",
+        y_label="Loss",
         series=(
-            ("reference", "#2563eb", reference_loss),
-            ("candidate", "#dc2626", candidate_loss),
+            ("GPU reference", "#2563eb", reference_loss),
+            ("NPU candidate", "#dc2626", candidate_loss),
         ),
+        include_zero=True,
     )
     _svg_chart(
         output_directory / "grad_norm.svg",
-        title="Grad Norm: reference vs candidate",
+        title="Gradient Norm",
+        y_label="L2 norm",
         series=(
-            ("reference", "#2563eb", reference_grad),
-            ("candidate", "#dc2626", candidate_grad),
+            ("GPU reference", "#2563eb", reference_grad),
+            ("NPU candidate", "#dc2626", candidate_grad),
         ),
+        include_zero=True,
     )
-    _svg_chart(
-        output_directory / "relative_error.svg",
-        title="Relative error by training step",
-        series=(
-            (
-                "loss",
-                "#7c3aed",
-                [(row["step"], row["loss_relative_error"]) for row in rows],
-            ),
-            (
-                "grad_norm",
-                "#059669",
-                [
-                    (row["step"], row["grad_norm_relative_error"])
-                    for row in rows
-                ],
-            ),
-        ),
-    )
-    first_observed_step = min(reference)
+    loss_error = [
+        (row["step"], row["loss_relative_error"] * 100.0) for row in rows
+    ]
+    grad_error = [
+        (row["step"], row["grad_norm_relative_error"] * 100.0)
+        for row in rows
+    ]
+    loss_mean = _finite_mean(value for _, value in loss_error)
     first_loss_difference = _first_step(
         rows,
         lambda row: math.isfinite(row["loss_relative_error"])
         and row["loss_relative_error"] > loss_relative_threshold,
     )
+    _svg_chart(
+        output_directory / "loss_relative_error.svg",
+        title="Loss Relative Error",
+        y_label="Relative error (%)",
+        series=(("Loss error", "#7c3aed", loss_error),),
+        reference_lines=(
+            ("Zero-error baseline", "#dc2626", 0.0),
+            (
+                f"Guidance {loss_relative_threshold * 100:g}%",
+                "#f59e0b",
+                loss_relative_threshold * 100.0,
+            ),
+        ),
+        include_zero=True,
+        subtitle=(
+            f"Mean error: {loss_mean:.6g}%; first step above guidance: "
+            f"{first_loss_difference if first_loss_difference is not None else 'none'}"
+            if loss_mean is not None
+            else "No finite Loss relative errors"
+        ),
+    )
+    grad_reference_lines = [("Zero-error baseline", "#dc2626", 0.0)]
+    if grad_norm_relative_threshold is not None:
+        grad_reference_lines.append(
+            (
+                f"Configured {grad_norm_relative_threshold * 100:g}%",
+                "#f59e0b",
+                grad_norm_relative_threshold * 100.0,
+            )
+        )
+    grad_mean = _finite_mean(value for _, value in grad_error)
+    _svg_chart(
+        output_directory / "grad_norm_relative_error.svg",
+        title="Gradient Norm Relative Error",
+        y_label="Relative error (%)",
+        series=(("Grad Norm error", "#059669", grad_error),),
+        reference_lines=tuple(grad_reference_lines),
+        include_zero=True,
+        subtitle=(
+            f"Mean error: {grad_mean:.6g}%; no universal acceptance threshold"
+            if grad_mean is not None
+            else "No finite Grad Norm relative errors"
+        ),
+    )
+    first_observed_step = min(reference)
     if _first_nonfinite_metrics(candidate_path):
         symptom = "candidate-nan-or-inf"
     elif first_loss_difference == first_observed_step:

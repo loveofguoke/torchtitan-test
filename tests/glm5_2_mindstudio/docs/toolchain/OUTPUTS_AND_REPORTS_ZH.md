@@ -68,54 +68,248 @@ compile-npu-inductor-bf16-random-s1-b64-seq128-seed61-e5f6a7b8
 - 末尾短 hash 表示完整实验契约，不为每个阶段各算一套不相干 hash；
 - Windows 路径长度敏感，避免把所有参数展开成超长目录名；完整参数保存在 manifest。
 
-## 3. 当前目录树
+## 3. 精度实验的逻辑层级
+
+`<experiment-id>` 是一项完整精度实验，不是一次命令。其下依次按以下层级组织：
 
 ```text
-mindstudio_fixtures/accuracy/<experiment-id>/
-├── fixture.json
-├── token_plan.pt或fixture记录的实际token文件
-├── checkpoint/
-├── token_generation.log
-├── seed_generation.log
-└── 其他precision fixture契约文件
-
-mindstudio_runs/accuracy/<experiment-id>/<topology>/<role>-r1/
-├── runtime.log
-├── run_state.json
-├── resolved_command.json
-├── resolved_launch.sh
-├── msprobe_config.json
-├── input_contract/
-└── trainer_output/
-
-mindstudio_artifacts/accuracy/<experiment-id>/<topology>/<role>-r1/
-├── official/                       # 官方工具原样输出
-├── manifest.json                   # fixture、输入契约、topology、工具链、文件索引
-└── complete.json                   # 只有校验成功后生成
-
-mindstudio_artifacts/accuracy/<experiment-id>/<topology>/precision_precheck/
-├── reference-r1/stepN/rankN/{official/,manifest.json,complete.json}
-└── candidate-r1/stepN/rankN/{official/,manifest.json,complete.json}
-
-mindstudio_reports/accuracy/<experiment-id>/
-├── <experiment-id>.html
-├── README.md
-└── <topology>/
-    ├── official_compare/
-    └── precision_precheck/
-        └── compare-r1/
-            ├── precheck_report.html
-            ├── precheck_index.json
-            └── stepN/rankN/official/
+<experiment-id>                         # 模型、设备对、dtype、输入契约等整体身份
+└── <topology>                          # single、fsdp8、tp8、pp8、hsdp2x4 等
+    └── <stage-family>/<stage>           # 检查、正常观察、采集或按现象诊断
+        └── <stage-profile>              # 本阶段的步数、范围和配置 hash
+            └── <role>-r<repeat>         # GPU reference / NPU candidate / 重复编号
 ```
 
-若官方工具只能在指定相对结构中工作，`official/` 内部完整保留该结构；项目层
-不把其文件全部扁平化重命名。compile 的逐 part CSV 会额外合并成逐 rank CSV，
-但原始 part CSV 仍保留；config-check 则逐 rank 保存 ZIP 和 compare 目录。
+所以 `single` 下出现多个一级分类是预期行为：它们不是重复实验，而是同一 topology
+的标准精度流程。
 
-## 4. 各阶段应该保存什么
+| 目录 | 作用 | 什么时候产生 |
+| --- | --- | --- |
+| `checklist/configuration-check` | 排除超参、版本、模型结构、权重、输入和 rank 映射不一致 | 标准流程第一阶段 |
+| `observations/training/<profile>` | 无 PrecisionDebugger、无 Monitor hook 的正常训练；观察 Loss、Grad Norm、NaN/Inf、首步差异、长稳漂移和尖刺 | CheckList 之后，细粒度 dump 之前 |
+| `observations/monitor/<profile>` | 使用 Monitor V2 低开销监控所选参数、梯度、模块或通信统计量 | 长程异常存在但第一现场 step/module 不明确时 |
+| `captures/<dump-profile>` | 使用 PrecisionDebugger 采集指定 step/rank 的 statistics/tensor/md5 数据 | 已确定需要细粒度比较的位置时 |
+| `diagnostics/dump/<dump-profile>` | 在既有实验内追加不同 scope、level、task 或 step 的定点 dump | 对首个可疑模块/API 继续缩小范围时 |
+| `diagnostics/monitor/<profile>` | 在既有实验内追加特定窗口或对象的 Monitor 诊断 | baseline/初次 monitor 后继续定点监控时 |
 
-### 4.1 fixture
+早期实现把这一阶段称为 `baseline`，但该词容易同时被误解为 GPU 标杆、性能基线，
+或与一个并不存在的 `non-baseline` stage 成对。当前用户接口统一称为
+`observation`，目录称为 `observations/training`。它表示“无精度工具 hook 的正常训练
+观察”，与 `reference/candidate` 设备角色是两个正交维度。同一个 observation profile
+内同时有 `reference-r1`（GPU）和 `candidate-r1`（NPU），两端运行相同 checkpoint、
+token plan 和训练契约，再比较逐 step 训练现象。它回答：
+
+```text
+整网是否已经出现问题？
+问题属于 NaN/Inf、首 Step、后续漂移还是尖刺？
+最早应当采集哪个 step？
+```
+
+它不回答具体哪个 API 出错；后者由 Monitor、PrecisionDebugger、`msprobe compare`
+和分级可视化完成。因此标准流程不是一开始就 dump。
+
+## 4. 当前完整目录树与文件含义
+
+以下树使用 `<profile>` 表示配置摘要，例如 baseline 的 `s500-fb08c375`；完整配置
+永远保存在 JSON、manifest 和启动契约中，不依赖人工反解 hash。
+
+### 4.1 固定输入：`mindstudio_fixtures`
+
+```text
+mindstudio_fixtures/accuracy/<experiment-id>/<topology>/
+└── inputs/<input-profile>/
+    ├── fixture.json                 # generation ID、配置、文件 hash 和完整性状态
+    ├── checkpoint/                  # GPU/NPU 共用的初始化权重
+    ├── token_plan.*                 # 每个训练 step 的固定 token/sample 计划
+    ├── token_generation.log         # token plan 生成日志
+    └── seed_generation.log          # checkpoint/随机初始化生成日志（如适用）
+```
+
+fixture 是所有阶段的共同输入契约，不是 msProbe dump。`<topology>` 必须保留，因为
+DP/TP/PP/CP 等切分会改变 rank 消费输入的方式。
+
+### 4.2 运行现场：`mindstudio_runs`
+
+```text
+mindstudio_runs/accuracy/<experiment-id>/<topology>/
+├── checklist/
+│   └── configuration-check/
+│       ├── reference-r1/            # GPU ConfigChecker 采集现场
+│       └── candidate-r1/            # NPU ConfigChecker 采集现场
+├── observations/
+│   ├── training/<profile>/
+│   │   ├── reference-r1/            # GPU 无 hook 正常训练
+│   │   └── candidate-r1/            # NPU 无 hook 正常训练
+│   └── monitor/<profile>/
+│       ├── reference-r1/            # GPU Monitor V2（工具支持时）
+│       └── candidate-r1/            # NPU Monitor V2
+├── captures/
+│   └── <dump-profile>/
+│       ├── reference-r1/            # GPU PrecisionDebugger 采集现场
+│       └── candidate-r1/            # NPU PrecisionDebugger 采集现场
+└── diagnostics/
+    ├── dump/<dump-profile>/<role>-rN/
+    └── monitor/<profile>/<role>-rN/
+```
+
+每个 `<role>-rN/` 运行目录使用同一套外围文件：
+
+```text
+<role>-rN/
+├── EXPERIMENT.md                    # 人进入目录后首先阅读的实验摘要与原始入口命令
+├── runtime.log                      # 完整实时训练/工具日志
+├── run_state.json                   # PID、attempt、running/completed/failed/interrupted
+├── resolved_command.json            # 最终 argv 数组
+├── resolved_launch.sh               # 最终环境变量与可复现启动命令
+├── msprobe_config.json              # 当前阶段工具配置；baseline 明确为 instrumentation=none
+├── training_metrics.jsonl           # 逐 step TorchTitan 指标；baseline 必需，其他训练也保留
+├── input_contract/
+│   ├── rank-*.jsonl                 # 每个 rank 实际消费的 step/sample/token 证据
+│   └── summary.json                 # 对 token plan、DP replica 和 step 连续性的校验摘要
+└── trainer_output/                  # TorchTitan 自身输出（仅配置要求时出现）
+```
+
+并非每个 stage 都会填满所有可选文件。例如 config-check 主要产生 ZIP，baseline 不
+启动 msProbe，dump 才会在 artifact 中产生 `dump.json`/`construct.json`。
+
+### 4.3 可同步端点证据：`mindstudio_artifacts`
+
+artifact 路径镜像 run 的 stage/profile/role 路径：
+
+```text
+mindstudio_artifacts/accuracy/<experiment-id>/<topology>/
+├── checklist/configuration-check/<role>-rN/
+├── observations/training/<profile>/<role>-rN/
+├── observations/monitor/<profile>/<role>-rN/
+├── captures/<dump-profile>/<role>-rN/
+└── diagnostics/{dump|monitor}/<profile>/<role>-rN/
+```
+
+每个 endpoint artifact 的外围结构一致：
+
+```text
+<role>-rN/
+├── official/                        # 该阶段交给下游分析的规范化端点输出
+├── manifest.json                    # fixture、topology、输入契约、工具链及逐文件 hash
+└── complete.json                    # 通过结构/输入校验后才生成的完成标记
+```
+
+`official/` 是历史通用名称，含义是“该 endpoint 的规范化输出”，不保证一定由
+msProbe 生成。各阶段内容如下：
+
+```text
+checklist/.../official/
+└── config_check_rankN.zip           # 官方 ConfigChecker 每 rank 数据包
+
+observations/training/.../official/
+└── training_metrics.jsonl           # 从 run 选择出的正式逐 step 训练指标
+
+observations/monitor/.../official/
+└── rank_N/**/*.csv                  # Monitor V2 按 rank/对象输出的时间序列
+
+captures/<dump-profile>/.../official/
+└── stepN/rankN/
+    ├── dump.json                    # Module/API 输入输出统计或 tensor 索引
+    ├── construct.json               # Module/API 层级结构
+    ├── stack.json                   # API 调用栈（由配置和版本决定）
+    └── dump_tensor_data/            # task=tensor 时的完整 tensor（如产生）
+```
+
+单端精度预检是 dump artifact 的派生端点证据，不写回原 capture：
+
+```text
+mindstudio_artifacts/accuracy/<experiment-id>/<topology>/
+└── precision_precheck/
+    ├── reference-rN/stepN/rankN/
+    │   ├── official/                # GPU API-vs-CPU 高精度预检 CSV
+    │   ├── invocation.json
+    │   ├── runtime.log
+    │   ├── manifest.json
+    │   └── complete.json
+    └── candidate-rN/stepN/rankN/    # NPU API-vs-CPU 高精度预检，结构同上
+```
+
+### 4.4 汇合分析与人类入口：`mindstudio_reports`
+
+```text
+mindstudio_reports/accuracy/<experiment-id>/
+├── <experiment-id>.html             # 当前 workflow 的自包含聚合报告
+├── README.md                        # Markdown 入口
+├── report.json                      # 机器可读聚合数据
+└── <topology>/
+    ├── checklist/configuration-check/
+    │   └── official_compare/        # 官方 config_check 逐 rank 比较
+    ├── observations/training/<profile>/
+    │   └── comparison/              # 项目实现的整网训练现象比较，不是 msprobe compare
+    ├── observations/monitor/<profile>/
+    │   └── official_compare/        # 只索引两端 Monitor；不伪造跨端 PASS/FAIL
+    ├── captures/<dump-profile>/
+    │   ├── official_compare/        # 官方 msprobe compare CSV/JSON/XLSX
+    │   ├── precision_precheck/
+    │   │   └── compare-rN/          # 官方两端 API 预检比较及 HTML 索引
+    │   ├── trend-<role>-rN/         # 官方 data2db 生成的 .trend.db
+    │   └── overflow-<role>-rN/      # 官方首溢出分析
+    └── diagnostics/{dump|monitor}/<profile>/
+        └── 对应的 compare/trend/overflow 派生结果
+```
+
+baseline 的 `comparison/` 内容全部由项目基于官方诊断流程生成：
+
+```text
+comparison/
+├── training_metrics_compare.csv     # GPU/NPU 按 step 对齐后的 Loss/Grad Norm
+├── summary.json                     # NaN/Inf、首步、长稳和尖刺现象分类
+├── loss.svg                         # 两端 Loss 曲线
+├── grad_norm.svg                    # 两端 Grad Norm 曲线
+├── loss_relative_error.svg          # Loss 误差、零误差 baseline 与 1% 指导线
+├── grad_norm_relative_error.svg      # Grad Norm 误差及零误差 baseline
+├── official_summary.json            # 生命周期摘要；不表示 msProbe verdict
+├── runtime.log                      # 比较过程日志
+├── toolchain_compatibility_diff.json# 两端来源差异，仅供人工检查
+├── comparison_state.json            # 输入 identity/hash 与输出索引，用于安全复用
+└── compare_run_state.json            # compare attempt/PID/完成状态
+```
+
+名字 `official_compare` 只保留给确实调用官方比较器，或直接索引官方输出的阶段。
+baseline 已使用 `comparison/`，因为 CSV、SVG、summary 均由项目生成。
+
+其他官方派生分析：
+
+```text
+mindstudio_runs/accuracy/<experiment-id>/<topology>/graph-visualize-rN/
+├── invocation.json
+└── runtime.log
+
+mindstudio_artifacts/accuracy/<experiment-id>/<topology>/graph-visualize-rN/
+├── official/*.vis.db                # 官方分级构图数据库
+├── manifest.json
+└── complete.json
+
+mindstudio_reports/accuracy/<experiment-id>/<topology>/graph-visualize-rN/
+├── README.md                         # TensorBoard 启动说明
+└── index.json                        # 数据库相对路径、大小、hash 和来源
+```
+
+compile accuracy 是独立实验族，而非统一 eager 诊断四阶段之一：
+
+```text
+mindstudio_runs/accuracy/<compile-experiment>/<topology>/candidate-rN/
+mindstudio_artifacts/accuracy/<compile-experiment>/<topology>/candidate-rN/
+└── official/
+    ├── precision_rankN_partM.csv     # 官方 PrecisionChecker 原始分片结果
+    ├── precision_rankN.csv           # 项目聚合后的逐 rank 结果
+    └── compile_coverage_rankN.json   # 前向/反向和目标模块覆盖证据
+mindstudio_reports/accuracy/<compile-experiment>/<topology>/official_compare/
+└── compile_all_ranks.csv             # 跨 rank 汇总；判定仍来自官方行
+```
+
+若官方工具只能在指定相对结构中工作，`official/` 内完整保留该结构；项目层不把
+其文件全部扁平化重命名。目录树是导航契约，实际文件清单和 SHA-256 仍以
+`manifest.json` 为准。
+
+## 5. 各阶段应该保存什么
+
+### 5.1 fixture
 
 fixture 是 reference/candidate 的共同契约，至少包含：
 
@@ -129,7 +323,7 @@ fixture 是 reference/candidate 的共同契约，至少包含：
 
 fixture 不等于 msProbe dump。msProbe capture 必须引用 fixture，而不是自己生成另一份随机数据。
 
-### 4.2 capture run
+### 5.2 capture run
 
 每个 reference/candidate run 保存：
 
@@ -166,7 +360,7 @@ forward 与 backward 决定性行。CSV 表头或合成 `LOSS` 行本身不能�
 
 “目录存在”“runtime.log 存在”都不足以表示 capture 完成。
 
-### 4.3 offline compare/analyze
+### 5.3 offline compare/analyze
 
 保存：
 
@@ -180,7 +374,7 @@ forward 与 backward 决定性行。CSV 表头或合成 `LOSS` 行本身不能�
 
 compare 应可重复执行，不修改 reference/candidate raw。官方输出 schema 变化时，原始 compare 结果仍可人工阅读，项目 parser 失败不能删除它。
 
-### 4.4 precision pre-check
+### 5.4 precision pre-check
 
 单端预检结果属于 endpoint artifact，但不会写回原 capture 的 `<role>-rN/`；它放在
 同一 topology 下独立的 `precision_precheck/<role>-rN/`。两端比较结果才属于
@@ -205,15 +399,15 @@ mindstudio_artifacts/<experiment-id>/<topology>/precision_precheck/candidate-r1/
 
 项目会校验预检结果对应当前 capture；旧 details CSV 不能与新 dump 混搭。
 
-## 5. 官方原始产物的分类
+## 6. 官方原始产物的分类
 
-### 5.1 msProbe
+### 6.1 msProbe
 
 不同版本、task 和 dump 配置会产生不同文件。当前项目只规定 artifact 容器结构，
 并在 manifest 中索引官方实际文件，不再创造一层虚构的 `official_raw/`：
 
 ```text
-mindstudio_artifacts/<experiment-id>/<topology>/<role>-r1/
+mindstudio_artifacts/accuracy/<experiment-id>/<topology>/captures/<dump-profile>/<role>-r1/
 ├── official/
 │   └── stepN/rankN/
 │       ├── dump.json
@@ -223,20 +417,20 @@ mindstudio_artifacts/<experiment-id>/<topology>/<role>-r1/
 └── complete.json
 ```
 
-普通离线 compare 放在 report 的 `official_compare/`；单端预检放在 endpoint
+普通离线 compare 放在同一 dump profile report 的 `official_compare/`；单端预检放在 endpoint
 artifact 的 `precision_precheck/<role>-rN/.../official/`；两端
 `api_precision_compare` 才放在 report 的 `precision_precheck/compare-rN/`。这些
 目录可能包含 CSV、JSON、HTML、XLSX 或其他官方格式，以锁定版本实际产出为准。
 
-### 5.5 Monitor V2 与 graph_visualize
+### 6.2 Monitor V2 与 graph_visualize
 
 Monitor capture 沿用普通 endpoint artifact：
 
 ```text
-mindstudio_artifacts/<experiment-id>/<topology>/<role>-r1/official/
+mindstudio_artifacts/accuracy/<experiment-id>/<topology>/observations/monitor/<profile>/<role>-r1/official/
 └── rank_<rank>/**/*.csv
 
-mindstudio_reports/<experiment-id>/<topology>/official_compare/
+mindstudio_reports/accuracy/<experiment-id>/<topology>/observations/monitor/<profile>/official_compare/
 ├── monitor_index.json
 ├── official_summary.json
 └── runtime.log
@@ -269,7 +463,7 @@ mindstudio_reports/<experiment-id>/<topology>/graph-visualize-r1/
 - 官方版本；
 - 文件 hash。
 
-### 5.2 Ascend PyTorch Profiler/CANN
+### 6.3 Ascend PyTorch Profiler/CANN
 
 性能 raw 可能包含：
 
@@ -283,7 +477,7 @@ mindstudio_reports/<experiment-id>/<topology>/graph-visualize-r1/
 
 这些数据是体积最大的类别。现有 performance workflow 已管理它们，MindStudio 标准目录应通过 manifest/link 引用，而不是复制一份。
 
-### 5.3 msprof-analyze
+### 6.4 msprof-analyze
 
 根据 recipe/version，结果可能包括：
 
@@ -295,7 +489,7 @@ mindstudio_reports/<experiment-id>/<topology>/graph-visualize-r1/
 
 报告应显示“哪个 recipe 成功”“输出在哪里”，不能把 advisor 阶段成功误写成模型性能 PASS。
 
-### 5.4 MindStudio Insight
+### 6.5 MindStudio Insight
 
 Insight 是查看器。项目应保存它能够导入的数据和导入说明；如人工从 GUI 导出截图、标注或工程文件，可放到 report `assets/insight/`，并记录：
 
@@ -306,7 +500,7 @@ Insight 是查看器。项目应保存它能够导入的数据和导入说明；
 
 截图是解释材料，不是原始证据。
 
-### 5.5 图编译
+### 6.6 图编译
 
 图模式现有产物包括但不限于：
 
@@ -320,7 +514,7 @@ Insight 是查看器。项目应保存它能够导入的数据和导入说明；
 
 MindStudio compile accuracy 的官方输出作为独立子目录加入，不覆盖这些编译调试证据。
 
-## 6. compact artifact 的定义
+## 7. compact artifact 的定义
 
 当前 workflow 不自动生成一个名为 `compact artifact` 的独立目录。跨
 GPU/NPU/CPU 做官方 compare 时，必须同步完整 `mindstudio_artifacts/.../<role>-rN`
@@ -349,7 +543,7 @@ GPU/NPU/CPU 做官方 compare 时，必须同步完整 `mindstudio_artifacts/...
 - Python/Conda 环境副本；
 - 可从 raw 确定性重建的大型中间文件。
 
-## 7. 当前 manifest 核心字段
+## 8. 当前 manifest 核心字段
 
 ```json
 {
@@ -385,7 +579,7 @@ ID。`official_files` 对 official raw 逐文件记录相对路径、大小和 S
 - Windows/Linux 分隔符统一归一化到 manifest 的 `/`；
 - 每个 attachment 逐文件校验；大型 raw 可用分层索引 hash，避免每次 compare 重扫数百万文件。
 
-## 8. 中文索引应该包含什么
+## 9. 中文索引应该包含什么
 
 `mindstudio_reports/<experiment-id>/<experiment-id>.html` 和同目录 `README.md`
 是入口，不是另一套官方 analyzer。当前报告重点索引 workflow、topology、状态、
@@ -414,9 +608,9 @@ ID。`official_files` 对 official raw 逐文件记录相对路径、大小和 S
 
 不能把 `COMPLETE` 写成精度 `PASS`。精度结论应来自官方比较和明确标准。
 
-## 9. 跨服务器同步流程
+## 10. 跨服务器同步流程
 
-### 9.1 fixture
+### 10.1 fixture
 
 fixture 可在 GPU 或 NPU 任一端生成，但只能生成一次。同步后两端先校验 manifest/hash，再 capture。
 
@@ -427,7 +621,7 @@ fixture creator
   → candidate server
 ```
 
-### 9.2 capture
+### 10.2 capture
 
 GPU/NPU 各自运行自己的模型代码和官方采集。完成后同步完整 artifact 到 compare 机：
 
@@ -445,7 +639,7 @@ statistics compare 也需要 `dump.json` 等 official raw，tensor compare 还�
 推荐使用支持断点续传和校验的受控方式，例如 rsync/对象存储/内部文件服务，
 或 `release_artifacts.py upload/download`。Git 不承担数十 GB raw。
 
-### 9.3 同步包
+### 10.3 同步包
 
 若团队另行建设对象存储，可为每个 capture 生成：
 
@@ -459,9 +653,9 @@ statistics compare 也需要 `dump.json` 等 official raw，tensor compare 还�
 这不是当前 workflow 自动生成的固定文件名。压缩包外另存 SHA-256，解包后重新
 校验 manifest，防止只传了一部分目录。
 
-## 10. force、继续运行和 generation
+## 11. force、继续运行和 generation
 
-### 10.1 `--force`
+### 11.1 `--force`
 
 `--force` 必须对用户选中的实验范围建立新一代：
 
@@ -474,7 +668,7 @@ statistics compare 也需要 `dump.json` 等 official raw，tensor compare 还�
 
 如果只 `--force --capture candidate --topology tp8`，清理范围必须由 CLI 规则明确；不能意外删除其他拓扑已经完成的数据，也不能复用旧 candidate raw。
 
-### 10.2 不加 `--force`
+### 11.2 不加 `--force`
 
 不加 force 是安全续跑：
 
@@ -497,16 +691,16 @@ capture manifest 会记录 lock、resolved manifest、实际安装树/CLI 与相
 独立离线分析身份；只升级 analyzer 时保留 capture，只重跑明确选择的 analysis，不能
 把旧 analyzer 输出混进新报告。
 
-### 10.3 原子提交
+### 11.3 原子提交
 
 当前 capture 直接写最终 run/artifact 目录，但只有子进程成功、关键官方文件校验、
 manifest/hash 完成后才写 `complete.json`。中断目录不会被视为成功，下次运行会
 先归档再重跑。`.partial-<attempt-id>` + 原子 rename 是后续可选增强，不应写成
 当前已经采用的机制。
 
-## 11. 存储控制
+## 12. 存储控制
 
-### 11.1 为什么全拓扑 × 全 preset 会产生数百 GB
+### 12.1 为什么全拓扑 × 全 preset 会产生数百 GB
 
 性能或精度 raw 的体积近似：
 
@@ -516,7 +710,7 @@ manifest/hash 完成后才写 `complete.json`。中断目录不会被视为成�
 
 例如 27 个拓扑、8 个 preset、8 rank 的完整 profiling 不是“同一份 trace 换八种图”，而是大量独立 capture。distributed/system/memory/stack/shape/op-args 等 preset 可能改变采集层级和原始数据，数百 GB 是可能的，但通常说明实验矩阵过度采集，不应作为默认流程。
 
-### 11.2 分层采集策略
+### 12.2 分层采集策略
 
 - 全拓扑：profiler-off 基线或轻量 overview；
 - 代表性拓扑：distributed/kernel/memory/runtime/system 深度 preset；
@@ -524,7 +718,7 @@ manifest/hash 完成后才写 `complete.json`。中断目录不会被视为成�
 - graph：先 compile log/tlparse，再对异常 graph 保存大 dump；
 - operator：只对证据指向的 kernel 做 msOpProf。
 
-### 11.3 配额和预估
+### 12.3 配额和预估
 
 每次启动前输出：
 
@@ -536,9 +730,9 @@ manifest/hash 完成后才写 `complete.json`。中断目录不会被视为成�
 
 超过配额时默认拒绝，要求用户显式确认大规模采集，而不是静默填满挂载盘。
 
-## 12. Git、Release 和长期保留
+## 13. Git、Release 和长期保留
 
-### 12.1 Git
+### 13.1 Git
 
 代码仓库默认跟踪：
 
@@ -558,7 +752,7 @@ Git。`mindstudio_reports/` 没有被整体忽略，可在审查敏感信息和�
 - 大型数据库和 TensorBoard event；
 - 构建 wheel 和外部源码。
 
-### 12.2 GitHub Release
+### 13.2 GitHub Release
 
 当前 `release_artifacts.py` 已把 `mindstudio_fixtures`、`mindstudio_runs`、
 `mindstudio_artifacts`、`mindstudio_reports` 纳入发现与恢复测试：
@@ -592,7 +786,7 @@ collector 支持就默认传到 GitHub。
 
 大型 raw 只在内部对象存储/文件服务器保留，release 中提供 hash 和访问说明。
 
-### 12.3 保留等级
+### 13.3 保留等级
 
 | 等级 | 内容 | 建议保留 |
 | --- | --- | --- |
@@ -601,7 +795,7 @@ collector 支持就默认传到 GitHub。
 | L2 | official compare/analyze | 项目周期内长期保留 |
 | L3 | compact artifact、report、lock | 长期保留并可发布 |
 
-## 13. 一次实验的推荐阅读顺序
+## 14. 一次实验的推荐阅读顺序
 
 1. 打开 `mindstudio_reports/<experiment-id>/README.md` 看目的和运行状态；
 2. 打开 `<experiment-id>.html` 看契约、端点、拓扑和工具版本；
@@ -612,7 +806,7 @@ collector 支持就默认传到 GitHub。
 7. 需要复核时，依据 manifest/hash 找 raw，而不是从截图反推；
 8. 最后读“人工结论与下一步”，区分已证实根因和待验证假设。
 
-## 14. 完整性验收清单
+## 15. 完整性验收清单
 
 - [ ] fixture、reference、candidate 属于同一 config/generation；
 - [ ] 每个阶段有命令、runtime log、exit code；

@@ -484,7 +484,7 @@ def _baseline_command(value: dict[str, Any], *arguments: str) -> str:
     return _python_command(
         "tests/glm5_2_mindstudio/accuracy_benchmark.py",
         "--stage",
-        "baseline",
+        "observation",
         *arguments,
         *_selected_topology_args(value),
         "--repeat",
@@ -830,7 +830,7 @@ def analyze_training_observation(
         )
         output_root = (
             _case_root(repository_root, case_id)
-            / "03_observe/baseline"
+            / "03_observe/training"
             / f"s{steps}"
         )
     else:
