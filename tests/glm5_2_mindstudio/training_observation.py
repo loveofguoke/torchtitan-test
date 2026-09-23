@@ -75,10 +75,53 @@ def _first_nonfinite_metrics(path: Path) -> dict[str, int]:
     return dict(sorted(first.items()))
 
 
+def _nonfinite_summary(path: Path) -> dict[str, Any]:
+    """Describe the first NaN/Inf occurrence for every logged metric."""
+
+    events: dict[str, dict[str, Any]] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        payload = json.loads(line)
+        step = int(payload["step"])
+        for name, raw_value in payload["metrics"].items():
+            try:
+                value = _number(raw_value)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if math.isfinite(value) or str(name) in events:
+                continue
+            kind = "nan" if math.isnan(value) else ("+inf" if value > 0 else "-inf")
+            events[str(name)] = {
+                "first_step": step,
+                "kind": kind,
+            }
+    ordered = [
+        {"metric": name, **event}
+        for name, event in sorted(
+            events.items(), key=lambda item: (item[1]["first_step"], item[0])
+        )
+    ]
+    return {
+        "status": "observed" if ordered else "none-observed",
+        "first_step": ordered[0]["first_step"] if ordered else None,
+        "metric_count": len(ordered),
+        "metrics": ordered,
+    }
+
+
 def _relative_error(reference: float, candidate: float) -> float:
     if not math.isfinite(reference) or not math.isfinite(candidate):
         return math.nan
     return abs(candidate - reference) / max(abs(reference), 1e-12)
+
+
+def _signed_relative_error(reference: float, candidate: float) -> float:
+    """Return the Precision-compatible signed error (reference-candidate)/reference."""
+
+    if not math.isfinite(reference) or not math.isfinite(candidate):
+        return math.nan
+    if reference == 0.0:
+        return math.nan
+    return (reference - candidate) / reference
 
 
 def _first_step(
@@ -162,6 +205,9 @@ def _svg_chart(
     lines = [
         '<svg xmlns="http://www.w3.org/2000/svg" '
         f'width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+        "<style>.data-point{fill:transparent;stroke:transparent;cursor:crosshair}"
+        ".data-point:hover{fill:var(--point-color);stroke:white;stroke-width:2}"
+        "</style>",
         '<rect width="100%" height="100%" fill="white"/>',
         f'<text x="{width / 2}" y="30" font-size="24" '
         f'text-anchor="middle" font-weight="700">{escape(title)}</text>',
@@ -224,6 +270,18 @@ def _svg_chart(
                     f'<polyline points="{" ".join(segment)}" fill="none" '
                     f'stroke="{color}" stroke-width="2"/>'
                 )
+        for step, value in values:
+            if not math.isfinite(value):
+                continue
+            x, y = point(step, value)
+            tooltip = escape(
+                f"{name} | step={step} | value={value:.10g}"
+            )
+            lines.append(
+                f'<circle class="data-point" cx="{x:.2f}" cy="{y:.2f}" '
+                f'r="6" style="--point-color:{color}"><title>{tooltip}</title>'
+                "</circle>"
+            )
         lines.extend(
             [
                 f'<line x1="{legend_x}" y1="75" x2="{legend_x+24}" y2="75" '
@@ -261,6 +319,7 @@ def compare_training_metrics(
     loss_relative_threshold: float = 0.01,
     grad_norm_relative_threshold: float | None = None,
     spike_relative_threshold: float | None = None,
+    early_window_size: int = 10,
 ) -> Path:
     reference = read_training_metrics(reference_path)
     candidate = read_training_metrics(candidate_path)
@@ -273,6 +332,8 @@ def compare_training_metrics(
             f"missing_candidate={missing_candidate}"
         )
     output_directory.mkdir(parents=True, exist_ok=True)
+    if early_window_size < 1:
+        raise ValueError("early_window_size must be positive")
     rows: list[dict[str, Any]] = []
     for step in sorted(reference):
         ref = reference[step]
@@ -282,12 +343,22 @@ def compare_training_metrics(
                 "step": step,
                 "reference_loss": ref["loss"],
                 "candidate_loss": cand["loss"],
+                "loss_signed_difference": cand["loss"] - ref["loss"],
                 "loss_relative_error": _relative_error(
+                    ref["loss"], cand["loss"]
+                ),
+                "loss_signed_relative_error": _signed_relative_error(
                     ref["loss"], cand["loss"]
                 ),
                 "reference_grad_norm": ref["grad_norm"],
                 "candidate_grad_norm": cand["grad_norm"],
+                "grad_norm_signed_difference": (
+                    cand["grad_norm"] - ref["grad_norm"]
+                ),
                 "grad_norm_relative_error": _relative_error(
+                    ref["grad_norm"], cand["grad_norm"]
+                ),
+                "grad_norm_signed_relative_error": _signed_relative_error(
                     ref["grad_norm"], cand["grad_norm"]
                 ),
             }
@@ -306,6 +377,9 @@ def compare_training_metrics(
     candidate_grad = [
         (step, candidate[step]["grad_norm"]) for step in sorted(candidate)
     ]
+    early_steps = tuple(sorted(reference)[:early_window_size])
+    early_reference_loss = [(step, reference[step]["loss"]) for step in early_steps]
+    early_candidate_loss = [(step, candidate[step]["loss"]) for step in early_steps]
     _svg_chart(
         output_directory / "loss.svg",
         title="Training Loss",
@@ -326,12 +400,36 @@ def compare_training_metrics(
         ),
         include_zero=True,
     )
+    _svg_chart(
+        output_directory / "early_loss.svg",
+        title=f"Early-step Loss (first {len(early_steps)} observed steps)",
+        y_label="Loss",
+        series=(
+            ("GPU reference", "#2563eb", early_reference_loss),
+            ("NPU candidate", "#dc2626", early_candidate_loss),
+        ),
+        include_zero=True,
+    )
     loss_error = [
         (row["step"], row["loss_relative_error"] * 100.0) for row in rows
     ]
     grad_error = [
         (row["step"], row["grad_norm_relative_error"] * 100.0)
         for row in rows
+    ]
+    early_loss_error = [
+        (row["step"], row["loss_relative_error"] * 100.0)
+        for row in rows[: len(early_steps)]
+    ]
+    grad_signed_relative_error = [
+        (row["step"], row["grad_norm_signed_relative_error"] * 100.0)
+        for row in rows
+    ]
+    loss_signed_difference = [
+        (row["step"], row["loss_signed_difference"]) for row in rows
+    ]
+    grad_signed_difference = [
+        (row["step"], row["grad_norm_signed_difference"]) for row in rows
     ]
     loss_mean = _finite_mean(value for _, value in loss_error)
     first_loss_difference = _first_step(
@@ -360,6 +458,38 @@ def compare_training_metrics(
             else "No finite Loss relative errors"
         ),
     )
+    early_loss_mean = _finite_mean(value for _, value in early_loss_error)
+    _svg_chart(
+        output_directory / "early_loss_relative_error.svg",
+        title=(
+            f"Early-step Loss Relative Error (first {len(early_steps)} observed steps)"
+        ),
+        y_label="Relative error (%)",
+        series=(("Loss error", "#7c3aed", early_loss_error),),
+        reference_lines=(
+            ("Zero-error baseline", "#dc2626", 0.0),
+            (
+                f"Guidance {loss_relative_threshold * 100:g}%",
+                "#f59e0b",
+                loss_relative_threshold * 100.0,
+            ),
+        ),
+        include_zero=True,
+        subtitle=(
+            f"Early-window mean error: {early_loss_mean:.6g}%"
+            if early_loss_mean is not None
+            else "No finite early-step Loss relative errors"
+        ),
+    )
+    _svg_chart(
+        output_directory / "loss_signed_difference.svg",
+        title="Loss Signed Difference",
+        y_label="NPU candidate - GPU reference",
+        series=(("Loss signed difference", "#7c3aed", loss_signed_difference),),
+        reference_lines=(("Zero-difference baseline", "#dc2626", 0.0),),
+        include_zero=True,
+        subtitle="Positive means NPU Loss is above GPU; negative means it is below GPU",
+    )
     grad_reference_lines = [("Zero-error baseline", "#dc2626", 0.0)]
     if grad_norm_relative_threshold is not None:
         grad_reference_lines.append(
@@ -383,18 +513,135 @@ def compare_training_metrics(
             else "No finite Grad Norm relative errors"
         ),
     )
+    _svg_chart(
+        output_directory / "grad_norm_signed_difference.svg",
+        title="Gradient Norm Signed Difference",
+        y_label="NPU candidate - GPU reference",
+        series=(("Grad Norm signed difference", "#059669", grad_signed_difference),),
+        reference_lines=(("Zero-difference baseline", "#dc2626", 0.0),),
+        include_zero=True,
+        subtitle=(
+            "Positive means NPU Grad Norm is above GPU; negative means it is below GPU"
+        ),
+    )
+    grad_signed_mean = _finite_mean(value for _, value in grad_signed_relative_error)
+    _svg_chart(
+        output_directory / "grad_norm_signed_relative_error.svg",
+        title="Gradient Norm Signed Relative Error",
+        y_label="(GPU reference - NPU candidate) / GPU reference (%)",
+        series=(
+            ("Grad Norm signed relative error", "#059669", grad_signed_relative_error),
+        ),
+        reference_lines=(
+            ("Zero-error baseline", "#374151", 0.0),
+            ("Precision upper guidance +5%", "#f59e0b", 5.0),
+            ("Precision lower guidance -5%", "#f59e0b", -5.0),
+        ),
+        include_zero=True,
+        subtitle=(
+            f"Mean signed relative error: {grad_signed_mean:.6g}%"
+            if grad_signed_mean is not None
+            else "No finite Grad Norm signed relative errors"
+        ),
+    )
+    early_rows = rows[: len(early_steps)]
+    early_finite = [
+        row for row in early_rows if math.isfinite(row["loss_relative_error"])
+    ]
+    early_above = [
+        row
+        for row in early_finite
+        if row["loss_relative_error"] > loss_relative_threshold
+    ]
+    early_summary = {
+        "requested_step_count": early_window_size,
+        "observed_step_count": len(early_rows),
+        "first_step": early_rows[0]["step"] if early_rows else None,
+        "last_step": early_rows[-1]["step"] if early_rows else None,
+        "first_step_relative_error": (
+            early_rows[0]["loss_relative_error"] if early_rows else None
+        ),
+        "mean_relative_error": _finite_mean(
+            row["loss_relative_error"] for row in early_finite
+        ),
+        "max_relative_error": (
+            max(row["loss_relative_error"] for row in early_finite)
+            if early_finite
+            else None
+        ),
+        "first_step_above_threshold": (
+            early_above[0]["step"] if early_above else None
+        ),
+        "steps_above_threshold": len(early_above),
+        "fraction_above_threshold": (
+            len(early_above) / len(early_finite) if early_finite else None
+        ),
+    }
+    post_threshold_rows = (
+        [row for row in rows if row["step"] >= first_loss_difference]
+        if first_loss_difference is not None
+        else []
+    )
+    post_threshold_finite = [
+        row
+        for row in post_threshold_rows
+        if math.isfinite(row["loss_relative_error"])
+    ]
+    post_threshold_above = [
+        row
+        for row in post_threshold_finite
+        if row["loss_relative_error"] > loss_relative_threshold
+    ]
+    post_threshold_summary = {
+        "first_step": first_loss_difference,
+        "last_step": max(reference) if first_loss_difference is not None else None,
+        "finite_step_count": len(post_threshold_finite),
+        "mean_relative_error": _finite_mean(
+            row["loss_relative_error"] for row in post_threshold_finite
+        ),
+        "steps_above_threshold": len(post_threshold_above),
+        "fraction_above_threshold": (
+            len(post_threshold_above) / len(post_threshold_finite)
+            if post_threshold_finite
+            else None
+        ),
+    }
     first_observed_step = min(reference)
-    if _first_nonfinite_metrics(candidate_path):
+    reference_nonfinite = _nonfinite_summary(reference_path)
+    candidate_nonfinite = _nonfinite_summary(candidate_path)
+    overall_mean_loss_error = _finite_mean(
+        row["loss_relative_error"] for row in rows
+    )
+    post_threshold_mean = post_threshold_summary["mean_relative_error"]
+    if (
+        candidate_nonfinite["status"] == "observed"
+        and reference_nonfinite["status"] == "none-observed"
+    ):
         symptom = "candidate-nan-or-inf"
-    elif first_loss_difference == first_observed_step:
+    elif (
+        candidate_nonfinite["status"] == "observed"
+        and reference_nonfinite["status"] == "observed"
+    ):
+        symptom = "both-endpoints-nan-or-inf"
+    elif reference_nonfinite["status"] == "observed":
+        symptom = "reference-nan-or-inf"
+    elif (
+        first_loss_difference == first_observed_step
+        and overall_mean_loss_error is not None
+        and overall_mean_loss_error > loss_relative_threshold
+    ):
         symptom = "first-step-loss-difference"
-    elif first_loss_difference is not None:
+    elif (
+        first_loss_difference is not None
+        and post_threshold_mean is not None
+        and post_threshold_mean > loss_relative_threshold
+    ):
         symptom = "later-window-loss-difference"
     else:
-        symptom = "no-loss-difference-observed"
+        symptom = "no-average-loss-difference-observed"
     summary = {
         "schema": "torchtitan.glm5_2.mindstudio_training_observation",
-        "schema_version": 1,
+        "schema_version": 2,
         "reference": str(reference_path.resolve()),
         "candidate": str(candidate_path.resolve()),
         "step_count": len(rows),
@@ -408,6 +655,16 @@ def compare_training_metrics(
             "candidate_first_nonfinite_metrics": _first_nonfinite_metrics(
                 candidate_path
             ),
+            "nonfinite_analysis": {
+                "reference": reference_nonfinite,
+                "candidate": candidate_nonfinite,
+                "comparison": (
+                    "neither-endpoint-observed"
+                    if reference_nonfinite["status"] == "none-observed"
+                    and candidate_nonfinite["status"] == "none-observed"
+                    else "nonfinite-values-observed"
+                ),
+            },
         },
         "loss": {
             "guidance_relative_threshold": loss_relative_threshold,
@@ -415,6 +672,8 @@ def compare_training_metrics(
             "mean_relative_error": _finite_mean(
                 row["loss_relative_error"] for row in rows
             ),
+            "post_first_threshold_window": post_threshold_summary,
+            "early_window": early_summary,
             "reference_nonfinite_step": _first_step(
                 rows, lambda row: not math.isfinite(row["reference_loss"])
             ),
@@ -442,6 +701,9 @@ def compare_training_metrics(
             ),
             "mean_relative_error": _finite_mean(
                 row["grad_norm_relative_error"] for row in rows
+            ),
+            "mean_signed_relative_error": _finite_mean(
+                row["grad_norm_signed_relative_error"] for row in rows
             ),
             "reference_nonfinite_step": _first_step(
                 rows, lambda row: not math.isfinite(row["reference_grad_norm"])

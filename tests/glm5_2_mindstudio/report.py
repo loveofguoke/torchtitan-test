@@ -155,6 +155,11 @@ def _write_baseline_report_index(
         "grad_norm.svg",
         "loss_relative_error.svg",
         "grad_norm_relative_error.svg",
+        "loss_signed_difference.svg",
+        "grad_norm_signed_difference.svg",
+        "early_loss.svg",
+        "early_loss_relative_error.svg",
+        "grad_norm_signed_relative_error.svg",
     )
     for row in rows:
         official_summary = Path(row["official_result"])
@@ -185,6 +190,7 @@ def _write_baseline_report_index(
                 "candidate_first_nonfinite_metrics": details[
                     "candidate_first_nonfinite_metrics"
                 ],
+                "nonfinite_analysis": details.get("nonfinite_analysis"),
                 "evidence": [str(path.resolve()) for path in evidence],
                 "runtime_log": str(Path(row["runtime_log"]).resolve()),
             }
@@ -218,8 +224,10 @@ def _write_baseline_report_index(
         "## Training observations",
         "",
         "| Topology | Observed symptom | Window | Mean Loss relative error | "
-        "First Loss step above guidance | Runtime log |",
-        "|---|---|---|---|---|---|",
+        "First Loss step above guidance | Mean error after first exceedance | "
+        "Subsequent exceedance rate | Early Loss window | "
+        "Mean signed Grad Norm error | NaN/Inf | Runtime log |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     html_rows: list[str] = []
     evidence_sections: list[str] = []
@@ -228,14 +236,81 @@ def _write_baseline_report_index(
         runtime_link = _relative_link(runtime_log, report_directory)
         loss = entry["loss"]
         mean_error = loss.get("mean_relative_error")
-        mean_error_text = "N/A" if mean_error is None else f"{mean_error:.6g}"
+        mean_error_text = "N/A" if mean_error is None else f"{mean_error:.2%}"
         first_above = loss.get("first_step_above_threshold")
         first_above_text = "none" if first_above is None else str(first_above)
+        post_window = loss.get("post_first_threshold_window", {})
+        post_mean = post_window.get("mean_relative_error")
+        post_mean_text = "N/A" if post_mean is None else f"{post_mean:.2%}"
+        post_fraction = post_window.get("fraction_above_threshold")
+        post_fraction_text = (
+            "N/A" if post_fraction is None else f"{post_fraction:.2%}"
+        )
+        early_window = loss.get("early_window", {})
+        early_mean = early_window.get("mean_relative_error")
+        early_max = early_window.get("max_relative_error")
+        early_fraction = early_window.get("fraction_above_threshold")
+        early_window_text = (
+            "N/A"
+            if early_mean is None or early_max is None
+            else (
+                f"{early_window.get('first_step')}..{early_window.get('last_step')}: "
+                f"mean {early_mean:.2%}, max {early_max:.2%}, "
+                f"above {early_fraction:.2%}"
+            )
+        )
+        grad_signed_mean = entry["grad_norm"].get("mean_signed_relative_error")
+        grad_signed_mean_text = (
+            "N/A" if grad_signed_mean is None else f"{grad_signed_mean:.2%}"
+        )
+        candidate_nonfinite = entry["candidate_first_nonfinite_metrics"]
+        reference_nonfinite = entry["reference_first_nonfinite_metrics"]
+        nonfinite = entry.get("nonfinite_analysis")
+        no_nonfinite = (
+            isinstance(nonfinite, dict)
+            and nonfinite.get("comparison") == "neither-endpoint-observed"
+        ) or (
+            not isinstance(nonfinite, dict)
+            and not candidate_nonfinite
+            and not reference_nonfinite
+        )
+        nonfinite_text = (
+            "Neither endpoint observed NaN/Inf"
+            if no_nonfinite
+            else "NaN/Inf observed; inspect endpoint details"
+        )
+        endpoint_nonfinite_text: dict[str, str] = {}
+        for role, fallback in (
+            ("candidate", candidate_nonfinite),
+            ("reference", reference_nonfinite),
+        ):
+            endpoint = (
+                nonfinite.get(role)
+                if isinstance(nonfinite, dict)
+                else None
+            )
+            metrics = endpoint.get("metrics") if isinstance(endpoint, dict) else None
+            if isinstance(endpoint, dict) and endpoint.get("status") == "none-observed":
+                endpoint_nonfinite_text[role] = "none observed"
+            elif isinstance(metrics, list) and metrics:
+                endpoint_nonfinite_text[role] = "; ".join(
+                    f"{item['metric']}: {item['kind']} at step {item['first_step']}"
+                    for item in metrics
+                )
+            elif fallback:
+                endpoint_nonfinite_text[role] = "; ".join(
+                    f"{name}: non-finite at step {step}"
+                    for name, step in sorted(fallback.items())
+                )
+            else:
+                endpoint_nonfinite_text[role] = "none observed"
         window = f"{entry['first_step']}..{entry['last_step']}"
         markdown_lines.append(
             f"| {entry['topology']} | {entry['diagnostic_symptom']} | "
             f"{window} ({entry['step_count']} steps) | {mean_error_text} | "
-            f"{first_above_text} | [{runtime_log.name}]({runtime_link}) |"
+            f"{first_above_text} | {post_mean_text} | {post_fraction_text} | "
+            f"{early_window_text} | {grad_signed_mean_text} | {nonfinite_text} | "
+            f"[{runtime_log.name}]({runtime_link}) |"
         )
         html_rows.append(
             "<tr>"
@@ -244,6 +319,11 @@ def _write_baseline_report_index(
             f"<td>{html.escape(window)} ({entry['step_count']} steps)</td>"
             f"<td>{html.escape(mean_error_text)}</td>"
             f"<td>{html.escape(first_above_text)}</td>"
+            f"<td>{html.escape(post_mean_text)}</td>"
+            f"<td>{html.escape(post_fraction_text)}</td>"
+            f"<td>{html.escape(early_window_text)}</td>"
+            f"<td>{html.escape(grad_signed_mean_text)}</td>"
+            f"<td>{html.escape(nonfinite_text)}</td>"
             "<td>embedded below</td>"
             "</tr>"
         )
@@ -254,14 +334,13 @@ def _write_baseline_report_index(
             link = _relative_link(path, report_directory)
             markdown_lines.append(f"- [{path.name}]({link})")
             evidence_by_name[path.name] = path
-        candidate_nonfinite = entry["candidate_first_nonfinite_metrics"]
-        reference_nonfinite = entry["reference_first_nonfinite_metrics"]
         markdown_lines.extend(
             (
-                f"- Candidate first NaN/Inf metrics: "
-                f"`{json.dumps(candidate_nonfinite, sort_keys=True)}`",
-                f"- Reference first NaN/Inf metrics: "
-                f"`{json.dumps(reference_nonfinite, sort_keys=True)}`",
+                f"- NaN/Inf: {nonfinite_text}",
+                "- Candidate NaN/Inf details: "
+                f"{endpoint_nonfinite_text['candidate']}",
+                "- Reference NaN/Inf details: "
+                f"{endpoint_nonfinite_text['reference']}",
             )
         )
         chart_sections = "".join(
@@ -269,8 +348,13 @@ def _write_baseline_report_index(
             for name in (
                 "loss.svg",
                 "grad_norm.svg",
+                "early_loss.svg",
+                "early_loss_relative_error.svg",
                 "loss_relative_error.svg",
                 "grad_norm_relative_error.svg",
+                "loss_signed_difference.svg",
+                "grad_norm_signed_difference.svg",
+                "grad_norm_signed_relative_error.svg",
             )
             if name in evidence_by_name
         )
@@ -288,11 +372,12 @@ def _write_baseline_report_index(
         evidence_sections.append(
             f"<section><h3>{html.escape(entry['topology'])} evidence</h3>"
             + chart_sections
-            + "<p>Candidate first NaN/Inf metrics: <code>"
-            + html.escape(json.dumps(candidate_nonfinite, sort_keys=True))
-            + "</code><br>Reference first NaN/Inf metrics: <code>"
-            + html.escape(json.dumps(reference_nonfinite, sort_keys=True))
-            + "</code></p>"
+            + f"<p><strong>NaN/Inf:</strong> {html.escape(nonfinite_text)}<br>"
+            + "Candidate details: "
+            + html.escape(endpoint_nonfinite_text["candidate"])
+            + "<br>Reference details: "
+            + html.escape(endpoint_nonfinite_text["reference"])
+            + "</p>"
             + "<details><summary>Per-step metric comparison</summary>"
             + metrics_table
             + "</details>"
@@ -330,7 +415,11 @@ def _write_baseline_report_index(
         "<h2>Training observations</h2><table><thead><tr>"
         "<th>Topology</th><th>Observed symptom</th><th>Window</th>"
         "<th>Mean Loss relative error</th>"
-        "<th>First Loss step above guidance</th><th>Runtime log</th>"
+        "<th>First Loss step above guidance</th>"
+        "<th>Mean error after first exceedance</th>"
+        "<th>Subsequent exceedance rate</th><th>Early Loss window</th>"
+        "<th>Mean signed Grad Norm error</th><th>NaN/Inf</th>"
+        "<th>Runtime log</th>"
         "</tr></thead><tbody>"
         + "".join(html_rows)
         + "</tbody></table>"

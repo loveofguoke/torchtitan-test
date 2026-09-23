@@ -704,7 +704,7 @@ python release_artifacts.py upload "$EXPERIMENT" --content full
 
 ### 9.2 正常训练现象观察
 
-完成 CheckList 后先执行 baseline，不安装 PrecisionDebugger 或 TrainerMonitorV2 hook：
+完成 CheckList 后先执行正常训练观察，不安装 PrecisionDebugger 或 TrainerMonitorV2 hook：
 
 ```bash
 # NPU candidate
@@ -724,16 +724,40 @@ python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage observation \
 
 每端的 `training_metrics.jsonl` 记录 TorchTitan 正常 metrics logger 已产生的全部数值
 指标；比较报告生成 `loss.svg`、`grad_norm.svg`、`loss_relative_error.svg`、
-`grad_norm_relative_error.svg`、逐 step CSV 和
+`grad_norm_relative_error.svg`、`loss_signed_difference.svg`、
+`grad_norm_signed_difference.svg`、`early_loss.svg`、
+`early_loss_relative_error.svg`、`grad_norm_signed_relative_error.svg`、逐 step CSV 和
 `summary.json`。摘要按官方流程先列出 NaN/Inf 的首次 step，再给出首个超过指导阈值
 的 Loss step。它只做现象分类，不把 1% 指导值冒充所有模型的交付 PASS/FAIL。
+
+两张 signed difference 图画的是 `NPU candidate - GPU reference`，因此可以围绕零差值
+线观察正负方向；relative error 图画误差幅度，Loss 和 Grad Norm 分开，避免把量纲和
+验收含义不同的指标混在一起。SVG 中每个 step 都有可悬停的数据点。Loss 摘要除全窗口
+平均相对误差外，还记录首次超过 1% 的 step，以及从该 step 到观察末尾的平均相对误差、
+有限值步数、超限步数和超限比例，用于区分单点抖动与后续持续偏离。
+
+官方实践里的 1% 描述的是相应观察窗口的平均 Loss 相对误差：首 Step 场景可观察第一步
+或前几步，长稳场景观察出现问题的后期窗口。官方没有规定该窗口必须为固定的 100、500
+或 1000 步；本实验的 500 步只是当前显式选择的观察长度。Grad Norm 没有默认套用 Loss
+的 1% 指导线，msProbe Module/API 节点级规则也属于另一套局部定位判据。
+
+NaN/Inf 分析覆盖 logger 中的全部数值指标，而不只 Loss 和 Grad Norm。报告在没有异常时
+明确显示 `Neither endpoint observed NaN/Inf`；存在异常时给出两端各指标首次出现的 step
+以及 `nan`、`+inf` 或 `-inf` 类型。
+
+首步/前几步另取最前面的 10 个已观测 step 生成放大图，避免在 500-step 或更长曲线中
+被压缩到左侧。摘要给出该窗口首步误差、平均误差、最大误差、首个超过 1% 的 step 和
+超限比例。Grad Norm 另按 Precision 定义计算有符号相对误差
+`(GPU reference - NPU candidate) / GPU reference`，展示零线、`+5%`、`-5%` 和全窗口
+平均值；这用于识别误差是否围绕零波动或持续偏向一侧，但 observation 本身不据此生成
+正式交付 PASS/FAIL。
 
 观察顺序固定为：
 
 1. Loss、Grad Norm 或其他训练指标是否出现 NaN/Inf；
 2. 第一步是否不对齐；若第一步对齐，第二步或前几步何时首次不对齐；
 3. 前几步对齐后，观察窗口内是否逐渐漂移或突然尖刺；
-4. 若本窗口没有复现，扩大 baseline 窗口，而不是直接扩大 dump 窗口。
+4. 若本窗口没有复现，扩大正常训练观察窗口，而不是直接扩大 dump 窗口。
 
 ### 9.3 训练状态监控
 

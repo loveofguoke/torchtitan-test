@@ -263,6 +263,11 @@ comparison/
 ├── grad_norm.svg                    # 两端 Grad Norm 曲线
 ├── loss_relative_error.svg          # Loss 误差、零误差 baseline 与 1% 指导线
 ├── grad_norm_relative_error.svg      # Grad Norm 误差及零误差 baseline
+├── loss_signed_difference.svg        # Loss 的 NPU-GPU 有符号差值及零差值线
+├── grad_norm_signed_difference.svg   # Grad Norm 的 NPU-GPU 有符号差值及零差值线
+├── early_loss.svg                    # 首 10 个已观测 step 的 Loss 双线放大图
+├── early_loss_relative_error.svg     # 首 10 个 step 的 Loss 相对误差放大图
+├── grad_norm_signed_relative_error.svg # Grad Norm 有符号相对误差及 ±5% 指导线
 ├── official_summary.json            # 生命周期摘要；不表示 msProbe verdict
 ├── runtime.log                      # 比较过程日志
 ├── toolchain_compatibility_diff.json# 两端来源差异，仅供人工检查

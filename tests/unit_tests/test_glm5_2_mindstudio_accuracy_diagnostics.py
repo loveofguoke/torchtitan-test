@@ -486,6 +486,11 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                 "grad_norm.svg",
                 "loss_relative_error.svg",
                 "grad_norm_relative_error.svg",
+                "loss_signed_difference.svg",
+                "grad_norm_signed_difference.svg",
+                "early_loss.svg",
+                "early_loss_relative_error.svg",
+                "grad_norm_signed_relative_error.svg",
             ):
                 self.assertTrue((root / "output" / name).is_file())
             loss_error_chart = (
@@ -495,12 +500,32 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
             self.assertIn("Relative error (%)", loss_error_chart)
             self.assertIn("Zero-error baseline", loss_error_chart)
             self.assertIn("Guidance 1%", loss_error_chart)
+            self.assertIn("class=\"data-point\"", loss_error_chart)
             grad_error_chart = (
                 root / "output" / "grad_norm_relative_error.svg"
             ).read_text(encoding="utf-8")
             self.assertIn("Gradient Norm Relative Error", grad_error_chart)
             self.assertIn("no universal acceptance threshold", grad_error_chart)
             self.assertFalse((root / "output" / "relative_error.svg").exists())
+            post_window = summary["loss"]["post_first_threshold_window"]
+            self.assertEqual(1, post_window["first_step"])
+            self.assertEqual(1, post_window["finite_step_count"])
+            self.assertEqual(1.0, post_window["fraction_above_threshold"])
+            early_window = summary["loss"]["early_window"]
+            self.assertEqual(3, early_window["observed_step_count"])
+            self.assertEqual(0, early_window["first_step"])
+            self.assertEqual(1, early_window["first_step_above_threshold"])
+            grad_signed_chart = (
+                root / "output" / "grad_norm_signed_relative_error.svg"
+            ).read_text(encoding="utf-8")
+            self.assertIn("Precision upper guidance +5%", grad_signed_chart)
+            self.assertIn("Precision lower guidance -5%", grad_signed_chart)
+            self.assertEqual(
+                "observed",
+                summary["observation"]["nonfinite_analysis"]["candidate"][
+                    "status"
+                ],
+            )
 
     def test_case_training_observation_is_cached(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
