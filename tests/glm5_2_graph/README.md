@@ -304,10 +304,11 @@ top-level combination report additionally links one per-rank interactive
 `tlparse` report, raw structured trace, readable FX graph, pre/post-fusion
 Inductor IR, and generated backend code.
 
-Install `tlparse` on the capture or compare host once:
+Install the repository reporting dependencies, including `tlparse`, on the
+capture or compare host once:
 
 ```bash
-python -m pip install tlparse
+python -m pip install -r requirements-reporting.txt
 ```
 
 Or install the complete optional visualization set used by graph and

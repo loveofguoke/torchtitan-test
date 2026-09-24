@@ -604,6 +604,16 @@ tlparse <run>/graph_visualization/rank_0/torch_trace/*.log \
 在 profiler Chrome trace 中观察编译区域；NPU kernel、stream、通信和 Host/Device 时间线继续
 由 Ascend PyTorch Profiler/MindStudio Insight 负责。
 
+额外环境只要求安装 `tlparse`。采集本身由 PyTorch 提供，即使没有安装
+`tlparse`，原始 `TORCH_TRACE`、FX、Inductor IR 和生成代码仍会保留；缺少的只是
+自动生成的交互式 HTML：
+
+```bash
+python -m pip install -r requirements-reporting.txt
+python -m pip show tlparse
+tlparse --help
+```
+
 真实转换链路为：
 
 ```text
@@ -621,7 +631,41 @@ TorchTitan Python/nn.Module
 ```
 
 其中映射不是一对一：一个 ATen op 可以被分解，多个 FX node 可以融合成一个 kernel，节点也
-可能被消除、重计算或 fallback。因此报告保留多对多关系，绝不伪造“一个模块对应一个 kernel”。
+可能被消除、重计算或 fallback。当前统一报告只保留各层官方原始产物及其文件索引，并明确声明
+这种多对多语义；它**尚未建立逐节点的 Module → FX → IR → kernel 关联图**。具体关联必须沿
+`tlparse` 的源码栈、FX node metadata、Inductor IR origin 和生成代码逐层核对，不能根据文件名
+伪造一对一映射。
+
+### 18.2 当前实现落点
+
+真实执行链如下：
+
+1. `train_smoke.py` 在 `--compiler-diagnostics` 下通过 `GraphFeatureConfig` 设置
+   `GLM5_GRAPH_CAPTURE_DIAGNOSTICS=true`，并把当前拓扑的 run 目录写入
+   `GLM5_EXPERIMENT_RUN_DIRECTORY`。
+2. 每个 torchrun rank 启动 `train_npu.py` 后、导入 TorchTitan/TorchNPU 之前调用
+   `configure_graph_diagnostics()`；它根据 `RANK` 创建
+   `graph_visualization/rank_<rank>/torch_trace` 与 `inductor`，再设置
+   `TORCH_TRACE`、`TORCH_COMPILE_DEBUG=1`、`TORCH_COMPILE_DEBUG_DIR`。
+3. 训练子进程结束后，`train_smoke.py` 调用
+   `generate_graph_compilation_report(run_directory)`。该函数运行可用的 `tlparse`、索引
+   FX/IR/generated code、扫描结构化 trace 中的 graph-break/recompile 事件，并写出 JSON/HTML。
+4. `train_smoke.py` 最后把报告路径和计数写入该拓扑的 `manifest.json`。
+
+对应源码：
+
+- `train_npu.py`：每 rank 的诊断环境必须在 TorchNPU/Inductor import 前配置；
+- `tests/glm5_2_graph/config.py`：CLI 配置转换为训练参数和诊断开关；
+- `tests/glm5_2_graph/visualization.py`：trace 路由、tlparse、产物清单和统一报告；
+- `tests/glm5_2_smoke/train_smoke.py`：run 目录传递、训练结束后的报告生成和 manifest 记录。
+
+这里必须区分“已经实现”和“尚未实现”：
+
+- 已实现：每 rank 原始 trace、FX/IR/code 保留，tlparse 自动运行，break/recompile 原始事件
+  收集，JSON/HTML 汇总，manifest 登记；
+- 尚未实现：规范化抽取每个 break/recompile 的源码位置与原因字段、逐节点跨层关联图、
+  NPU kernel 时间线与 FX/IR 节点的自动 join。完整原因和源码栈目前以原始 event 与 tlparse
+  为准。
 
 执行：
 

@@ -625,6 +625,10 @@ def _run_topology(
         }
     )
     environment.update(execution.environment())
+    if graph.diagnostics:
+        environment["GLM5_EXPERIMENT_RUN_DIRECTORY"] = str(
+            run_directory.resolve()
+        )
     if npu_compiler_identity is not None:
         if compiler_cache == "fresh":
             compiler_cache_root = run_directory / "compiler_cache"

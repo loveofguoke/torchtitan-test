@@ -8,6 +8,7 @@ import sys
 from tests.glm5_2_common.compiler_cache import (
     configure_compiler_cache,
 )
+from tests.glm5_2_graph.visualization import configure_graph_diagnostics
 
 
 def _configure_nonfinite_compiler_diagnostics() -> None:
@@ -44,6 +45,7 @@ def _configure_nonfinite_compiler_diagnostics() -> None:
 
 
 configure_compiler_cache()
+configure_graph_diagnostics()
 _configure_nonfinite_compiler_diagnostics()
 
 import torchtitanturbo  # noqa: F401
