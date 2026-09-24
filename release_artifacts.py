@@ -11,6 +11,8 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
+import time
 from pathlib import Path, PurePosixPath
 from urllib.parse import quote
 
@@ -63,6 +65,85 @@ EXPERIMENT_BOUNDARY_FILES = {
     "manifest.json",
     "run_state.json",
 }
+
+
+def _human_bytes(size: int) -> str:
+    value = float(size)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024.0 or unit == "TiB":
+            return f"{value:.1f} {unit}"
+        value /= 1024.0
+    raise AssertionError("unreachable")
+
+
+class ArchiveProgress:
+    """Track accepted tar members without pre-scanning the source tree."""
+
+    def __init__(
+        self,
+        archive_path: Path,
+        member_filter=None,
+        *,
+        interval_seconds: float = 1.0,
+    ):
+        self.archive_path = archive_path
+        self.member_filter = member_filter
+        self.interval_seconds = interval_seconds
+        self.started_at = time.monotonic()
+        self.files = 0
+        self.bytes = 0
+        self.current = "starting"
+        self._finished = threading.Event()
+        self._ticker = threading.Thread(
+            target=self._tick,
+            name="archive-progress",
+            daemon=True,
+        )
+        self._ticker.start()
+
+    def __call__(self, member: tarfile.TarInfo) -> tarfile.TarInfo | None:
+        accepted = (
+            member
+            if self.member_filter is None
+            else self.member_filter(member)
+        )
+        if accepted is None:
+            return None
+        if accepted.isfile():
+            self.files += 1
+            self.bytes += accepted.size
+            self.current = accepted.name
+        return accepted
+
+    def finish(self, status: str = "complete") -> None:
+        self.current = status
+        self._finished.set()
+        self._ticker.join()
+        self._print(now=time.monotonic())
+
+    def _tick(self) -> None:
+        while not self._finished.wait(self.interval_seconds):
+            self._print(now=time.monotonic())
+
+    def _print(self, *, now: float) -> None:
+        elapsed = max(now - self.started_at, 1e-9)
+        archive_bytes = (
+            self.archive_path.stat().st_size
+            if self.archive_path.exists()
+            else 0
+        )
+        rate = (
+            f"{_human_bytes(int(archive_bytes / elapsed))}/s compressed"
+            if elapsed >= 0.1
+            else "warming up"
+        )
+        print(
+            "Archive progress: "
+            f"{self.files} files, {_human_bytes(self.bytes)} input, "
+            f"{_human_bytes(archive_bytes)} written, {elapsed:.1f}s, {rate}; "
+            f"current: {self.current}",
+            flush=True,
+        )
 
 # ``analysis`` archives are intended for local report review and follow-up
 # diagnosis.  They retain rendered/parsed results and compact experiment
@@ -225,20 +306,26 @@ def create_archive(
             for path in find_experiment_paths(repository_root, name)
         )
     )
-    with tarfile.open(archive_path, "w:gz") as archive:
-        for path in paths:
-            relative_path = path.relative_to(repository_root)
-            print(f"Adding {relative_path}", flush=True)
-            archive.add(
-                path,
-                arcname=relative_path.as_posix(),
-                recursive=True,
-                filter=(
-                    None
-                    if content == "full"
-                    else _analysis_archive_filter
-                ),
-            )
+    progress = ArchiveProgress(
+        archive_path,
+        None if content == "full" else _analysis_archive_filter,
+    )
+    try:
+        with tarfile.open(archive_path, "w:gz") as archive:
+            for path in paths:
+                relative_path = path.relative_to(repository_root)
+                print(f"Adding {relative_path}", flush=True)
+                archive.add(
+                    path,
+                    arcname=relative_path.as_posix(),
+                    recursive=True,
+                    filter=progress,
+                )
+    except BaseException:
+        progress.finish("failed")
+        raise
+    else:
+        progress.finish()
     return paths
 
 

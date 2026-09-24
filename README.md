@@ -232,6 +232,11 @@ contract is documented in
 
 Use GitHub Releases in one of two content modes:
 
+During local archive creation the uploader prints the accepted file count,
+uncompressed input size, elapsed time, throughput, and current member once per
+second. `gh release upload` starts only after the final `current: complete`
+line and checksum generation.
+
 - `--content analysis`: transfer reports, compact artifacts, metrics/logs, and
   processed profiler/compiler visualization results, including reviewed
   MindStudio graph `.vis.db`; omit fixtures, raw tensors/CANN collection trees,

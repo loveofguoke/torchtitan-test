@@ -1,6 +1,8 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
+import contextlib
+import io
 import json
 import tarfile
 import tempfile
@@ -17,6 +19,27 @@ from release_artifacts import (
 
 
 class TestReleaseArtifacts(unittest.TestCase):
+    def test_archive_reports_progress_for_recursive_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            experiment = "progress-example"
+            fixture = root / "precision_fixtures" / experiment
+            fixture.mkdir(parents=True)
+            (fixture / "fixture.json").write_text("{}", encoding="utf-8")
+            (fixture / "payload.bin").write_bytes(b"x" * 2048)
+            output = io.StringIO()
+
+            with contextlib.redirect_stdout(output):
+                create_archive(root, experiment, root / "output.tar.gz")
+
+            progress = output.getvalue()
+            self.assertIn(
+                f"Adding {Path('precision_fixtures') / experiment}", progress
+            )
+            self.assertIn("Archive progress: 2 files", progress)
+            self.assertIn("input", progress)
+            self.assertIn("current: complete", progress)
+
     def test_wget_insecure_is_explicit(self) -> None:
         from release_artifacts import build_parser, download_assets_with_wget, download
 
