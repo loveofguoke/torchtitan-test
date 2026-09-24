@@ -224,6 +224,12 @@ run—MindStudio/portable flame graphs, memory timelines, TensorBoard events,
 `tlparse`, FX/IR/generated code, parsed profiler CSV/JSON/DB, advisor, cluster,
 and compare output—are intentionally not flattened into `*_reports`.
 
+Project-owned interactive HTML reports use Panel with pyecharts/Apache ECharts.
+Install the pinned report stack with
+`python -m pip install -r requirements-reporting.txt`; its offline single-file
+contract is documented in
+[`tests/glm5_2_common/docs/INTERACTIVE_REPORTS_ZH.md`](tests/glm5_2_common/docs/INTERACTIVE_REPORTS_ZH.md).
+
 Use GitHub Releases in one of two content modes:
 
 - `--content analysis`: transfer reports, compact artifacts, metrics/logs, and

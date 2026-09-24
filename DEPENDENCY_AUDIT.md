@@ -64,6 +64,7 @@ See `tests/glm5_2_graph/docs/NPU_CODEGEN.md` for loader names and validation sco
 | MindStudio diagnostic case schema or recipe | configuration, migration, monitor, graph, pre-check and overflow CLI; case reports and ignored state root |
 | parity trace/report schema | paired and offline parity, artifact reader/writer, HTML regression tests |
 | output directory nesting | rerun reset, report links, docs, release discovery and restore |
+| shared interactive report stack | all project-owned HTML generators, report unit tests, offline single-file portability, Release analysis content; external tool-native pages remain untouched |
 
 ## Current GLM graph/parity boundary
 

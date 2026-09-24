@@ -482,6 +482,7 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
             self.assertEqual([1, 2], summary["loss"]["reference_spike_steps"])
             for name in (
                 "training_metrics_compare.csv",
+                "training_observation.html",
                 "loss.svg",
                 "grad_norm.svg",
                 "loss_relative_error.svg",
@@ -507,6 +508,16 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
             self.assertIn("Gradient Norm Relative Error", grad_error_chart)
             self.assertIn("no universal acceptance threshold", grad_error_chart)
             self.assertFalse((root / "output" / "relative_error.svg").exists())
+            interactive = (
+                root / "output" / "training_observation.html"
+            ).read_text(encoding="utf-8")
+            self.assertIn("Hover for exact values", interactive)
+            self.assertIn("Whole-training Loss Relative Error", interactive)
+            self.assertIn("First-step Loss Relative Error", interactive)
+            self.assertIn("dataZoom", interactive)
+            self.assertIn("After first guidance exceedance", interactive)
+            self.assertNotIn('<script src="https://cdn', interactive)
+            self.assertNotIn('<link rel="stylesheet" href="https://cdn', interactive)
             post_window = summary["loss"]["post_first_threshold_window"]
             self.assertEqual(1, post_window["first_step"])
             self.assertEqual(1, post_window["finite_step_count"])

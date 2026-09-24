@@ -119,7 +119,7 @@ msProbe 的五项工具能力不是整网诊断的起点。结合官方大模型
 | 阶段 | 目的 | 当前实现 |
 | --- | --- | --- |
 | 配置检查 | 找出两端 seed、dtype、优化器、模型、环境等差异 | 已接入 dynamic `ConfigChecker` 和逐 rank 官方 compare |
-| 正常训练 | 在无 dump/Monitor hook 下记录逐 step Loss、Grad Norm 与所有数值日志指标 | 已由 `accuracy_benchmark.py --stage observation` 接入并生成 JSONL/CSV/JSON/SVG |
+| 正常训练 | 在无 dump/Monitor hook 下记录逐 step Loss、Grad Norm 与所有数值日志指标 | 已由 `accuracy_benchmark.py --stage observation` 接入并生成 JSONL/CSV/JSON、Panel + ECharts 交互 HTML 及兼容 SVG |
 | 训练状态监控 | 监控激活、梯度、权重、优化器及异常状态 | 已由 `accuracy_benchmark.py --stage monitor` 接入 Monitor V2 |
 | 数据采集 | L0/L1/mix，statistics/tensor | 已由 `accuracy_benchmark.py --stage dump` 接入 `PrecisionDebugger` |
 | 精度预检 | 对单端 API 构造单测、比较 CPU 高精度标杆，再比较 GPU/NPU 预检结论 | 已接入 `--precheck`、`--precheck-compare`，逐 step、逐 rank 保存官方结果 |
@@ -723,7 +723,10 @@ python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage observation \
 ```
 
 每端的 `training_metrics.jsonl` 记录 TorchTitan 正常 metrics logger 已产生的全部数值
-指标；比较报告生成 `loss.svg`、`grad_norm.svg`、`loss_relative_error.svg`、
+指标；比较报告首先生成自包含的 `training_observation.html` 交互面板，支持悬停读取
+step/数值、图例开关、框选放大、滚轮缩放、缩放后平移和复位。每张图自身展示摘要、
+指导线、首个超限 step 竖线，并高亮首 Steps 和首次超限后的观察区间；总表只负责跨
+拓扑汇总。报告同时保留 `loss.svg`、`grad_norm.svg`、`loss_relative_error.svg`、
 `grad_norm_relative_error.svg`、`loss_signed_difference.svg`、
 `grad_norm_signed_difference.svg`、`early_loss.svg`、
 `early_loss_relative_error.svg`、`grad_norm_signed_relative_error.svg`、逐 step CSV 和

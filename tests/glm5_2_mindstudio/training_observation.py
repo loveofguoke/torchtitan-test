@@ -13,6 +13,9 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from tests.glm5_2_mindstudio.artifacts import write_json
+from tests.glm5_2_mindstudio.observation_report import (
+    write_observation_report,
+)
 
 
 LOSS_KEY = "loss_metrics/global_avg_loss"
@@ -729,4 +732,9 @@ def compare_training_metrics(
     }
     summary_path = output_directory / "summary.json"
     write_json(summary_path, summary)
+    write_observation_report(
+        output_directory=output_directory,
+        rows=rows,
+        summary=summary,
+    )
     return summary_path

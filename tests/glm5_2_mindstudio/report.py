@@ -56,6 +56,15 @@ def _embedded_svg(path: Path) -> str:
     return f'<div class="chart">{payload}</div>'
 
 
+def _embedded_html_document(path: Path) -> str:
+    payload = html.escape(path.read_text(encoding="utf-8"), quote=True)
+    return (
+        '<iframe title="Interactive training observation" '
+        'style="width:100%;height:1050px;border:1px solid #dce2ea;border-radius:8px" '
+        f'srcdoc="{payload}"></iframe>'
+    )
+
+
 def _supplemental_entries(
     repository_root: Path,
     patterns: Sequence[str],
@@ -151,6 +160,7 @@ def _write_baseline_report_index(
     evidence_names = (
         "summary.json",
         "training_metrics_compare.csv",
+        "training_observation.html",
         "loss.svg",
         "grad_norm.svg",
         "loss_relative_error.svg",
@@ -343,7 +353,7 @@ def _write_baseline_report_index(
                 f"{endpoint_nonfinite_text['reference']}",
             )
         )
-        chart_sections = "".join(
+        static_chart_sections = "".join(
             f"<h4>{html.escape(name)}</h4>{_embedded_svg(evidence_by_name[name])}"
             for name in (
                 "loss.svg",
@@ -357,6 +367,17 @@ def _write_baseline_report_index(
                 "grad_norm_signed_relative_error.svg",
             )
             if name in evidence_by_name
+        )
+        interactive_charts = (
+            _embedded_html_document(evidence_by_name["training_observation.html"])
+            if "training_observation.html" in evidence_by_name
+            else "<p>Interactive training charts are unavailable.</p>"
+        )
+        chart_sections = (
+            interactive_charts
+            + "<details><summary>Static SVG fallbacks</summary>"
+            + static_chart_sections
+            + "</details>"
         )
         metrics_table = (
             _embedded_csv_table(evidence_by_name["training_metrics_compare.csv"])

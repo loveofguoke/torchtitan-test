@@ -1,5 +1,9 @@
 # Shared experiment primitives
 
+项目自有交互式 HTML 报告统一使用 Panel + pyecharts/Apache ECharts，安装、
+离线导出和外部工具边界见
+[交互式报告栈](docs/INTERACTIVE_REPORTS_ZH.md)。
+
 模型配置的来源与各实验检查结果：[模型配置审计](docs/MODEL_CONFIG_AUDIT.md)。
 
 `glm5_2_common` is dependency-free with respect to individual experiments. It

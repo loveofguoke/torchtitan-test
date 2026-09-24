@@ -1,5 +1,10 @@
 # GLM-5.2 MindStudio 官方标准实验
 
+项目自有训练观察报告使用统一的 Panel + pyecharts/Apache ECharts 报告栈。
+执行 `python -m pip install -r requirements-reporting.txt` 安装；设计和离线
+单文件契约见
+[`../glm5_2_common/docs/INTERACTIVE_REPORTS_ZH.md`](../glm5_2_common/docs/INTERACTIVE_REPORTS_ZH.md)。
+
 本目录是 GLM-5.2 的独立 MindStudio 官方标准工作流。实验的阶段、工具、输入、
 产物和判读方法均以 MindStudio 26.1 官方文档为准：
 
@@ -42,7 +47,7 @@ schedule 窗口时切到 Ascend PyTorch Profiler。系统调优、单算子调�
 | API 精度预检与两端预检结果比对 | 已实现 | `--precheck`、`--precheck-compare` |
 | 长程训练状态监控 | 已实现，step 数按问题复现窗口显式指定 | `accuracy_benchmark.py --stage monitor` |
 | 分级图可视化与 TensorBoard 索引 | 已实现 | migration 完成 L0/mix capture 后执行 `--graph-visualize` |
-| 现象驱动的有状态精度诊断 case | 已实现控制面和整网曲线 | `accuracy_diagnostic_benchmark.py`，输出 Loss/Grad Norm/相对误差 SVG、CSV、JSON，并复用上述官方阶段 |
+| 现象驱动的有状态精度诊断 case | 已实现控制面和整网曲线 | `accuracy_diagnostic_benchmark.py`，输出 Panel + ECharts 交互 HTML 以及兼容用 SVG、CSV、JSON，并复用上述官方阶段 |
 | NPU 性能采集、分析、可视化 | 已实现标准入口 | `performance_benchmark.py`、`docs/performance/PERFORMANCE_WORKFLOW_ZH.md` |
 | msOpProf 单算子上板/仿真采集与 Insight handoff | 已实现独立入口，需目标服务器验证具体指标支持 | `operator_tuning_benchmark.py` |
 | msMemScope 单/多卡内存事件、泄漏/拆解与 step 对比 | 已实现独立入口，需按目标 CANN 安装 hook 库 | `memory_tuning_benchmark.py` |
@@ -695,9 +700,13 @@ python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage observation \
   --compare --topology single --training-steps 500
 ```
 
-`--compare` 输出 Loss、Grad Norm 和相对误差曲线，并列出所有已记录数值指标第一次
+`--compare` 输出自包含的 `training_observation.html` 交互面板以及 Loss、Grad Norm 和
+相对误差曲线，并列出所有已记录数值指标第一次
 出现 NaN/Inf 的 step。先判断 NaN/溢出，再判断首 Step Loss，最后判断前期对齐后的
-长稳漂移或尖刺。`500` 只是本次观察窗口，不是官方固定标准；命令必须覆盖实际问题。
+长稳漂移或尖刺。交互面板支持逐点悬停、图例开关、框选放大、滚轮缩放、缩放后拖动
+平移和双击/按钮复位；每张图内部保留摘要、指导线、首个超限 step 竖线，并分别高亮
+首 Steps 与首次超限后的区间。静态 SVG 继续作为无 JavaScript 的兜底证据。`500` 只是
+本次观察窗口，不是官方固定标准；命令必须覆盖实际问题。
 
 只有 baseline 发现长程异常但第一现场不明确时，才运行 Monitor V2；发现明确异常
 step 后，才对少量 step 运行 L0/L1/mix/tensor dump。

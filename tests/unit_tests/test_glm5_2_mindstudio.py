@@ -960,6 +960,14 @@ class TestMindStudioReport(unittest.TestCase):
                 (compare / name).write_text(
                     f'<svg><text>{name}</text></svg>', encoding="utf-8"
                 )
+            (compare / "training_observation.html").write_text(
+                "<!doctype html><p>standalone interactive report</p>",
+                encoding="utf-8",
+            )
+            (compare / "training_observation.fragment.html").write_text(
+                '<section id="interactive-observation">interactive charts</section>',
+                encoding="utf-8",
+            )
             report_directory = root / "mindstudio_reports" / "experiment"
 
             output = write_report_index(
@@ -995,6 +1003,8 @@ class TestMindStudioReport(unittest.TestCase):
             self.assertIn("training_metrics_compare.csv", page)
             self.assertIn("Per-step metric comparison", page)
             self.assertIn("<svg><text>loss.svg</text></svg>", page)
+            self.assertIn("Interactive training observation", page)
+            self.assertIn("Static SVG fallbacks", page)
             self.assertIn("runtime.log", page)
             self.assertNotIn("href=", page)
             self.assertNotIn("Official msProbe", page)

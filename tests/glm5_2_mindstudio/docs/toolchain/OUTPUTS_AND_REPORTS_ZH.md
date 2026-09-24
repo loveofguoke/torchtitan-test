@@ -50,7 +50,7 @@ mindstudio_reports/performance/system/ # 系统性能报告
 
 每次新的精度 capture 在自己的 run 根目录额外保留
 `training_metrics.jsonl`，用于整网 Loss/Grad Norm 现象分析。Case 下的
-`03_observe/` 只包含由该文件生成的 CSV、JSON 和 SVG 派生证据；msProbe 的 dump、
+`03_observe/` 只包含由该文件生成的 CSV、JSON、交互 HTML 和 SVG 派生证据；msProbe 的 dump、
 Monitor CSV、`.trend.db` 和 `.vis.db` 仍留在各自官方 artifact/report 目录。
 
 实验 ID 应简洁但能区分工作流、设备、模式、拓扑和关键训练配置。例如：
@@ -260,6 +260,7 @@ comparison/
 ├── training_metrics_compare.csv     # GPU/NPU 按 step 对齐后的 Loss/Grad Norm
 ├── summary.json                     # NaN/Inf、首步、长稳和尖刺现象分类
 ├── loss.svg                         # 两端 Loss 曲线
+├── training_observation.html         # Panel + ECharts 自包含交互面板，可悬停、缩放、平移、查看数据和导图
 ├── grad_norm.svg                    # 两端 Grad Norm 曲线
 ├── loss_relative_error.svg          # Loss 误差、零误差 baseline 与 1% 指导线
 ├── grad_norm_relative_error.svg      # Grad Norm 误差及零误差 baseline
