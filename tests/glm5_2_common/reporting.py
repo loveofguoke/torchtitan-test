@@ -354,7 +354,9 @@ def interactive_table(
         # Long evidence stays in one filterable table, but scrolls inside a
         # bounded viewport instead of expanding the whole report page.
         "height": 720,
-        "layout": "fit_data_stretch",
+        # Size columns from their content. Do not stretch short fields across
+        # the remaining viewport; wide evidence can scroll horizontally.
+        "layout": "fit_data_fill",
     }
     if pagination:
         options.update(pagination="local", page_size=page_size)
@@ -383,6 +385,8 @@ def interactive_table(
             :host .tabulator-col { background:#eaf1fb !important;
               border-right:1px solid #ccd5e2 !important; }
             :host .tabulator-col-content { padding:14px 16px !important; }
+            :host .tabulator-col-title,
+            :host .tabulator-cell { text-align:left !important; }
             :host .tabulator-header-filter input { box-sizing:border-box;
               width:100%; margin-top:8px; padding:7px 9px;
               border:1px solid #aebacd; border-radius:5px; background:#fff;
@@ -475,9 +479,9 @@ def save_panel_report(
     :root { --report-blue:#2563eb; --report-ink:#172033; --report-muted:#64748b; }
     body { background:#f6f8fb; color:var(--report-ink); }
     html, body { margin:0; padding:0; }
-    .report-shell { width:calc(100% - 96px) !important; max-width:1400px;
-      box-sizing:border-box; margin:36px auto 72px !important;
-      padding:48px 64px 72px !important; background:#fff;
+    .report-shell { width:calc(100% - 64px) !important; max-width:none;
+      box-sizing:border-box; margin:32px auto 64px !important;
+      padding:44px 52px 68px !important; background:#fff;
       border:1px solid #dce3ec; border-radius:14px;
       box-shadow:0 6px 24px #17203312; }
     .report-title { font-size:40px; font-weight:750; margin:0 0 10px; }
