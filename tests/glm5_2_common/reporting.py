@@ -107,6 +107,7 @@ def echarts_line(
             list(values),
             is_symbol_show=is_short_window,
             symbol_size=8 if is_short_window else 4,
+            is_clip=not is_short_window,
             is_connect_nones=False,
             label_opts=opts.LabelOpts(is_show=False),
             linestyle_opts=line_opts,
@@ -139,10 +140,17 @@ def echarts_line(
         xaxis_opts=opts.AxisOpts(
             name="训练步 / Step",
             type_="category",
-            boundary_gap=is_short_window,
+            boundary_gap=False,
             name_gap=38,
             name_textstyle_opts=opts.TextStyleOpts(font_size=15),
-            axislabel_opts=opts.LabelOpts(font_size=13, margin=16),
+            axislabel_opts=opts.LabelOpts(
+                font_size=13,
+                margin=16,
+                interval=0 if is_short_window else None,
+            ),
+            axistick_opts=opts.AxisTickOpts(
+                is_align_with_label=True,
+            ),
         ),
         yaxis_opts=opts.AxisOpts(
             name=y_name,

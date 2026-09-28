@@ -400,6 +400,8 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
             self.assertIn("NaN / Inf", interactive)
             self.assertIn("First-step inspection window", interactive)
             self.assertIn("After first guidance exceedance", interactive)
+            self.assertIn('"showSymbol",true', interactive)
+            self.assertIn('"interval",0', interactive)
             self.assertIn("dataZoom", interactive)
             self.assertIn("summary-table", interactive)
             self.assertIn("Interpretation", interactive)
