@@ -426,6 +426,98 @@ def _move_legacy_path(source: Path, destination: Path) -> None:
     )
 
 
+def _remove_empty_legacy_parents(path: Path, *, stop: Path) -> None:
+    """Remove empty legacy directories without crossing the experiment root."""
+
+    directory = path if path.is_dir() else path.parent
+    stop = stop.resolve()
+    while directory.exists() and directory.resolve() != stop:
+        try:
+            directory.rmdir()
+        except OSError:
+            break
+        directory = directory.parent
+
+
+def _legacy_report_aliases(
+    root: Path,
+    current: MindStudioExperimentConfig,
+    legacy_configs: Sequence[MindStudioExperimentConfig],
+    topology: ParallelTopology,
+) -> tuple[Path, ...]:
+    """Return obsolete report copies for one selected topology and scope."""
+
+    report_root = _output_root(root, current.report_root, current)
+    aliases: list[Path] = [
+        report_root / "topologies" / f"{topology.slug}.html",
+    ]
+    for legacy in legacy_configs:
+        aliases.append(
+            report_root
+            / "html_reports"
+            / topology.slug
+            / legacy.operation_relative_root
+            / "report.html"
+        )
+    # A short-lived topology-first layout already used the current operation
+    # identity. Include it explicitly so reruns cannot leave that HTML stale.
+    aliases.append(
+        report_root
+        / "html_reports"
+        / topology.slug
+        / current.operation_relative_root
+        / "report.html"
+    )
+    canonical = _collected_html_report(root, current, topology).resolve()
+    return tuple(
+        dict.fromkeys(path for path in aliases if path.resolve() != canonical)
+    )
+
+
+def _legacy_report_indexes(
+    root: Path,
+    current: MindStudioExperimentConfig,
+    legacy_configs: Sequence[MindStudioExperimentConfig],
+) -> tuple[Path, ...]:
+    """Return obsolete aggregate/index directories for one report scope."""
+
+    if current.workflow == "observation":
+        return ()
+    report_root = _output_root(root, current.report_root, current)
+    indexes: list[Path] = []
+    for legacy in legacy_configs:
+        indexes.extend(
+            (
+                report_root / "operation_indexes" / legacy.operation_relative_root,
+                report_root / "html_reports" / legacy.operation_relative_root,
+            )
+        )
+    canonical = _report_index_directory(root, current).resolve()
+    return tuple(
+        dict.fromkeys(path for path in indexes if path.resolve() != canonical)
+    )
+
+
+def _migrate_legacy_report_path(
+    source: Path,
+    destination: Path,
+    *,
+    report_root: Path,
+) -> None:
+    """Move a derived report, or discard it when canonical output exists."""
+
+    if not source.exists() or source.resolve() == destination.resolve():
+        return
+    if destination.exists():
+        reset_output_generation(
+            (source,),
+            label="obsolete legacy MindStudio report",
+        )
+    else:
+        _move_legacy_path(source, destination)
+    _remove_empty_legacy_parents(source, stop=report_root)
+
+
 def _migrate_legacy_stage_layout(
     root: Path,
     legacy_configs: Sequence[MindStudioExperimentConfig] | MindStudioExperimentConfig,
@@ -436,6 +528,7 @@ def _migrate_legacy_stage_layout(
 
     if isinstance(legacy_configs, MindStudioExperimentConfig):
         legacy_configs = (legacy_configs,)
+    report_root = _output_root(root, current.report_root, current)
     for topology in topologies:
         for legacy in legacy_configs:
             if legacy.operation_relative_root == current.operation_relative_root:
@@ -460,32 +553,23 @@ def _migrate_legacy_stage_layout(
                     base / current.operation_relative_root,
                 )
         collected_destination = _collected_html_report(root, current, topology)
-        collected_candidates = [
-            _output_root(root, current.report_root, current)
-            / "topologies"
-            / f"{topology.slug}.html"
-        ]
-        for legacy in legacy_configs:
-            collected_candidates.append(
-                _output_root(root, current.report_root, current)
-                / "html_reports"
-                / topology.slug
-                / legacy.operation_relative_root
-                / "report.html"
+        for candidate in _legacy_report_aliases(
+            root, current, legacy_configs, topology
+        ):
+            _migrate_legacy_report_path(
+                candidate,
+                collected_destination,
+                report_root=report_root,
             )
-        for candidate in collected_candidates:
-            _move_legacy_path(candidate, collected_destination)
     if current.workflow != "observation":
-        for legacy in legacy_configs:
-            report_root = _output_root(root, current.report_root, current)
-            for legacy_index in (
-                report_root / "operation_indexes" / legacy.operation_relative_root,
-                report_root / "html_reports" / legacy.operation_relative_root,
-            ):
-                _move_legacy_path(
-                    legacy_index,
-                    _report_index_directory(root, current),
-                )
+        for legacy_index in _legacy_report_indexes(
+            root, current, legacy_configs
+        ):
+            _migrate_legacy_report_path(
+                legacy_index,
+                _report_index_directory(root, current),
+                report_root=report_root,
+            )
 
 
 def _fixture_manifest(
@@ -1570,6 +1654,7 @@ def reset_compare_outputs(
     *,
     topologies: Sequence[ParallelTopology],
     repeat: int,
+    legacy_configs: Sequence[MindStudioExperimentConfig] = (),
 ) -> None:
     """Reset one selected comparison generation before any compare starts."""
 
@@ -1583,6 +1668,11 @@ def reset_compare_outputs(
         _collected_html_report(root, config, topology)
         for topology in topologies
     )
+    for topology in topologies:
+        paths.extend(
+            _legacy_report_aliases(root, config, legacy_configs, topology)
+        )
+    paths.extend(_legacy_report_indexes(root, config, legacy_configs))
     active: list[Path] = []
     for topology in topologies:
         _, _, report = _paths(root, config, topology, "reference", repeat)
@@ -4184,6 +4274,7 @@ def run_mindstudio_cli(
             config,
             topologies=selected,
             repeat=args.repeat,
+            legacy_configs=(legacy_config, intermediate_config),
         )
     rows = [
         compare_official(

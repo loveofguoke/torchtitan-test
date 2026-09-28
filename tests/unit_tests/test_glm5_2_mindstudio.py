@@ -441,6 +441,110 @@ class TestMindStudioConfig(unittest.TestCase):
                 / f"{topology.slug}.html"
             )
             self.assertEqual("html", destination.read_text())
+            self.assertFalse(
+                (
+                    root
+                    / current.report_root
+                    / current.output_relative_root
+                    / "html_reports"
+                    / topology.slug
+                ).exists()
+            )
+
+    def test_force_compare_reset_removes_legacy_report_aliases(self) -> None:
+        base = _experiment()
+        selected = replace(base, workflow="monitor")
+        legacy = _legacy_stage_scoped_config(
+            selected, base, experiment_name="shared"
+        )
+        intermediate = _intermediate_training_window_config(
+            selected, base, experiment_name="shared"
+        )
+        current = _stage_scoped_config(
+            selected,
+            base,
+            experiment_name="shared",
+            training_profile="s500-normal",
+        )
+        topology = base.candidate.topology
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            report_root = (
+                root
+                / current.report_root
+                / current.output_relative_root
+            )
+            aliases = (
+                report_root / "topologies" / f"{topology.slug}.html",
+                report_root
+                / "html_reports"
+                / topology.slug
+                / intermediate.operation_relative_root
+                / "report.html",
+                report_root
+                / "operation_indexes"
+                / legacy.operation_relative_root
+                / "report.json",
+            )
+            for alias in aliases:
+                alias.parent.mkdir(parents=True, exist_ok=True)
+                alias.write_text("stale", encoding="utf-8")
+
+            reset_compare_outputs(
+                root,
+                current,
+                topologies=(topology,),
+                repeat=1,
+                legacy_configs=(legacy, intermediate),
+            )
+
+            self.assertTrue(all(not alias.exists() for alias in aliases))
+
+    def test_stale_legacy_report_is_removed_when_canonical_exists(self) -> None:
+        base = _experiment()
+        selected = replace(base, workflow="monitor")
+        intermediate = _intermediate_training_window_config(
+            selected, base, experiment_name="shared"
+        )
+        current = _stage_scoped_config(
+            selected,
+            base,
+            experiment_name="shared",
+            training_profile="s500-normal",
+        )
+        topology = base.candidate.topology
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            legacy_report = (
+                root
+                / current.report_root
+                / current.output_relative_root
+                / "html_reports"
+                / topology.slug
+                / intermediate.operation_relative_root
+                / "report.html"
+            )
+            canonical_report = (
+                root
+                / current.report_root
+                / current.output_relative_root
+                / "html_reports"
+                / "s500-normal"
+                / "monitor"
+                / current.operation_relative_root.name
+                / f"{topology.slug}.html"
+            )
+            legacy_report.parent.mkdir(parents=True)
+            canonical_report.parent.mkdir(parents=True)
+            legacy_report.write_text("stale", encoding="utf-8")
+            canonical_report.write_text("current", encoding="utf-8")
+
+            _migrate_legacy_stage_layout(
+                root, (intermediate,), current, (topology,)
+            )
+
+            self.assertFalse(legacy_report.exists())
+            self.assertEqual("current", canonical_report.read_text())
 
     def test_interrupted_legacy_migration_resumes_by_safe_merge(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
