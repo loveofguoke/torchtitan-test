@@ -461,8 +461,9 @@ mindstudio_reports/accuracy/<experiment-id>/html_reports/
 JSON、运行日志和生命周期状态，HTML 镜像不替代这些原始证据。
 
 首次对既有 stage 执行非 dry-run 命令时会自动迁移旧布局：目录使用同文件系统
-rename 原样移动，不重新 capture、不改写 manifest 或数据文件。目标已存在时拒绝
-合并和覆盖，要求先人工确认冲突；`--dry-run` 始终保持只读。
+rename 原样移动，不重新 capture、不改写 manifest 或数据文件。若迁移曾经中断，重跑会
+逐文件续传：目标缺失项直接移动，同名同内容项安全去重；只有同名文件内容不同时才拒绝
+覆盖并要求人工确认。`--dry-run` 始终保持只读。
 
 分级图把处理后数据库与 tracked 索引分开：
 

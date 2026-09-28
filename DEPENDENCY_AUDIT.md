@@ -82,6 +82,8 @@ training window from its shorter execution length. Self-contained HTML copies
 are grouped for download as
 `html_reports/<training-profile>/<report-kind>/<topology>.html`; source CSV,
 JSON, logs, lifecycle state, and the original in-scope HTML remain in place.
+Layout migration is resumable: merge disjoint entries, deduplicate byte-identical
+files, and reject same-path content conflicts instead of overwriting either side.
 
 ## Current GLM graph/parity boundary
 

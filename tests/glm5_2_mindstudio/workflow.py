@@ -404,9 +404,19 @@ def _move_legacy_path(source: Path, destination: Path) -> None:
     if not source.exists() or source.resolve() == destination.resolve():
         return
     if destination.exists():
+        if source.is_dir() and destination.is_dir():
+            for child in tuple(source.iterdir()):
+                _move_legacy_path(child, destination / child.name)
+            source.rmdir()
+            return
+        if source.is_file() and destination.is_file():
+            if sha256_file(source) == sha256_file(destination):
+                source.unlink()
+                return
         raise FileExistsError(
-            "legacy and training-window-first outputs both exist; refusing to "
-            f"merge or overwrite them: legacy={source}, destination={destination}"
+            "legacy and training-window-first outputs contain conflicting "
+            f"entries; refusing to overwrite them: legacy={source}, "
+            f"destination={destination}"
         )
     destination.parent.mkdir(parents=True, exist_ok=True)
     source.rename(destination)

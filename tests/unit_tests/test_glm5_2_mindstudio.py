@@ -61,6 +61,7 @@ from tests.glm5_2_mindstudio.workflow import (
     _fixture_directory,
     _legacy_stage_scoped_config,
     _intermediate_training_window_config,
+    _move_legacy_path,
     _migrate_legacy_stage_layout,
     _paths,
     _stage_scoped_config,
@@ -440,6 +441,42 @@ class TestMindStudioConfig(unittest.TestCase):
                 / f"{topology.slug}.html"
             )
             self.assertEqual("html", destination.read_text())
+
+    def test_interrupted_legacy_migration_resumes_by_safe_merge(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "legacy"
+            destination = root / "current"
+            (source / "nested").mkdir(parents=True)
+            (destination / "nested").mkdir(parents=True)
+            (source / "nested" / "same.json").write_text("same")
+            (destination / "nested" / "same.json").write_text("same")
+            (source / "legacy-only.csv").write_text("legacy")
+            (destination / "current-only.html").write_text("current")
+
+            _move_legacy_path(source, destination)
+
+            self.assertFalse(source.exists())
+            self.assertEqual(
+                "same", (destination / "nested" / "same.json").read_text()
+            )
+            self.assertEqual(
+                "legacy", (destination / "legacy-only.csv").read_text()
+            )
+            self.assertEqual(
+                "current", (destination / "current-only.html").read_text()
+            )
+
+    def test_legacy_migration_rejects_different_same_name_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "legacy.json"
+            destination = root / "current.json"
+            source.write_text("legacy")
+            destination.write_text("current")
+
+            with self.assertRaisesRegex(FileExistsError, "conflicting entries"):
+                _move_legacy_path(source, destination)
 
     def test_observation_accepts_existing_training_capture_identity(self) -> None:
         config = _experiment(workflow="observation")
