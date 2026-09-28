@@ -281,6 +281,45 @@ def _compatible_fixture_directory(
     return exact
 
 
+def _finalizable_monitor_capture(
+    *,
+    config: MindStudioExperimentConfig,
+    topology: ParallelTopology,
+    endpoint: TrainingEndpoint,
+    official_output: Path,
+    input_contract: Path,
+    runtime_log: Path,
+    token_plan_path: Path,
+) -> dict[str, Any] | None:
+    """Validate a finished Monitor run whose publication previously failed."""
+
+    if config.workflow != "monitor" or not runtime_log.is_file():
+        return None
+    try:
+        input_summary = validate_runtime_input_contract(
+            contract_directory=input_contract,
+            plan=load_token_plan(token_plan_path),
+            steps=config.training.steps,
+            global_batch_size=config.training.global_batch_size,
+            training_local_batch_size=config.training.local_batch_size,
+            dp_world_size=topology.data_parallel_degree,
+            context_parallel_degree=topology.context_parallel_degree,
+            tensor_parallel_degree=topology.tensor_parallel_degree,
+            pipeline_parallel_degree=topology.pipeline_parallel_degree,
+            node_rank=endpoint.node_rank,
+            num_processes_per_node=endpoint.num_processes_per_node,
+            wait_seconds=0.0,
+        )
+        _validate_monitor_outputs(
+            official_output,
+            configured_ranks=config.monitor.ranks,
+            world_size=topology.world_size,
+        )
+    except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+        return None
+    return input_summary
+
+
 def _experiment_digest(
     config: MindStudioExperimentConfig,
     topology: ParallelTopology,
@@ -1464,6 +1503,22 @@ def capture_official(
         )
         return artifact_directory
 
+    finalized_input_contract = _finalizable_monitor_capture(
+        config=config,
+        topology=topology,
+        endpoint=endpoint,
+        official_output=official_output,
+        input_contract=input_contract,
+        runtime_log=runtime_log,
+        token_plan_path=token_plan_path,
+    )
+    finalize_existing = finalized_input_contract is not None
+    if finalize_existing:
+        print_output_path(
+            "Finalize completed Monitor capture without rerunning training",
+            run_directory,
+        )
+
     precheck_directory = _precheck_root(
         root,
         config,
@@ -1471,19 +1526,23 @@ def capture_official(
         owner=role,
         repeat=repeat,
     )
-    stale_paths = [
-        path
-        for path in (run_directory, artifact_directory, precheck_directory)
-        if path.exists()
-    ]
+    stale_paths = (
+        []
+        if finalize_existing
+        else [
+            path
+            for path in (run_directory, artifact_directory, precheck_directory)
+            if path.exists()
+        ]
+    )
     for stale in stale_paths:
         _assert_tree_not_active(stale)
-    if report_directory.exists():
+    if report_directory.exists() and not finalize_existing:
         _assert_tree_not_active(report_directory)
     for stale in stale_paths:
         archived = archive_previous_output(stale)
         print_output_path("Retry incomplete output; archived", archived)
-    if report_directory.exists():
+    if report_directory.exists() and not finalize_existing:
         archived = archive_previous_output(report_directory)
         print_output_path(
             "Capture retry invalidated the previous comparison; archived",
@@ -1543,26 +1602,30 @@ def capture_official(
         },
     )
     try:
-        _run_process(
-            command,
-            root=root,
-            environment=environment,
-            log_path=runtime_log,
-            context=attempt.log_context,
-        )
-        input_contract_summary = validate_runtime_input_contract(
-            contract_directory=input_contract,
-            plan=load_token_plan(token_plan_path),
-            steps=config.training.steps,
-            global_batch_size=config.training.global_batch_size,
-            training_local_batch_size=config.training.local_batch_size,
-            dp_world_size=topology.data_parallel_degree,
-            context_parallel_degree=topology.context_parallel_degree,
-            tensor_parallel_degree=topology.tensor_parallel_degree,
-            pipeline_parallel_degree=topology.pipeline_parallel_degree,
-            node_rank=endpoint.node_rank,
-            num_processes_per_node=endpoint.num_processes_per_node,
-        )
+        if finalize_existing:
+            assert finalized_input_contract is not None
+            input_contract_summary = finalized_input_contract
+        else:
+            _run_process(
+                command,
+                root=root,
+                environment=environment,
+                log_path=runtime_log,
+                context=attempt.log_context,
+            )
+            input_contract_summary = validate_runtime_input_contract(
+                contract_directory=input_contract,
+                plan=load_token_plan(token_plan_path),
+                steps=config.training.steps,
+                global_batch_size=config.training.global_batch_size,
+                training_local_batch_size=config.training.local_batch_size,
+                dp_world_size=topology.data_parallel_degree,
+                context_parallel_degree=topology.context_parallel_degree,
+                tensor_parallel_degree=topology.tensor_parallel_degree,
+                pipeline_parallel_degree=topology.pipeline_parallel_degree,
+                node_rank=endpoint.node_rank,
+                num_processes_per_node=endpoint.num_processes_per_node,
+            )
         if config.workflow == "config-check":
             _validate_rank_outputs(
                 official_output,

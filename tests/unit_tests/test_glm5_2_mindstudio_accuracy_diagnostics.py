@@ -44,6 +44,7 @@ from tests.glm5_2_mindstudio.training_monitor_benchmark import (
 from tests.glm5_2_mindstudio.training_observation import compare_training_metrics
 from tests.glm5_2_mindstudio.workflow import (
     _compatible_fixture_directory,
+    _finalizable_monitor_capture,
     _fixture_directory,
     _paths,
     _stage_scoped_config,
@@ -231,6 +232,41 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                 longer,
                 _compatible_fixture_directory(root, scoped, topology),
             )
+
+    def test_finished_monitor_run_can_be_finalized_without_training(self) -> None:
+        topology = MONITOR_CONFIG.candidate.topology
+        endpoint = replace(MONITOR_CONFIG.candidate, topology=topology)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            runtime_log = root / "runtime.log"
+            runtime_log.write_text("training completed\n", encoding="utf-8")
+            expected = {"valid": True, "steps": MONITOR_CONFIG.training.steps}
+            with (
+                patch(
+                    "tests.glm5_2_mindstudio.workflow.load_token_plan",
+                    return_value=object(),
+                ),
+                patch(
+                    "tests.glm5_2_mindstudio.workflow.validate_runtime_input_contract",
+                    return_value=expected,
+                ) as validate_contract,
+                patch(
+                    "tests.glm5_2_mindstudio.workflow._validate_monitor_outputs"
+                ) as validate_monitor,
+            ):
+                result = _finalizable_monitor_capture(
+                    config=MONITOR_CONFIG,
+                    topology=topology,
+                    endpoint=endpoint,
+                    official_output=root / "official",
+                    input_contract=root / "input_contract",
+                    runtime_log=runtime_log,
+                    token_plan_path=root / "token_plan",
+                )
+
+            self.assertEqual(expected, result)
+            validate_contract.assert_called_once()
+            validate_monitor.assert_called_once()
 
     def test_named_experiment_fixture_path_is_shared_with_formal_producer(self) -> None:
         experiment = "glm5-debug-bf16-b64-seq128-seed61"
