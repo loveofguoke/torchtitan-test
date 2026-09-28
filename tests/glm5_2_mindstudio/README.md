@@ -700,13 +700,14 @@ python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage observation \
   --compare --topology single --training-steps 500
 ```
 
-`--compare` 输出自包含的 `training_observation.html` 交互面板以及 Loss、Grad Norm 和
-相对误差曲线，并列出所有已记录数值指标第一次
-出现 NaN/Inf 的 step。先判断 NaN/溢出，再判断首 Step Loss，最后判断前期对齐后的
-长稳漂移或尖刺。交互面板支持逐点悬停、图例开关、框选放大、滚轮缩放、缩放后拖动
-平移和双击/按钮复位；每张图内部保留摘要、指导线、首个超限 step 竖线，并分别高亮
-首 Steps 与首次超限后的区间。静态 SVG 继续作为无 JavaScript 的兜底证据。`500` 只是
-本次观察窗口，不是官方固定标准；命令必须覆盖实际问题。
+`--compare` 输出中英双语、自包含的 `training_observation.html` 交互面板以及 Loss、
+Grad Norm 和相对误差曲线。报告按标准流程分为总体摘要、NaN/Inf、Loss 和 Grad Norm
+四部分：NaN/Inf 即使为零也单独留证；首 Steps 图只读取前 10 个实际 step，不把 500
+步全程数据混入；Grad Norm 同时给出平均值、中位数、最大相对误差及 Top 异常 step，
+并展示两侧原始范数，防止孤立尖峰被均值掩盖，也便于识别参考值接近零导致的相对误差
+放大。交互面板支持逐点悬停、图例开关、框选放大、滚轮缩放、缩放后拖动平移和
+双击/按钮复位；图内保留指导线、异常点和诊断区间。静态 SVG 继续作为无 JavaScript
+的兜底证据。`500` 只是本次观察窗口，不是官方固定标准；命令必须覆盖实际问题。
 
 实验报告根目录同时生成轻量 `<experiment-id>.html` 总索引，以及
 `single.html`、`fsdp8.html` 等每拓扑独立的自包含报告。总索引不重复嵌入所有

@@ -303,9 +303,13 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
             reference = root / "reference.jsonl"
             candidate = root / "candidate.jsonl"
 
-            def write_metrics(path: Path, losses: tuple[object, ...]) -> None:
+            def write_metrics(
+                path: Path,
+                losses: tuple[object, ...],
+                grad_norms: tuple[float, ...],
+            ) -> None:
                 records = []
-                for step, loss in enumerate(losses):
+                for step, (loss, grad_norm) in enumerate(zip(losses, grad_norms)):
                     records.append(
                         json.dumps(
                             {
@@ -314,15 +318,15 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                                 "metrics": {
                                     "loss_metrics/global_avg_loss": loss,
                                     "loss_metrics/global_max_loss": loss,
-                                    "grad_norm": 1.0 + step,
+                                    "grad_norm": grad_norm,
                                 },
                             }
                         )
                     )
                 path.write_text("\n".join(records) + "\n", encoding="utf-8")
 
-            write_metrics(reference, (2.0, 1.0, 0.5))
-            write_metrics(candidate, (2.0, 1.02, "NaN"))
+            write_metrics(reference, (2.0, 1.0, 0.5), (1.0, 0.001, 3.0))
+            write_metrics(candidate, (2.0, 1.02, "NaN"), (1.0, 0.031, 3.0))
             summary_path = compare_training_metrics(
                 reference_path=reference,
                 candidate_path=candidate,
@@ -344,6 +348,18 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
             self.assertEqual(1, summary["loss"]["first_step_above_threshold"])
             self.assertEqual(2, summary["loss"]["candidate_nonfinite_step"])
             self.assertEqual([1, 2], summary["loss"]["reference_spike_steps"])
+            self.assertEqual(0.0, summary["grad_norm"]["median_relative_error"])
+            self.assertEqual(30.0, summary["grad_norm"]["max_relative_error"])
+            self.assertEqual(1, summary["grad_norm"]["max_relative_error_step"])
+            self.assertEqual(
+                [1, 0, 2],
+                [
+                    item["step"]
+                    for item in summary["grad_norm"][
+                        "largest_relative_error_steps"
+                    ]
+                ],
+            )
             for name in (
                 "training_metrics_compare.csv",
                 "training_observation.html",
@@ -375,11 +391,14 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
             interactive = (
                 root / "output" / "training_observation.html"
             ).read_text(encoding="utf-8")
-            self.assertIn("Hover for exact values", interactive)
-            self.assertIn("Whole-training Loss Relative Error", interactive)
-            self.assertIn("First-step Loss Relative Error", interactive)
+            self.assertIn("Training Observation", interactive)
+            self.assertIn("Training Loss", interactive)
+            self.assertIn("First Steps Loss", interactive)
+            self.assertIn("First Steps Relative Error", interactive)
+            self.assertIn("Whole-training Relative Error", interactive)
+            self.assertIn("Grad Norm Relative Error", interactive)
+            self.assertIn("NaN / Inf", interactive)
             self.assertIn("dataZoom", interactive)
-            self.assertIn("After first guidance exceedance", interactive)
             self.assertIn("summary-table", interactive)
             self.assertIn("Interpretation", interactive)
             self.assertNotIn("metric-card", interactive)

@@ -139,6 +139,16 @@ def _finite_mean(values: Iterable[float]) -> float | None:
     return sum(finite) / len(finite) if finite else None
 
 
+def _finite_median(values: Iterable[float]) -> float | None:
+    finite = sorted(value for value in values if math.isfinite(value))
+    if not finite:
+        return None
+    middle = len(finite) // 2
+    if len(finite) % 2:
+        return finite[middle]
+    return (finite[middle - 1] + finite[middle]) / 2
+
+
 def _spike_steps(
     values: list[tuple[int, float]],
     threshold: float | None,
@@ -615,6 +625,14 @@ def compare_training_metrics(
     overall_mean_loss_error = _finite_mean(
         row["loss_relative_error"] for row in rows
     )
+    finite_grad_error_rows = [
+        row for row in rows if math.isfinite(row["grad_norm_relative_error"])
+    ]
+    largest_grad_error_rows = sorted(
+        finite_grad_error_rows,
+        key=lambda row: row["grad_norm_relative_error"],
+        reverse=True,
+    )[:5]
     post_threshold_mean = post_threshold_summary["mean_relative_error"]
     if (
         candidate_nonfinite["status"] == "observed"
@@ -705,6 +723,28 @@ def compare_training_metrics(
             "mean_relative_error": _finite_mean(
                 row["grad_norm_relative_error"] for row in rows
             ),
+            "median_relative_error": _finite_median(
+                row["grad_norm_relative_error"] for row in rows
+            ),
+            "max_relative_error": (
+                largest_grad_error_rows[0]["grad_norm_relative_error"]
+                if largest_grad_error_rows
+                else None
+            ),
+            "max_relative_error_step": (
+                largest_grad_error_rows[0]["step"]
+                if largest_grad_error_rows
+                else None
+            ),
+            "largest_relative_error_steps": [
+                {
+                    "step": row["step"],
+                    "reference": row["reference_grad_norm"],
+                    "candidate": row["candidate_grad_norm"],
+                    "relative_error": row["grad_norm_relative_error"],
+                }
+                for row in largest_grad_error_rows
+            ],
             "mean_signed_relative_error": _finite_mean(
                 row["grad_norm_signed_relative_error"] for row in rows
             ),

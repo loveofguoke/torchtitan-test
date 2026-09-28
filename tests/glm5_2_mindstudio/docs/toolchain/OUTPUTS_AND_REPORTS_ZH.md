@@ -263,7 +263,7 @@ comparison/
 ├── training_metrics_compare.csv     # GPU/NPU 按 step 对齐后的 Loss/Grad Norm
 ├── summary.json                     # NaN/Inf、首步、长稳和尖刺现象分类
 ├── loss.svg                         # 两端 Loss 曲线
-├── training_observation.html         # Panel + ECharts 自包含交互面板，可悬停、缩放、平移、查看数据和导图
+├── training_observation.html         # 中英双语 Panel + ECharts 自包含面板；NaN/Inf、Loss、首 10 steps、Grad Norm 异常点分节展示
 ├── grad_norm.svg                    # 两端 Grad Norm 曲线
 ├── loss_relative_error.svg          # Loss 误差、零误差 baseline 与 1% 指导线
 ├── grad_norm_relative_error.svg      # Grad Norm 误差及零误差 baseline

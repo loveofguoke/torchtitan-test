@@ -9,7 +9,12 @@ import math
 from pathlib import Path
 from typing import Any, Sequence
 
-from tests.glm5_2_common.reporting import echarts_line, save_panel_report, summary_table
+from tests.glm5_2_common.reporting import (
+    echarts_line,
+    save_panel_report,
+    section_heading,
+    summary_table,
+)
 
 
 def _percent(value: float | None) -> str:
@@ -42,6 +47,12 @@ def write_observation_report(
     first_exceeded = loss["first_step_above_threshold"]
     nonfinite = summary["observation"]["nonfinite_analysis"]
     steps = [int(row["step"]) for row in rows]
+    early_rows = [
+        row
+        for row in rows
+        if early["first_step"] <= row["step"] <= early["last_step"]
+    ]
+    early_steps = [int(row["step"]) for row in early_rows]
     areas: list[tuple[str, int, int, str]] = []
     if early["first_step"] is not None:
         areas.append(("First-step inspection window", early["first_step"], early["last_step"], "#2563eb"))
@@ -70,7 +81,7 @@ def write_observation_report(
             (
                 "Grad Norm mean relative error",
                 _percent(grad["mean_relative_error"]),
-                "Inspect persistence, direction, and nearby Loss behavior.",
+                "Use together with the median and largest-error steps below.",
             ),
             (
                 "GPU NaN/Inf metrics",
@@ -84,73 +95,131 @@ def write_observation_report(
             ),
         ),
     )
-    charts = [
+    nonfinite_rows = []
+    for endpoint, label in (("reference", "GPU 标杆 / Reference"), ("candidate", "NPU 调试 / Candidate")):
+        result = nonfinite[endpoint]
+        details = "; ".join(
+            f"{item['metric']}: {item['kind']} at step {item['first_step']}"
+            for item in result["metrics"]
+        ) or "未发现 / None observed"
+        nonfinite_rows.append(
+            (
+                label,
+                str(result["metric_count"]),
+                "-" if result["first_step"] is None else str(result["first_step"]),
+                details,
+            )
+        )
+    nonfinite_table = summary_table(
+        columns=("端点 / Endpoint", "异常指标数 / Count", "首次 Step", "明细 / Details"),
+        rows=tuple(nonfinite_rows),
+    )
+    grad_largest = grad.get("largest_relative_error_steps", [])
+    grad_anomaly_table = summary_table(
+        columns=(
+            "Step",
+            "GPU Grad Norm",
+            "NPU Grad Norm",
+            "相对误差 / Relative error",
+            "定位提示 / Diagnostic note",
+        ),
+        rows=tuple(
+            (
+                str(item["step"]),
+                _number(item["reference"]),
+                _number(item["candidate"]),
+                _percent(item["relative_error"]),
+                "检查原始值是否接近 0，并对照相邻 step 的 Loss、梯度和更新。",
+            )
+            for item in grad_largest
+        ),
+    )
+    max_grad_step = grad.get("max_relative_error_step")
+    max_grad_error = grad.get("max_relative_error")
+    max_grad_points = (
+        (("最大相对误差", max_grad_step, float(max_grad_error) * 100.0, "#dc2626"),)
+        if max_grad_step is not None and max_grad_error is not None
+        else ()
+    )
+    loss_charts = [
         echarts_line(
-            title="Training Loss",
-            subtitle=f"Mean relative error {_percent(loss['mean_relative_error'])}; first guidance exceedance: {first_exceeded if first_exceeded is not None else 'none'}",
+            title="训练 Loss 全程对比 / Training Loss",
+            subtitle=f"平均相对误差 {_percent(loss['mean_relative_error'])}; 首次超过指导线: {first_exceeded if first_exceeded is not None else '无'}",
             x_values=steps,
             series=[
                 ("GPU reference", _values(rows, "reference_loss"), "#2563eb"),
                 ("NPU candidate", _values(rows, "candidate_loss"), "#dc2626"),
             ],
-            y_name="Loss",
+            y_name="Loss / 损失",
             mark_areas=areas,
         ),
         echarts_line(
-            title="First-step Loss Relative Error",
-            subtitle=f"Window {early['first_step']}..{early['last_step']}: mean {_percent(early['mean_relative_error'])}, max {_percent(early['max_relative_error'])}",
-            x_values=steps,
-            series=[("Loss relative error", _values(rows, "loss_relative_error", percent=True), "#7c3aed")],
-            y_name="Relative error (%)",
-            mark_lines=[("Zero baseline", 0.0, "#475569"), (f"Guidance {loss_threshold_pct:g}%", loss_threshold_pct, "#f59e0b")],
-            mark_areas=areas[:1],
+            title="首 Steps Loss 对比 / First Steps Loss",
+            subtitle=f"仅显示 step {early['first_step']}..{early['last_step']}，不混入后续训练窗口",
+            x_values=early_steps,
+            series=[
+                ("GPU 标杆 / Reference", _values(early_rows, "reference_loss"), "#2563eb"),
+                ("NPU 调试 / Candidate", _values(early_rows, "candidate_loss"), "#dc2626"),
+            ],
+            y_name="Loss / 损失",
         ),
         echarts_line(
-            title="Whole-training Loss Relative Error",
-            subtitle=f"Post-first-exceedance mean {_percent(loss['post_first_threshold_window']['mean_relative_error']) if first_exceeded is not None else 'N/A'}",
+            title="首 Steps Loss 相对误差 / First Steps Relative Error",
+            subtitle=f"窗口 {early['first_step']}..{early['last_step']}: 均值 {_percent(early['mean_relative_error'])}, 最大值 {_percent(early['max_relative_error'])}",
+            x_values=early_steps,
+            series=[("Loss 相对误差", _values(early_rows, "loss_relative_error", percent=True), "#7c3aed")],
+            y_name="相对误差 / Relative error (%)",
+            mark_lines=[("Zero baseline", 0.0, "#475569"), (f"Guidance {loss_threshold_pct:g}%", loss_threshold_pct, "#f59e0b")],
+        ),
+        echarts_line(
+            title="全程 Loss 相对误差 / Whole-training Relative Error",
+            subtitle=f"首次超限后均值 {_percent(loss['post_first_threshold_window']['mean_relative_error']) if first_exceeded is not None else 'N/A'}",
             x_values=steps,
             series=[("Loss relative error", _values(rows, "loss_relative_error", percent=True), "#7c3aed")],
-            y_name="Relative error (%)",
+            y_name="相对误差 / Relative error (%)",
             mark_lines=[("Zero baseline", 0.0, "#475569"), (f"Guidance {loss_threshold_pct:g}%", loss_threshold_pct, "#f59e0b")],
             mark_areas=areas,
         ),
         echarts_line(
-            title="Loss Signed Difference",
-            subtitle=f"Mean signed difference {_number(_mean(rows, 'loss_signed_difference'))}; candidate - reference",
+            title="Loss 有符号差值 / Signed Difference",
+            subtitle=f"平均有符号差值 {_number(_mean(rows, 'loss_signed_difference'))}; NPU - GPU",
             x_values=steps,
             series=[("Signed difference", _values(rows, "loss_signed_difference"), "#7c3aed")],
-            y_name="NPU - GPU",
+            y_name="NPU - GPU / 差值",
             mark_lines=[("Zero baseline", 0.0, "#475569")],
         ),
+    ]
+    grad_charts = [
         echarts_line(
-            title="Gradient Norm",
-            subtitle=f"Mean relative error {_percent(grad['mean_relative_error'])}; inspect direction and persistence, not only magnitude",
+            title="梯度范数对比 / Gradient Norm",
+            subtitle=f"平均相对误差 {_percent(grad['mean_relative_error'])}; 中位数 {_percent(grad.get('median_relative_error'))}",
             x_values=steps,
             series=[
                 ("GPU reference", _values(rows, "reference_grad_norm"), "#2563eb"),
                 ("NPU candidate", _values(rows, "candidate_grad_norm"), "#dc2626"),
             ],
-            y_name="L2 norm",
+            y_name="L2 Norm / 范数",
         ),
         echarts_line(
-            title="Gradient Norm Relative Error",
-            subtitle="Diagnostic evidence; no universal acceptance threshold is asserted",
+            title="梯度范数相对误差 / Grad Norm Relative Error",
+            subtitle=f"最大值 {_percent(max_grad_error)}，位于 step {max_grad_step}; 极值是定位信号，不由均值掩盖",
             x_values=steps,
             series=[("Grad Norm relative error", _values(rows, "grad_norm_relative_error", percent=True), "#059669")],
-            y_name="Relative error (%)",
+            y_name="相对误差 / Relative error (%)",
             mark_lines=[("Zero baseline", 0.0, "#475569")] + ([("Configured guidance", float(grad_threshold) * 100.0, "#f59e0b")] if grad_threshold is not None else []),
+            mark_points=max_grad_points,
         ),
         echarts_line(
-            title="Gradient Norm Signed Difference",
-            subtitle=f"Mean signed difference {_number(_mean(rows, 'grad_norm_signed_difference'))}; zero line exposes persistent bias",
+            title="梯度范数有符号差值 / Grad Norm Signed Difference",
+            subtitle=f"平均有符号差值 {_number(_mean(rows, 'grad_norm_signed_difference'))}; 零线用于观察持续偏斜",
             x_values=steps,
             series=[("Signed difference", _values(rows, "grad_norm_signed_difference"), "#059669")],
-            y_name="NPU - GPU",
+            y_name="NPU - GPU / 差值",
             mark_lines=[("Zero baseline", 0.0, "#475569")],
         ),
         echarts_line(
-            title="Gradient Norm Signed Relative Error",
-            subtitle=f"Mean signed relative error {_percent(grad['mean_signed_relative_error'])}; ±5% lines are diagnostic guidance",
+            title="梯度范数有符号相对误差 / Signed Relative Error",
+            subtitle=f"平均有符号相对误差 {_percent(grad['mean_signed_relative_error'])}; ±5% 仅为诊断指导线",
             x_values=steps,
             series=[("Signed relative error", _values(rows, "grad_norm_signed_relative_error", percent=True), "#059669")],
             y_name="(GPU - NPU) / GPU (%)",
@@ -159,7 +228,17 @@ def write_observation_report(
     ]
     return save_panel_report(
         path=output_directory / "training_observation.html",
-        title="GPU / NPU Training Observation",
-        description="Interactive offline evidence. Hover for exact values; zoom, pan, select a window, toggle series, inspect data, or export a chart from its toolbox.",
-        sections=[overview, *charts],
+        title="GPU / NPU 训练观察（Training Observation）",
+        description="交互式离线证据：悬停查看精确值，框选或滚轮缩放，拖动平移，切换曲线，并可从工具箱查看数据或导出图片。",
+        sections=[
+            section_heading("总体摘要 / Overview", "先看现象分类，再进入分支定位；表中阈值是诊断指导，不自动等同于交付结论。"),
+            overview,
+            section_heading("NaN / Inf 与溢出检查", "标准流程首先检查两端所有已记录数值指标是否出现非有限值；即使未发现，也明确记录为零。"),
+            nonfinite_table,
+            section_heading("Loss 对齐分析", "依次查看全程曲线、真正截取的首 Steps 窗口、全程相对误差和有符号差值。"),
+            *loss_charts,
+            section_heading("Grad Norm 对齐与异常点", "均值可能掩盖孤立极值。下表列出相对误差最大的 step；异常点需结合原始范数、相邻 Loss 和参数更新继续定位。"),
+            grad_anomaly_table,
+            *grad_charts,
+        ],
     )
