@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tests.glm5_2_mindstudio.monitor_analysis import (
+    _rank_scope_rows,
     _rank_step_summary,
     align_monitor_rows,
     read_monitor_rows,
@@ -24,6 +25,34 @@ def _write_csv(path: Path, rows: list[dict[str, str]]) -> None:
 
 
 class MonitorAnalysisTest(unittest.TestCase):
+    def test_rank_scope_rows_keep_rank_aggregates_separate(self) -> None:
+        rows = []
+        for rank, reference_norm, candidate_norm in (
+            (0, "3", "4"),
+            (1, "5", "12"),
+        ):
+            rows.extend(
+                align_monitor_rows(
+                    [{
+                        "rank": rank, "monitor": "weight_grad",
+                        "vpp_stage": "0", "step": "22",
+                        "module_name": "p", "scope": "unreduced",
+                        "micro_step": "1", "norm": reference_norm,
+                    }],
+                    [{
+                        "rank": rank, "monitor": "weight_grad",
+                        "vpp_stage": "0", "step": "22",
+                        "module_name": "p", "scope": "unreduced",
+                        "micro_step": "1", "norm": candidate_norm,
+                    }],
+                )
+            )
+
+        summary = _rank_scope_rows(rows)
+
+        self.assertEqual([0, 1], [row["rank"] for row in summary])
+        self.assertEqual([4.0, 12.0], [row["npu_aggregate_norm"] for row in summary])
+
     def test_aligns_official_rows_by_rank_step_parameter_and_scope(self) -> None:
         reference = [{
             "rank": 0, "monitor": "weight_grad", "vpp_stage": "0",
@@ -125,6 +154,10 @@ class MonitorAnalysisTest(unittest.TestCase):
                     return_value=[],
                 ),
                 patch(
+                    "tests.glm5_2_mindstudio.monitor_analysis._rank_scope_charts",
+                    return_value=[],
+                ),
+                patch(
                     "tests.glm5_2_mindstudio.monitor_analysis._rank_step_heatmap",
                     return_value=None,
                 ),
@@ -144,7 +177,7 @@ class MonitorAnalysisTest(unittest.TestCase):
                 )
 
             self.assertEqual(1, summary["matched_rows"])
-            self.assertEqual("22", summary["focus_step"])
+            self.assertEqual("23", summary["focus_step"])
             self.assertTrue((output / "aligned_metrics.csv").is_file())
             self.assertTrue((output / "anomaly_summary.csv").is_file())
             self.assertTrue((output / "rank_step_summary.csv").is_file())

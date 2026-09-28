@@ -844,6 +844,11 @@ Monitor 不会因为选择 `weight_grad` 就保存完整梯度 Tensor。时间�
 `--monitor-start-step`、`--monitor-stop-step` 和 `--monitor-step-interval` 控制；
 其中 start inclusive、stop exclusive，`--training-steps` 仍需覆盖 stop。对象和用途为：
 
+Monitor V2 CSV 使用从 0 开始的 step，TorchTitan 正常训练观察和 HTML 报告使用从 1
+开始的训练步。分析层会把 CSV `step=21` 映射成训练 `Step 22`，同时保留
+`monitor_step_zero_based=21` 供回溯；配置 Monitor 窗口和后续定点 dump 时必须按各自
+工具的原始 step 语义填写，不能直接混用展示编号。
+
 | 开关 | 监测对象 | 典型用途 |
 | --- | --- | --- |
 | 默认 `weight_grad` | 参数梯度 | Grad Norm、梯度尖刺、NaN/Inf、异常参数 |
@@ -917,8 +922,10 @@ Monitor 自动给出的根因或跨设备 PASS/FAIL。
 每个端点的 `official/rank_<rank>/**/*.csv` 是权威监控数据。官方 Monitor V2 当前只
 支持 CSV，不提供 TensorBoard、csv2tensorboard/csv2db 或 GPU/NPU cross-device
 comparator。项目在 `monitor_analysis/` 中生成自包含交互 HTML，并按
-rank/step/module/scope 对齐两端 CSV，展示覆盖情况、Top-K 异常、异常 step 的逐层
-梯度 norm 曲线、rank × step 热力图、reduce 前后定界提示以及完整可筛选对齐表。
+rank/step/module/scope 对齐两端 CSV。报告先用 rank × step × scope 热力图定界，再分别
+展示 `unreduced` 和 `reduced` 的每个 rank GPU/NPU 梯度 norm 曲线；跨 rank 聚合图只作
+总体趋势参考，不能替代单 rank 判断。其后再展示 Top-K 异常、异常 step 的逐层梯度
+norm 曲线、reduce 前后定界提示以及完整可筛选对齐表。
 所有差异和图表均明确标记为项目派生诊断，不产生
 官方 PASS/FAIL。根据报告找出异常 step/rank/module 后，再在对应 step 运行 L0/L1
 dump。Monitor 的 CSV、训练日志和官方 dump/compare 共同组成这套独立 msProbe

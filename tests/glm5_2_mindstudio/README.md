@@ -743,6 +743,11 @@ Tensor。`--monitor-start-step`、`--monitor-stop-step`（exclusive）和
 `optimizer.step()` 前。它们是两个采集时点，不能在所有并行拓扑下机械解释成某一个
 collective 的严格前后；应结合 FSDP/DDP hook、梯度累积、裁剪和其他梯度处理判断。
 
+Monitor V2 官方 CSV 的 `step` 从 0 开始，而 TorchTitan training observation 和项目
+报告使用从 1 开始的训练步编号。报告统一把 CSV `step=21` 展示为训练 `Step 22`，并在
+完整明细中保留 `monitor_step_zero_based=21`，防止定点 dump 和训练日志之间出现
+off-by-one。
+
 官方语义与字段说明见 [msProbe Monitor V2](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msProbe/docs/zh/user_guide/monitor_v2_instruct.md)，项目中的完整选择方法、产物解读和定点 dump 衔接见
 [精度工作流 9.3 节](docs/accuracy/ACCURACY_WORKFLOW_ZH.md#93-训练状态监控)。
 
@@ -823,8 +828,10 @@ Monitor V2 当前只提供 CSV，不提供 TensorBoard 或官方 GPU/NPU compara
 生成明确标为项目派生的 `monitor_report.html`、`aligned_metrics.csv`、
 `anomaly_summary.csv`、`rank_step_summary.csv` 和 `analysis.json`。报告按
 rank/step/module/scope 对齐两端 CSV，以热力图定位异常 step/rank，显示异常 step 的
-逐层梯度曲线，判断差异在 reduce 前已出现还是 reduce 后放大，并把完整 CSV 对齐表
-内嵌为可筛选、排序和分页的表格，但不计算官方 PASS/FAIL。
+报告先显示 rank × step × scope 热力图，再分别绘制 `unreduced` 和 `reduced` 下每个
+rank 的 GPU/NPU 梯度 norm 曲线；跨 rank 汇总另行标为总体趋势，不能代替单 rank
+诊断。随后用逐层梯度曲线判断差异在 reduce 前已出现还是 reduce 后放大，并把完整
+CSV 对齐表内嵌为可筛选、排序且在固定高度内滚动的连续表格，但不计算官方 PASS/FAIL。
 它用于筛出异常 step/rank/module，再用 L0/L1 dump 和正式多 step precision 定位、验收。
 每个流程 profile 的跨拓扑入口写入
 `mindstudio_reports/.../<experiment>/html_reports/<training-profile>/<report-kind>/<profile>/`，不会覆盖实验

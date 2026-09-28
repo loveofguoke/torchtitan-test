@@ -351,7 +351,9 @@ def interactive_table(
         "show_index": False,
         "header_filters": True,
         "sizing_mode": "stretch_width",
-        "height": 760 if pagination else min(6000, max(760, 36 * (len(frame) + 2))),
+        # Long evidence stays in one filterable table, but scrolls inside a
+        # bounded viewport instead of expanding the whole report page.
+        "height": 720,
         "layout": "fit_data_stretch",
     }
     if pagination:
@@ -374,12 +376,18 @@ def interactive_table(
             """
             :host .tabulator { border:1px solid #bcc8d8; border-radius:9px;
               overflow:hidden; box-shadow:0 3px 12px #17203314;
-              font-size:16px; background:#fff; }
+              font-size:19px; line-height:1.45; background:#fff; }
             :host .tabulator-header { background:#eaf1fb; color:#24324a;
-              font-weight:700; border-bottom:1px solid #bcc8d8; }
+              font-size:20px; font-weight:700;
+              border-bottom:1px solid #bcc8d8; }
             :host .tabulator-col { background:#eaf1fb !important;
               border-right:1px solid #ccd5e2 !important; }
-            :host .tabulator-cell { padding:11px 13px;
+            :host .tabulator-col-content { padding:14px 16px !important; }
+            :host .tabulator-header-filter input { box-sizing:border-box;
+              width:100%; margin-top:8px; padding:7px 9px;
+              border:1px solid #aebacd; border-radius:5px; background:#fff;
+              color:#172033; font-size:15px; font-weight:400; }
+            :host .tabulator-cell { padding:13px 14px;
               border-right:1px solid #e2e8f0; }
             :host .tabulator-row { border-bottom:1px solid #e2e8f0; }
             :host .tabulator-row:hover { background:#f4f8fd !important; }
@@ -427,7 +435,7 @@ def save_panel_report(
     :root { --report-blue:#2563eb; --report-ink:#172033; --report-muted:#64748b; }
     body { background:#f6f8fb; color:var(--report-ink); }
     html, body { margin:0; padding:0; }
-    .report-shell { width:calc(100% - 96px) !important; max-width:1400px;
+    .report-shell { width:calc(100% - 128px) !important; max-width:1360px;
       box-sizing:border-box; margin:36px auto 72px !important;
       padding:48px 64px 72px !important; background:#fff;
       border:1px solid #dce3ec; border-radius:14px;
@@ -465,7 +473,22 @@ def save_panel_report(
         + "</p></header>",
         sizing_mode="stretch_width",
     )
-    body = pn.Column(header, *sections, css_classes=["report-shell"], sizing_mode="stretch_width")
+    body = pn.Column(
+        header,
+        *sections,
+        css_classes=["report-shell"],
+        sizing_mode="stretch_width",
+        max_width=1360,
+        align="center",
+        margin=(36, 64, 72, 64),
+        styles={
+            "box-sizing": "border-box",
+            "background": "#ffffff",
+            "border": "1px solid #dce3ec",
+            "border-radius": "14px",
+            "box-shadow": "0 6px 24px #17203312",
+        },
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     body.save(path, resources=inline, embed=True, title=title, max_states=1, css=[css])
     document = path.read_text(encoding="utf-8")

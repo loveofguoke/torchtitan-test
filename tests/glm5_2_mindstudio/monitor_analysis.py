@@ -75,6 +75,10 @@ def read_monitor_rows(official_root: Path, role: str) -> list[dict[str, Any]]:
                     "row_order": order,
                 }
                 row.update({str(key): value for key, value in raw.items()})
+                raw_step = row.get("step")
+                if raw_step is not None and str(raw_step).strip():
+                    row["monitor_step_zero_based"] = str(raw_step)
+                    row["step"] = str(int(str(raw_step)) + 1)
                 rows.append(row)
     return rows
 
@@ -298,6 +302,110 @@ def _overall_scope_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+def _rank_scope_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[tuple[int, int, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        if (
+            row.get("monitor") == "weight_grad"
+            and row.get("match_status") == "matched"
+            and row.get("scope") in {"unreduced", "reduced"}
+            and row.get("reference_norm") is not None
+            and row.get("candidate_norm") is not None
+        ):
+            groups[
+                (int(row["rank"]), int(row["step"]), str(row["scope"]))
+            ].append(row)
+    result: list[dict[str, Any]] = []
+    for (rank, step, scope), group in sorted(groups.items()):
+        reference = math.sqrt(
+            sum(float(row["reference_norm"]) ** 2 for row in group)
+        )
+        candidate = math.sqrt(
+            sum(float(row["candidate_norm"]) ** 2 for row in group)
+        )
+        result.append(
+            {
+                "rank": rank,
+                "step": step,
+                "scope": scope,
+                "gpu_aggregate_norm": reference,
+                "npu_aggregate_norm": candidate,
+                "absolute_difference": abs(candidate - reference),
+                "scaled_error": abs(candidate - reference)
+                / max(reference, candidate, NEAR_ZERO_EPSILON),
+                "parameter_rows": len(group),
+            }
+        )
+    return result
+
+
+def _rank_scope_charts(rows: list[dict[str, Any]]) -> list[Any]:
+    aggregate = _rank_scope_rows(rows)
+    charts: list[Any] = []
+    gpu_colors = (
+        "#1e3a8a", "#1d4ed8", "#2563eb", "#3b82f6",
+        "#0e7490", "#0891b2", "#0284c7", "#0369a1",
+    )
+    npu_colors = (
+        "#7c2d12", "#9a3412", "#c2410c", "#ea580c",
+        "#b45309", "#d97706", "#f59e0b", "#ca8a04",
+    )
+    for scope, label in (
+        ("unreduced", "Reduce 前 / Unreduced"),
+        ("reduced", "Reduce 后 / Reduced"),
+    ):
+        selected = [row for row in aggregate if row["scope"] == scope]
+        ranks = sorted({int(row["rank"]) for row in selected})
+        steps = sorted({int(row["step"]) for row in selected})
+        if not ranks or not steps:
+            continue
+        by_key = {
+            (int(row["rank"]), int(row["step"])): row for row in selected
+        }
+        series: list[tuple[str, list[float | None], str]] = []
+        for index, rank in enumerate(ranks):
+            series.extend(
+                (
+                    (
+                        f"GPU Rank {rank}",
+                        [
+                            by_key.get((rank, step), {}).get(
+                                "gpu_aggregate_norm"
+                            )
+                            for step in steps
+                        ],
+                        gpu_colors[index % len(gpu_colors)],
+                    ),
+                    (
+                        f"NPU Rank {rank}",
+                        [
+                            by_key.get((rank, step), {}).get(
+                                "npu_aggregate_norm"
+                            )
+                            for step in steps
+                        ],
+                        npu_colors[index % len(npu_colors)],
+                    ),
+                )
+            )
+        charts.append(
+            echarts_line(
+                title=f"{label}：各 Rank 梯度 Norm 汇总",
+                subtitle=(
+                    "每条线只汇总一个 rank 内已匹配参数的 "
+                    "sqrt(sum(parameter_norm²))；图例可单独开关 GPU/NPU 和 rank，"
+                    "用于检查异常是否集中在特定 rank。"
+                ),
+                x_values=steps,
+                series=tuple(series),
+                x_name="训练 Step（从 1 开始） / Training step",
+                y_name="Rank 内汇总梯度 Norm",
+                height=720,
+            )
+        )
+    return charts
+
+
 def _overall_scope_charts(rows: list[dict[str, Any]]) -> list[Any]:
     aggregate = _overall_scope_rows(rows)
     charts: list[Any] = []
@@ -311,8 +419,9 @@ def _overall_scope_charts(rows: list[dict[str, Any]]) -> list[Any]:
         charts.append(echarts_line(
             title=f"{label}：完整监控窗口梯度 Norm 汇总",
             subtitle=(
-                "每个 step 对已匹配参数行做 sqrt(sum(parameter_norm^2))。"
-                "该值用于观察趋势和尖刺；分片/复制参数可能使它不同于训练日志的全局 Grad Norm。"
+                "All-rank pooled overview：每个 step 把所有 rank 的已匹配参数行一起做 "
+                "sqrt(sum(parameter_norm²))。该图只看总体趋势；分片/复制参数会使它不同于"
+                "训练日志的全局 Grad Norm，单 rank 异常必须以上方各 Rank 曲线为准。"
             ),
             x_values=[str(row["step"]) for row in selected],
             series=(
@@ -421,37 +530,9 @@ def _rank_step_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _rank_step_heatmap(rows: list[dict[str, Any]]) -> Any | None:
-    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
-    for row in rows:
-        if (
-            row.get("monitor") == "weight_grad"
-            and row.get("match_status") == "matched"
-            and row.get("scope") in {"unreduced", "reduced"}
-            and row.get("reference_norm") is not None
-            and row.get("candidate_norm") is not None
-        ):
-            groups[
-                (str(row["rank"]), str(row["step"]), str(row["scope"]))
-            ].append(row)
-    if not groups:
+    aggregate = _rank_scope_rows(rows)
+    if not aggregate:
         return None
-    aggregate: list[dict[str, Any]] = []
-    for (rank, step, scope), group in groups.items():
-        reference = math.sqrt(
-            sum(float(row["reference_norm"]) ** 2 for row in group)
-        )
-        candidate = math.sqrt(
-            sum(float(row["candidate_norm"]) ** 2 for row in group)
-        )
-        aggregate.append(
-            {
-                "rank": rank,
-                "step": step,
-                "scope": scope,
-                "scaled_error": abs(candidate - reference)
-                / max(reference, candidate, NEAR_ZERO_EPSILON),
-            }
-        )
     steps = sorted(
         {str(row["step"]) for row in aggregate}, key=lambda value: int(value)
     )
@@ -611,9 +692,15 @@ def write_monitor_analysis(
             ) or (("配置", "未记录"),),
         ),
         section_heading(
-            "Reduce 前后总体梯度 / Overall unreduced and reduced gradients",
-            "先分别查看完整监控窗口的 reduce 前与 reduce 后梯度汇总趋势，再进入异常 step、rank 和参数。",
+            "Step、Rank 与 Scope 总览 / Step-rank-scope overview",
+            "先看矩阵定位异常集中在哪个训练 step、rank，以及 reduce 前还是 reduce 后，再进入趋势曲线和参数明细。",
         ),
+        *( [heatmap] if heatmap is not None else [] ),
+        section_heading(
+            "Reduce 前后总体梯度 / Overall unreduced and reduced gradients",
+            "先查看每个 rank 的 GPU/NPU 曲线，再看跨 rank 汇总。后者只用于总体趋势，不能掩盖或替代单 rank 诊断。",
+        ),
+        *_rank_scope_charts(aligned),
         *_overall_scope_charts(aligned),
         interactive_table(
             title="完整监控窗口汇总 / Full-window gradient summary",
@@ -627,9 +714,8 @@ def write_monitor_analysis(
         ),
         section_heading(
             "Step 与 Rank 定界 / Step and rank localization",
-            "先确认异常是否只发生在单个 step/rank，还是跨 step/rank 持续传播。",
+            "矩阵已在前面完成总体定位；这里给出可筛选、可排序的逐 rank/step 数值证据。",
         ),
-        *( [heatmap] if heatmap is not None else [] ),
         interactive_table(
             title="Rank × Step 异常摘要 / Rank-by-step anomaly summary",
             description="列出每个 rank、step 的稳健 P95、近零不匹配数和最异常参数，用于选择后续定点分析范围。",
@@ -709,7 +795,8 @@ def write_monitor_analysis(
             description="连续内嵌全部匹配行，不分页；支持按 rank、step、scope、参数和数值列筛选排序。",
             rows=aligned,
             columns=(
-                "rank", "monitor", "step", "vpp_stage", "scope", "micro_step",
+                "rank", "monitor", "step", "monitor_step_zero_based",
+                "vpp_stage", "scope", "micro_step",
                 "module_name", "match_status", "reference_norm", "candidate_norm",
                 "signed_norm_difference", "absolute_norm_difference",
                 "scaled_norm_error", "reference_norm_near_zero",
