@@ -904,12 +904,20 @@ python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage monitor \
 “上一步 backward + 当前 forward”运行窄范围 dump。这里得到的是诊断方向，不是
 Monitor 自动给出的根因或跨设备 PASS/FAIL。
 
-每个端点的 `official/rank_<rank>/**/*.csv` 是权威监控数据；compare 只生成
-`official_compare/monitor_index.json` 将两端身份关联起来。官方 Monitor V2 没有
-GPU/NPU cross-device 数值 comparator，所以这里的 `unparsed`/索引完成不是 FAIL，
-也不能改写成 PASS。先从 CSV 找出异常 step/rank/module，再在对应 step 运行 L0/L1
+每个端点的 `official/rank_<rank>/**/*.csv` 是权威监控数据。官方 Monitor V2 当前只
+支持 CSV，不提供 TensorBoard、csv2tensorboard/csv2db 或 GPU/NPU cross-device
+comparator。项目在 `monitor_analysis/` 中生成自包含交互 HTML，并按
+rank/step/module/scope 对齐两端 CSV，展示覆盖情况、Top-K 异常、异常 step 的逐层
+梯度 norm 曲线、rank × step 热力图、reduce 前后定界提示以及完整可筛选对齐表。
+所有差异和图表均明确标记为项目派生诊断，不产生
+官方 PASS/FAIL。根据报告找出异常 step/rank/module 后，再在对应 step 运行 L0/L1
 dump。Monitor 的 CSV、训练日志和官方 dump/compare 共同组成这套独立 msProbe
 实验的长程与定位证据，不引用其他实验目录的结论。
+
+训练观察保留实验根报告；Monitor、定点 dump、配置检查等后续操作的索引分别写入
+`operation_indexes/<operation-scope>/`。因此执行新的诊断不会把先前阶段的 HTML、
+`report.json` 或 `README.md` 替换掉。每个拓扑的实际交互内容仍位于对应 operation
+scope 下，例如 `fsdp8/observations/monitor/<profile>/monitor_analysis/monitor_report.html`。
 
 分布式先验证 FSDP/TP/EP 的 sharded 参数与 optimizer 容器，再验证 PP 的 model-parts
 名称和 optimizer ownership。当前 workflow 会警告 PP 尚需服务器专项验收，并拒绝

@@ -27,7 +27,7 @@ def _stack() -> tuple[Any, Any, Any]:
             "Interactive reports require Panel and pyecharts; run "
             "`python -m pip install -r requirements-reporting.txt`."
         ) from error
-    pn.extension("echarts")
+    pn.extension("echarts", "tabulator")
     return pn, INLINE, opts
 
 
@@ -48,6 +48,7 @@ def echarts_line(
     x_values: Sequence[int | float | str],
     series: Sequence[tuple[str, Sequence[float | None], str]],
     y_name: str,
+    x_name: str = "训练步 / Step",
     mark_lines: Sequence[tuple[str, float, str]] = (),
     mark_areas: Sequence[tuple[str, int | float, int | float, str]] = (),
     mark_points: Sequence[tuple[str, int | float, float, str]] = (),
@@ -139,7 +140,7 @@ def echarts_line(
             opts.DataZoomOpts(type_="slider", range_start=0, range_end=100),
         ],
         xaxis_opts=opts.AxisOpts(
-            name="训练步 / Step",
+            name=x_name,
             type_="category",
             boundary_gap=False,
             name_gap=38,
@@ -213,6 +214,81 @@ def echarts_line(
     )
 
 
+def echarts_heatmap(
+    *,
+    title: str,
+    subtitle: str,
+    x_values: Sequence[int | float | str],
+    y_values: Sequence[int | float | str],
+    values: Sequence[tuple[int, int, float]],
+    value_name: str,
+    height: int = 680,
+) -> Any:
+    """Build an interactive rank-by-step heatmap for diagnostic evidence."""
+
+    pn, _, opts = _stack()
+    from pyecharts.charts import HeatMap
+
+    maximum = max((value for _, _, value in values), default=1.0)
+    chart = HeatMap(init_opts=opts.InitOpts(width="100%", height=f"{height}px"))
+    chart.add_xaxis([str(value) for value in x_values])
+    chart.add_yaxis(
+        value_name,
+        [str(value) for value in y_values],
+        [[x, y, value] for x, y, value in values],
+        label_opts=opts.LabelOpts(is_show=False),
+    )
+    chart.set_global_opts(
+        tooltip_opts=opts.TooltipOpts(trigger="item"),
+        toolbox_opts=opts.ToolboxOpts(
+            is_show=True,
+            feature={"restore": {}, "saveAsImage": {}, "dataView": {"readOnly": True}},
+        ),
+        visualmap_opts=opts.VisualMapOpts(
+            min_=0,
+            max_=maximum,
+            pos_right="2%",
+            pos_top="middle",
+            is_calculable=True,
+        ),
+        xaxis_opts=opts.AxisOpts(
+            name="训练步 / Step",
+            name_gap=36,
+            axislabel_opts=opts.LabelOpts(font_size=13),
+        ),
+        yaxis_opts=opts.AxisOpts(
+            name="Rank",
+            name_gap=42,
+            axislabel_opts=opts.LabelOpts(font_size=13),
+        ),
+        datazoom_opts=[opts.DataZoomOpts(type_="inside", range_start=0, range_end=100)],
+    )
+    option = json.loads(chart.dump_options())
+    option["grid"] = {
+        "left": "7%",
+        "right": "14%",
+        "top": "8%",
+        "bottom": "13%",
+        "containLabel": True,
+    }
+    heading = pn.pane.HTML(
+        '<div style="margin:0 0 20px;padding:0 8px">'
+        '<h3 style="color:#172033;font-size:27px;line-height:1.35;'
+        'font-weight:700;margin:0 0 10px">'
+        + html.escape(title)
+        + '</h3><p style="color:#526178;font-size:18px;line-height:1.65;margin:0">'
+        + html.escape(subtitle)
+        + "</p></div>",
+        sizing_mode="stretch_width",
+    )
+    return pn.Column(
+        heading,
+        pn.pane.ECharts(option, height=height, sizing_mode="stretch_width"),
+        margin=(42, 0, 78, 0),
+        sizing_mode="stretch_width",
+    )
+
+
 def summary_table(
     *,
     columns: Sequence[str],
@@ -250,6 +326,33 @@ def summary_table(
         'box-shadow:0 3px 12px #17203314">'
         f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>",
         sizing_mode="stretch_width",
+    )
+
+
+def interactive_table(
+    *,
+    rows: Sequence[dict[str, Any]],
+    columns: Sequence[str],
+    page_size: int = 30,
+) -> Any:
+    """Render a filterable, sortable, offline table with local pagination."""
+
+    pn, _, _ = _stack()
+    import pandas as pd
+
+    frame = pd.DataFrame(
+        [{column: row.get(column) for column in columns} for row in rows],
+        columns=list(columns),
+    )
+    return pn.widgets.Tabulator(
+        frame,
+        show_index=False,
+        pagination="local",
+        page_size=page_size,
+        header_filters=True,
+        sizing_mode="stretch_width",
+        height=760,
+        layout="fit_data_stretch",
     )
 
 

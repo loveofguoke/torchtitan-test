@@ -73,6 +73,7 @@ from .msprobe_adapter import (
     validate_compile_report,
     write_compare_invocation,
 )
+from .monitor_analysis import write_monitor_analysis
 from .report import write_report_index
 from .training_observation import compare_training_metrics, read_training_metrics
 
@@ -126,12 +127,39 @@ def _output_root(
     return root / configured_root / config.output_relative_root
 
 
+def _report_index_directory(
+    root: Path,
+    config: MindStudioExperimentConfig,
+) -> Path:
+    directory = _output_root(root, config.report_root, config)
+    if config.workflow != "observation":
+        directory = directory / "operation_indexes" / config.operation_relative_root
+    return directory
+
+
 def _comparison_directory(
     report_directory: Path,
     workflow: str,
 ) -> Path:
-    name = "comparison" if workflow == "observation" else "official_compare"
+    if workflow == "observation":
+        name = "comparison"
+    elif workflow == "monitor":
+        name = "monitor_analysis"
+    else:
+        name = "official_compare"
     return report_directory / name
+
+
+def _comparison_primary_result(compare_directory: Path, workflow: str) -> Path:
+    if workflow == "monitor":
+        return compare_directory / "monitor_report.html"
+    return compare_directory / "official_summary.json"
+
+
+def _comparison_summary_path(compare_directory: Path, workflow: str) -> Path:
+    if workflow == "monitor":
+        return compare_directory / "analysis.json"
+    return compare_directory / "official_summary.json"
 
 
 def _stage_scoped_config(
@@ -1254,7 +1282,7 @@ def reset_selected_outputs(
                         repeat=repeat,
                     )
                     paths.extend((run, artifact, precheck, report))
-        aggregate = _output_root(root, config.report_root, config)
+        aggregate = _report_index_directory(root, config)
         paths.extend(
             (
                 aggregate / f"{config.storage_name}.html",
@@ -1277,13 +1305,16 @@ def reset_compare_outputs(
 ) -> None:
     """Reset one selected comparison generation before any compare starts."""
 
-    aggregate = _output_root(root, config.report_root, config)
+    aggregate = _report_index_directory(root, config)
     paths: list[Path] = [
         aggregate / f"{config.storage_name}.html",
         aggregate / "report.json",
         aggregate / "README.md",
     ]
-    paths.extend(aggregate / f"{topology.slug}.html" for topology in topologies)
+    if config.workflow == "observation":
+        paths.extend(aggregate / f"{topology.slug}.html" for topology in topologies)
+    elif config.workflow == "monitor":
+        paths.append(aggregate / "topologies")
     active: list[Path] = []
     for topology in topologies:
         _, _, report = _paths(root, config, topology, "reference", repeat)
@@ -1306,12 +1337,15 @@ def _aggregate_report_paths(
     root: Path,
     config: MindStudioExperimentConfig,
 ) -> tuple[Path, ...]:
-    aggregate = _output_root(root, config.report_root, config)
-    return (
+    aggregate = _report_index_directory(root, config)
+    paths = (
         aggregate / f"{config.storage_name}.html",
         aggregate / "report.json",
         aggregate / "README.md",
     )
+    if config.workflow == "monitor":
+        return (*paths, aggregate / "topologies")
+    return paths
 
 
 def _invalidate_aggregate_report(
@@ -1322,8 +1356,8 @@ def _invalidate_aggregate_report(
     topology: ParallelTopology | None = None,
 ) -> None:
     paths = list(_aggregate_report_paths(root, config))
-    if topology is not None:
-        aggregate = _output_root(root, config.report_root, config)
+    if topology is not None and config.workflow == "observation":
+        aggregate = _report_index_directory(root, config)
         paths.append(aggregate / f"{topology.slug}.html")
     if not any(path.exists() for path in paths):
         return
@@ -2815,25 +2849,33 @@ def compare_official(
             "status_counts": {},
             "official_files": [],
             "official_result": str(
-                (compare_directory / "official_summary.json").resolve()
+                _comparison_primary_result(
+                    compare_directory, config.workflow
+                ).resolve()
             ),
             "runtime_log": str((compare_directory / "runtime.log").resolve()),
         }
     if (
         not force
-        and (compare_directory / "official_summary.json").is_file()
+        and _comparison_summary_path(compare_directory, config.workflow).is_file()
         and _comparison_is_current(comparison_state_path, comparison_digest)
     ):
         summary = json.loads(
-            (compare_directory / "official_summary.json").read_text(encoding="utf-8")
+            _comparison_summary_path(
+                compare_directory, config.workflow
+            ).read_text(encoding="utf-8")
         )
         return {
             "topology": topology.name,
             "verdict": summary.get("verdict", "unparsed"),
             "status_counts": summary.get("status_counts", {}),
-            "official_files": summary.get("official_files", []),
+            "official_files": summary.get(
+                "analysis_files", summary.get("official_files", [])
+            ),
             "official_result": str(
-                (compare_directory / "official_summary.json").resolve()
+                _comparison_primary_result(
+                    compare_directory, config.workflow
+                ).resolve()
             ),
             "runtime_log": str((compare_directory / "runtime.log").resolve()),
         }
@@ -2987,27 +3029,24 @@ def compare_official(
                 encoding="utf-8",
             )
         else:
-            write_json(
-                compare_directory / "monitor_index.json",
-                {
-                    "schema": "torchtitan.glm5_2.mindstudio_monitor_index",
-                    "schema_version": 1,
-                    "reference": artifact_inputs["reference"],
-                    "candidate": artifact_inputs["candidate"],
-                    "note": (
-                        "Monitor V2 emits per-rank CSV time series and does not "
-                        "define an official cross-device pass/fail comparator. "
-                        "Use these traces to select a suspicious step, then run "
-                        "the dump/compare workflow at that step."
-                    ),
-                },
+            write_monitor_analysis(
+                reference_official=reference_artifact / "official",
+                candidate_official=candidate_artifact / "official",
+                output_directory=compare_directory,
             )
             runtime_log.write_text(
-                "Indexed reference and candidate TrainerMonitorV2 captures. "
-                "No unofficial numerical verdict was computed.\n",
+                "Rendered project-owned analysis of reference and candidate "
+                "TrainerMonitorV2 CSV captures. No official numerical verdict "
+                "was computed.\n",
                 encoding="utf-8",
             )
-        summary = summarize_official_results(compare_directory)
+        summary = (
+            json.loads(
+                (compare_directory / "analysis.json").read_text(encoding="utf-8")
+            )
+            if config.workflow == "monitor"
+            else summarize_official_results(compare_directory)
+        )
         if config.workflow == "observation":
             observation = json.loads(
                 (compare_directory / "summary.json").read_text(encoding="utf-8")
@@ -3045,8 +3084,12 @@ def compare_official(
         "topology": topology.name,
         "verdict": summary["verdict"],
         "status_counts": summary["status_counts"],
-        "official_files": summary["official_files"],
-        "official_result": str((compare_directory / "official_summary.json").resolve()),
+        "official_files": summary.get(
+            "analysis_files", summary.get("official_files", [])
+        ),
+        "official_result": str(
+            _comparison_primary_result(compare_directory, config.workflow).resolve()
+        ),
         "runtime_log": str(runtime_log.resolve()),
     }
 
@@ -3855,7 +3898,7 @@ def run_mindstudio_cli(
     ]
     if args.dry_run:
         return
-    report_directory = _output_root(root, config.report_root, config)
+    report_directory = _report_index_directory(root, config)
     path = write_report_index(
         repository_root=root,
         report_directory=report_directory,

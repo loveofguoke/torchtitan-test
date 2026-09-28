@@ -9,6 +9,7 @@ import csv
 import html
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -167,8 +168,8 @@ def _official_diagnostic_entries(
         ),
         (
             "training_monitor",
-            "Official TrainerMonitorV2 capture index",
-            "*/official_compare/monitor_index.json",
+            "Project-derived TrainerMonitorV2 CSV analysis",
+            "*/monitor_analysis/monitor_report.html",
         ),
     )
     entries: list[dict[str, str]] = []
@@ -585,18 +586,35 @@ def write_report_index(
         },
     )
 
+    is_monitor = workflow == "monitor"
+    workflow_label = (
+        "Project-derived Monitor analysis"
+        if is_monitor
+        else f"Official workflow: `{workflow}`"
+    )
+    evidence_description = (
+        "Monitor V2 only owns the endpoint CSV captures. The links below point "
+        "to project-derived alignment and visualization, which is diagnostic "
+        "evidence without an official PASS/FAIL verdict."
+        if is_monitor
+        else "The verdicts below are copied or aggregated from official msProbe "
+        "outputs. Tool-stage completion and numerical PASS are reported separately."
+    )
+    table_title = "Monitor diagnostic analyses" if is_monitor else "Official verdicts"
+    verdict_column = "Analysis status" if is_monitor else "Official verdict"
+    result_column = "Analysis report" if is_monitor else "Official result"
+    diagnostic_title = "Related diagnostic evidence" if is_monitor else "Official diagnostics"
+
     markdown_lines = [
         f"# {experiment_name}",
         "",
-        f"Official workflow: `{workflow}`",
+        workflow_label,
         "",
-        "The verdicts below are copied or aggregated from official msProbe "
-        "outputs. Tool-stage completion and numerical PASS are reported "
-        "separately.",
+        evidence_description,
         "",
-        "## Official verdicts",
+        f"## {table_title}",
         "",
-        "| Topology | Official verdict | Result counts | Official result | Runtime log |",
+        f"| Topology | {verdict_column} | Result counts | {result_column} | Runtime log |",
         "|---|---|---|---|---|",
     ]
     html_rows: list[str] = []
@@ -609,7 +627,17 @@ def write_report_index(
         ) or "not parsed"
         official = Path(row["official_result"])
         runtime_log = Path(row["runtime_log"])
-        official_link = _relative_link(official, report_directory)
+        if is_monitor:
+            collected_report = (
+                report_directory / "topologies" / f"{topology}.html"
+            )
+            collected_report.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(official, collected_report)
+            official_link = collected_report.relative_to(
+                report_directory
+            ).as_posix()
+        else:
+            official_link = _relative_link(official, report_directory)
         runtime_link = _relative_link(runtime_log, report_directory)
         markdown_lines.append(
             f"| {topology} | {verdict} | {counts} | "
@@ -622,11 +650,12 @@ def write_report_index(
             f"<td class=\"verdict {html.escape(verdict)}\">"
             f"{html.escape(verdict)}</td>"
             f"<td>{html.escape(counts)}</td>"
-            f"<td><a href=\"{html.escape(official_link)}\">official output</a></td>"
+            f"<td><a href=\"{html.escape(official_link)}\">"
+            f"{'analysis report' if is_monitor else 'official output'}</a></td>"
             f"<td><a href=\"{html.escape(runtime_link)}\">runtime log</a></td>"
             "</tr>"
         )
-    markdown_lines.extend(("", "## Official diagnostics", ""))
+    markdown_lines.extend(("", f"## {diagnostic_title}", ""))
     if official_diagnostics:
         for entry in official_diagnostics:
             diagnostic_path = repository_root / entry["path"]
@@ -635,7 +664,7 @@ def write_report_index(
                 f"- {entry['label']}: [{entry['scope']}]({link})"
             )
     else:
-        markdown_lines.append("- No derived official diagnostic has been generated.")
+        markdown_lines.append("- No related diagnostic output has been generated.")
     markdown_lines.extend(("", "## Supplemental long-run evidence", ""))
     if supplemental_reports:
         for entry in supplemental_reports:
@@ -682,7 +711,7 @@ def write_report_index(
         )
     diagnostic_html = (
         "".join(diagnostic_items)
-        or "<li>No derived official diagnostic has been generated.</li>"
+        or "<li>No related diagnostic output has been generated.</li>"
     )
     html_path = report_directory / f"{experiment_name}.html"
     html_path.write_text(
@@ -696,15 +725,14 @@ def write_report_index(
         ".error,.failed{color:#b3261e}code{background:#f4f6f8;padding:2px 4px}"
         "</style></head><body>"
         f"<h1>{html.escape(experiment_name)}</h1>"
-        f"<p>Official workflow: <code>{html.escape(workflow)}</code>.</p>"
-        "<p>Official msProbe files own module/API/compile verdicts. The project "
-        "page only indexes and aggregates them; it does not recompute thresholds.</p>"
-        "<h2>Official verdicts</h2><table><thead><tr><th>Topology</th>"
-        "<th>Official verdict</th>"
+        f"<p>{html.escape(workflow_label)}</p>"
+        f"<p>{html.escape(evidence_description)}</p>"
+        f"<h2>{html.escape(table_title)}</h2><table><thead><tr><th>Topology</th>"
+        f"<th>{html.escape(verdict_column)}</th>"
         "<th>Result counts</th>"
-        "<th>Official result</th><th>Runtime log</th></tr></thead><tbody>"
+        f"<th>{html.escape(result_column)}</th><th>Runtime log</th></tr></thead><tbody>"
         + "".join(html_rows)
-        + "</tbody></table><h2>Official diagnostics</h2><ul>"
+        + f"</tbody></table><h2>{html.escape(diagnostic_title)}</h2><ul>"
         + diagnostic_html
         + "</ul><h2>Supplemental long-run evidence</h2><ul>"
         + supplemental_html

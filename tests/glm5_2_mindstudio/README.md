@@ -811,10 +811,20 @@ python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage monitor \
 
 capture 的官方 CSV 位于
 `mindstudio_artifacts/<experiment-id>/<topology>/<role>-r1/official/rank_<rank>/**.csv`。
-`--compare` 只在 `mindstudio_reports/.../<topology>/official_compare/monitor_index.json`
-中建立两端 capture 索引；Monitor V2 没有官方 GPU/NPU 数值 comparator，因此这里
-不会计算项目自定义 PASS/FAIL。它用于筛出异常 step/rank/module，再用 L0/L1 dump
-和正式多 step precision 定位、验收。
+Monitor V2 当前只提供 CSV，不提供 TensorBoard 或官方 GPU/NPU comparator。
+`--compare` 因此在 `mindstudio_reports/.../<topology>/<monitor-scope>/monitor_analysis/`
+生成明确标为项目派生的 `monitor_report.html`、`aligned_metrics.csv`、
+`anomaly_summary.csv`、`rank_step_summary.csv` 和 `analysis.json`。报告按
+rank/step/module/scope 对齐两端 CSV，以热力图定位异常 step/rank，显示异常 step 的
+逐层梯度曲线，判断差异在 reduce 前已出现还是 reduce 后放大，并把完整 CSV 对齐表
+内嵌为可筛选、排序和分页的表格，但不计算官方 PASS/FAIL。
+它用于筛出异常 step/rank/module，再用 L0/L1 dump 和正式多 step precision 定位、验收。
+每个 operation profile 的索引写入
+`mindstudio_reports/.../<experiment>/operation_indexes/<operation-scope>/`，不会再覆盖
+实验根目录已有的训练观察报告；真正的 Monitor 内容仍由拓扑/profile 下的
+`monitor_analysis/monitor_report.html` 承载。同时各拓扑的自包含 HTML 会集中复制到
+该 operation index 的 `topologies/<topology>.html`，下载一个目录即可离线查看全部
+拓扑；原始 CSV、JSON 和日志仍留在各自拓扑 scope 中。
 
 ## 8. NPU 性能标准流程
 

@@ -246,7 +246,7 @@ mindstudio_reports/accuracy/<experiment-id>/
     ├── observations/training/<profile>/
     │   └── comparison/              # 项目实现的整网训练现象比较，不是 msprobe compare
     ├── observations/monitor/<profile>/
-    │   └── official_compare/        # 只索引两端 Monitor；不伪造跨端 PASS/FAIL
+    │   └── monitor_analysis/        # 项目派生的 Monitor CSV 对齐与可视化；无 PASS/FAIL
     ├── captures/<dump-profile>/
     │   ├── official_compare/        # 官方 msprobe compare CSV/JSON/XLSX
     │   ├── precision_precheck/
@@ -440,15 +440,41 @@ Monitor capture 沿用普通 endpoint artifact：
 mindstudio_artifacts/accuracy/<experiment-id>/<topology>/observations/monitor/<profile>/<role>-r1/official/
 └── rank_<rank>/**/*.csv
 
-mindstudio_reports/accuracy/<experiment-id>/<topology>/observations/monitor/<profile>/official_compare/
-├── monitor_index.json
-├── official_summary.json
+mindstudio_reports/accuracy/<experiment-id>/<topology>/observations/monitor/<profile>/monitor_analysis/
+├── monitor_report.html
+├── aligned_metrics.csv
+├── anomaly_summary.csv
+├── rank_step_summary.csv
+├── analysis.json
 └── runtime.log
 ```
 
-`monitor_index.json` 只把 GPU/NPU capture 身份连在一起。Monitor V2 没有官方的
-cross-device 数值 comparator，因此这里不生成项目自定义 PASS/FAIL；CSV 用于发现
-异常 step/rank/module，再转入 L0/L1 dump 与多 step precision。
+Monitor V2 当前只输出 CSV，没有官方 cross-device comparator 或 TensorBoard。
+`monitor_report.html` 是项目从官方 CSV 派生的自包含交互分析：按 rank、step、参数和
+`unreduced/reduced` scope 对齐，以热力图展示 rank × step 最大误差，列出 Top-K
+异常，并绘制异常 step 的逐层梯度曲线。报告还给出 reduce 前后差异的诊断方向，
+并将完整明细作为可筛选、排序、分页的表格内嵌到单个 HTML 中。
+`aligned_metrics.csv` 保存全部对齐结果，`anomaly_summary.csv` 保存可复制的异常摘要，
+`rank_step_summary.csv` 保存异常 step/rank 及 reduce 前后定界提示，`analysis.json`
+为机器可读分析。这些文件不生成项目 PASS/FAIL；它们用于选定下一步
+L0/L1 dump 的 step/rank/module。
+
+实验根目录下的训练观察报告不会被后续操作替换。非 observation 操作各自生成：
+
+```text
+mindstudio_reports/accuracy/<experiment-id>/operation_indexes/<operation-scope>/
+├── <experiment-id>.html
+├── report.json
+├── README.md
+└── topologies/                      # Monitor 时集中存放自包含拓扑报告
+    ├── single.html
+    ├── fsdp8.html
+    └── <topology>.html
+```
+
+该目录是同一次 operation 的可下载交付入口。Monitor 的每个拓扑报告是自包含 HTML，
+因此额外汇集到 `topologies/`，下载这个 operation 目录即可离线查看所有拓扑。原拓扑
+scope 仍保留 CSV、JSON、运行日志和生命周期状态，集中 HTML 不替代这些原始证据。
 
 分级图把处理后数据库与 tracked 索引分开：
 

@@ -163,10 +163,12 @@ change:
   `api_precision_compare` and its HTML/JSON index live under
   `mindstudio_reports/.../precision_precheck/compare-rN/`. Audit all sync and
   Release documentation after changing either path.
-- Monitor V2 comparison is an index of per-rank CSV captures, not an official
-  cross-device numerical comparator. Do not turn an `unparsed` monitor summary
-  into PASS. Revalidate sharded optimizer ownership and PP model-parts on the
-  target server after changing Trainer or topology integration.
+- Monitor V2 produces per-rank official CSV captures, not an official
+  cross-device numerical comparator. Project-owned `monitor_analysis/` aligns
+  those CSV rows and renders interactive diagnostic evidence, but must never
+  turn derived differences or an `unparsed` summary into PASS/FAIL. Revalidate
+  sharded optimizer ownership and PP model-parts on the target server after
+  changing Trainer or topology integration.
 - `graph_visualize` consumes complete same-generation L0/mix captures and
   produces processed `.vis.db` files. Release `analysis` may retain reviewed
   databases while excluding raw tensors; the database can still contain model

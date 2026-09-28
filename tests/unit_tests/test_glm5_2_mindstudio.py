@@ -1113,7 +1113,7 @@ class TestMindStudioReport(unittest.TestCase):
                 / "precheck_report.html",
                 report_directory / "single" / "graph-visualize-r1" / "README.md",
                 report_directory / "single" / "graph-visualize-r1" / "index.json",
-                report_directory / "single" / "official_compare" / "monitor_index.json",
+                report_directory / "single" / "monitor_analysis" / "monitor_report.html",
             )
             for diagnostic in diagnostics:
                 diagnostic.parent.mkdir(parents=True, exist_ok=True)
@@ -1147,12 +1147,42 @@ class TestMindStudioReport(unittest.TestCase):
                 encoding="utf-8"
             )
             page = output.read_text(encoding="utf-8")
-            self.assertIn("## Official verdicts", markdown)
-            self.assertIn("## Official diagnostics", markdown)
+            self.assertIn("## Monitor diagnostic analyses", markdown)
+            self.assertIn("## Related diagnostic evidence", markdown)
+            self.assertNotIn("Official verdict", markdown)
             self.assertIn("## Supplemental long-run evidence", markdown)
             self.assertIn("Supplemental long-run evidence", page)
             self.assertIn("precheck_report.html", page)
-            self.assertIn("monitor_index.json", page)
+            self.assertIn("monitor_report.html", page)
+
+    def test_monitor_reports_are_collected_in_one_download_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            report_directory = root / "mindstudio_reports" / "operation"
+            source = root / "scoped" / "monitor_report.html"
+            source.parent.mkdir(parents=True)
+            source.write_text("self-contained monitor", encoding="utf-8")
+            runtime_log = root / "scoped" / "runtime.log"
+            runtime_log.write_text("done", encoding="utf-8")
+
+            output = write_report_index(
+                repository_root=root,
+                report_directory=report_directory,
+                experiment_name="monitor-experiment",
+                workflow="monitor",
+                rows=({
+                    "topology": "fsdp8",
+                    "verdict": "diagnostic-only",
+                    "status_counts": {},
+                    "official_result": str(source),
+                    "runtime_log": str(runtime_log),
+                },),
+                supplemental_report_patterns=(),
+            )
+
+            collected = report_directory / "topologies" / "fsdp8.html"
+            self.assertEqual("self-contained monitor", collected.read_text())
+            self.assertIn("topologies/fsdp8.html", output.read_text())
 
 
 class TestMindStudioLifecycle(unittest.TestCase):
@@ -1779,7 +1809,7 @@ class TestMindStudioLifecycle(unittest.TestCase):
         "tests.glm5_2_mindstudio.msprobe_adapter.resolve_tool_executable",
         return_value="/opt/mindstudio/bin/msprobe",
     )
-    def test_failed_compare_invalidates_stale_aggregate_report(self, _which) -> None:
+    def test_failed_compare_invalidates_only_its_operation_index(self, _which) -> None:
         config = _experiment()
         topology = config.candidate.topology
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1787,7 +1817,14 @@ class TestMindStudioLifecycle(unittest.TestCase):
             _write_fixture_and_capture(root, config, "reference")
             _write_fixture_and_capture(root, config, "candidate")
             aggregate = root / config.report_root / config.storage_name
-            stale = aggregate / f"{config.storage_name}.html"
+            experiment_report = aggregate / f"{config.storage_name}.html"
+            experiment_report.parent.mkdir(parents=True, exist_ok=True)
+            experiment_report.write_text("preserve", encoding="utf-8")
+            stale = (
+                aggregate
+                / "operation_indexes"
+                / f"{config.storage_name}.html"
+            )
             stale.parent.mkdir(parents=True, exist_ok=True)
             stale.write_text("stale", encoding="utf-8")
 
@@ -1813,6 +1850,7 @@ class TestMindStudioLifecycle(unittest.TestCase):
                 )
 
             self.assertFalse(stale.exists())
+            self.assertTrue(experiment_report.exists())
 
     @staticmethod
     def _emit_precheck_csv(command, **_kwargs) -> None:
@@ -2499,7 +2537,7 @@ class TestMindStudioLifecycle(unittest.TestCase):
             self.assertFalse(candidate_artifact.exists())
             self.assertFalse(report.exists())
             self.assertFalse(stale_archive.exists())
-            self.assertFalse(topology_report.exists())
+            self.assertTrue(topology_report.exists())
 
     @patch(
         "tests.glm5_2_common.cli.process_is_running",
