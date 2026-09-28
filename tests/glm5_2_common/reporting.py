@@ -59,7 +59,8 @@ def echarts_line(
     from pyecharts.charts import Line
 
     chart = Line(init_opts=opts.InitOpts(width="100%", height=f"{height}px"))
-    chart.add_xaxis(list(x_values))
+    x_categories = [str(value) for value in x_values]
+    chart.add_xaxis(x_categories)
     is_short_window = len(x_values) <= 20
     for index, (name, values, color) in enumerate(series):
         line_opts = opts.LineStyleOpts(width=2, color=color)
@@ -82,7 +83,7 @@ def echarts_line(
                 data=[
                     opts.MarkAreaItem(
                         name=label,
-                        x=(start, end),
+                        x=(str(start), str(end)),
                         itemstyle_opts=opts.ItemStyleOpts(color=color, opacity=0.09),
                     )
                     for label, start, end, color in mark_areas
@@ -95,7 +96,7 @@ def echarts_line(
                 data=[
                     opts.MarkPointItem(
                         name=label,
-                        coord=[x_value, y_value],
+                        coord=[str(x_value), y_value],
                         value=f"{y_value:.4g}",
                         itemstyle_opts=opts.ItemStyleOpts(color=point_color),
                     )

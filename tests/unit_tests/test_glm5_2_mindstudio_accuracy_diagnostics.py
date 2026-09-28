@@ -15,6 +15,7 @@ import types
 import unittest
 from unittest.mock import patch
 
+from tests.glm5_2_common.reporting import echarts_line
 from tests.glm5_2_mindstudio.accuracy_benchmark import _select_stage
 from tests.glm5_2_mindstudio.accuracy_diagnostics import (
     _load_case,
@@ -53,6 +54,28 @@ from tests.glm5_2_precision.workflow import (
 
 
 class MindStudioDiagnosticsTest(unittest.TestCase):
+    def test_echarts_category_steps_use_names_not_numeric_indexes(self) -> None:
+        chart = echarts_line(
+            title="Early steps",
+            subtitle="Step coordinates",
+            x_values=(1, 2, 3),
+            series=(("Loss", (3.0, 2.0, 1.0), "#2563eb"),),
+            y_name="Loss",
+            mark_areas=(("Early window", 1, 3, "#2563eb"),),
+            mark_points=(("First", 1, 3.0, "#dc2626"),),
+        )
+        option = chart[1].object
+        self.assertEqual(["1", "2", "3"], option["xAxis"][0]["data"])
+        self.assertEqual(["1", 3.0], option["series"][0]["data"][0])
+        self.assertEqual(
+            "1",
+            option["series"][0]["markArea"]["data"][0][0]["xAxis"],
+        )
+        self.assertEqual(
+            ["1", 3.0],
+            option["series"][0]["markPoint"]["data"][0]["coord"],
+        )
+
     def test_training_metrics_capture_does_not_require_tensorboard(self) -> None:
         class BaseLogger:
             def log(self, metrics, step) -> None:
