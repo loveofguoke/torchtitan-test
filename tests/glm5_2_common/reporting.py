@@ -77,6 +77,7 @@ def echarts_line(
         if index == 0 and mark_areas:
             markarea_opts = opts.MarkAreaOpts(
                 is_silent=True,
+                label_opts=opts.LabelOpts(is_show=False),
                 data=[
                     opts.MarkAreaItem(
                         name=label,
@@ -112,19 +113,11 @@ def echarts_line(
             markpoint_opts=markpoint_opts,
         )
     chart.set_global_opts(
-        title_opts=opts.TitleOpts(
-            title=title,
-            subtitle=subtitle,
-            pos_left="3%",
-            item_gap=14,
-            title_textstyle_opts=opts.TextStyleOpts(font_size=24),
-            subtitle_textstyle_opts=opts.TextStyleOpts(font_size=15),
-        ),
         tooltip_opts=opts.TooltipOpts(
             trigger="axis", axis_pointer_type="cross", textstyle_opts=opts.TextStyleOpts(font_size=15)
         ),
         legend_opts=opts.LegendOpts(
-            pos_top="18%",
+            pos_top="3%",
             item_gap=24,
             textstyle_opts=opts.TextStyleOpts(font_size=15),
         ),
@@ -162,18 +155,30 @@ def echarts_line(
     option["grid"] = {
         "left": "10%",
         "right": "5%",
-        "top": "29%",
+        "top": "13%",
         "bottom": "17%",
         "containLabel": True,
     }
+    chart_heading = pn.pane.HTML(
+        '<div class="chart-heading" style="margin:0 0 20px;padding:0 8px">'
+        '<h3 style="color:#172033;font-size:27px;line-height:1.35;'
+        'font-weight:700;margin:0 0 10px">'
+        + html.escape(title)
+        + '</h3><p style="color:#526178;font-size:18px;line-height:1.65;'
+        'margin:0">'
+        + html.escape(subtitle)
+        + "</p></div>",
+        sizing_mode="stretch_width",
+    )
     chart_pane = pn.pane.ECharts(
         option,
         height=height,
         sizing_mode="stretch_width",
     )
     return pn.Column(
+        chart_heading,
         chart_pane,
-        margin=(30, 0, 64, 0),
+        margin=(42, 0, 78, 0),
         sizing_mode="stretch_width",
     )
 
@@ -210,7 +215,7 @@ def summary_table(
     )
     return pn.pane.HTML(
         '<div class="summary-table-wrap" style="width:100%;overflow-x:auto;'
-        'margin:12px 0 30px"><table class="summary-table" style="width:100%;'
+        'margin:20px 0 42px"><table class="summary-table" style="width:100%;'
         'border-collapse:collapse;background:#fff;border:1px solid #bcc8d8;'
         'box-shadow:0 3px 12px #17203314">'
         f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>",
@@ -223,7 +228,7 @@ def section_heading(title: str, description: str) -> Any:
 
     pn, _, _ = _stack()
     return pn.pane.HTML(
-        '<section class="report-section" style="margin:46px 0 20px;'
+        '<section class="report-section" style="margin:58px 0 28px;'
         'border-left:7px solid #2563eb;background:#edf4ff;padding:20px 26px;'
         'border-radius:9px"><h2 style="color:#172033;font-size:32px;'
         'line-height:1.3;margin:0 0 9px">'
@@ -268,9 +273,9 @@ def save_panel_report(
     .bk-panel-models-layout-Card { margin:12px 0; }
     """
     header = pn.pane.HTML(
-        '<header style="margin:0 0 30px"><h1 class="report-title" '
-        'style="color:#172033;font-size:44px;line-height:1.25;font-weight:750;'
-        'margin:0 0 14px">'
+        '<header style="margin:0 0 48px"><h1 class="report-title" '
+        'style="color:#172033;font-size:42px;line-height:1.3;font-weight:750;'
+        'margin:0 0 18px">'
         + html.escape(title)
         + '</h1><p class="report-description" style="color:#526178;'
         'font-size:20px;line-height:1.7;margin:0">'

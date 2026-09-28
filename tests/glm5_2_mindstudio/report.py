@@ -60,7 +60,7 @@ def _embedded_html_document(path: Path) -> str:
     payload = html.escape(path.read_text(encoding="utf-8"), quote=True)
     return (
         '<iframe title="交互式训练观察 / Interactive training observation" '
-        'style="display:block;width:100%;height:8000px;border:0" '
+        'style="display:block;width:100%;height:10000px;border:0" '
         f'srcdoc="{payload}"></iframe>'
     )
 
@@ -157,9 +157,13 @@ def _observation_html_document(
     return (
         "<!doctype html><html><head><meta charset=\"utf-8\">"
         f"<title>{html.escape(title)}</title>"
-        "<style>body{font-family:system-ui,sans-serif;margin:32px;color:#172033}"
-        "table{border-collapse:collapse;width:100%;margin-top:20px}"
-        "th,td{border:1px solid #ccd4e0;padding:8px;text-align:left}"
+        "<style>body{font-family:system-ui,sans-serif;margin:42px auto;max-width:1900px;"
+        "color:#172033;font-size:18px;line-height:1.6}"
+        "h1{font-size:40px;line-height:1.3;margin:0 0 18px}"
+        "h2{font-size:30px;line-height:1.35;margin:52px 0 22px}"
+        "p{margin:12px 0 20px}"
+        "table{border-collapse:collapse;width:100%;margin:24px 0 44px}"
+        "th,td{border:1px solid #ccd4e0;padding:14px 16px;text-align:left}"
         "th{background:#eef3fa;position:sticky;top:0}"
         "code{background:#f4f6f8;padding:2px 4px}"
         "details{margin:20px 0;border:1px solid #ccd4e0;padding:12px}"
