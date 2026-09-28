@@ -354,7 +354,11 @@ def interactive_table(
     }
     if pagination:
         options.update(pagination="local", page_size=page_size)
-    return pn.widgets.Tabulator(frame, **options)
+    return pn.Column(
+        pn.widgets.Tabulator(frame, **options),
+        sizing_mode="stretch_width",
+        margin=(8, 28, 44, 28),
+    )
 
 
 def section_heading(title: str, description: str) -> Any:
@@ -388,7 +392,7 @@ def save_panel_report(
     css = """
     :root { --report-blue:#2563eb; --report-ink:#172033; --report-muted:#64748b; }
     body { background:#f6f8fb; color:var(--report-ink); }
-    .report-shell { max-width:1900px; margin:0 auto; padding:36px 44px; }
+    .report-shell { max-width:1560px; margin:0 auto; padding:44px 64px; }
     .report-title { font-size:40px; font-weight:750; margin:0 0 10px; }
     .report-description { color:var(--report-muted); font-size:18px; line-height:1.6; margin:0 0 26px; }
     .report-section { margin:36px 0 14px; border-left:6px solid var(--report-blue);

@@ -438,7 +438,11 @@ rank、step、参数的 `unreduced`（reduce 前）和 `reduced`（reduce 后、
 前）记录做成对判断；不会从一条 reduced 记录推断“reduce 前异常”。当 GPU norm 接近
 0 时，原始相对误差仅保留作证据，排序和热力图改用有界尺度化误差并同时展示绝对误差，
 避免除以近零值产生的巨大百分比主导结论。所有明细表不分页，列头支持按 rank、step、
-scope 和数值筛选、排序。
+scope 和数值筛选、排序；短小的覆盖表和采集配置表仍使用紧凑静态表格。报告先分别
+绘制完整 Monitor 窗口的 unreduced/reduced 汇总梯度曲线，再对自动选出的 reduced
+异常 step 展示两种 scope 的 GPU/NPU 汇总值、绝对差、近零类别和逐参数明细。逐层图
+按同一 rank/VPP 成组，先相邻展示 unreduced/reduced Norm，再相邻展示两者的
+min/mean/max，避免把两个阶段拆散。
 `aligned_metrics.csv` 保存全部对齐结果，`anomaly_summary.csv` 保存可复制的异常摘要，
 `rank_step_summary.csv` 保存异常 step/rank 及 reduce 前后定界提示，`analysis.json`
 为机器可读分析。这些文件不生成项目 PASS/FAIL；它们用于选定下一步

@@ -113,6 +113,10 @@ class MonitorAnalysisTest(unittest.TestCase):
                     return_value=object(),
                 ),
                 patch(
+                    "tests.glm5_2_mindstudio.monitor_analysis.summary_table",
+                    return_value=object(),
+                ),
+                patch(
                     "tests.glm5_2_mindstudio.monitor_analysis._layer_charts",
                     return_value=[],
                 ),
