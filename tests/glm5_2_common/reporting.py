@@ -350,15 +350,14 @@ def interactive_table(
     options: dict[str, Any] = {
         "show_index": False,
         "header_filters": True,
-        "sizing_mode": "stretch_width",
         "header_align": "left",
         "text_align": "left",
         # Long evidence stays in one filterable table, but scrolls inside a
         # bounded viewport instead of expanding the whole report page.
         "height": 720,
-        # Keep content-sized columns. fit_data_fill adds a synthetic-looking
-        # trailing fill area, while fit_data_stretch makes short fields huge.
-        "layout": "fit_data",
+        # Size both columns and the table from their contents. This avoids the
+        # trailing fill area and does not stretch short fields.
+        "layout": "fit_data_table",
     }
     if pagination:
         options.update(pagination="local", page_size=page_size)
@@ -401,9 +400,14 @@ def interactive_table(
         ],
         **options,
     )
+    table_scroller = pn.Row(
+        table,
+        sizing_mode="stretch_width",
+        styles={"overflow-x": "auto"},
+    )
     return pn.Column(
         heading,
-        table,
+        table_scroller,
         sizing_mode="stretch_width",
         margin=(30, 0, 64, 0),
     )
@@ -479,12 +483,11 @@ def save_panel_report(
     pn, inline, _ = _stack()
     css = """
     :root { --report-blue:#2563eb; --report-ink:#172033; --report-muted:#64748b; }
-    html { margin:0; padding:0; background:#f6f8fb; }
-    body { margin:0; padding:32px 48px 64px; box-sizing:border-box;
-      background:#f6f8fb; color:var(--report-ink); }
-    .report-shell { width:100% !important; max-width:none;
-      box-sizing:border-box; margin:0 !important;
-      padding:44px 52px 68px !important; background:#fff;
+    html, body { margin:0; padding:0; background:#f6f8fb;
+      color:var(--report-ink); }
+    .report-shell { width:100% !important; max-width:1900px;
+      box-sizing:border-box; margin:0 auto !important;
+      padding:36px 44px !important; background:#fff;
       border:1px solid #dce3ec; border-radius:14px;
       box-shadow:0 6px 24px #17203312; }
     .report-title { font-size:40px; font-weight:750; margin:0 0 10px; }
@@ -505,9 +508,8 @@ def save_panel_report(
     .tabulator { font-variant-numeric:tabular-nums; }
     .bk-panel-models-layout-Card { margin:12px 0; }
     @media (max-width:900px) {
-      body { padding:14px; }
-      .report-shell { width:100% !important; margin:0 !important;
-        padding:28px 22px 44px !important; }
+      .report-shell { width:100% !important; margin:0 auto !important;
+        padding:24px 20px 40px !important; }
     }
     """
     header = pn.pane.HTML(
