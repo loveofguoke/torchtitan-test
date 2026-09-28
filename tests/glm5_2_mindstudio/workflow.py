@@ -133,8 +133,25 @@ def _report_index_directory(
 ) -> Path:
     directory = _output_root(root, config.report_root, config)
     if config.workflow != "observation":
-        directory = directory / "html_reports" / config.operation_relative_root
+        operation = config.operation_relative_root
+        if not operation.parts:
+            return directory / "html_reports"
+        directory = (
+            directory
+            / "html_reports"
+            / operation.parts[0]
+            / _report_kind_relative_root(operation)
+        )
     return directory
+
+
+def _report_kind_relative_root(operation: Path) -> Path:
+    parts = operation.parts[1:]
+    if parts[:2] == ("observations", "training"):
+        return Path("training", *parts[2:])
+    if parts[:2] == ("observations", "monitor"):
+        return Path("monitor", *parts[2:])
+    return Path(*parts)
 
 
 def _collected_html_report(
@@ -142,12 +159,21 @@ def _collected_html_report(
     config: MindStudioExperimentConfig,
     topology: ParallelTopology,
 ) -> Path:
+    operation = config.operation_relative_root
+    if not operation.parts:
+        return (
+            _output_root(root, config.report_root, config)
+            / "html_reports"
+            / f"{topology.slug}.html"
+        )
+    training_profile = operation.parts[0]
+    report_kind = _report_kind_relative_root(operation)
     return (
         _output_root(root, config.report_root, config)
         / "html_reports"
-        / topology.slug
-        / config.operation_relative_root
-        / "report.html"
+        / training_profile
+        / report_kind
+        / f"{topology.slug}.html"
     )
 
 
@@ -180,15 +206,17 @@ def _stage_scoped_config(
     config: MindStudioExperimentConfig,
     base_config: MindStudioExperimentConfig,
     experiment_name: str | None = None,
+    *,
+    training_profile: str | None = None,
 ) -> MindStudioExperimentConfig:
-    """Place diagnostic variants below one canonical accuracy experiment."""
+    """Place every diagnostic stage below its normal-training contract."""
 
     if experiment_name is not None or config.experiment_storage_name is not None:
         config = replace(
             config,
             experiment_storage_name=base_config.storage_name,
         )
-        fixture_profile = (
+        fixture_profile = training_profile or (
             f"s{config.training.steps}-"
             f"{config_digest(asdict(config.training), length=8)}"
         )
@@ -202,7 +230,7 @@ def _stage_scoped_config(
         if config.workflow == "observation":
             return replace(
                 config,
-                output_subdirectory=f"{fixture_profile}/observation/training",
+                output_subdirectory=f"{fixture_profile}/observations/training",
                 fixture_subdirectory=fixture_subdirectory,
             )
         if config.workflow == "migration":
@@ -217,18 +245,26 @@ def _stage_scoped_config(
                 fixture_subdirectory=fixture_subdirectory,
             )
         if config.workflow == "monitor":
-            identity = asdict(config.monitor)
-            profile = f"monitor-{config_digest(identity, length=8)}"
+            identity = {
+                "training": asdict(config.training),
+                "monitor": asdict(config.monitor),
+            }
+            profile = (
+                f"s{config.training.steps}-"
+                f"{config_digest(identity, length=8)}"
+            )
             return replace(
                 config,
-                output_subdirectory=f"{fixture_profile}/monitor/{profile}",
+                output_subdirectory=(
+                    f"{fixture_profile}/observations/monitor/{profile}"
+                ),
                 fixture_subdirectory=fixture_subdirectory,
             )
 
     if config.experiment_storage_name is None:
         return config
     if config.workflow == "migration" and config.dump != base_config.dump:
-        training_profile = (
+        training_profile = training_profile or (
             f"s{config.training.steps}-"
             f"{config_digest(asdict(config.training), length=8)}"
         )
@@ -242,28 +278,44 @@ def _stage_scoped_config(
             output_subdirectory=f"{training_profile}/dump/{profile}",
         )
     if config.workflow == "observation":
-        training_profile = (
+        training_profile = training_profile or (
             f"s{config.training.steps}-"
             f"{config_digest(asdict(config.training), length=8)}"
         )
         return replace(
             config,
-            output_subdirectory=f"{training_profile}/observation/training",
+            output_subdirectory=f"{training_profile}/observations/training",
         )
     if config.workflow == "monitor":
-        training_profile = (
+        training_profile = training_profile or (
             f"s{config.training.steps}-"
             f"{config_digest(asdict(config.training), length=8)}"
         )
-        identity = asdict(config.monitor)
-        profile = f"monitor-{config_digest(identity, length=8)}"
-        relative = f"{training_profile}/monitor/{profile}"
+        identity = {
+            "training": asdict(config.training),
+            "monitor": asdict(config.monitor),
+        }
+        profile = (
+            f"s{config.training.steps}-"
+            f"{config_digest(identity, length=8)}"
+        )
+        relative = f"{training_profile}/observations/monitor/{profile}"
         return replace(
             config,
             output_subdirectory=relative,
             fixture_subdirectory=f"{training_profile}/inputs",
         )
     return config
+
+
+def _training_profile_from_fixture(directory: Path) -> str:
+    """Return the normal-training profile encoded by either fixture layout."""
+
+    if directory.name == "inputs":
+        return directory.parent.name
+    if directory.parent.name == "inputs":
+        return directory.name
+    raise ValueError(f"unrecognized accuracy fixture layout: {directory}")
 
 
 def _legacy_stage_scoped_config(
@@ -310,6 +362,44 @@ def _legacy_stage_scoped_config(
     return config
 
 
+def _intermediate_training_window_config(
+    config: MindStudioExperimentConfig,
+    base_config: MindStudioExperimentConfig,
+    experiment_name: str | None = None,
+) -> MindStudioExperimentConfig:
+    """Resolve the short-lived layout that made each tool its own window."""
+
+    if experiment_name is None and config.experiment_storage_name is None:
+        return config
+    config = replace(config, experiment_storage_name=base_config.storage_name)
+    training_profile = (
+        f"s{config.training.steps}-"
+        f"{config_digest(asdict(config.training), length=8)}"
+    )
+    fixture_subdirectory = f"{training_profile}/inputs"
+    if config.workflow == "config-check":
+        relative = f"{training_profile}/checklist/configuration-check"
+    elif config.workflow == "observation":
+        relative = f"{training_profile}/observation/training"
+    elif config.workflow == "migration":
+        profile = (
+            f"{config.dump.task}-{config.dump.level}-"
+            f"{config.dump.summary_mode}-"
+            f"{config_digest(asdict(config.dump), length=8)}"
+        )
+        relative = f"{training_profile}/dump/{profile}"
+    elif config.workflow == "monitor":
+        profile = f"monitor-{config_digest(asdict(config.monitor), length=8)}"
+        relative = f"{training_profile}/monitor/{profile}"
+    else:
+        return config
+    return replace(
+        config,
+        output_subdirectory=relative,
+        fixture_subdirectory=fixture_subdirectory,
+    )
+
+
 def _move_legacy_path(source: Path, destination: Path) -> None:
     if not source.exists() or source.resolve() == destination.resolve():
         return
@@ -328,48 +418,64 @@ def _move_legacy_path(source: Path, destination: Path) -> None:
 
 def _migrate_legacy_stage_layout(
     root: Path,
-    legacy: MindStudioExperimentConfig,
+    legacy_configs: Sequence[MindStudioExperimentConfig] | MindStudioExperimentConfig,
     current: MindStudioExperimentConfig,
     topologies: Sequence[ParallelTopology],
 ) -> None:
-    """Move the selected legacy stage without rewriting captured files."""
+    """Move selected historical layouts without rewriting captured files."""
 
-    if legacy.operation_relative_root == current.operation_relative_root:
-        return
+    if isinstance(legacy_configs, MindStudioExperimentConfig):
+        legacy_configs = (legacy_configs,)
     for topology in topologies:
-        _move_legacy_path(
-            _fixture_directory(root, legacy, topology),
-            _fixture_directory(root, current, topology),
-        )
-        for configured_root in (
-            current.run_root,
-            current.artifact_root,
-            current.report_root,
-        ):
-            base = root / configured_root / current.output_relative_root / topology.slug
+        for legacy in legacy_configs:
+            if legacy.operation_relative_root == current.operation_relative_root:
+                continue
             _move_legacy_path(
-                base / legacy.operation_relative_root,
-                base / current.operation_relative_root,
+                _fixture_directory(root, legacy, topology),
+                _fixture_directory(root, current, topology),
             )
-        legacy_collected = (
+            for configured_root in (
+                current.run_root,
+                current.artifact_root,
+                current.report_root,
+            ):
+                base = (
+                    root
+                    / configured_root
+                    / current.output_relative_root
+                    / topology.slug
+                )
+                _move_legacy_path(
+                    base / legacy.operation_relative_root,
+                    base / current.operation_relative_root,
+                )
+        collected_destination = _collected_html_report(root, current, topology)
+        collected_candidates = [
             _output_root(root, current.report_root, current)
             / "topologies"
             / f"{topology.slug}.html"
-        )
-        _move_legacy_path(
-            legacy_collected,
-            _collected_html_report(root, current, topology),
-        )
+        ]
+        for legacy in legacy_configs:
+            collected_candidates.append(
+                _output_root(root, current.report_root, current)
+                / "html_reports"
+                / topology.slug
+                / legacy.operation_relative_root
+                / "report.html"
+            )
+        for candidate in collected_candidates:
+            _move_legacy_path(candidate, collected_destination)
     if current.workflow != "observation":
-        legacy_index = (
-            _output_root(root, current.report_root, current)
-            / "operation_indexes"
-            / legacy.operation_relative_root
-        )
-        _move_legacy_path(
-            legacy_index,
-            _report_index_directory(root, current),
-        )
+        for legacy in legacy_configs:
+            report_root = _output_root(root, current.report_root, current)
+            for legacy_index in (
+                report_root / "operation_indexes" / legacy.operation_relative_root,
+                report_root / "html_reports" / legacy.operation_relative_root,
+            ):
+                _move_legacy_path(
+                    legacy_index,
+                    _report_index_directory(root, current),
+                )
 
 
 def _fixture_manifest(
@@ -391,36 +497,70 @@ def _compatible_fixture_directory(
     """Reuse a longer canonical input plan for a shorter diagnostic run."""
 
     exact = _fixture_directory(root, config, topology)
-    if (exact / "fixture.json").is_file():
-        return exact
-    inputs_root = (
+    topology_root = (
         root
         / config.fixture_root
         / config.storage_name
         / topology.slug
-        / "inputs"
     )
     expected = json.loads(json.dumps(asdict(config.training), sort_keys=True))
     expected["converged_checkpoint"] = None
     requested_steps = int(expected.pop("steps"))
-    compatible: list[tuple[int, Path]] = []
-    if inputs_root.is_dir():
-        for manifest_path in inputs_root.glob("*/fixture.json"):
-            try:
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                stored = dict(manifest["training"])
-                stored_steps = int(stored.pop("steps"))
-                token_steps = int(manifest["token_plan"]["steps"])
-            except (KeyError, OSError, TypeError, ValueError):
-                continue
-            if (
-                stored == expected
-                and stored_steps >= requested_steps
-                and token_steps >= requested_steps
-            ):
-                compatible.append((stored_steps, manifest_path.parent))
+    compatible: list[tuple[bool, int, Path]] = []
+    manifest_paths: set[Path] = set()
+    if (exact / "fixture.json").is_file():
+        manifest_paths.add(exact / "fixture.json")
+    legacy_inputs_root = topology_root / "inputs"
+    if legacy_inputs_root.is_dir():
+        manifest_paths.update(legacy_inputs_root.glob("*/fixture.json"))
+    if topology_root.is_dir():
+        manifest_paths.update(topology_root.glob("s*/inputs/fixture.json"))
+    for manifest_path in manifest_paths:
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            stored = dict(manifest["training"])
+            stored_steps = int(stored.pop("steps"))
+            token_steps = int(manifest["token_plan"]["steps"])
+        except (KeyError, OSError, TypeError, ValueError):
+            continue
+        if (
+            stored == expected
+            and stored_steps >= requested_steps
+            and token_steps >= requested_steps
+        ):
+            profile = _training_profile_from_fixture(manifest_path.parent)
+            normal_training_paths = (
+                root
+                / configured_root
+                / config.output_relative_root
+                / topology.slug
+                / profile
+                / "observations"
+                / "training"
+                for configured_root in (config.run_root, config.artifact_root)
+            )
+            legacy_training_paths = (
+                root
+                / configured_root
+                / config.output_relative_root
+                / topology.slug
+                / "observations"
+                / "training"
+                / profile
+                for configured_root in (config.run_root, config.artifact_root)
+            )
+            has_normal_training = any(
+                path.exists()
+                for path in (*normal_training_paths, *legacy_training_paths)
+            )
+            compatible.append(
+                (not has_normal_training, stored_steps, manifest_path.parent)
+            )
     if compatible:
-        return min(compatible, key=lambda item: (item[0], str(item[1])))[1]
+        return min(
+            compatible,
+            key=lambda item: (item[0], item[1], str(item[2])),
+        )[2]
     return exact
 
 
@@ -3578,10 +3718,6 @@ def run_mindstudio_cli(
         monitor=monitor_config,
         training=training,
     )
-    legacy_config = _legacy_stage_scoped_config(
-        config, base_config, args.experiment
-    )
-    config = _stage_scoped_config(config, base_config, args.experiment)
     if args.npu_codegen:
         def select_codegen(endpoint):
             if endpoint.device_type != "npu":
@@ -3591,6 +3727,7 @@ def run_mindstudio_cli(
             })
         config = replace(config, reference=select_codegen(config.reference),
                          candidate=select_codegen(config.candidate))
+    unscoped_config = config
     root = _root(script_path)
     selected_names = select_topologies(
         available=tuple(registry),
@@ -3599,8 +3736,47 @@ def run_mindstudio_cli(
         default=("single",),
     )
     selected = tuple(registry[name] for name in selected_names)
+    legacy_config = _legacy_stage_scoped_config(
+        unscoped_config, base_config, args.experiment
+    )
+    intermediate_config = _intermediate_training_window_config(
+        unscoped_config, base_config, args.experiment
+    )
+    requested_config = _stage_scoped_config(
+        unscoped_config, base_config, args.experiment
+    )
+    training_profile: str | None = None
+    if not args.data and requested_config.experiment_storage_name is not None:
+        profiles = {
+            _training_profile_from_fixture(
+                _compatible_fixture_directory(root, requested_config, topology)
+            )
+            for topology in selected
+        }
+        if len(profiles) != 1:
+            raise ValueError(
+                "selected topologies resolve to different normal-training "
+                f"profiles: {sorted(profiles)}"
+            )
+        training_profile = next(iter(profiles))
+    config = _stage_scoped_config(
+        unscoped_config,
+        base_config,
+        args.experiment,
+        training_profile=training_profile,
+    )
     if not args.dry_run:
-        _migrate_legacy_stage_layout(root, legacy_config, config, selected)
+        for topology in selected:
+            _move_legacy_path(
+                _compatible_fixture_directory(root, requested_config, topology),
+                _fixture_directory(root, config, topology),
+            )
+        _migrate_legacy_stage_layout(
+            root,
+            (legacy_config, intermediate_config),
+            config,
+            selected,
+        )
         write_experiment_overview(
             _output_root(root, config.run_root, config),
             title=f"GLM5.2 MindStudio {config.workflow} experiment",

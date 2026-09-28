@@ -240,7 +240,7 @@ def create_case(
                 "configuration_check": (
                     "<topology>/<training-profile>/checklist/configuration-check"
                 ),
-                "monitor": "<topology>/<training-profile>/monitor/<monitor-profile>",
+                "monitor": "<topology>/<training-profile>/observations/monitor/<monitor-profile>",
             },
         },
         "stages": {

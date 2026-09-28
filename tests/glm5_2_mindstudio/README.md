@@ -712,7 +712,7 @@ Grad Norm、绝对差、倍数、相对误差、同 step Loss 误差和相邻 st
 的兜底证据。`500` 只是本次观察窗口，不是官方固定标准；命令必须覆盖实际问题。
 
 实验报告根目录生成轻量 `<experiment-id>.html` 总索引；所有可下载自包含报告集中在
-`html_reports/`，并按 `<topology>/<training-profile>/<workflow>/<profile>/report.html`
+`html_reports/`，并按 `<training-profile>/<report-kind>/<profile>/<topology>.html`
 组织。该镜像层级与真实实验一致，不使用扁平 `topologies/`；下载 `html_reports/`
 即可离线查看全部拓扑和诊断步骤。
 
@@ -820,10 +820,10 @@ rank/step/module/scope 对齐两端 CSV，以热力图定位异常 step/rank，�
 内嵌为可筛选、排序和分页的表格，但不计算官方 PASS/FAIL。
 它用于筛出异常 step/rank/module，再用 L0/L1 dump 和正式多 step precision 定位、验收。
 每个流程 profile 的跨拓扑入口写入
-`mindstudio_reports/.../<experiment>/html_reports/<workflow>/<profile>/`，不会覆盖实验
+`mindstudio_reports/.../<experiment>/html_reports/<training-profile>/<report-kind>/<profile>/`，不会覆盖实验
 根目录已有的训练观察报告。真正的 Monitor 内容仍由拓扑/profile 下的
 `monitor_analysis/monitor_report.html` 承载；它的自包含 HTML 镜像放在
-`html_reports/<topology>/<workflow>/<profile>/report.html`。因此下载整个
+`html_reports/<training-profile>/<report-kind>/<profile>/<topology>.html`。因此下载整个
 `html_reports/` 就能按与实验一致的层级离线查看全部拓扑和流程步骤；原始 CSV、JSON
 和日志仍留在各自拓扑 scope 中。
 

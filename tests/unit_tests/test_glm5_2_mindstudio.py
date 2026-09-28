@@ -56,9 +56,11 @@ from tests.glm5_2_mindstudio.workflow import (
     _comparison_output_index,
     _comparison_toolchain_identity,
     _compile_rank_csv_files,
+    _compatible_fixture_directory,
     _experiment_digest,
     _fixture_directory,
     _legacy_stage_scoped_config,
+    _intermediate_training_window_config,
     _migrate_legacy_stage_layout,
     _paths,
     _stage_scoped_config,
@@ -257,12 +259,16 @@ class TestMindStudioConfig(unittest.TestCase):
                 Path(config.output_subdirectory or "").parts[0],
             )
         self.assertEqual(
-            Path(expected_prefix) / "observation" / "training",
+            Path(expected_prefix) / "observations" / "training",
             Path(stages["observation"].output_subdirectory or ""),
         )
         self.assertEqual(
-            "monitor",
+            "observations",
             Path(stages["monitor"].output_subdirectory or "").parts[1],
+        )
+        self.assertEqual(
+            "monitor",
+            Path(stages["monitor"].output_subdirectory or "").parts[2],
         )
 
     def test_legacy_stage_layout_moves_without_rewriting_outputs(self) -> None:
@@ -317,6 +323,123 @@ class TestMindStudioConfig(unittest.TestCase):
                     / "marker"
                 )
                 self.assertEqual(configured_root.encode(), destination.read_bytes())
+
+    def test_monitor_reuses_normal_training_profile_not_short_run_profile(
+        self,
+    ) -> None:
+        base = _experiment()
+        monitor_training = replace(base.training, steps=27)
+        monitor = _stage_scoped_config(
+            replace(base, workflow="monitor", training=monitor_training),
+            base,
+            experiment_name="shared",
+        )
+        topology = base.candidate.topology
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            topology_root = (
+                root
+                / monitor.fixture_root
+                / monitor.storage_name
+                / topology.slug
+            )
+            for steps, profile in ((27, "s27-short"), (500, "s500-normal")):
+                fixture = topology_root / profile / "inputs"
+                fixture.mkdir(parents=True)
+                training = asdict(monitor.training)
+                training["steps"] = steps
+                write_json(
+                    fixture / "fixture.json",
+                    {
+                        "training": training,
+                        "token_plan": {"steps": steps},
+                    },
+                )
+            normal = (
+                root
+                / monitor.run_root
+                / monitor.output_relative_root
+                / topology.slug
+                / "s500-normal"
+                / "observations"
+                / "training"
+            )
+            normal.mkdir(parents=True)
+
+            selected = _compatible_fixture_directory(root, monitor, topology)
+
+            self.assertEqual(topology_root / "s500-normal" / "inputs", selected)
+
+    def test_intermediate_monitor_layout_and_html_are_migrated(self) -> None:
+        base = _experiment()
+        selected = replace(base, workflow="monitor")
+        intermediate = _intermediate_training_window_config(
+            selected, base, experiment_name="shared"
+        )
+        current = _stage_scoped_config(
+            selected,
+            base,
+            experiment_name="shared",
+            training_profile="s500-normal",
+        )
+        topology = base.candidate.topology
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            for configured_root in (
+                current.run_root,
+                current.artifact_root,
+                current.report_root,
+            ):
+                source = (
+                    root
+                    / configured_root
+                    / current.output_relative_root
+                    / topology.slug
+                    / intermediate.operation_relative_root
+                )
+                source.mkdir(parents=True)
+                (source / "marker").write_text(configured_root)
+            collected = (
+                root
+                / current.report_root
+                / current.output_relative_root
+                / "html_reports"
+                / topology.slug
+                / intermediate.operation_relative_root
+                / "report.html"
+            )
+            collected.parent.mkdir(parents=True)
+            collected.write_text("html")
+
+            _migrate_legacy_stage_layout(
+                root, (intermediate,), current, (topology,)
+            )
+
+            for configured_root in (
+                current.run_root,
+                current.artifact_root,
+                current.report_root,
+            ):
+                destination = (
+                    root
+                    / configured_root
+                    / current.output_relative_root
+                    / topology.slug
+                    / current.operation_relative_root
+                    / "marker"
+                )
+                self.assertEqual(configured_root, destination.read_text())
+            destination = (
+                root
+                / current.report_root
+                / current.output_relative_root
+                / "html_reports"
+                / "s500-normal"
+                / "monitor"
+                / current.operation_relative_root.name
+                / f"{topology.slug}.html"
+            )
+            self.assertEqual("html", destination.read_text())
 
     def test_observation_accepts_existing_training_capture_identity(self) -> None:
         config = _experiment(workflow="observation")
@@ -1104,11 +1227,9 @@ class TestMindStudioReport(unittest.TestCase):
             topology_report = (
                 report_directory
                 / "html_reports"
-                / "single"
                 / "s500-training"
-                / "observation"
                 / "training"
-                / "report.html"
+                / "single.html"
             )
 
             output = write_report_index(
@@ -1143,8 +1264,8 @@ class TestMindStudioReport(unittest.TestCase):
                 report["training_observations"][0]["diagnostic_symptom"],
             )
             self.assertIn("loss.svg", markdown)
-            self.assertIn("html_reports/single/s500-training/observation", markdown)
-            self.assertIn("html_reports/single/s500-training/observation", page)
+            self.assertIn("html_reports/s500-training/training", markdown)
+            self.assertIn("html_reports/s500-training/training", page)
             self.assertNotIn("training_metrics_compare.csv", page)
             self.assertIn("training_metrics_compare.csv", topology_page)
             self.assertIn("Per-step metric comparison", topology_page)
@@ -1268,11 +1389,10 @@ class TestMindStudioReport(unittest.TestCase):
             collected = (
                 experiment
                 / "html_reports"
-                / "fsdp8"
                 / "s27-training"
                 / "monitor"
                 / "profile"
-                / "report.html"
+                / "fsdp8.html"
             ).resolve()
             collected.parent.mkdir(parents=True)
             collected.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
@@ -1294,7 +1414,7 @@ class TestMindStudioReport(unittest.TestCase):
             )
 
             self.assertEqual("self-contained monitor", collected.read_text())
-            self.assertIn("fsdp8/s27-training/monitor", output.read_text())
+            self.assertIn("fsdp8.html", output.read_text())
 
 
 class TestMindStudioLifecycle(unittest.TestCase):

@@ -73,14 +73,15 @@ invalidated or reset with it. Keep the summary as a readable table rather than
 independent metric cards; detailed evidence stays in interactive charts and
 embedded raw tables.
 
-MindStudio accuracy storage is training-window first. Below one experiment and
-topology, `s<steps>-<training-hash>/` owns the shared inputs and every diagnostic
-step derived from that exact training contract: checklist, uninstrumented
-observation, Monitor, targeted dump, compare, visualization, and validation.
-Do not split one window into top-level `captures/`, `observations/`, or
-`diagnostics/` families. Self-contained HTML copies live under `html_reports/`
-with the same topology/training-window/workflow hierarchy; source CSV, JSON,
-logs, lifecycle state, and the original in-scope HTML remain in place.
+MindStudio accuracy storage is normal-training-window first. Below one
+experiment and topology, `s<steps>-<training-hash>/` is the normal uninstrumented
+training contract reused by every follow-up. Its children are `inputs/`,
+`checklist/`, `observations/`, and `dump/`; Monitor remains a diagnostic child at
+`observations/monitor/<monitor-profile>/` and never creates another top-level
+training window from its shorter execution length. Self-contained HTML copies
+are grouped for download as
+`html_reports/<training-profile>/<report-kind>/<topology>.html`; source CSV,
+JSON, logs, lifecycle state, and the original in-scope HTML remain in place.
 
 ## Current GLM graph/parity boundary
 
