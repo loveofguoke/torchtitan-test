@@ -188,7 +188,11 @@ ANALYSIS_RUN_DIRECTORIES = {
 }
 
 
-def run_gh(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+def run_gh(
+    *args: str,
+    check: bool = True,
+    capture_output: bool = False,
+) -> subprocess.CompletedProcess[str]:
     """Run GitHub CLI without invoking a shell."""
     if shutil.which("gh") is None:
         raise RuntimeError(
@@ -196,7 +200,40 @@ def run_gh(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         )
     command = ["gh", *args]
     print("+", " ".join(command), flush=True)
-    return subprocess.run(command, check=check, text=True)
+    return subprocess.run(
+        command,
+        check=check,
+        text=True,
+        capture_output=capture_output,
+    )
+
+
+def github_release_exists(experiment: str, repository: str) -> bool:
+    """Return False only when GitHub confirms that the release is absent."""
+    result = run_gh(
+        "release",
+        "view",
+        experiment,
+        "--repo",
+        repository,
+        check=False,
+        capture_output=True,
+    )
+    if result.returncode == 0:
+        return True
+    diagnostic = "\n".join(
+        value.strip() for value in (result.stdout, result.stderr) if value
+    )
+    if "release not found" in diagnostic.lower():
+        return False
+    if diagnostic:
+        print(diagnostic, file=sys.stderr, flush=True)
+    raise subprocess.CalledProcessError(
+        result.returncode,
+        result.args,
+        output=result.stdout,
+        stderr=result.stderr,
+    )
 
 
 def run_wget(url: str, output_path: Path, *, insecure: bool = False) -> None:
@@ -550,17 +587,7 @@ def upload(args: argparse.Namespace) -> None:
         checksum_path = write_checksum(archive_path)
         assets = [str(archive_path), str(checksum_path)]
 
-        release_exists = (
-            run_gh(
-                "release",
-                "view",
-                experiment,
-                "--repo",
-                args.repo,
-                check=False,
-            ).returncode
-            == 0
-        )
+        release_exists = github_release_exists(experiment, args.repo)
         if release_exists:
             run_gh(
                 "release",

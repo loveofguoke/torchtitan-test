@@ -4,6 +4,7 @@
 import contextlib
 import io
 import json
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -14,6 +15,7 @@ from release_artifacts import (
     EXPERIMENT_ROOTS,
     create_archive,
     find_experiment_paths,
+    github_release_exists,
     normalize_scopes,
     release_asset_names,
     run_wget,
@@ -21,6 +23,25 @@ from release_artifacts import (
 
 
 class TestReleaseArtifacts(unittest.TestCase):
+    def test_release_probe_distinguishes_missing_release_from_network_error(self) -> None:
+        missing = mock.Mock(
+            returncode=1,
+            stdout="",
+            stderr="release not found",
+            args=["gh", "release", "view"],
+        )
+        network_error = mock.Mock(
+            returncode=1,
+            stdout="",
+            stderr="proxyconnect tcp: connection refused",
+            args=["gh", "release", "view"],
+        )
+        with mock.patch("release_artifacts.run_gh", return_value=missing):
+            self.assertFalse(github_release_exists("experiment", "owner/repo"))
+        with mock.patch("release_artifacts.run_gh", return_value=network_error):
+            with self.assertRaises(subprocess.CalledProcessError):
+                github_release_exists("experiment", "owner/repo")
+
     def test_scoped_archive_collects_only_matching_experiment_subtrees(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
