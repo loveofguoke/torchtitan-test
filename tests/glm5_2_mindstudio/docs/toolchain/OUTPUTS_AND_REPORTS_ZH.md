@@ -234,9 +234,10 @@ mindstudio_artifacts/accuracy/<experiment-id>/<topology>/
 ```text
 mindstudio_reports/accuracy/<experiment-id>/
 ├── <experiment-id>.html             # 轻量总索引，只汇总拓扑现象并链接独立报告
-├── single.html                      # single 自包含交互报告
-├── fsdp8.html                       # fsdp8 自包含交互报告；其他拓扑同级排列
-├── <topology>.html                  # 每个已比较拓扑各一份，便于单独下载和阅读
+├── topologies/                      # 所有拓扑自包含报告集中存放，便于整目录下载
+│   ├── single.html                  # single 自包含交互报告
+│   ├── fsdp8.html                   # fsdp8 自包含交互报告
+│   └── <topology>.html              # 其他已比较拓扑各一份
 ├── README.md                        # Markdown 入口
 ├── report.json                      # 机器可读聚合数据
 └── <topology>/

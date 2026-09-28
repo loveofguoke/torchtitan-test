@@ -59,8 +59,8 @@ def _embedded_svg(path: Path) -> str:
 def _embedded_html_document(path: Path) -> str:
     payload = html.escape(path.read_text(encoding="utf-8"), quote=True)
     return (
-        '<iframe title="Interactive training observation" '
-        'style="width:100%;height:1050px;border:1px solid #dce2ea;border-radius:8px" '
+        '<iframe title="交互式训练观察 / Interactive training observation" '
+        'style="display:block;width:100%;height:8000px;border:0" '
         f'srcdoc="{payload}"></iframe>'
     )
 
@@ -170,18 +170,17 @@ def _observation_html_document(
         ".table-scroll{max-height:640px;overflow:auto}.metrics{font-size:12px}"
         "</style></head><body>"
         f"<h1>{html.escape(title)}</h1>"
-        "<p>Workflow: <code>training observation</code>.</p>"
-        "<p>This report compares uninstrumented GPU reference and NPU candidate "
-        "training metrics. It classifies the observed symptom and does not "
-        "define a universal delivery PASS/FAIL verdict.</p>"
-        "<h2>Training observations</h2><table><thead><tr>"
-        "<th>Topology</th><th>Observed symptom</th><th>Window</th>"
-        "<th>Mean Loss relative error</th>"
-        "<th>First Loss step above guidance</th>"
-        "<th>Mean error after first exceedance</th>"
-        "<th>Subsequent exceedance rate</th><th>Early Loss window</th>"
-        "<th>Mean signed Grad Norm error</th><th>NaN/Inf</th>"
-        "<th>Report</th>"
+        "<p>流程 / Workflow: <code>training observation</code>.</p>"
+        "<p>本报告比较未注入调试工具的 GPU 标杆与 NPU 调试侧训练指标，用于现象分类，"
+        "不声明通用的交付 PASS/FAIL 结论。</p>"
+        "<h2>训练观察 / Training observations</h2><table><thead><tr>"
+        "<th>拓扑 / Topology</th><th>观察现象 / Symptom</th><th>窗口 / Window</th>"
+        "<th>Loss 平均相对误差</th>"
+        "<th>Loss 首次超过指导线</th>"
+        "<th>首次超限后平均误差</th>"
+        "<th>后续超限比例</th><th>首 Steps Loss 窗口</th>"
+        "<th>Grad Norm 平均有符号误差</th><th>NaN/Inf</th>"
+        "<th>报告 / Report</th>"
         "</tr></thead><tbody>"
         + "".join(html_rows)
         + "</tbody></table>"
@@ -357,8 +356,16 @@ def _write_observation_report_index(
             else:
                 endpoint_nonfinite_text[role] = "none observed"
         window = f"{entry['first_step']}..{entry['last_step']}"
-        topology_report = report_directory / f"{entry['topology']}.html"
-        topology_report_link = topology_report.name
+        topology_report = (
+            report_directory / "topologies" / f"{entry['topology']}.html"
+        )
+        topology_report.parent.mkdir(parents=True, exist_ok=True)
+        legacy_topology_report = report_directory / f"{entry['topology']}.html"
+        if legacy_topology_report.is_file():
+            legacy_topology_report.unlink()
+        topology_report_link = topology_report.relative_to(
+            report_directory
+        ).as_posix()
         markdown_lines.append(
             f"| {entry['topology']} | {entry['diagnostic_symptom']} | "
             f"{window} ({entry['step_count']} steps) | {mean_error_text} | "
@@ -442,8 +449,9 @@ def _write_observation_report_index(
         )
         runtime_payload = _embedded_text_file(runtime_log)
         evidence_section = (
-            f"<section><h3>{html.escape(entry['topology'])} evidence</h3>"
-            + chart_sections
+            chart_sections
+            + "<section class=\"supporting-evidence\">"
+            + "<h2>补充证据 / Supporting evidence</h2>"
             + f"<p><strong>NaN/Inf:</strong> {html.escape(nonfinite_text)}<br>"
             + "Candidate details: "
             + html.escape(endpoint_nonfinite_text["candidate"])
@@ -466,7 +474,7 @@ def _write_observation_report_index(
         )
         topology_report.write_text(
             _observation_html_document(
-                title=f"{experiment_name} / {entry['topology']}",
+                title=f"训练观察：{experiment_name} / {entry['topology']}",
                 html_rows=(topology_row,),
                 evidence_sections=(evidence_section,),
             ),

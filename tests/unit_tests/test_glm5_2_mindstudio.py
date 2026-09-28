@@ -1018,22 +1018,23 @@ class TestMindStudioReport(unittest.TestCase):
                 encoding="utf-8"
             )
             page = output.read_text(encoding="utf-8")
-            topology_page = (report_directory / "single.html").read_text(
-                encoding="utf-8"
-            )
+            topology_page = (
+                report_directory / "topologies" / "single.html"
+            ).read_text(encoding="utf-8")
             self.assertIsNone(report["delivery_verdict"])
             self.assertEqual(
                 "later-window-loss-difference",
                 report["training_observations"][0]["diagnostic_symptom"],
             )
             self.assertIn("loss.svg", markdown)
-            self.assertIn("single.html", markdown)
-            self.assertIn('href="single.html"', page)
+            self.assertIn("topologies/single.html", markdown)
+            self.assertIn('href="topologies/single.html"', page)
             self.assertNotIn("training_metrics_compare.csv", page)
             self.assertIn("training_metrics_compare.csv", topology_page)
             self.assertIn("Per-step metric comparison", topology_page)
             self.assertIn("<svg><text>loss.svg</text></svg>", topology_page)
             self.assertIn("Interactive training observation", topology_page)
+            self.assertNotIn("single evidence", topology_page)
             self.assertIn("Static SVG fallbacks", topology_page)
             self.assertIn("runtime.log", topology_page)
             self.assertNotIn("Official msProbe", page)

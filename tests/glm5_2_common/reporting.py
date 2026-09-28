@@ -163,10 +163,19 @@ def echarts_line(
         "left": "10%",
         "right": "5%",
         "top": "29%",
-        "bottom": "20%",
+        "bottom": "17%",
         "containLabel": True,
     }
-    return pn.pane.ECharts(option, height=height, sizing_mode="stretch_width")
+    chart_pane = pn.pane.ECharts(
+        option,
+        height=height,
+        sizing_mode="stretch_width",
+    )
+    return pn.Column(
+        chart_pane,
+        margin=(30, 0, 64, 0),
+        sizing_mode="stretch_width",
+    )
 
 
 def summary_table(
