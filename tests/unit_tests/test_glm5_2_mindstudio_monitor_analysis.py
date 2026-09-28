@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tests.glm5_2_mindstudio.monitor_analysis import (
+    _rank_scope_charts,
     _rank_scope_rows,
     _rank_step_summary,
     align_monitor_rows,
@@ -52,6 +53,48 @@ class MonitorAnalysisTest(unittest.TestCase):
 
         self.assertEqual([0, 1], [row["rank"] for row in summary])
         self.assertEqual([4.0, 12.0], [row["npu_aggregate_norm"] for row in summary])
+
+    def test_rank_scope_charts_put_each_rank_in_a_separate_tab(self) -> None:
+        rows = []
+        for rank in (0, 1):
+            rows.extend(
+                align_monitor_rows(
+                    [{
+                        "rank": rank, "monitor": "weight_grad",
+                        "vpp_stage": "0", "step": "22",
+                        "module_name": "p", "scope": "unreduced",
+                        "micro_step": "1", "norm": "3",
+                    }],
+                    [{
+                        "rank": rank, "monitor": "weight_grad",
+                        "vpp_stage": "0", "step": "22",
+                        "module_name": "p", "scope": "unreduced",
+                        "micro_step": "1", "norm": "4",
+                    }],
+                )
+            )
+
+        with (
+            patch(
+                "tests.glm5_2_mindstudio.monitor_analysis.echarts_line",
+                side_effect=lambda **kwargs: kwargs,
+            ),
+            patch(
+                "tests.glm5_2_mindstudio.monitor_analysis.tabbed_views",
+                side_effect=lambda **kwargs: kwargs,
+            ),
+        ):
+            charts = _rank_scope_charts(rows)
+
+        self.assertEqual(1, len(charts))
+        self.assertEqual(
+            ["Rank 0", "Rank 1"],
+            [name for name, _ in charts[0]["views"]],
+        )
+        self.assertEqual(
+            ["GPU Rank 1", "NPU Rank 1"],
+            [series[0] for series in charts[0]["views"][1][1]["series"]],
+        )
 
     def test_aligns_official_rows_by_rank_step_parameter_and_scope(self) -> None:
         reference = [{

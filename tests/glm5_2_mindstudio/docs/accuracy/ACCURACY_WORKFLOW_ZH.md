@@ -923,8 +923,9 @@ Monitor 自动给出的根因或跨设备 PASS/FAIL。
 支持 CSV，不提供 TensorBoard、csv2tensorboard/csv2db 或 GPU/NPU cross-device
 comparator。项目在 `monitor_analysis/` 中生成自包含交互 HTML，并按
 rank/step/module/scope 对齐两端 CSV。报告先用 rank × step × scope 热力图定界，再分别
-展示 `unreduced` 和 `reduced` 的每个 rank GPU/NPU 梯度 norm 曲线；跨 rank 聚合图只作
-总体趋势参考，不能替代单 rank 判断。其后再展示 Top-K 异常、异常 step 的逐层梯度
+展示 `unreduced` 和 `reduced` 的逐 rank GPU/NPU 梯度 norm 曲线；同一 scope 下通过
+`Rank 0`、`Rank 1` 等子面板在同一位置切换，不把所有 rank 叠在一张图中。跨 rank
+聚合图只作总体趋势参考，不能替代单 rank 判断。其后再展示 Top-K 异常、异常 step 的逐层梯度
 norm 曲线、reduce 前后定界提示以及完整可筛选对齐表。
 所有差异和图表均明确标记为项目派生诊断，不产生
 官方 PASS/FAIL。根据报告找出异常 step/rank/module 后，再在对应 step 运行 L0/L1

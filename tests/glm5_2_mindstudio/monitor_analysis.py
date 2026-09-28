@@ -19,6 +19,7 @@ from tests.glm5_2_common.reporting import (
     save_panel_report,
     section_heading,
     summary_table,
+    tabbed_views,
 )
 
 from .artifacts import write_json
@@ -362,45 +363,54 @@ def _rank_scope_charts(rows: list[dict[str, Any]]) -> list[Any]:
         by_key = {
             (int(row["rank"]), int(row["step"])): row for row in selected
         }
-        series: list[tuple[str, list[float | None], str]] = []
+        rank_views: list[tuple[str, Any]] = []
         for index, rank in enumerate(ranks):
-            series.extend(
+            rank_views.append(
                 (
-                    (
-                        f"GPU Rank {rank}",
-                        [
-                            by_key.get((rank, step), {}).get(
-                                "gpu_aggregate_norm"
-                            )
-                            for step in steps
-                        ],
-                        gpu_colors[index % len(gpu_colors)],
-                    ),
-                    (
-                        f"NPU Rank {rank}",
-                        [
-                            by_key.get((rank, step), {}).get(
-                                "npu_aggregate_norm"
-                            )
-                            for step in steps
-                        ],
-                        npu_colors[index % len(npu_colors)],
+                    f"Rank {rank}",
+                    echarts_line(
+                        title=f"{label}：Rank {rank} 梯度 Norm",
+                        subtitle=(
+                            f"仅汇总 Rank {rank} 内已匹配参数的 "
+                            "sqrt(sum(parameter_norm²))；蓝色为 GPU，橙色为 NPU。"
+                        ),
+                        x_values=steps,
+                        series=(
+                            (
+                                f"GPU Rank {rank}",
+                                [
+                                    by_key.get((rank, step), {}).get(
+                                        "gpu_aggregate_norm"
+                                    )
+                                    for step in steps
+                                ],
+                                gpu_colors[index % len(gpu_colors)],
+                            ),
+                            (
+                                f"NPU Rank {rank}",
+                                [
+                                    by_key.get((rank, step), {}).get(
+                                        "npu_aggregate_norm"
+                                    )
+                                    for step in steps
+                                ],
+                                npu_colors[index % len(npu_colors)],
+                            ),
+                        ),
+                        x_name="训练 Step（从 1 开始） / Training step",
+                        y_name="Rank 内汇总梯度 Norm",
+                        height=720,
                     ),
                 )
             )
         charts.append(
-            echarts_line(
-                title=f"{label}：各 Rank 梯度 Norm 汇总",
-                subtitle=(
-                    "每条线只汇总一个 rank 内已匹配参数的 "
-                    "sqrt(sum(parameter_norm²))；图例可单独开关 GPU/NPU 和 rank，"
-                    "用于检查异常是否集中在特定 rank。"
+            tabbed_views(
+                title=f"{label}：逐 Rank 梯度 Norm",
+                description=(
+                    "在同一位置切换 Rank 0、Rank 1……；每个子面板只比较该 rank 的 "
+                    "GPU/NPU 两条曲线，用于判断异常是否集中在特定 rank。"
                 ),
-                x_values=steps,
-                series=tuple(series),
-                x_name="训练 Step（从 1 开始） / Training step",
-                y_name="Rank 内汇总梯度 Norm",
-                height=720,
+                views=tuple(rank_views),
             )
         )
     return charts

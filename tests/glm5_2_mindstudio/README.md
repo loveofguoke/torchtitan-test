@@ -827,10 +827,11 @@ Monitor V2 当前只提供 CSV，不提供 TensorBoard 或官方 GPU/NPU compara
 `--compare` 因此在 `mindstudio_reports/.../<topology>/<monitor-scope>/monitor_analysis/`
 生成明确标为项目派生的 `monitor_report.html`、`aligned_metrics.csv`、
 `anomaly_summary.csv`、`rank_step_summary.csv` 和 `analysis.json`。报告按
-rank/step/module/scope 对齐两端 CSV，以热力图定位异常 step/rank，显示异常 step 的
-报告先显示 rank × step × scope 热力图，再分别绘制 `unreduced` 和 `reduced` 下每个
-rank 的 GPU/NPU 梯度 norm 曲线；跨 rank 汇总另行标为总体趋势，不能代替单 rank
-诊断。随后用逐层梯度曲线判断差异在 reduce 前已出现还是 reduce 后放大，并把完整
+rank/step/module/scope 对齐两端 CSV，先显示 rank × step × scope 热力图，再分别绘制
+`unreduced` 和 `reduced` 下逐 rank 的 GPU/NPU 梯度 norm 曲线；每个 scope 使用
+`Rank N` 子面板在同一位置切换，避免把所有 rank 叠在一张图里。跨 rank 汇总另行
+标为总体趋势，不能代替单 rank 诊断。随后用逐层梯度曲线判断差异在 reduce 前已出现
+还是 reduce 后放大，并把完整
 CSV 对齐表内嵌为可筛选、排序且在固定高度内滚动的连续表格，但不计算官方 PASS/FAIL。
 它用于筛出异常 step/rank/module，再用 L0/L1 dump 和正式多 step precision 定位、验收。
 每个流程 profile 的跨拓扑入口写入

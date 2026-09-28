@@ -403,6 +403,46 @@ def interactive_table(
     )
 
 
+def tabbed_views(
+    *,
+    title: str,
+    description: str,
+    views: Sequence[tuple[str, Any]],
+) -> Any:
+    """Place related interactive evidence in one selectable tab panel."""
+
+    pn, _, _ = _stack()
+    heading = pn.pane.HTML(
+        '<div class="table-heading" style="margin:0 0 18px;padding:0">'
+        '<h3 style="color:#172033;font-size:25px;line-height:1.35;'
+        'font-weight:700;margin:0 0 8px">'
+        + html.escape(title)
+        + '</h3><p style="color:#526178;font-size:17px;line-height:1.6;'
+        'margin:0">'
+        + html.escape(description)
+        + "</p></div>",
+        sizing_mode="stretch_width",
+    )
+    tabs = pn.Tabs(
+        *views,
+        dynamic=False,
+        tabs_location="above",
+        sizing_mode="stretch_width",
+        stylesheets=[
+            """
+            :host .bk-tab { font-size:18px; font-weight:650; padding:12px 20px; }
+            :host .bk-tab.bk-active { color:#1d4ed8; background:#edf4ff; }
+            """
+        ],
+    )
+    return pn.Column(
+        heading,
+        tabs,
+        sizing_mode="stretch_width",
+        margin=(18, 0, 34, 0),
+    )
+
+
 def section_heading(title: str, description: str) -> Any:
     """Render a visible bilingual report section boundary."""
 
