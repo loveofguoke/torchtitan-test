@@ -128,6 +128,30 @@ def write_observation_report(
         columns=("端点 / Endpoint", "异常指标数 / Count", "首次 Step", "明细 / Details"),
         rows=tuple(nonfinite_rows),
     )
+    spike_rows = []
+    for metric, values in (("Loss", loss), ("Grad Norm", grad)):
+        for endpoint, label in (
+            ("reference", "GPU 标杆 / Reference"),
+            ("candidate", "NPU 调试 / Candidate"),
+        ):
+            spike_steps = values.get(f"{endpoint}_spike_steps", [])
+            spike_rows.append(
+                (
+                    metric,
+                    label,
+                    str(len(spike_steps)),
+                    ", ".join(str(step) for step in spike_steps) or "未发现 / None",
+                )
+            )
+    spike_table = summary_table(
+        columns=(
+            "指标 / Metric",
+            "端点 / Endpoint",
+            "尖刺数 / Count",
+            "Step 明细 / Steps",
+        ),
+        rows=tuple(spike_rows),
+    )
     grad_largest = grad.get("largest_relative_error_steps", [])
     grad_anomaly_table = summary_table(
         columns=(
@@ -249,6 +273,11 @@ def write_observation_report(
             overview,
             section_heading("NaN / Inf 与溢出检查", "标准流程首先检查两端所有已记录数值指标是否出现非有限值；即使未发现，也明确记录为零。"),
             nonfinite_table,
+            section_heading(
+                "尖刺检查 / Spike Analysis",
+                "尖刺是与 NaN/Inf、首 Steps 差异和长稳差异并列的精度问题类型。这里分别列出 GPU/NPU 的 Loss 与 Grad Norm 尖刺，重点关注 NPU 独有或更频繁的尖刺。",
+            ),
+            spike_table,
             section_heading("Loss 对齐分析", "依次查看全程曲线、真正截取的首 Steps 窗口、全程相对误差和有符号差值。"),
             *loss_charts,
             section_heading("Grad Norm 对齐与异常点", "均值可能掩盖孤立极值。下表列出相对误差最大的 step；异常点需结合原始范数、相邻 Loss 和参数更新继续定位。"),

@@ -43,6 +43,7 @@ from tests.glm5_2_mindstudio.training_monitor_benchmark import (
 )
 from tests.glm5_2_mindstudio.training_observation import compare_training_metrics
 from tests.glm5_2_mindstudio.workflow import (
+    _compatible_fixture_directory,
     _fixture_directory,
     _paths,
     _stage_scoped_config,
@@ -198,6 +199,38 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
         self.assertTrue(short.output_subdirectory.startswith("captures/"))
         self.assertTrue(long.output_subdirectory.startswith("observations/monitor/"))
         self.assertNotEqual(short.fixture_subdirectory, long.fixture_subdirectory)
+
+    def test_short_monitor_reuses_longer_compatible_fixture(self) -> None:
+        scoped = _stage_scoped_config(
+            replace(
+                MONITOR_CONFIG,
+                training=replace(MONITOR_CONFIG.training, steps=27),
+            ),
+            MIGRATION_CONFIG,
+            "accuracy-experiment",
+        )
+        topology = scoped.candidate.topology
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            exact = _fixture_directory(root, scoped, topology)
+            longer = exact.parent / "s500-compatible"
+            longer.mkdir(parents=True)
+            stored_training = asdict(replace(scoped.training, steps=500))
+            stored_training["converged_checkpoint"] = None
+            (longer / "fixture.json").write_text(
+                json.dumps(
+                    {
+                        "training": stored_training,
+                        "token_plan": {"steps": 500},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                longer,
+                _compatible_fixture_directory(root, scoped, topology),
+            )
 
     def test_named_experiment_fixture_path_is_shared_with_formal_producer(self) -> None:
         experiment = "glm5-debug-bf16-b64-seq128-seed61"
@@ -383,6 +416,14 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                     ]
                 ],
             )
+            prominent = summary["grad_norm"]["prominent_anomalies"]
+            self.assertEqual(1, len(prominent))
+            self.assertEqual(1, prominent[0]["step"])
+            self.assertEqual(0.001, prominent[0]["reference"])
+            self.assertEqual(0.031, prominent[0]["candidate"])
+            self.assertEqual(30.0, prominent[0]["relative_error"])
+            self.assertEqual(0, prominent[0]["previous"]["step"])
+            self.assertEqual(2, prominent[0]["next"]["step"])
             for name in (
                 "training_metrics_compare.csv",
                 "training_observation.html",

@@ -6,21 +6,43 @@
 标准流程的起点是正常训练，不是 dump。完成 CheckList 和可复现性准备后，先在相同
 checkpoint、token plan、超参数和拓扑下分别运行 GPU/NPU **无 dump、无 Monitor
 hook** 的正常训练，保存逐 step Loss、Grad Norm 和训练日志，再按现象选择定位工具。
-官方稳定复现场景流程图在本项目中的顺序是：
+官方稳定复现场景在本项目中遵循下面这一条主线：
 
 ```text
-训练前配置检查       accuracy_benchmark.py --stage config-check
-正常训练现象观察     accuracy_benchmark.py --stage observation
-  ├─ Loss/Grad Norm 是否出现 NaN/Inf？
-  ├─ 第一步或前几步 Loss 是否不对齐？
-  └─ 前期对齐后，长程 Loss/Grad Norm 是否漂移或尖刺？
-按需长程状态监控     accuracy_benchmark.py --stage monitor
-按需模块级快速定界   accuracy_benchmark.py --stage dump --level L0
-按需 API 级下钻      accuracy_benchmark.py --stage dump --level L1/mix
-按需 kernel 级下钻   accuracy_benchmark.py --stage dump --level L2
-按需预检/溢出分析    --precheck / --overflow-check / nan_check
-修复后闭环           重跑正常训练观察，再检查目标区间与最终任务指标
+训练前 CheckList 与复现合同
+→ 正常训练观察
+→ 将现象分类为：
+  1. NaN/溢出
+  2. 首 Steps Loss 差异
+  3. 长稳 Loss 差异
+  4. Loss/Grad Norm 尖刺
+→ Monitor V2 缩小到 step/rank/parameter/module
+→ 定点 statistics dump
+→ L0 → L1/mix → tensor 逐级下钻
+→ compare 表格定位首个差异节点
+→ graph_visualize 从模型层级观察误差传播
+→ 单算子验证、修复、重跑正常训练闭环
 ```
+
+这不是要求每个问题机械执行所有工具，而是一条从低开销整网证据逐步收缩到高开销局部
+证据的顺序。每一步必须回答一个明确问题，得到证据后才进入下一步：
+
+| 步骤 | 进入条件与执行入口 | 本步必须检查 | 下一步选择 |
+| --- | --- | --- | --- |
+| 1. CheckList | `--stage config-check`；两端正式训练前 | checkpoint、token plan、模型结构、超参数、dtype、seed、软件版本和拓扑是否属于同一实验合同 | 有未解释差异先修合同；全部解释后进入正常训练 |
+| 2. 正常训练观察 | `--stage observation`；无 dump、无 Monitor hook | Loss、Grad Norm、所有数值指标的 NaN/Inf；首 Steps；长程持续偏离；两端尖刺次数和 step | 将现象归入四类之一；没有复现则扩大正常训练窗口，不扩大 dump |
+| 3. Monitor V2 | `--stage monitor`；已知异常窗口，或长程中第一现场不明确 | 首个异常 step、rank、parameter/module；`unreduced/reduced`；必要时 optimizer/communication | 收敛到少量 step/rank/对象后再 dump；Monitor CSV 本身不作跨端 PASS/FAIL |
+| 4. 定点 statistics dump | `--stage dump --dump-task statistics`；只覆盖异常形成所需 step | 先用 L0 找异常模块，再用 L1/mix 找模块内 API；检查输入是否已偏离、输出是否首次新增偏离 | 找到可疑 API 后才保存真实 tensor；若是 NaN/Inf 可运行 overflow-check |
+| 5. Tensor/API 下钻 | `--dump-task tensor`、`--precheck`，必要时 L2 | 相同输入下当前 API/算子是否产生异常输出；dtype、shape、调用栈和 kernel 是否一致 | 形成单算子复现，或证明当前节点只是上游误差的受害者 |
+| 6. Compare | `--stage dump --compare` | 官方 CSV 中的匹配关系、`Result`、`Err_Message`、统计量和误差；沿执行顺序找第一个输入仍对齐而输出开始异常的节点 | 得到首个差异节点，并与分级图交叉核对 |
+| 7. 分级可视化 | 已有同 generation 的 L0/mix dump 后运行 `--graph-visualize` | 从 Module→API 层级观察误差传播、颜色加深位置、首个可疑节点和调用栈 | 回到该节点对应 tensor、源码和算子实现，不把图中所有后继红点都当根因 |
+| 8. 根因与闭环 | 单算子测试、框架/通信/算子/硬件 A/B；实施单变量修复 | 修复是否消除局部首异常，是否恢复目标窗口和长程曲线，最终指标及相关拓扑是否回归 | 证据完整才关闭问题；进程成功退出不等于精度通过 |
+
+四类现象决定第三步首先开启什么：Grad Norm 异常或尖刺先用 `weight_grad`；Loss
+上扬/尖刺但 Grad Norm 正常时用 `module`；NaN/Inf 先确定首个可区分两端的 step，
+随后结合 Monitor 或定点 dump/overflow-check；长稳缓慢漂移先用低开销 Monitor 找最早
+持续偏离窗口。工具选择可以分支，但 `CheckList → 正常训练观察 → 第一现场 → 局部证据
+→ 根因 → 修复后正常训练验收` 的因果顺序不能颠倒。
 
 各类官方能力共用一个由固定实验合同生成的精度实验根，例如
 `migration-cuda-npu-bf16-random-s2-b64-seq128-seed61-ffb9c634`。训练步数、
@@ -109,7 +131,7 @@ msProbe 的五项工具能力不是整网诊断的起点。结合官方大模型
 ```text
 1. CheckList、固定随机性和确定性，确认问题可复现；
 2. 正常 GPU/NPU 训练，观察 Loss、Grad Norm、NaN/Inf、尖刺和任务指标；
-3. 先判 NaN/溢出，再判首 Step Loss，最后判长稳 Loss；
+3. 将 NaN/溢出、首 Steps Loss 差异、长稳 Loss 差异和尖刺作为四类并列现象分支；
 4. 根据现象选择 Monitor、模块/API dump、预检或溢出分析；
 5. 修复后重跑局部证据、正常训练区间和最终任务指标。
 ```
@@ -759,8 +781,9 @@ NaN/Inf 分析覆盖 logger 中的全部数值指标，而不只 Loss 和 Grad N
 
 1. Loss、Grad Norm 或其他训练指标是否出现 NaN/Inf；
 2. 第一步是否不对齐；若第一步对齐，第二步或前几步何时首次不对齐；
-3. 前几步对齐后，观察窗口内是否逐渐漂移或突然尖刺；
-4. 若本窗口没有复现，扩大正常训练观察窗口，而不是直接扩大 dump 窗口。
+3. 前几步对齐后，观察窗口内是否逐渐出现持续漂移；
+4. NPU 是否出现 GPU 没有或更频繁的 Loss/Grad Norm 尖刺；
+5. 若本窗口没有复现，扩大正常训练观察窗口，而不是直接扩大 dump 窗口。
 
 ### 9.3 训练状态监控
 
@@ -768,8 +791,11 @@ NaN/Inf 分析覆盖 logger 中的全部数值指标，而不只 Loss 和 Grad N
 `accuracy_benchmark.py --stage monitor` 在 Trainer 创建模型与优化器后调用
 `TrainerMonitorV2.start()`，每个完整 train step 后调用一次 `step()`，并在正常
 结束或异常退出时通过 `finally` 调用 `stop()`。官方没有固定训练步数；调用者必须
-用 `--training-steps` 指定能够覆盖问题复现的窗口。默认只开官方案例常用的
-weight_grad，module、optimizer、param 和 cc 根据现象显式开启。
+用 `--training-steps` 指定能够覆盖问题复现的窗口。默认只开官方推荐作为长期底座的
+`weight_grad`，module、optimizer、param 和 cc 根据现象显式开启。Grad Norm 异常
+或尖刺优先使用 `weight_grad`；Loss 上扬/尖刺但 Grad Norm 正常时优先使用
+`module`；收敛变差或震荡时按需使用 `optimizer`；怀疑分布式同步或通信时再启用
+`cc`，并通过 target/code-line 过滤降低开销。
 
 这里必须区分 Monitor 和 dump：
 

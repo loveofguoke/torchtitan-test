@@ -10,7 +10,7 @@
 
 ```text
 训练问题复现与配置 CheckList
-  -> 无 dump 正常训练，先判断 NaN/Inf、首 Step 和长稳 Loss/Grad Norm
+  -> 无 dump 正常训练，分别判断 NaN/Inf、首 Steps、长稳差异和尖刺
   -> 按现象选择 Monitor V2、模块/API/编译精度采集与比较
   -> msProf 或 Ascend PyTorch Profiler 性能采集
   -> msprof-analyze advisor / cluster / compare
@@ -705,7 +705,9 @@ Grad Norm 和相对误差曲线。报告按标准流程分为总体摘要、NaN/
 四部分：NaN/Inf 即使为零也单独留证；首 Steps 图只读取前 10 个实际 step，不把 500
 步全程数据混入；Grad Norm 同时给出平均值、中位数、最大相对误差及 Top 异常 step，
 并展示两侧原始范数，防止孤立尖峰被均值掩盖，也便于识别参考值接近零导致的相对误差
-放大。交互面板支持逐点悬停、图例开关、框选放大、滚轮缩放、缩放后拖动平移和
+放大。每个拓扑报告还会生成可直接复制的异常事实摘要，列出显著孤立 step 的两端
+Grad Norm、绝对差、倍数、相对误差、同 step Loss 误差和相邻 step 误差。交互面板
+支持逐点悬停、图例开关、框选放大、滚轮缩放、缩放后拖动平移和
 双击/按钮复位；图内保留指导线、异常点和诊断区间。静态 SVG 继续作为无 JavaScript
 的兜底证据。`500` 只是本次观察窗口，不是官方固定标准；命令必须覆盖实际问题。
 
@@ -714,8 +716,9 @@ Grad Norm 和相对误差曲线。报告按标准流程分为总体摘要、NaN/
 嵌入所有拓扑曲线；需要同步全部拓扑报告时直接下载该子目录，需要单独分享时取对应
 HTML。
 
-只有正常训练观察发现长程异常但第一现场不明确时，才运行 Monitor V2；发现明确异常
-step 后，才对少量 step 运行 L0/L1/mix/tensor dump。
+正常训练观察发现长程趋势异常、尖刺，或已经知道异常 step 但尚不知道异常
+rank/module/parameter 时，运行 Monitor V2 缩小第一现场；只有把范围收敛到少量 step、
+rank 和模块后，才运行 L0/L1/mix/tensor dump。
 
 ### 7.1 官方训练状态监控
 
@@ -736,7 +739,9 @@ collective 的严格前后；应结合 FSDP/DDP hook、梯度累积、裁剪和�
 官方语义与字段说明见 [msProbe Monitor V2](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msProbe/docs/zh/user_guide/monitor_v2_instruct.md)，项目中的完整选择方法、产物解读和定点 dump 衔接见
 [精度工作流 9.3 节](docs/accuracy/ACCURACY_WORKFLOW_ZH.md#93-训练状态监控)。
 
-长稳 Loss 跑飞且 Grad Norm 先异常时，可只采梯度统计：
+长稳 Loss 跑飞、Grad Norm 尖刺或其他 Grad Norm 异常时，按官方建议先只启用默认
+`weight_grad`。若 Loss 尖刺但 Grad Norm 正常，则启用 `--monitor-module` 并用
+`--monitor-target` 缩小模块；怀疑分布式同步/通信时再增量启用 `--monitor-cc`：
 
 ```bash
 python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage monitor \

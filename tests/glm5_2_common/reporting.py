@@ -164,8 +164,8 @@ def echarts_line(
     )
     option = json.loads(chart.dump_options())
     option["grid"] = {
-        "left": "10%",
-        "right": "5%",
+        "left": "7%",
+        "right": "8%",
         "top": "13%",
         "bottom": "17%",
         "containLabel": True,

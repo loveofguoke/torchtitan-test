@@ -963,7 +963,29 @@ class TestMindStudioReport(unittest.TestCase):
                     "mean_relative_error": 0.0125,
                     "first_step_above_threshold": 137,
                 },
-                "grad_norm": {"mean_relative_error": 0.02},
+                "grad_norm": {
+                    "mean_relative_error": 0.02,
+                    "median_relative_error": 0.004,
+                    "prominent_anomalies": [
+                        {
+                            "step": 22,
+                            "reference": 0.779,
+                            "candidate": 23.496,
+                            "absolute_difference": 22.717,
+                            "candidate_to_reference_ratio": 30.1617,
+                            "relative_error": 29.1617,
+                            "loss_relative_error": 0.001,
+                            "previous": {
+                                "step": 21,
+                                "relative_error": 0.005,
+                            },
+                            "next": {
+                                "step": 23,
+                                "relative_error": 0.006,
+                            },
+                        }
+                    ],
+                },
             }
             write_json(compare / "summary.json", observation)
             write_json(
@@ -1034,7 +1056,13 @@ class TestMindStudioReport(unittest.TestCase):
             self.assertIn("Per-step metric comparison", topology_page)
             self.assertIn("<svg><text>loss.svg</text></svg>", topology_page)
             self.assertIn("Interactive training observation", topology_page)
+            self.assertIn('scrolling="no"', topology_page)
+            self.assertIn("documentElement.scrollHeight", topology_page)
             self.assertNotIn("single evidence", topology_page)
+            self.assertIn("自动提取异常事实", topology_page)
+            self.assertIn("step 22", topology_page)
+            self.assertIn("GPU=0.779", topology_page)
+            self.assertIn("NPU=23.496", topology_page)
             self.assertIn("Static SVG fallbacks", topology_page)
             self.assertIn("runtime.log", topology_page)
             self.assertNotIn("Official msProbe", page)

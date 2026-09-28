@@ -633,6 +633,54 @@ def compare_training_metrics(
         key=lambda row: row["grad_norm_relative_error"],
         reverse=True,
     )[:5]
+    median_grad_error = _finite_median(
+        row["grad_norm_relative_error"] for row in rows
+    )
+    grad_prominence_threshold = max(
+        grad_norm_relative_threshold or 0.05,
+        (median_grad_error or 0.0) * 10.0,
+    )
+    row_index_by_step = {row["step"]: index for index, row in enumerate(rows)}
+    prominent_grad_anomalies = []
+    for row in largest_grad_error_rows:
+        if row["grad_norm_relative_error"] < grad_prominence_threshold:
+            continue
+        index = row_index_by_step[row["step"]]
+
+        def neighbor(offset: int) -> dict[str, Any] | None:
+            neighbor_index = index + offset
+            if not 0 <= neighbor_index < len(rows):
+                return None
+            adjacent = rows[neighbor_index]
+            return {
+                "step": adjacent["step"],
+                "reference": adjacent["reference_grad_norm"],
+                "candidate": adjacent["candidate_grad_norm"],
+                "relative_error": adjacent["grad_norm_relative_error"],
+            }
+
+        reference_grad_norm = row["reference_grad_norm"]
+        prominent_grad_anomalies.append(
+            {
+                "step": row["step"],
+                "reference": reference_grad_norm,
+                "candidate": row["candidate_grad_norm"],
+                "absolute_difference": abs(
+                    row["candidate_grad_norm"] - reference_grad_norm
+                ),
+                "candidate_to_reference_ratio": (
+                    abs(row["candidate_grad_norm"] / reference_grad_norm)
+                    if reference_grad_norm != 0.0
+                    else None
+                ),
+                "relative_error": row["grad_norm_relative_error"],
+                "reference_loss": row["reference_loss"],
+                "candidate_loss": row["candidate_loss"],
+                "loss_relative_error": row["loss_relative_error"],
+                "previous": neighbor(-1),
+                "next": neighbor(1),
+            }
+        )
     post_threshold_mean = post_threshold_summary["mean_relative_error"]
     if (
         candidate_nonfinite["status"] == "observed"
@@ -723,9 +771,9 @@ def compare_training_metrics(
             "mean_relative_error": _finite_mean(
                 row["grad_norm_relative_error"] for row in rows
             ),
-            "median_relative_error": _finite_median(
-                row["grad_norm_relative_error"] for row in rows
-            ),
+            "median_relative_error": median_grad_error,
+            "prominence_threshold": grad_prominence_threshold,
+            "prominent_anomalies": prominent_grad_anomalies,
             "max_relative_error": (
                 largest_grad_error_rows[0]["grad_norm_relative_error"]
                 if largest_grad_error_rows

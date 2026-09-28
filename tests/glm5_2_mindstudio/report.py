@@ -60,9 +60,50 @@ def _embedded_html_document(path: Path) -> str:
     payload = html.escape(path.read_text(encoding="utf-8"), quote=True)
     return (
         '<iframe title="交互式训练观察 / Interactive training observation" '
-        'style="display:block;width:100%;height:10000px;border:0" '
+        'style="display:block;width:100%;height:10000px;border:0;overflow:hidden" '
+        'scrolling="no" onload="this.style.height=this.contentDocument.'
+        "documentElement.scrollHeight+'px'\" "
         f'srcdoc="{payload}"></iframe>'
     )
+
+
+def _copy_ready_grad_anomaly_summary(entry: dict[str, Any]) -> str:
+    grad = entry["grad_norm"]
+    anomalies = grad.get("prominent_anomalies") or []
+    median_error = grad.get("median_relative_error")
+    median_text = "N/A" if median_error is None else f"{median_error:.2%}"
+    if not anomalies:
+        return (
+            f"拓扑 {entry['topology']}：未自动识别出显著孤立的 Grad Norm 异常点；"
+            f"全窗口相对误差中位数={median_text}。"
+        )
+
+    lines = [
+        f"拓扑 {entry['topology']}：自动识别出 {len(anomalies)} 个显著 Grad Norm 异常点；"
+        f"全窗口相对误差中位数={median_text}。"
+    ]
+    for anomaly in anomalies:
+        ratio = anomaly.get("candidate_to_reference_ratio")
+        ratio_text = "N/A" if ratio is None else f"{ratio:.4g}x"
+        lines.append(
+            f"step {anomaly['step']}：GPU={anomaly['reference']:.6g}，"
+            f"NPU={anomaly['candidate']:.6g}，"
+            f"绝对差={anomaly['absolute_difference']:.6g}，"
+            f"NPU/GPU={ratio_text}，"
+            f"Grad Norm 相对误差={anomaly['relative_error']:.2%}，"
+            f"同 step Loss 相对误差={anomaly['loss_relative_error']:.2%}。"
+        )
+        neighbors = []
+        for label, key in (("前一", "previous"), ("后一", "next")):
+            adjacent = anomaly.get(key)
+            if adjacent is None:
+                continue
+            neighbors.append(
+                f"{label} step {adjacent['step']}={adjacent['relative_error']:.2%}"
+            )
+        if neighbors:
+            lines.append("相邻 Grad Norm 相对误差：" + "；".join(neighbors) + "。")
+    return "\n".join(lines)
 
 
 def _supplemental_entries(
@@ -246,7 +287,7 @@ def _write_observation_report_index(
                     "candidate_first_nonfinite_metrics"
                 ],
                 "nonfinite_analysis": details.get("nonfinite_analysis"),
-                "topology_report": f"{row['topology']}.html",
+                "topology_report": f"topologies/{row['topology']}.html",
                 "evidence": [str(path.resolve()) for path in evidence],
                 "runtime_log": str(Path(row["runtime_log"]).resolve()),
             }
@@ -452,8 +493,17 @@ def _write_observation_report_index(
             else "<p>Observation summary is unavailable.</p>"
         )
         runtime_payload = _embedded_text_file(runtime_log)
+        anomaly_summary = _copy_ready_grad_anomaly_summary(entry)
+        anomaly_section = (
+            '<section class="automatic-anomaly-summary">'
+            "<h2>自动提取异常事实 / Copy-ready anomaly facts</h2>"
+            "<p>以下内容由逐 step 指标自动生成，可直接复制用于后续定位；"
+            "它是事实摘要，不是根因结论。</p>"
+            f"<pre>{html.escape(anomaly_summary)}</pre></section>"
+        )
         evidence_section = (
-            chart_sections
+            anomaly_section
+            + chart_sections
             + "<section class=\"supporting-evidence\">"
             + "<h2>补充证据 / Supporting evidence</h2>"
             + f"<p><strong>NaN/Inf:</strong> {html.escape(nonfinite_text)}<br>"

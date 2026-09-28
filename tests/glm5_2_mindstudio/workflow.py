@@ -240,6 +240,47 @@ def _fixture_manifest(
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _compatible_fixture_directory(
+    root: Path,
+    config: MindStudioExperimentConfig,
+    topology: ParallelTopology,
+) -> Path:
+    """Reuse a longer canonical input plan for a shorter diagnostic run."""
+
+    exact = _fixture_directory(root, config, topology)
+    if (exact / "fixture.json").is_file():
+        return exact
+    inputs_root = (
+        root
+        / config.fixture_root
+        / config.storage_name
+        / topology.slug
+        / "inputs"
+    )
+    expected = json.loads(json.dumps(asdict(config.training), sort_keys=True))
+    expected["converged_checkpoint"] = None
+    requested_steps = int(expected.pop("steps"))
+    compatible: list[tuple[int, Path]] = []
+    if inputs_root.is_dir():
+        for manifest_path in inputs_root.glob("*/fixture.json"):
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                stored = dict(manifest["training"])
+                stored_steps = int(stored.pop("steps"))
+                token_steps = int(manifest["token_plan"]["steps"])
+            except (KeyError, OSError, TypeError, ValueError):
+                continue
+            if (
+                stored == expected
+                and stored_steps >= requested_steps
+                and token_steps >= requested_steps
+            ):
+                compatible.append((stored_steps, manifest_path.parent))
+    if compatible:
+        return min(compatible, key=lambda item: (item[0], str(item[1])))[1]
+    return exact
+
+
 def _experiment_digest(
     config: MindStudioExperimentConfig,
     topology: ParallelTopology,
@@ -1281,9 +1322,18 @@ def capture_official(
         _validate_monitor_execution(config, topology, endpoint)
     if not 1 <= repeat <= endpoint.repeats:
         raise ValueError(f"repeat must be in [1, {endpoint.repeats}]")
-    formal = _formal_config(config, topology)
+    fixture_directory = _compatible_fixture_directory(root, config, topology)
+    fixture_name = fixture_directory.relative_to(
+        root / config.fixture_root
+    ).as_posix()
+    formal = replace(
+        _formal_config(config, topology),
+        fixture_name=fixture_name,
+    )
     checkpoint_path, token_plan_path = resolve_fixture_inputs(root, formal)
-    fixture = _fixture_manifest(root, config, topology)
+    fixture = json.loads(
+        (fixture_directory / "fixture.json").read_text(encoding="utf-8")
+    )
     generation = str(fixture["generation_id"])
     compatible_digests = _compatible_experiment_digests(
         config, topology, role
