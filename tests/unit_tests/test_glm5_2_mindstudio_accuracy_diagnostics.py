@@ -398,6 +398,8 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
             self.assertIn("Whole-training Relative Error", interactive)
             self.assertIn("Grad Norm Relative Error", interactive)
             self.assertIn("NaN / Inf", interactive)
+            self.assertIn("First-step inspection window", interactive)
+            self.assertIn("After first guidance exceedance", interactive)
             self.assertIn("dataZoom", interactive)
             self.assertIn("summary-table", interactive)
             self.assertIn("Interpretation", interactive)

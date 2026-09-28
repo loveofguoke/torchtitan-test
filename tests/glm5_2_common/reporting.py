@@ -60,6 +60,7 @@ def echarts_line(
 
     chart = Line(init_opts=opts.InitOpts(width="100%", height=f"{height}px"))
     chart.add_xaxis(list(x_values))
+    is_short_window = len(x_values) <= 20
     for index, (name, values, color) in enumerate(series):
         line_opts = opts.LineStyleOpts(width=2, color=color)
         markline_opts = None
@@ -104,7 +105,8 @@ def echarts_line(
         chart.add_yaxis(
             name,
             list(values),
-            is_symbol_show=False,
+            is_symbol_show=is_short_window,
+            symbol_size=8 if is_short_window else 4,
             is_connect_nones=False,
             label_opts=opts.LabelOpts(is_show=False),
             linestyle_opts=line_opts,
@@ -137,7 +139,7 @@ def echarts_line(
         xaxis_opts=opts.AxisOpts(
             name="训练步 / Step",
             type_="category",
-            boundary_gap=False,
+            boundary_gap=is_short_window,
             name_gap=38,
             name_textstyle_opts=opts.TextStyleOpts(font_size=15),
             axislabel_opts=opts.LabelOpts(font_size=13, margin=16),
@@ -159,6 +161,23 @@ def echarts_line(
         "bottom": "17%",
         "containLabel": True,
     }
+    area_legend = ""
+    if mark_areas:
+        area_items = "".join(
+            '<span style="display:inline-flex;align-items:center;gap:8px;'
+            'font-size:17px;color:#334155;margin:0 24px 8px 0">'
+            f'<span style="display:inline-block;width:24px;height:14px;'
+            f'border:2px solid {html.escape(color)};background:{html.escape(color)}22;'
+            'border-radius:3px"></span>'
+            + html.escape(label)
+            + "</span>"
+            for label, _, _, color in mark_areas
+        )
+        area_legend = (
+            '<div style="display:flex;flex-wrap:wrap;margin:18px 0 0">'
+            + area_items
+            + "</div>"
+        )
     chart_heading = pn.pane.HTML(
         '<div class="chart-heading" style="margin:0 0 20px;padding:0 8px">'
         '<h3 style="color:#172033;font-size:27px;line-height:1.35;'
@@ -167,7 +186,9 @@ def echarts_line(
         + '</h3><p style="color:#526178;font-size:18px;line-height:1.65;'
         'margin:0">'
         + html.escape(subtitle)
-        + "</p></div>",
+        + "</p>"
+        + area_legend
+        + "</div>",
         sizing_mode="stretch_width",
     )
     chart_pane = pn.pane.ECharts(

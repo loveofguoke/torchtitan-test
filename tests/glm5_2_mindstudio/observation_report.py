@@ -55,9 +55,23 @@ def write_observation_report(
     early_steps = [int(row["step"]) for row in early_rows]
     areas: list[tuple[str, int, int, str]] = []
     if early["first_step"] is not None:
-        areas.append(("First-step inspection window", early["first_step"], early["last_step"], "#2563eb"))
+        areas.append(
+            (
+                "首 Steps 检查窗口 / First-step inspection window",
+                early["first_step"],
+                early["last_step"],
+                "#2563eb",
+            )
+        )
     if first_exceeded is not None:
-        areas.append(("After first guidance exceedance", first_exceeded, steps[-1], "#f59e0b"))
+        areas.append(
+            (
+                "首次超限后窗口 / After first guidance exceedance",
+                first_exceeded,
+                steps[-1],
+                "#f59e0b",
+            )
+        )
     loss_threshold_pct = float(loss["guidance_relative_threshold"]) * 100.0
     grad_threshold = grad["diagnostic_relative_threshold"]
     overview = summary_table(
