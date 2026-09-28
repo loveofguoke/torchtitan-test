@@ -44,6 +44,7 @@ from tests.glm5_2_mindstudio.training_monitor_benchmark import (
 from tests.glm5_2_mindstudio.training_observation import compare_training_metrics
 from tests.glm5_2_mindstudio.workflow import (
     _compatible_fixture_directory,
+    _compatible_fixture_manifest,
     _finalizable_monitor_capture,
     _fixture_directory,
     _paths,
@@ -232,6 +233,8 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                 longer,
                 _compatible_fixture_directory(root, scoped, topology),
             )
+            manifest = _compatible_fixture_manifest(root, scoped, topology)
+            self.assertEqual(manifest["token_plan"]["steps"], 500)
 
     def test_finished_monitor_run_can_be_finalized_without_training(self) -> None:
         topology = MONITOR_CONFIG.candidate.topology

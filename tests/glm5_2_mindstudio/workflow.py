@@ -281,6 +281,19 @@ def _compatible_fixture_directory(
     return exact
 
 
+def _compatible_fixture_manifest(
+    root: Path,
+    config: MindStudioExperimentConfig,
+    topology: ParallelTopology,
+) -> dict[str, Any]:
+    """Read the exact fixture or a compatible longer canonical fixture."""
+    directory = _compatible_fixture_directory(root, config, topology)
+    path = directory / "fixture.json"
+    if not path.is_file():
+        raise FileNotFoundError(f"fixture is missing; run --data first: {path}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def _finalizable_monitor_capture(
     *,
     config: MindStudioExperimentConfig,
@@ -2647,7 +2660,7 @@ def compare_official(
         root, config, topology, "candidate", repeat
     )
     del reference_run, candidate_run
-    fixture = _fixture_manifest(root, config, topology)
+    fixture = _compatible_fixture_manifest(root, config, topology)
     generation = str(fixture["generation_id"])
     selected_artifacts: dict[Role, Path] = {"candidate": candidate_artifact}
     if config.workflow != "compile":
