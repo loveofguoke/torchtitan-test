@@ -78,6 +78,9 @@ from .report import write_report_index
 from .training_observation import compare_training_metrics, read_training_metrics
 
 
+MONITOR_EXECUTION_CONTRACT_VERSION = 2
+
+
 Role = Literal["reference", "candidate"]
 
 
@@ -715,14 +718,16 @@ def _experiment_digest(
     topology: ParallelTopology,
     role: Role,
 ) -> str:
-    return config_digest(
-        {
-            "experiment": config.identity,
-            "topology": asdict(topology),
-            "role": role,
-        },
-        length=64,
-    )
+    identity = {
+        "experiment": config.identity,
+        "topology": asdict(topology),
+        "role": role,
+    }
+    if config.workflow == "monitor":
+        identity["monitor_execution_contract_version"] = (
+            MONITOR_EXECUTION_CONTRACT_VERSION
+        )
+    return config_digest(identity, length=64)
 
 
 def _compatible_experiment_digests(
@@ -1174,6 +1179,7 @@ def _torchrun_command(
     endpoint: TrainingEndpoint,
     run_directory: Path,
     checkpoint_path: Path,
+    lr_schedule_steps: int | None = None,
 ) -> list[str]:
     if endpoint.num_nodes > 1 and endpoint.rendezvous_endpoint == "localhost:0":
         raise ValueError("multi-node capture requires a shared rendezvous endpoint")
@@ -1183,7 +1189,7 @@ def _torchrun_command(
     rendezvous_id = (
         f"{config.storage_name}-{endpoint.topology.slug}-{run_directory.name}"
     )
-    return [
+    arguments = [
         torchrun,
         f"--nnodes={endpoint.num_nodes}",
         f"--node_rank={endpoint.node_rank}",
@@ -1212,6 +1218,9 @@ def _torchrun_command(
         "--checkpoint.load_only",
         f"--checkpoint.initial_load_path={checkpoint_path}",
     ]
+    if lr_schedule_steps is not None:
+        arguments.append(f"--lr_scheduler.total_steps={lr_schedule_steps}")
+    return arguments
 
 
 def _run_process(
@@ -1781,6 +1790,15 @@ def capture_official(
         )
     )
     generation = str(fixture["generation_id"])
+    fixture_training_steps = int(fixture["training"]["steps"])
+    if fixture_training_steps < config.training.steps:
+        raise ValueError(
+            "fixture training contract is shorter than the requested execution: "
+            f"fixture={fixture_training_steps}, execution={config.training.steps}"
+        )
+    lr_schedule_steps = (
+        fixture_training_steps if config.workflow == "monitor" else None
+    )
     compatible_digests = _compatible_experiment_digests(
         config, topology, role
     )
@@ -1884,6 +1902,7 @@ def capture_official(
         endpoint=endpoint,
         run_directory=run_directory,
         checkpoint_path=checkpoint_path,
+        lr_schedule_steps=lr_schedule_steps,
     )
     launch_contract = run_directory / "resolved_launch.sh"
     environment["GLM5_MINDSTUDIO_SHELL_PATH"] = str(launch_contract.resolve())
@@ -1974,6 +1993,8 @@ def capture_official(
             "topology": asdict(topology),
             "repeat": repeat,
             "training": asdict(config.training),
+            "execution_steps": config.training.steps,
+            "lr_schedule_steps": lr_schedule_steps or config.training.steps,
             "official_tool_config": official_config,
             "fixture_directory": str(
                 _fixture_directory(root, config, topology).resolve()
@@ -2074,6 +2095,8 @@ def capture_official(
             "fixture_generation_id": generation,
             "fixture_checkpoint_sha256": fixture["checkpoint_sha256"],
             "fixture_token_plan": fixture["token_plan"],
+            "execution_steps": config.training.steps,
+            "lr_schedule_steps": lr_schedule_steps or config.training.steps,
             "input_contract": input_contract_summary,
             "official_output": "official",
             "official_files": output_index(official_output),
@@ -3056,6 +3079,7 @@ def compare_official(
         selected_artifacts["reference"] = reference_artifact
     artifact_inputs: dict[str, Any] = {}
     capture_compatibility: dict[str, dict[str, Any]] = {}
+    execution_contracts: dict[str, dict[str, Any]] = {}
     for selected_role, artifact in selected_artifacts.items():
         compatible_digests = _compatible_experiment_digests(
             config, topology, selected_role
@@ -3090,6 +3114,33 @@ def compare_official(
                 f"recapture it: {artifact}"
             )
         capture_compatibility[selected_role] = compatibility
+        if config.workflow == "monitor":
+            expected_schedule_steps = int(fixture["training"]["steps"])
+            if (
+                manifest.get("execution_steps") != config.training.steps
+                or manifest.get("lr_schedule_steps")
+                != expected_schedule_steps
+            ):
+                raise MindStudioArtifactError(
+                    "Monitor capture does not preserve the parent training LR "
+                    f"schedule; recapture it: {artifact}"
+                )
+            token_plan = manifest.get("fixture_token_plan", {})
+            execution_contracts[selected_role] = {
+                "fixture_generation_id": manifest.get(
+                    "fixture_generation_id"
+                ),
+                "fixture_checkpoint_sha256": manifest.get(
+                    "fixture_checkpoint_sha256"
+                ),
+                "fixture_token_plan_sha256": (
+                    token_plan.get("sha256")
+                    if isinstance(token_plan, dict)
+                    else None
+                ),
+                "execution_steps": manifest.get("execution_steps"),
+                "lr_schedule_steps": manifest.get("lr_schedule_steps"),
+            }
         artifact_inputs[selected_role] = {
             "manifest_sha256": sha256_file(artifact / "manifest.json"),
             "complete_sha256": sha256_file(artifact / "complete.json"),
@@ -3389,6 +3440,7 @@ def compare_official(
                 candidate_official=candidate_artifact / "official",
                 output_directory=compare_directory,
                 monitor_config=asdict(config.monitor),
+                execution_contracts=execution_contracts,
             )
             runtime_log.write_text(
                 "Rendered project-owned analysis of reference and candidate "

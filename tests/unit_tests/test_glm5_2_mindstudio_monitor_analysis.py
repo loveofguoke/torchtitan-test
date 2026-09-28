@@ -121,6 +121,10 @@ class MonitorAnalysisTest(unittest.TestCase):
                     return_value=[],
                 ),
                 patch(
+                    "tests.glm5_2_mindstudio.monitor_analysis._overall_scope_charts",
+                    return_value=[],
+                ),
+                patch(
                     "tests.glm5_2_mindstudio.monitor_analysis._rank_step_heatmap",
                     return_value=None,
                 ),

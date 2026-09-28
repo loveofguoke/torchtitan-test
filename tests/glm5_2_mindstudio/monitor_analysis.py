@@ -421,33 +421,68 @@ def _rank_step_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _rank_step_heatmap(rows: list[dict[str, Any]]) -> Any | None:
-    summary = _rank_step_summary(rows)
-    if not summary:
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        if (
+            row.get("monitor") == "weight_grad"
+            and row.get("match_status") == "matched"
+            and row.get("scope") in {"unreduced", "reduced"}
+            and row.get("reference_norm") is not None
+            and row.get("candidate_norm") is not None
+        ):
+            groups[
+                (str(row["rank"]), str(row["step"]), str(row["scope"]))
+            ].append(row)
+    if not groups:
         return None
-    steps = sorted({str(row["step"]) for row in summary}, key=lambda value: int(value))
-    ranks = sorted({str(row["rank"]) for row in summary}, key=lambda value: int(value))
+    aggregate: list[dict[str, Any]] = []
+    for (rank, step, scope), group in groups.items():
+        reference = math.sqrt(
+            sum(float(row["reference_norm"]) ** 2 for row in group)
+        )
+        candidate = math.sqrt(
+            sum(float(row["candidate_norm"]) ** 2 for row in group)
+        )
+        aggregate.append(
+            {
+                "rank": rank,
+                "step": step,
+                "scope": scope,
+                "scaled_error": abs(candidate - reference)
+                / max(reference, candidate, NEAR_ZERO_EPSILON),
+            }
+        )
+    steps = sorted(
+        {str(row["step"]) for row in aggregate}, key=lambda value: int(value)
+    )
+    rank_scopes = sorted(
+        {f"Rank {row['rank']} / {row['scope']}" for row in aggregate},
+        key=lambda value: (
+            int(value.split()[1]),
+            0 if value.endswith("unreduced") else 1,
+        ),
+    )
     x_index = {value: index for index, value in enumerate(steps)}
-    y_index = {value: index for index, value in enumerate(ranks)}
+    y_index = {value: index for index, value in enumerate(rank_scopes)}
     values = [
         (
             x_index[str(row["step"])],
-            y_index[str(row["rank"])],
-            100.0 * float(
-                row["p95_scaled_norm_error_excluding_near_zero"] or 0.0
-            ),
+            y_index[f"Rank {row['rank']} / {row['scope']}"],
+            100.0 * float(row["scaled_error"]),
         )
-        for row in summary
+        for row in aggregate
     ]
     return echarts_heatmap(
-        title="Rank × Step 梯度 Norm P95 尺度化误差",
+        title="Rank × Step × Scope 汇总梯度 Norm 误差",
         subtitle=(
-            "每个格子统计该 rank、step 下非近零参考项的 P95 尺度化误差；"
-            "近零不匹配单独计数，避免所有格子被少数除零项顶到 100%。"
+            "每个格子先对该 rank、step、scope 的全部参数 Norm 做 "
+            "sqrt(sum(norm²)) 汇总，再比较 GPU/NPU。它不会被单个稀疏参数的近零除法"
+            "直接顶到 100%；参数级近零不匹配仍在下方摘要和明细表单独展示。"
         ),
         x_values=steps,
-        y_values=ranks,
+        y_values=rank_scopes,
         values=values,
-        value_name="P95 尺度化误差 / %",
+        value_name="汇总 Norm 尺度化误差 / %",
     )
 
 
@@ -457,6 +492,7 @@ def write_monitor_analysis(
     candidate_official: Path,
     output_directory: Path,
     monitor_config: dict[str, Any] | None = None,
+    execution_contracts: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Create a self-contained project analysis from official Monitor V2 CSVs."""
 
@@ -508,6 +544,7 @@ def write_monitor_analysis(
         "top_anomalies": anomalies,
         "rank_step_summary": rank_step_summary,
         "monitor_config": monitor_config or {},
+        "execution_contracts": execution_contracts or {},
     }
     output_directory.mkdir(parents=True, exist_ok=True)
     _write_aligned_csv(output_directory / "aligned_metrics.csv", aligned)
@@ -534,6 +571,34 @@ def write_monitor_analysis(
             ),
         ),
         section_heading(
+            "父训练契约一致性 / Parent training contract",
+            "Monitor 可以缩短实际执行窗口，但 checkpoint、token plan 和 LR schedule "
+            "必须继承所属正常训练；下表来自两端 capture manifest。",
+        ),
+        summary_table(
+            columns=(
+                "端点 / Endpoint",
+                "Fixture generation",
+                "Checkpoint SHA256",
+                "Token plan SHA256",
+                "执行步数 / Execution",
+                "LR schedule 总步数",
+            ),
+            rows=tuple(
+                (
+                    role,
+                    str(contract.get("fixture_generation_id", "-")),
+                    str(contract.get("fixture_checkpoint_sha256", "-")),
+                    str(contract.get("fixture_token_plan_sha256", "-")),
+                    str(contract.get("execution_steps", "-")),
+                    str(contract.get("lr_schedule_steps", "-")),
+                )
+                for role, contract in sorted(
+                    (execution_contracts or {}).items()
+                )
+            ) or (("未记录", "-", "-", "-", "-", "-"),),
+        ),
+        section_heading(
             "Monitor 采集配置 / Capture configuration",
             "这是本次 TrainerMonitorV2 的实际配置。weight_grad 同时产生 "
             "unreduced（reduce 前）与 reduced（reduce 后、optimizer.step 前）统计。",
@@ -551,6 +616,8 @@ def write_monitor_analysis(
         ),
         *_overall_scope_charts(aligned),
         interactive_table(
+            title="完整监控窗口汇总 / Full-window gradient summary",
+            description="按 step 和 reduce 前后 scope 展示 GPU/NPU 汇总 Norm；可在列头筛选并按任意数值列排序。",
             rows=overall_scope_rows,
             columns=(
                 "step", "scope", "gpu_aggregate_norm", "npu_aggregate_norm",
@@ -564,6 +631,8 @@ def write_monitor_analysis(
         ),
         *( [heatmap] if heatmap is not None else [] ),
         interactive_table(
+            title="Rank × Step 异常摘要 / Rank-by-step anomaly summary",
+            description="列出每个 rank、step 的稳健 P95、近零不匹配数和最异常参数，用于选择后续定点分析范围。",
             rows=rank_step_summary,
             columns=(
                 "step", "rank", "max_scaled_norm_error",
@@ -596,6 +665,8 @@ def write_monitor_analysis(
             ) or (("-", "-", "-", "-", "-", "-"),),
         ),
         interactive_table(
+            title=f"异常 Step {focus_step or '-'} 参数明细 / Focus-step parameter details",
+            description="同一张表内并列展示 reduced 与 unreduced 行；按 rank、scope、参数名或误差大小筛选。",
             rows=focus_rows,
             columns=(
                 "rank", "step", "scope", "module_name", "reference_norm",
@@ -611,6 +682,8 @@ def write_monitor_analysis(
             "避免把除以近零值产生的巨大百分比误判为同等严重的问题。",
         ),
         interactive_table(
+            title="最高优先级异常 / Highest-priority anomalies",
+            description="按尺度化 Norm 误差排序；同时保留绝对差与近零标记，避免把除零放大的百分比当作唯一依据。",
             rows=anomalies,
             columns=(
                 "step", "rank", "scope", "module_name", "reference_norm",
@@ -632,6 +705,8 @@ def write_monitor_analysis(
             "aligned_metrics.csv 同时保留便于脚本处理。",
         ),
         interactive_table(
+            title="完整 Monitor 对齐明细 / Full aligned Monitor evidence",
+            description="连续内嵌全部匹配行，不分页；支持按 rank、step、scope、参数和数值列筛选排序。",
             rows=aligned,
             columns=(
                 "rank", "monitor", "step", "vpp_stage", "scope", "micro_step",

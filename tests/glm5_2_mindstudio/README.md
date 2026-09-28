@@ -728,6 +728,13 @@ step。官方没有固定 5000-step 标准；命令必须用 `--training-steps` 
 cc 按问题现象显式开启。在 TorchTitan 完成一次 optimizer step
 后手动调用一次 `mon.step()`；配置固定 `patch_optimizer_step=false`，避免重复计步。
 
+Monitor 的 `--training-steps` 只定义本次诊断实际执行到哪一步，不能改变所属正常训练
+的优化轨迹。框架从复用 fixture 的正常训练契约读取 LR schedule 总步数：例如正常训练
+为 500 步、Monitor 只执行前 27 步时，启动参数同时包含
+`--training.steps=27` 和 `--lr_scheduler.total_steps=500`。因此两次运行复用相同
+checkpoint、token plan、batch、拓扑、dtype、随机性和 LR schedule；若没有这项
+解耦，27 步 Monitor 与 500 步 training 的 Loss/Grad Norm 不可直接比较。
+
 Monitor 保存的是所选对象的 `norm/mean/min/max/nans` 等统计量趋势，不是完整
 Tensor。`--monitor-start-step`、`--monitor-stop-step`（exclusive）和
 `--monitor-step-interval` 可以只监控问题窗口；例如已知异常约在 step 360，可以先

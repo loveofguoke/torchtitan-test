@@ -331,6 +331,8 @@ def summary_table(
 
 def interactive_table(
     *,
+    title: str,
+    description: str,
     rows: Sequence[dict[str, Any]],
     columns: Sequence[str],
     page_size: int = 30,
@@ -354,10 +356,42 @@ def interactive_table(
     }
     if pagination:
         options.update(pagination="local", page_size=page_size)
-    return pn.Column(
-        pn.widgets.Tabulator(frame, **options),
+    heading = pn.pane.HTML(
+        '<div class="table-heading" style="margin:0 0 18px;padding:0">'
+        '<h3 style="color:#172033;font-size:25px;line-height:1.35;'
+        'font-weight:700;margin:0 0 8px">'
+        + html.escape(title)
+        + '</h3><p style="color:#526178;font-size:17px;line-height:1.6;'
+        'margin:0">'
+        + html.escape(description)
+        + "</p></div>",
         sizing_mode="stretch_width",
-        margin=(8, 28, 44, 28),
+    )
+    table = pn.widgets.Tabulator(
+        frame,
+        theme="simple",
+        stylesheets=[
+            """
+            :host .tabulator { border:1px solid #bcc8d8; border-radius:9px;
+              overflow:hidden; box-shadow:0 3px 12px #17203314;
+              font-size:16px; background:#fff; }
+            :host .tabulator-header { background:#eaf1fb; color:#24324a;
+              font-weight:700; border-bottom:1px solid #bcc8d8; }
+            :host .tabulator-col { background:#eaf1fb !important;
+              border-right:1px solid #ccd5e2 !important; }
+            :host .tabulator-cell { padding:11px 13px;
+              border-right:1px solid #e2e8f0; }
+            :host .tabulator-row { border-bottom:1px solid #e2e8f0; }
+            :host .tabulator-row:hover { background:#f4f8fd !important; }
+            """
+        ],
+        **options,
+    )
+    return pn.Column(
+        heading,
+        table,
+        sizing_mode="stretch_width",
+        margin=(30, 0, 64, 0),
     )
 
 
@@ -392,7 +426,12 @@ def save_panel_report(
     css = """
     :root { --report-blue:#2563eb; --report-ink:#172033; --report-muted:#64748b; }
     body { background:#f6f8fb; color:var(--report-ink); }
-    .report-shell { max-width:1560px; margin:0 auto; padding:44px 64px; }
+    html, body { margin:0; padding:0; }
+    .report-shell { width:calc(100% - 96px) !important; max-width:1400px;
+      box-sizing:border-box; margin:36px auto 72px !important;
+      padding:48px 64px 72px !important; background:#fff;
+      border:1px solid #dce3ec; border-radius:14px;
+      box-shadow:0 6px 24px #17203312; }
     .report-title { font-size:40px; font-weight:750; margin:0 0 10px; }
     .report-description { color:var(--report-muted); font-size:18px; line-height:1.6; margin:0 0 26px; }
     .report-section { margin:36px 0 14px; border-left:6px solid var(--report-blue);
@@ -408,7 +447,12 @@ def save_panel_report(
     .summary-table td { border-top:1px solid #dce2ea; padding:13px 14px;
       font-variant-numeric:tabular-nums; line-height:1.45; }
     .summary-table tbody tr:hover { background:#f4f8fd; }
+    .tabulator { font-variant-numeric:tabular-nums; }
     .bk-panel-models-layout-Card { margin:12px 0; }
+    @media (max-width:900px) {
+      .report-shell { width:calc(100% - 28px) !important;
+        margin:14px auto 36px !important; padding:28px 22px 44px !important; }
+    }
     """
     header = pn.pane.HTML(
         '<header style="margin:0 0 48px"><h1 class="report-title" '

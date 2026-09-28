@@ -1964,7 +1964,10 @@ class TestMindStudioLifecycle(unittest.TestCase):
                 environment={"PRIVATE_TOKEN": secret},
             ),
         )
-        fixture_manifest.return_value = {"generation_id": "fixture-a"}
+        fixture_manifest.return_value = {
+            "generation_id": "fixture-a",
+            "training": asdict(config.training),
+        }
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             resolve_inputs.return_value = (
@@ -2011,6 +2014,44 @@ class TestMindStudioLifecycle(unittest.TestCase):
 
     @patch("tests.glm5_2_mindstudio.workflow._fixture_manifest")
     @patch("tests.glm5_2_mindstudio.workflow.resolve_fixture_inputs")
+    def test_monitor_short_execution_preserves_parent_lr_schedule(
+        self, resolve_inputs, fixture_manifest
+    ) -> None:
+        base = _experiment()
+        config = replace(
+            base,
+            workflow="monitor",
+            training=replace(base.training, steps=27),
+        )
+        fixture_training = asdict(config.training)
+        fixture_training["steps"] = 500
+        fixture_manifest.return_value = {
+            "generation_id": "fixture-a",
+            "training": fixture_training,
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            resolve_inputs.return_value = (
+                root / "fixture" / "checkpoint",
+                root / "fixture" / "tokens.json",
+            )
+            stream = io.StringIO()
+            with redirect_stdout(stream):
+                capture_official(
+                    root,
+                    config,
+                    topology=config.candidate.topology,
+                    role="candidate",
+                    repeat=1,
+                    dry_run=True,
+                )
+
+            plan = json.loads(stream.getvalue())
+            self.assertIn("--training.steps=27", plan["command"])
+            self.assertIn("--lr_scheduler.total_steps=500", plan["command"])
+
+    @patch("tests.glm5_2_mindstudio.workflow._fixture_manifest")
+    @patch("tests.glm5_2_mindstudio.workflow.resolve_fixture_inputs")
     def test_completed_capture_is_not_recollected_after_msprobe_build_changes(
         self,
         resolve_inputs,
@@ -2022,6 +2063,7 @@ class TestMindStudioLifecycle(unittest.TestCase):
             "generation_id": "fixture-a",
             "checkpoint_sha256": "checkpoint-a",
             "token_plan": {"sha256": "tokens-a"},
+            "training": asdict(config.training),
         }
 
         def emit_dump(_command, *, environment, log_path, **_kwargs) -> None:

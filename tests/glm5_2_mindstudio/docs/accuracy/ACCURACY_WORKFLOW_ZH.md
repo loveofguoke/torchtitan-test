@@ -818,6 +818,13 @@ NaN/Inf 分析覆盖 logger 中的全部数值指标，而不只 Loss 和 Grad N
 `module`；收敛变差或震荡时按需使用 `optimizer`；怀疑分布式同步或通信时再启用
 `cc`，并通过 target/code-line 过滤降低开销。
 
+这里的 `--training-steps` 是 Monitor 本次实际执行长度，不得重新定义正常训练的 LR
+schedule。Monitor 会复用父级正常训练 fixture，并把该 fixture 的训练总步数写入
+`--lr_scheduler.total_steps`。例如父训练为 500 步而诊断只需运行到 step 27，实际
+命令使用 `training.steps=27`、`lr_scheduler.total_steps=500`。只有这样前 27 步的
+checkpoint、token、batch、随机性和学习率轨迹才与无 Monitor 的正常训练一致；旧的
+短运行若同时把 scheduler 总长度改成 27，不能作为原 500 步实验的后继证据。
+
 这里必须区分 Monitor 和 dump：
 
 ```text
