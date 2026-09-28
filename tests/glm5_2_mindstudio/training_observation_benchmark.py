@@ -18,7 +18,7 @@ from tests.glm5_2_mindstudio.workflow import run_mindstudio_cli  # noqa: E402
 
 CONFIG = replace(
     ACCURACY_CONFIG,
-    workflow="baseline",
+    workflow="observation",
     reference=replace(ACCURACY_CONFIG.reference, repeats=1),
     candidate=replace(ACCURACY_CONFIG.candidate, repeats=1),
     training=replace(ACCURACY_CONFIG.training, steps=100),

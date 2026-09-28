@@ -19,7 +19,7 @@ hook** 的正常训练，保存逐 step Loss、Grad Norm 和训练日志，再�
 按需 API 级下钻      accuracy_benchmark.py --stage dump --level L1/mix
 按需 kernel 级下钻   accuracy_benchmark.py --stage dump --level L2
 按需预检/溢出分析    --precheck / --overflow-check / nan_check
-修复后闭环           重跑 baseline，再检查目标区间与最终任务指标
+修复后闭环           重跑正常训练观察，再检查目标区间与最终任务指标
 ```
 
 各类官方能力共用一个由固定实验合同生成的精度实验根，例如
@@ -45,7 +45,7 @@ mindstudio_artifacts/accuracy/<experiment-id>/diagnoses/<case-id>/
 ```
 
 训练窗口没有固定的“几百步”或“5000 step”标准，必须覆盖已知问题或约定的验收
-区间。baseline 始终先运行；只有正常训练表明需要更细的长期状态时才启用 Monitor
+区间。正常训练观察始终先运行；只有它表明需要更细的长期状态时才启用 Monitor
 V2，只有确定可疑 step 后才用 L0 -> L1/mix -> tensor 或 L2 逐层下钻。禁止把
 数百或数千 step 交给完整 dump。
 

@@ -101,7 +101,7 @@ def _install_training_metrics_capture() -> None:
 
     # MetricsProcessor uses BaseLogger when TensorBoard/WandB are disabled and
     # LoggerContainer when either backend is enabled.  Patch both common exits
-    # so baseline capture does not depend on an optional logging backend.
+    # so observation capture does not depend on an optional logging backend.
     BaseLogger.log = base_log_with_jsonl
     LoggerContainer.log = container_log_with_jsonl
 
@@ -409,10 +409,10 @@ def main() -> None:
     _install_training_metrics_capture()
     if mode == "config-check":
         _install_config_checker()
-    elif mode == "baseline":
+    elif mode == "observation":
         # Whole-training observation deliberately installs no msProbe hook.
         # Fixed inputs, deterministic setup, the normal Trainer, and the
-        # project-owned metrics recorder are the complete baseline contract.
+        # project-owned metrics recorder are the complete observation contract.
         pass
     elif mode == "dump":
         _install_dump_capture()
@@ -422,7 +422,7 @@ def main() -> None:
         _install_training_monitor()
     else:
         raise ValueError(
-            f"{MODE_ENV} must be config-check, baseline, dump, compile, or "
+            f"{MODE_ENV} must be config-check, observation, dump, compile, or "
             "monitor, "
             f"got {mode!r}"
         )

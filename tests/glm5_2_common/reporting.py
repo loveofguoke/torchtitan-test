@@ -10,7 +10,7 @@ import json
 import math
 import re
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
 
 class ReportingDependencyError(RuntimeError):
@@ -118,23 +118,26 @@ def echarts_line(
     return pn.pane.ECharts(option, height=height, sizing_mode="stretch_width")
 
 
-def metric_cards(items: Iterable[tuple[str, str, str]]) -> Any:
-    """Return responsive, project-owned metric cards."""
+def summary_table(
+    *,
+    columns: Sequence[str],
+    rows: Sequence[Sequence[str]],
+) -> Any:
+    """Render a compact summary table without external table dependencies."""
 
     pn, _, _ = _stack()
-    cards = []
-    for label, value, detail in items:
-        cards.append(
-            pn.pane.HTML(
-                '<section class="metric-card">'
-                f'<div class="metric-label">{html.escape(label)}</div>'
-                f'<div class="metric-value">{html.escape(value)}</div>'
-                f'<div class="metric-detail">{html.escape(detail)}</div>'
-                "</section>",
-                sizing_mode="stretch_width",
-            )
-        )
-    return pn.FlexBox(*cards, sizing_mode="stretch_width")
+    head = "".join(f"<th>{html.escape(column)}</th>" for column in columns)
+    body = "".join(
+        "<tr>"
+        + "".join(f"<td>{html.escape(value)}</td>" for value in row)
+        + "</tr>"
+        for row in rows
+    )
+    return pn.pane.HTML(
+        '<div class="summary-table-wrap"><table class="summary-table">'
+        f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>",
+        sizing_mode="stretch_width",
+    )
 
 
 def save_panel_report(
@@ -153,11 +156,15 @@ def save_panel_report(
     .report-shell { max-width:1500px; margin:0 auto; padding:22px; }
     .report-title { font-size:30px; font-weight:750; margin:0 0 5px; }
     .report-description { color:var(--report-muted); margin:0 0 18px; }
-    .metric-card { background:#fff; border:1px solid #dce2ea; border-radius:10px;
-      padding:14px 16px; min-width:210px; box-shadow:0 2px 9px #1720330d; }
-    .metric-label { color:var(--report-muted); font-size:12px; text-transform:uppercase; }
-    .metric-value { font-size:24px; font-weight:750; margin:4px 0; }
-    .metric-detail { color:var(--report-muted); font-size:12px; }
+    .summary-table-wrap { overflow-x:auto; margin:8px 0 22px; }
+    .summary-table { width:100%; border-collapse:collapse; background:#fff;
+      border:1px solid #ccd5e2; border-radius:10px; overflow:hidden;
+      box-shadow:0 2px 9px #1720330d; font-size:16px; }
+    .summary-table th { background:#eaf1fb; color:#24324a; font-weight:700;
+      padding:14px 16px; text-align:left; }
+    .summary-table td { border-top:1px solid #dce2ea; padding:13px 14px;
+      font-variant-numeric:tabular-nums; line-height:1.45; }
+    .summary-table tbody tr:hover { background:#f4f8fd; }
     .bk-panel-models-layout-Card { margin:12px 0; }
     """
     header = pn.pane.HTML(

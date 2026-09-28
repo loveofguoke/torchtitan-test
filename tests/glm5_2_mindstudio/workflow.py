@@ -42,7 +42,6 @@ from tests.glm5_2_common.topology import (
 from tests.glm5_2_precision.workflow import (
     FormalTrainingConfig,
     TrainingEndpoint,
-    _fixture_directory as _formal_fixture_directory,
     fixed_input_environment,
     prepare_fixture,
     resolve_fixture_inputs,
@@ -131,7 +130,7 @@ def _comparison_directory(
     report_directory: Path,
     workflow: str,
 ) -> Path:
-    name = "comparison" if workflow == "baseline" else "official_compare"
+    name = "comparison" if workflow == "observation" else "official_compare"
     return report_directory / name
 
 
@@ -158,7 +157,7 @@ def _stage_scoped_config(
                 output_subdirectory="checklist/configuration-check",
                 fixture_subdirectory=fixture_subdirectory,
             )
-        if config.workflow == "baseline":
+        if config.workflow == "observation":
             profile = (
                 f"s{config.training.steps}-"
                 f"{config_digest(asdict(config.training), length=8)}"
@@ -203,7 +202,7 @@ def _stage_scoped_config(
             config,
             output_subdirectory=f"diagnostics/dump/{profile}",
         )
-    if config.workflow == "baseline":
+    if config.workflow == "observation":
         profile = (
             f"s{config.training.steps}-"
             f"{config_digest(asdict(config.training), length=8)}"
@@ -228,138 +227,6 @@ def _stage_scoped_config(
             fixture_subdirectory=relative,
         )
     return config
-
-
-def _adopt_legacy_accuracy_storage(
-    root: Path,
-    config: MindStudioExperimentConfig,
-    *,
-    topologies: Sequence[ParallelTopology],
-    legacy_storage_name: str | None,
-) -> None:
-    """Move matching accuracy outputs into the canonical topology-first tree.
-
-    Historical named experiments placed the operation before the topology and
-    stored inputs outside the topology. Adopt only the selected topology and
-    operation so completed captures remain resumable without recollection.
-    """
-
-    def adopt(source: Path, destination: Path) -> None:
-        if source == destination or not source.exists():
-            return
-        if destination.exists():
-            raise RuntimeError(
-                "both legacy and canonical MindStudio accuracy outputs exist; "
-                f"refusing to mix them: {source} and {destination}"
-            )
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        source.rename(destination)
-        print(
-            "Adopted matching legacy accuracy output:\n"
-            f"  {display_repository_path(source)}\n"
-            f"  -> {display_repository_path(destination)}"
-        )
-
-    legacy_names = tuple(
-        dict.fromkeys(
-            name
-            for name in (legacy_storage_name, config.storage_name)
-            if name is not None
-        )
-    )
-    for topology in topologies:
-        destination_fixture = _fixture_directory(root, config, topology)
-        for legacy_name in legacy_names:
-            if config.fixture_subdirectory is not None:
-                old_subdirectory = config.fixture_subdirectory.replace(
-                    "inputs/", "fixtures/", 1
-                )
-                adopt(
-                    root / config.fixture_root / legacy_name / old_subdirectory,
-                    destination_fixture,
-                )
-                adopt(
-                    root
-                    / config.fixture_root
-                    / f"{legacy_name}-{old_subdirectory.replace('/', '-')}",
-                    destination_fixture,
-                )
-        _formal_fixture_directory(
-            root,
-            config.formal_fixture_config(topology),
-        )
-
-        for configured_root in (
-            config.run_root,
-            config.artifact_root,
-            config.report_root,
-        ):
-            destination = (
-                root
-                / configured_root
-                / config.storage_name
-                / topology.slug
-                / config.operation_relative_root
-            )
-            if (
-                config.workflow == "baseline"
-                and config.output_subdirectory is not None
-                and config.output_subdirectory.startswith(
-                    "observations/training/"
-                )
-            ):
-                previous_subdirectory = config.output_subdirectory.replace(
-                    "observations/training/",
-                    "observations/baseline/",
-                    1,
-                )
-                adopt(
-                    root
-                    / configured_root
-                    / config.storage_name
-                    / topology.slug
-                    / previous_subdirectory,
-                    destination,
-                )
-            for legacy_name in legacy_names:
-                source = root / configured_root / legacy_name
-                if config.output_subdirectory is not None:
-                    source /= config.output_subdirectory
-                source /= topology.slug
-                adopt(source, destination)
-
-    if (
-        config.output_subdirectory is not None
-        or config.fixture_subdirectory is not None
-    ):
-        return
-    for configured_root in (
-        config.fixture_root,
-        config.run_root,
-        config.artifact_root,
-        config.report_root,
-    ):
-        category_root = Path(configured_root)
-        if category_root.name != "accuracy":
-            continue
-        legacy = root / category_root.parent / config.storage_name
-        destination = root / category_root / config.storage_name
-        if not legacy.exists():
-            continue
-        if destination.exists():
-            raise RuntimeError(
-                "both legacy and categorized MindStudio accuracy outputs exist; "
-                f"refusing to mix them: {legacy} and {destination}"
-            )
-        if configured_root == config.run_root:
-            _assert_tree_not_active(legacy)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        legacy.rename(destination)
-        print(
-            "Adopted matching legacy accuracy output:\n"
-            f"  {display_repository_path(legacy)}\n"
-            f"  -> {display_repository_path(destination)}"
-        )
 
 
 def _fixture_manifest(
@@ -1281,6 +1148,7 @@ def reset_selected_outputs(
                 aggregate / "README.md",
             )
         )
+        paths.extend(aggregate / f"{topology.slug}.html" for topology in topologies)
     for path in paths:
         _assert_tree_not_active(path)
     reset_output_generation(paths, label="MindStudio official workflow")
@@ -1301,6 +1169,7 @@ def reset_compare_outputs(
         aggregate / "report.json",
         aggregate / "README.md",
     ]
+    paths.extend(aggregate / f"{topology.slug}.html" for topology in topologies)
     active: list[Path] = []
     for topology in topologies:
         _, _, report = _paths(root, config, topology, "reference", repeat)
@@ -1336,8 +1205,12 @@ def _invalidate_aggregate_report(
     config: MindStudioExperimentConfig,
     *,
     label: str,
+    topology: ParallelTopology | None = None,
 ) -> None:
-    paths = _aggregate_report_paths(root, config)
+    paths = list(_aggregate_report_paths(root, config))
+    if topology is not None:
+        aggregate = _output_root(root, config.report_root, config)
+        paths.append(aggregate / f"{topology.slug}.html")
     if not any(path.exists() for path in paths):
         return
     reset_output_generation(
@@ -1458,8 +1331,8 @@ def capture_official(
             "collection": "dynamic",
             "framework": "pytorch",
         }
-    elif config.workflow == "baseline":
-        environment["GLM5_MINDSTUDIO_MODE"] = "baseline"
+    elif config.workflow == "observation":
+        environment["GLM5_MINDSTUDIO_MODE"] = "observation"
         official_config = {
             "workflow": "observation",
             "collection": "whole_training_metrics",
@@ -1533,15 +1406,15 @@ def capture_official(
         print_output_path("Retry incomplete output; archived", archived)
     if report_directory.exists():
         archived = archive_previous_output(report_directory)
-        print(
-            "Capture retry invalidated the previous comparison; archived: "
-            f"{archived}",
-            flush=True,
+        print_output_path(
+            "Capture retry invalidated the previous comparison; archived",
+            archived,
         )
     _invalidate_aggregate_report(
         root,
         config,
         label="stale MindStudio aggregate report",
+        topology=topology,
     )
     run_directory.mkdir(parents=True, exist_ok=True)
     artifact_directory.mkdir(parents=True, exist_ok=True)
@@ -1614,7 +1487,7 @@ def capture_official(
                 pattern="config_check_rank{rank}.zip",
                 world_size=topology.world_size,
             )
-        elif config.workflow == "baseline":
+        elif config.workflow == "observation":
             metrics_path = run_directory / "training_metrics.jsonl"
             read_training_metrics(metrics_path)
             official_output.mkdir(parents=True, exist_ok=True)
@@ -2683,7 +2556,9 @@ def compare_official(
             "captures": capture_compatibility,
             "compare": _msprobe_toolchain_compatibility(comparison_toolchain_identity),
         })
-        print(f"Toolchain provenance (manual review, non-blocking): {diagnostic}", flush=True)
+        print_output_path(
+            "Toolchain provenance (manual review, non-blocking)", diagnostic
+        )
     comparison_identity = {
         "workflow": config.workflow,
         "topology": asdict(topology),
@@ -2728,7 +2603,7 @@ def compare_official(
                         output=compare_directory / f"rank{rank}",
                     )
                 )
-        elif config.workflow == "baseline":
+        elif config.workflow == "observation":
             commands.append(
                 [
                     "compare-training-metrics",
@@ -2803,6 +2678,7 @@ def compare_official(
         root,
         config,
         label="stale MindStudio aggregate report",
+        topology=topology,
     )
     if force and compare_directory.exists():
         reset_output_generation(
@@ -2867,7 +2743,7 @@ def compare_official(
                 + "\n",
                 encoding="utf-8",
             )
-        elif config.workflow == "baseline":
+        elif config.workflow == "observation":
             summary_path = compare_training_metrics(
                 reference_path=(
                     reference_artifact / "official/training_metrics.jsonl"
@@ -2969,7 +2845,7 @@ def compare_official(
                 encoding="utf-8",
             )
         summary = summarize_official_results(compare_directory)
-        if config.workflow == "baseline":
+        if config.workflow == "observation":
             observation = json.loads(
                 (compare_directory / "summary.json").read_text(encoding="utf-8")
             )
@@ -3176,13 +3052,13 @@ def run_mindstudio_cli(
     args = parser.parse_args()
 
     if (
-        base_config.workflow in {"baseline", "monitor"}
+        base_config.workflow in {"observation", "monitor"}
         and args.training_steps is None
         and not args.doctor
         and not args.list_topologies
     ):
         parser.error(
-            "the baseline/Monitor workflow requires an explicit "
+            "the observation/Monitor workflow requires an explicit "
             "--training-steps reproduction window"
         )
 
@@ -3278,9 +3154,9 @@ def run_mindstudio_cli(
         dump = replace(dump, extra_info=False)
     training = config.training
     if args.training_steps is not None:
-        if config.workflow not in {"baseline", "monitor"}:
+        if config.workflow not in {"observation", "monitor"}:
             parser.error(
-                "--training-steps is supported only by baseline and monitor "
+                "--training-steps is supported only by observation and monitor "
                 "workflows"
             )
         if args.training_steps < 1:
@@ -3400,12 +3276,6 @@ def run_mindstudio_cli(
     )
     selected = tuple(registry[name] for name in selected_names)
     if not args.dry_run:
-        _adopt_legacy_accuracy_storage(
-            root,
-            config,
-            topologies=selected,
-            legacy_storage_name=args.experiment,
-        )
         write_experiment_overview(
             _output_root(root, config.run_root, config),
             title=f"GLM5.2 MindStudio {config.workflow} experiment",

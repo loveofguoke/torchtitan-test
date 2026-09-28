@@ -38,7 +38,7 @@ schedule 窗口时切到 Ascend PyTorch Profiler。系统调优、单算子调�
 | --- | --- | --- |
 | 工具源码 checkout、安装计划、版本/路径 doctor | 已实现 | `tools/bootstrap_mindstudio_toolchain.py`、`toolchain.py` |
 | 固定 token plan 和 seed checkpoint | 已实现 | 每个 benchmark 的 `--data` |
-| GPU/NPU 完整精度流程 | 已实现统一入口 | `accuracy_benchmark.py --stage {config-check,baseline,monitor,dump}`；旧入口保留兼容 |
+| GPU/NPU 完整精度流程 | 已实现统一入口 | `accuracy_benchmark.py --stage {config-check,observation,monitor,dump}` |
 | 同一 GPU 官方链路自检 | 已实现 | `self_consistency_benchmark.py` |
 | 官方离线 `msprobe compare` | 已实现 | `accuracy_benchmark.py --stage dump --compare` |
 | NPU eager/compile 模块前向与反向比较 | 已实现 | `compile_accuracy_benchmark.py` |
@@ -681,7 +681,7 @@ python release_artifacts.py upload "$EXPERIMENT" --content full
 ## 7. 正常训练现象观察与按需监控
 
 标准流程不是一开始 dump。完成配置检查后，先运行无 PrecisionDebugger、无 Monitor
-hook 的 baseline。它仍使用统一 checkpoint、token plan 和确定性设置，但模型训练走
+hook 的正常训练观察。它仍使用统一 checkpoint、token plan 和确定性设置，但模型训练走
 正常 TorchTitan 路径，只额外把 Trainer 已经上报的数值指标写入 JSONL：
 
 ```bash
@@ -708,7 +708,11 @@ python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage observation \
 首 Steps 与首次超限后的区间。静态 SVG 继续作为无 JavaScript 的兜底证据。`500` 只是
 本次观察窗口，不是官方固定标准；命令必须覆盖实际问题。
 
-只有 baseline 发现长程异常但第一现场不明确时，才运行 Monitor V2；发现明确异常
+实验报告根目录同时生成轻量 `<experiment-id>.html` 总索引，以及
+`single.html`、`fsdp8.html` 等每拓扑独立的自包含报告。总索引不重复嵌入所有
+拓扑曲线；需要分享或下载某个拓扑时直接取对应 HTML。
+
+只有正常训练观察发现长程异常但第一现场不明确时，才运行 Monitor V2；发现明确异常
 step 后，才对少量 step 运行 L0/L1/mix/tensor dump。
 
 ### 7.1 官方训练状态监控

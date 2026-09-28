@@ -20,7 +20,7 @@ from tests.glm5_2_precision.workflow import (
 
 OfficialWorkflow = Literal[
     "config-check",
-    "baseline",
+    "observation",
     "migration",
     "compile",
     "monitor",
@@ -256,7 +256,7 @@ class MindStudioExperimentConfig:
             value = getattr(self, name)
             if value is not None:
                 _validate_repository_root(name, value)
-        if self.workflow in {"config-check", "baseline", "migration", "monitor"}:
+        if self.workflow in {"config-check", "observation", "migration", "monitor"}:
             if self.reference.topology != self.candidate.topology:
                 raise ValueError("migration requires equal reference/candidate topology")
         elif self.workflow == "compile" and (
@@ -284,7 +284,7 @@ class MindStudioExperimentConfig:
 
     @property
     def storage_base_name(self) -> str:
-        if self.workflow in {"config-check", "baseline", "migration"}:
+        if self.workflow in {"config-check", "observation", "migration"}:
             prefix = (
                 f"{self.workflow}-{self.reference.device_type}-"
                 f"{self.candidate.device_type}"
@@ -375,7 +375,7 @@ class MindStudioExperimentConfig:
                 "migration"
                 if self.workflow in {
                     "config-check",
-                    "baseline",
+                    "observation",
                     "migration",
                     "monitor",
                 }

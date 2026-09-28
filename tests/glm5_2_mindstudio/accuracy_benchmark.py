@@ -15,8 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tests.glm5_2_mindstudio.configuration_check_benchmark import (  # noqa: E402
     CONFIG as CONFIG_CHECK_CONFIG,
 )
-from tests.glm5_2_mindstudio.training_baseline_benchmark import (  # noqa: E402
-    CONFIG as BASELINE_CONFIG,
+from tests.glm5_2_mindstudio.training_observation_benchmark import (  # noqa: E402
+    CONFIG as OBSERVATION_CONFIG,
 )
 from tests.glm5_2_mindstudio.migration_benchmark import (  # noqa: E402
     CONFIG as DUMP_CONFIG,
@@ -29,7 +29,7 @@ from tests.glm5_2_mindstudio.workflow import run_mindstudio_cli  # noqa: E402
 
 STAGE_CONFIGS = {
     "config-check": CONFIG_CHECK_CONFIG,
-    "observation": BASELINE_CONFIG,
+    "observation": OBSERVATION_CONFIG,
     "monitor": MONITOR_CONFIG,
     "dump": DUMP_CONFIG,
 }
@@ -38,7 +38,7 @@ STAGE_CONFIGS = {
 def _select_stage(arguments: list[str]) -> tuple[str, list[str]]:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument(
-        "--stage", choices=tuple(STAGE_CONFIGS), default="baseline"
+        "--stage", choices=tuple(STAGE_CONFIGS), default="observation"
     )
     parsed, remaining = parser.parse_known_args(arguments)
     return parsed.stage, remaining

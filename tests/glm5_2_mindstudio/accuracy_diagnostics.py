@@ -40,8 +40,8 @@ from tests.glm5_2_mindstudio.msprobe_adapter import (
 from tests.glm5_2_mindstudio.training_monitor_benchmark import (
     CONFIG as MONITOR_CONFIG,
 )
-from tests.glm5_2_mindstudio.training_baseline_benchmark import (
-    CONFIG as BASELINE_CONFIG,
+from tests.glm5_2_mindstudio.training_observation_benchmark import (
+    CONFIG as OBSERVATION_CONFIG,
 )
 from tests.glm5_2_mindstudio.training_observation import compare_training_metrics
 from tests.glm5_2_mindstudio.workflow import (
@@ -480,7 +480,7 @@ def _migration_command(
     )
 
 
-def _baseline_command(value: dict[str, Any], *arguments: str) -> str:
+def _observation_command(value: dict[str, Any], *arguments: str) -> str:
     return _python_command(
         "tests/glm5_2_mindstudio/accuracy_benchmark.py",
         "--stage",
@@ -816,17 +816,17 @@ def analyze_training_observation(
         output_root = (
             _case_root(repository_root, case_id) / "03_observe/migration"
         )
-    elif workflow == "baseline":
+    elif workflow == "observation":
         steps = (
-            BASELINE_CONFIG.training.steps
+            OBSERVATION_CONFIG.training.steps
             if training_steps is None
             else training_steps
         )
         if steps < 1:
             raise ValueError("training steps must be positive")
         config = replace(
-            BASELINE_CONFIG,
-            training=replace(BASELINE_CONFIG.training, steps=steps),
+            OBSERVATION_CONFIG,
+            training=replace(OBSERVATION_CONFIG.training, steps=steps),
         )
         output_root = (
             _case_root(repository_root, case_id)
@@ -951,7 +951,7 @@ def analyze_training_observation(
 
 def _observe_plan(value: dict[str, Any]) -> dict[str, Any]:
     commands = [
-        _baseline_command(
+        _observation_command(
             value,
             "--data",
             "--data-device",
@@ -959,7 +959,7 @@ def _observe_plan(value: dict[str, Any]) -> dict[str, Any]:
             "--training-steps",
             "100",
         ),
-        _baseline_command(
+        _observation_command(
             value,
             "--capture",
             "candidate",
@@ -968,14 +968,14 @@ def _observe_plan(value: dict[str, Any]) -> dict[str, Any]:
         ),
         _release_upload_command(value),
         _release_download_command(value),
-        _baseline_command(
+        _observation_command(
             value,
             "--capture",
             "reference",
             "--training-steps",
             "100",
         ),
-        _baseline_command(
+        _observation_command(
             value,
             "--compare",
             "--training-steps",
@@ -986,7 +986,7 @@ def _observe_plan(value: dict[str, Any]) -> dict[str, Any]:
             "training-observation",
             value["case_id"],
             "--workflow",
-            "baseline",
+            "observation",
             "--training-steps",
             "100",
         ),
@@ -997,7 +997,7 @@ def _observe_plan(value: dict[str, Any]) -> dict[str, Any]:
         "not a standard.",
         "Inspect NaN/Inf first, then first-step Loss, then later Loss/Grad "
         "Norm drift or spikes.",
-        "Enable Monitor or dump only after the baseline identifies the next "
+        "Enable Monitor or dump only after the observation identifies the next "
         "diagnostic branch and incident window.",
     ]
     execution_hosts = ["NPU: commands 1-3", "GPU: commands 4-8"]
@@ -1284,7 +1284,7 @@ def _validate_plan(value: dict[str, Any]) -> dict[str, Any]:
             _migration_command(value, "--capture", "reference", "--level", "mix"),
             _migration_command(value, "--compare", "--level", "mix"),
             _release_upload_command(value),
-            _baseline_command(
+            _observation_command(
                 value,
                 "--data",
                 "--data-device",
@@ -1292,7 +1292,7 @@ def _validate_plan(value: dict[str, Any]) -> dict[str, Any]:
                 "--training-steps",
                 "100",
             ),
-            _baseline_command(
+            _observation_command(
                 value,
                 "--capture",
                 "candidate",
@@ -1301,14 +1301,14 @@ def _validate_plan(value: dict[str, Any]) -> dict[str, Any]:
             ),
             _release_upload_command(value),
             _release_download_command(value),
-            _baseline_command(
+            _observation_command(
                 value,
                 "--capture",
                 "reference",
                 "--training-steps",
                 "100",
             ),
-            _baseline_command(
+            _observation_command(
                 value,
                 "--compare",
                 "--training-steps",
@@ -1489,7 +1489,7 @@ def run_diagnostic_cli(
     observation = subparsers.add_parser("training-observation")
     observation.add_argument("case_id")
     observation.add_argument(
-        "--workflow", choices=("baseline", "migration", "monitor"), required=True
+        "--workflow", choices=("observation", "migration", "monitor"), required=True
     )
     observation.add_argument("--training-steps", type=int)
     observation.add_argument("--loss-relative-threshold", type=float, default=0.01)

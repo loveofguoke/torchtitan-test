@@ -73,13 +73,30 @@ class LoggedProcessError(subprocess.CalledProcessError):
 
 def print_runtime_log(log_path: Path) -> None:
     """Print a clickable repository-relative log location."""
-    print(f"Runtime log: {display_repository_path(log_path)}", flush=True)
+
+    _print_atomic_line(f"Runtime log: {display_repository_path(log_path)}")
 
 
 def print_output_path(label: str, path: Path) -> None:
     """Print a clickable repository-relative experiment output path."""
 
-    print(f"{label}: {display_repository_path(path)}", flush=True)
+    _print_atomic_line(f"{label}: {display_repository_path(path)}")
+
+
+def _print_atomic_line(line: str) -> None:
+    """Keep short status lines intact when topology workers share stdout."""
+
+    payload = (line + "\n").encode(
+        getattr(sys.stdout, "encoding", None) or "utf-8",
+        errors="replace",
+    )
+    try:
+        descriptor = sys.stdout.fileno()
+    except (AttributeError, OSError):
+        print(line, flush=True)
+        return
+    sys.stdout.flush()
+    os.write(descriptor, payload)
 
 
 def _terminate_process_tree(

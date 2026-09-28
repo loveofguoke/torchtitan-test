@@ -89,14 +89,14 @@ python tests/glm5_2_mindstudio/accuracy_diagnostic_benchmark.py plan glm5-first-
 
 ### 2.1 整网曲线和现象摘要
 
-完成无 dump 的 reference/candidate baseline 后，当前 `observe` recipe 会自动给出：
+完成无 dump 的 reference/candidate 正常训练观察后，当前 `observe` recipe 会自动给出：
 
 ```bash
 python tests/glm5_2_mindstudio/accuracy_diagnostic_benchmark.py training-observation \
-  glm5-first-loss-001 --workflow baseline --training-steps 100
+  glm5-first-loss-001 --workflow observation --training-steps 100
 ```
 
-所有现象先从 baseline 分类；只有 baseline 表明需要更多层/参数/优化器状态时才使用
+所有现象先从正常训练观察分类；只有观察表明需要更多层/参数/优化器状态时才使用
 `--workflow monitor`。每个拓扑生成：
 
 ```text
@@ -117,7 +117,7 @@ Loss 默认 `1%` 只用于复现官方案例中的现象分类，不会自动把
 
 ```bash
 python tests/glm5_2_mindstudio/accuracy_diagnostic_benchmark.py training-observation \
-  glm5-first-loss-001 --workflow baseline --training-steps 100 \
+  glm5-first-loss-001 --workflow observation --training-steps 100 \
   --grad-norm-relative-threshold 0.05 \
   --spike-relative-threshold 0.20
 ```

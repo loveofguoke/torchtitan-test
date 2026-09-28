@@ -90,12 +90,12 @@ compile-npu-inductor-bf16-random-s1-b64-seq128-seed61-e5f6a7b8
 | `observations/monitor/<profile>` | 使用 Monitor V2 低开销监控所选参数、梯度、模块或通信统计量 | 长程异常存在但第一现场 step/module 不明确时 |
 | `captures/<dump-profile>` | 使用 PrecisionDebugger 采集指定 step/rank 的 statistics/tensor/md5 数据 | 已确定需要细粒度比较的位置时 |
 | `diagnostics/dump/<dump-profile>` | 在既有实验内追加不同 scope、level、task 或 step 的定点 dump | 对首个可疑模块/API 继续缩小范围时 |
-| `diagnostics/monitor/<profile>` | 在既有实验内追加特定窗口或对象的 Monitor 诊断 | baseline/初次 monitor 后继续定点监控时 |
+| `diagnostics/monitor/<profile>` | 在既有实验内追加特定窗口或对象的 Monitor 诊断 | 正常训练观察/初次 monitor 后继续定点监控时 |
 
-早期实现把这一阶段称为 `baseline`，但该词容易同时被误解为 GPU 标杆、性能基线，
-或与一个并不存在的 `non-baseline` stage 成对。当前用户接口统一称为
-`observation`，目录称为 `observations/training`。它表示“无精度工具 hook 的正常训练
-观察”，与 `reference/candidate` 设备角色是两个正交维度。同一个 observation profile
+当前用户接口和内部 workflow 均称为 `observation`，目录固定为
+`observations/training`。它表示“无精度工具 hook 的正常训练观察”，与
+`reference/candidate` 设备角色是两个正交维度。旧 `observations/baseline` 布局不再
+扫描、迁移或生成。同一个 observation profile
 内同时有 `reference-r1`（GPU）和 `candidate-r1`（NPU），两端运行相同 checkpoint、
 token plan 和训练契约，再比较逐 step 训练现象。它回答：
 
@@ -110,7 +110,7 @@ token plan 和训练契约，再比较逐 step 训练现象。它回答：
 
 ## 4. 当前完整目录树与文件含义
 
-以下树使用 `<profile>` 表示配置摘要，例如 baseline 的 `s500-fb08c375`；完整配置
+以下树使用 `<profile>` 表示配置摘要，例如 observation 的 `s500-fb08c375`；完整配置
 永远保存在 JSON、manifest 和启动契约中，不依赖人工反解 hash。
 
 ### 4.1 固定输入：`mindstudio_fixtures`
@@ -161,15 +161,15 @@ mindstudio_runs/accuracy/<experiment-id>/<topology>/
 ├── run_state.json                   # PID、attempt、running/completed/failed/interrupted
 ├── resolved_command.json            # 最终 argv 数组
 ├── resolved_launch.sh               # 最终环境变量与可复现启动命令
-├── msprobe_config.json              # 当前阶段工具配置；baseline 明确为 instrumentation=none
-├── training_metrics.jsonl           # 逐 step TorchTitan 指标；baseline 必需，其他训练也保留
+├── msprobe_config.json              # 当前阶段工具配置；observation 明确为 instrumentation=none
+├── training_metrics.jsonl           # 逐 step TorchTitan 指标；observation 必需，其他训练也保留
 ├── input_contract/
 │   ├── rank-*.jsonl                 # 每个 rank 实际消费的 step/sample/token 证据
 │   └── summary.json                 # 对 token plan、DP replica 和 step 连续性的校验摘要
 └── trainer_output/                  # TorchTitan 自身输出（仅配置要求时出现）
 ```
 
-并非每个 stage 都会填满所有可选文件。例如 config-check 主要产生 ZIP，baseline 不
+并非每个 stage 都会填满所有可选文件。例如 config-check 主要产生 ZIP，observation 不
 启动 msProbe，dump 才会在 artifact 中产生 `dump.json`/`construct.json`。
 
 ### 4.3 可同步端点证据：`mindstudio_artifacts`
@@ -233,7 +233,10 @@ mindstudio_artifacts/accuracy/<experiment-id>/<topology>/
 
 ```text
 mindstudio_reports/accuracy/<experiment-id>/
-├── <experiment-id>.html             # 当前 workflow 的自包含聚合报告
+├── <experiment-id>.html             # 轻量总索引，只汇总拓扑现象并链接独立报告
+├── single.html                      # single 自包含交互报告
+├── fsdp8.html                       # fsdp8 自包含交互报告；其他拓扑同级排列
+├── <topology>.html                  # 每个已比较拓扑各一份，便于单独下载和阅读
 ├── README.md                        # Markdown 入口
 ├── report.json                      # 机器可读聚合数据
 └── <topology>/
@@ -253,7 +256,7 @@ mindstudio_reports/accuracy/<experiment-id>/
         └── 对应的 compare/trend/overflow 派生结果
 ```
 
-baseline 的 `comparison/` 内容全部由项目基于官方诊断流程生成：
+observation 的 `comparison/` 内容全部由项目基于官方诊断流程生成：
 
 ```text
 comparison/
@@ -277,7 +280,7 @@ comparison/
 ```
 
 名字 `official_compare` 只保留给确实调用官方比较器，或直接索引官方输出的阶段。
-baseline 已使用 `comparison/`，因为 CSV、SVG、summary 均由项目生成。
+observation 使用 `comparison/`，因为 CSV、SVG、summary 均由项目生成。
 
 其他官方派生分析：
 
@@ -587,8 +590,9 @@ ID。`official_files` 对 official raw 逐文件记录相对路径、大小和 S
 
 ## 9. 中文索引应该包含什么
 
-`mindstudio_reports/<experiment-id>/<experiment-id>.html` 和同目录 `README.md`
-是入口，不是另一套官方 analyzer。当前报告重点索引 workflow、topology、状态、
+`mindstudio_reports/accuracy/<experiment-id>/<experiment-id>.html` 和同目录 `README.md`
+是轻量总入口；完整训练观察按 `<topology>.html` 同级拆分，每份均为可单独下载的
+自包含报告，不在总入口重复嵌入所有曲线。它们不是另一套官方 analyzer。当前报告重点索引 workflow、topology、状态、
 官方 summary、runtime log 和分析入口；报告应包含：
 
 1. **实验目的**：迁移、编译精度、性能还是联合定位；

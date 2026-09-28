@@ -13,6 +13,8 @@ import pytest
 from tests.glm5_2_common.cli import (
     display_repository_path,
     LoggedProcessError,
+    print_output_path,
+    print_runtime_log,
     RunAttempt,
     replace_topology,
     reset_output_generation,
@@ -74,6 +76,18 @@ def test_repository_output_recognizes_alternate_mount_root(tmp_path: Path) -> No
     assert display_repository_path(alternate) == (
         "torchtitan-test/mindstudio_runs/accuracy/runtime.log"
     )
+
+
+def test_repository_output_lines_are_complete_and_clickable(capsys) -> None:
+    repository_root = Path(__file__).resolve().parents[2]
+
+    print_runtime_log(repository_root / "runs" / "runtime.log")
+    print_output_path("Report", repository_root / "reports" / "single.html")
+
+    assert capsys.readouterr().out.splitlines() == [
+        "Runtime log: torchtitan-test/runs/runtime.log",
+        "Report: torchtitan-test/reports/single.html",
+    ]
 
 
 def test_experiment_overview_is_human_and_machine_readable(tmp_path: Path) -> None:

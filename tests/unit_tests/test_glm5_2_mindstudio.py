@@ -908,7 +908,7 @@ class TestMindStudioReport(unittest.TestCase):
         report = Path("report")
         self.assertEqual(
             report / "comparison",
-            _comparison_directory(report, "baseline"),
+            _comparison_directory(report, "observation"),
         )
         self.assertEqual(
             report / "official_compare",
@@ -964,17 +964,13 @@ class TestMindStudioReport(unittest.TestCase):
                 "<!doctype html><p>standalone interactive report</p>",
                 encoding="utf-8",
             )
-            (compare / "training_observation.fragment.html").write_text(
-                '<section id="interactive-observation">interactive charts</section>',
-                encoding="utf-8",
-            )
             report_directory = root / "mindstudio_reports" / "experiment"
 
             output = write_report_index(
                 repository_root=root,
                 report_directory=report_directory,
                 experiment_name="experiment",
-                workflow="baseline",
+                workflow="observation",
                 rows=(
                     {
                         "topology": "single",
@@ -994,19 +990,24 @@ class TestMindStudioReport(unittest.TestCase):
                 encoding="utf-8"
             )
             page = output.read_text(encoding="utf-8")
+            topology_page = (report_directory / "single.html").read_text(
+                encoding="utf-8"
+            )
             self.assertIsNone(report["delivery_verdict"])
             self.assertEqual(
                 "later-window-loss-difference",
                 report["training_observations"][0]["diagnostic_symptom"],
             )
             self.assertIn("loss.svg", markdown)
-            self.assertIn("training_metrics_compare.csv", page)
-            self.assertIn("Per-step metric comparison", page)
-            self.assertIn("<svg><text>loss.svg</text></svg>", page)
-            self.assertIn("Interactive training observation", page)
-            self.assertIn("Static SVG fallbacks", page)
-            self.assertIn("runtime.log", page)
-            self.assertNotIn("href=", page)
+            self.assertIn("single.html", markdown)
+            self.assertIn('href="single.html"', page)
+            self.assertNotIn("training_metrics_compare.csv", page)
+            self.assertIn("training_metrics_compare.csv", topology_page)
+            self.assertIn("Per-step metric comparison", topology_page)
+            self.assertIn("<svg><text>loss.svg</text></svg>", topology_page)
+            self.assertIn("Interactive training observation", topology_page)
+            self.assertIn("Static SVG fallbacks", topology_page)
+            self.assertIn("runtime.log", topology_page)
             self.assertNotIn("Official msProbe", page)
             self.assertNotIn("unparsed", page)
 
@@ -1169,7 +1170,7 @@ class TestMindStudioLifecycle(unittest.TestCase):
         self._execution_patch.stop()
         self._toolchain_patch.stop()
 
-    def test_data_cli_resolves_root_before_storage_adoption(self) -> None:
+    def test_data_cli_resolves_root_before_writing_overview(self) -> None:
         config = _experiment()
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory).resolve()
@@ -1183,18 +1184,16 @@ class TestMindStudioLifecycle(unittest.TestCase):
                     "--dump-steps", "0,1", "--repeat", "1",
                 ]),
                 patch(
-                    "tests.glm5_2_mindstudio.workflow._adopt_legacy_accuracy_storage"
-                ) as adopt,
-                patch(
                     "tests.glm5_2_mindstudio.workflow.prepare_shared_fixture",
                     return_value=root / "fixture",
                 ) as prepare,
                 redirect_stdout(io.StringIO()),
             ):
                 run_mindstudio_cli(config, str(script))
-            self.assertEqual(adopt.call_args.args[0], root)
             self.assertEqual(prepare.call_args.args[0], root)
-            overview = root / config.run_root / adopt.call_args.args[1].storage_name
+            overviews = list((root / config.run_root).glob("*/experiment.json"))
+            self.assertEqual(1, len(overviews))
+            overview = overviews[0].parent
             self.assertTrue((overview / "README.md").is_file())
             self.assertTrue((overview / "experiment.json").is_file())
 
@@ -2422,6 +2421,10 @@ class TestMindStudioLifecycle(unittest.TestCase):
                 f".{candidate_run.name}.previous-20260101-000000"
             )
             stale_archive.mkdir()
+            aggregate = root / config.report_root / config.storage_name
+            topology_report = aggregate / f"{topology.slug}.html"
+            topology_report.parent.mkdir(parents=True, exist_ok=True)
+            topology_report.write_text("stale", encoding="utf-8")
 
             reset_selected_outputs(
                 root,
@@ -2438,6 +2441,7 @@ class TestMindStudioLifecycle(unittest.TestCase):
             self.assertFalse(candidate_artifact.exists())
             self.assertFalse(report.exists())
             self.assertFalse(stale_archive.exists())
+            self.assertFalse(topology_report.exists())
 
     @patch(
         "tests.glm5_2_common.cli.process_is_running",

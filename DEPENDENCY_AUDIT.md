@@ -66,6 +66,13 @@ See `tests/glm5_2_graph/docs/NPU_CODEGEN.md` for loader names and validation sco
 | output directory nesting | rerun reset, report links, docs, release discovery and restore |
 | shared interactive report stack | all project-owned HTML generators, report unit tests, offline single-file portability, Release analysis content; external tool-native pages remain untouched |
 
+MindStudio training-observation comparison writes one lightweight experiment
+index plus one self-contained root-level HTML report per topology. A selected
+topology report is part of that topology's compare generation and must be
+invalidated or reset with it. Keep the summary as a readable table rather than
+independent metric cards; detailed evidence stays in interactive charts and
+embedded raw tables.
+
 ## Current GLM graph/parity boundary
 
 The current compatibility baseline is TorchTitan `59899ade`, Turbo
@@ -167,7 +174,7 @@ change:
 - Keep official module/API evidence, end-to-end training evidence, performance
   capture evidence, and compile evidence in separate classes. Tool-stage
   completion is never a numerical or performance verdict.
-- Accuracy diagnosis starts with the `baseline` workflow: fixed inputs and
+- Accuracy diagnosis starts with the `observation` workflow: fixed inputs and
   deterministic setup, normal TorchTitan training, project-owned per-step
   metrics, and no PrecisionDebugger or Monitor hook.  NaN/Inf, first-step,
   and later-window observations select a subsequent Monitor or dump scope;

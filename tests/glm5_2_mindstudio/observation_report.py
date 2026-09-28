@@ -9,7 +9,7 @@ import math
 from pathlib import Path
 from typing import Any, Sequence
 
-from tests.glm5_2_common.reporting import echarts_line, metric_cards, save_panel_report
+from tests.glm5_2_common.reporting import echarts_line, save_panel_report, summary_table
 
 
 def _percent(value: float | None) -> str:
@@ -49,15 +49,40 @@ def write_observation_report(
         areas.append(("After first guidance exceedance", first_exceeded, steps[-1], "#f59e0b"))
     loss_threshold_pct = float(loss["guidance_relative_threshold"]) * 100.0
     grad_threshold = grad["diagnostic_relative_threshold"]
-    cards = metric_cards(
-        [
-            ("Compared steps", str(summary["step_count"]), f"{steps[0]} through {steps[-1]}"),
-            ("Loss mean relative error", _percent(loss["mean_relative_error"]), f"guidance {loss_threshold_pct:g}%"),
-            ("First Loss exceedance", "none" if first_exceeded is None else str(first_exceeded), "diagnostic trigger, not an automatic verdict"),
-            ("Grad Norm mean relative error", _percent(grad["mean_relative_error"]), "diagnostic signal"),
-            ("Reference non-finite", str(nonfinite["reference"]["metric_count"]), "metrics with NaN/Inf"),
-            ("Candidate non-finite", str(nonfinite["candidate"]["metric_count"]), "metrics with NaN/Inf"),
-        ]
+    overview = summary_table(
+        columns=("Metric", "Value", "Interpretation"),
+        rows=(
+            (
+                "Compared step window",
+                f"{steps[0]}-{steps[-1]} ({summary['step_count']} steps)",
+                "The common GPU/NPU observation interval.",
+            ),
+            (
+                "Loss mean relative error",
+                _percent(loss["mean_relative_error"]),
+                f"Compared with {loss_threshold_pct:g}% diagnostic guidance.",
+            ),
+            (
+                "First Loss guidance exceedance",
+                "none" if first_exceeded is None else f"step {first_exceeded}",
+                "A localization trigger, not an automatic delivery verdict.",
+            ),
+            (
+                "Grad Norm mean relative error",
+                _percent(grad["mean_relative_error"]),
+                "Inspect persistence, direction, and nearby Loss behavior.",
+            ),
+            (
+                "GPU NaN/Inf metrics",
+                str(nonfinite["reference"]["metric_count"]),
+                "Number of monitored metrics containing a non-finite value.",
+            ),
+            (
+                "NPU NaN/Inf metrics",
+                str(nonfinite["candidate"]["metric_count"]),
+                "Number of monitored metrics containing a non-finite value.",
+            ),
+        ),
     )
     charts = [
         echarts_line(
@@ -136,5 +161,5 @@ def write_observation_report(
         path=output_directory / "training_observation.html",
         title="GPU / NPU Training Observation",
         description="Interactive offline evidence. Hover for exact values; zoom, pan, select a window, toggle series, inspect data, or export a chart from its toolbox.",
-        sections=[cards, *charts],
+        sections=[overview, *charts],
     )

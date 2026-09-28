@@ -34,15 +34,14 @@ from tests.glm5_2_mindstudio.configuration_check_benchmark import (
     CONFIG as CONFIG_CHECK_CONFIG,
 )
 from tests.glm5_2_mindstudio.migration_benchmark import CONFIG as MIGRATION_CONFIG
-from tests.glm5_2_mindstudio.training_baseline_benchmark import (
-    CONFIG as BASELINE_CONFIG,
+from tests.glm5_2_mindstudio.training_observation_benchmark import (
+    CONFIG as OBSERVATION_CONFIG,
 )
 from tests.glm5_2_mindstudio.training_monitor_benchmark import (
     CONFIG as MONITOR_CONFIG,
 )
 from tests.glm5_2_mindstudio.training_observation import compare_training_metrics
 from tests.glm5_2_mindstudio.workflow import (
-    _adopt_legacy_accuracy_storage,
     _fixture_directory,
     _paths,
     _stage_scoped_config,
@@ -112,7 +111,7 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
         )
         self.assertEqual(
             MIGRATION_CONFIG.storage_name,
-            BASELINE_CONFIG.storage_name,
+            OBSERVATION_CONFIG.storage_name,
         )
         self.assertEqual(
             Path(MIGRATION_CONFIG.storage_name),
@@ -122,13 +121,13 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
             Path("diagnostics/configuration-check"),
             CONFIG_CHECK_CONFIG.operation_relative_root,
         )
-        baseline = _stage_scoped_config(BASELINE_CONFIG, MIGRATION_CONFIG)
+        observation = _stage_scoped_config(OBSERVATION_CONFIG, MIGRATION_CONFIG)
         self.assertEqual(
             Path(MIGRATION_CONFIG.storage_name),
-            baseline.output_relative_root,
+            observation.output_relative_root,
         )
         self.assertTrue(
-            baseline.operation_relative_root.as_posix().startswith(
+            observation.operation_relative_root.as_posix().startswith(
                 "observations/training/s100-"
             )
         )
@@ -147,11 +146,11 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
             ["--capture", "candidate", "--topology", "fsdp8"], remaining
         )
 
-    def test_unified_accuracy_entry_defaults_to_baseline(self) -> None:
+    def test_unified_accuracy_entry_defaults_to_observation(self) -> None:
         stage, remaining = _select_stage(
             ["--capture", "candidate", "--topology", "single"]
         )
-        self.assertEqual("baseline", stage)
+        self.assertEqual("observation", stage)
         self.assertEqual(
             ["--capture", "candidate", "--topology", "single"], remaining
         )
@@ -194,141 +193,6 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                     scoped.formal_fixture_config(topology),
                 ),
             )
-
-    def test_named_experiment_adopts_flattened_fixture_path(self) -> None:
-        experiment = "glm5-debug-bf16-b64-seq128-seed61"
-        scoped = _stage_scoped_config(
-            MIGRATION_CONFIG,
-            MIGRATION_CONFIG,
-            experiment,
-        )
-        topology = scoped.candidate.topology
-        formal = scoped.formal_fixture_config(topology)
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            legacy = (
-                root
-                / formal.fixture_root
-                / experiment
-                / scoped.fixture_subdirectory.replace("inputs/", "fixtures/", 1)
-            )
-            legacy.mkdir(parents=True)
-            (legacy / "fixture.json").write_text(
-                json.dumps({"training": asdict(formal.training)}),
-                encoding="utf-8",
-            )
-
-            _adopt_legacy_accuracy_storage(
-                root,
-                scoped,
-                topologies=(topology,),
-                legacy_storage_name=experiment,
-            )
-            destination = _formal_fixture_directory(root, formal)
-
-            self.assertEqual(
-                _fixture_directory(root, scoped, topology),
-                destination,
-            )
-            self.assertTrue((destination / "fixture.json").is_file())
-            self.assertFalse(legacy.exists())
-
-    def test_named_experiment_adopts_operation_below_topology(self) -> None:
-        experiment = "glm5-debug-bf16-b64-seq128-seed61"
-        scoped = _stage_scoped_config(
-            CONFIG_CHECK_CONFIG,
-            MIGRATION_CONFIG,
-            experiment,
-        )
-        topology = scoped.candidate.topology
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            legacy = (
-                root
-                / scoped.artifact_root
-                / experiment
-                / scoped.operation_relative_root
-                / topology.slug
-            )
-            legacy.mkdir(parents=True)
-            (legacy / "candidate-r1").mkdir()
-
-            _adopt_legacy_accuracy_storage(
-                root,
-                scoped,
-                topologies=(topology,),
-                legacy_storage_name=experiment,
-            )
-            destination = (
-                root
-                / scoped.artifact_root
-                / MIGRATION_CONFIG.storage_name
-                / topology.slug
-                / scoped.operation_relative_root
-            )
-
-            self.assertTrue((destination / "candidate-r1").is_dir())
-            self.assertFalse(legacy.exists())
-
-    def test_training_observation_adopts_previous_baseline_directory(self) -> None:
-        experiment = "glm5-debug-bf16-b64-seq128-seed61"
-        scoped = _stage_scoped_config(
-            BASELINE_CONFIG,
-            MIGRATION_CONFIG,
-            experiment,
-        )
-        topology = scoped.candidate.topology
-        previous_subdirectory = scoped.output_subdirectory.replace(
-            "observations/training/",
-            "observations/baseline/",
-            1,
-        )
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            for configured_root in (
-                scoped.run_root,
-                scoped.artifact_root,
-                scoped.report_root,
-            ):
-                previous = (
-                    root
-                    / configured_root
-                    / scoped.storage_name
-                    / topology.slug
-                    / previous_subdirectory
-                )
-                previous.mkdir(parents=True)
-                (previous / "candidate-r1").mkdir()
-
-            _adopt_legacy_accuracy_storage(
-                root,
-                scoped,
-                topologies=(topology,),
-                legacy_storage_name=experiment,
-            )
-
-            for configured_root in (
-                scoped.run_root,
-                scoped.artifact_root,
-                scoped.report_root,
-            ):
-                destination = (
-                    root
-                    / configured_root
-                    / scoped.storage_name
-                    / topology.slug
-                    / scoped.operation_relative_root
-                )
-                self.assertTrue((destination / "candidate-r1").is_dir())
-                self.assertFalse(
-                    (
-                        root
-                        / configured_root
-                        / scoped.storage_name
-                        / topology.slug
-                        / previous_subdirectory
-                    ).exists()
-                )
 
     def test_diagnostic_case_lives_below_canonical_experiment(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -516,6 +380,9 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
             self.assertIn("First-step Loss Relative Error", interactive)
             self.assertIn("dataZoom", interactive)
             self.assertIn("After first guidance exceedance", interactive)
+            self.assertIn("summary-table", interactive)
+            self.assertIn("Interpretation", interactive)
+            self.assertNotIn("metric-card", interactive)
             self.assertNotIn('<script src="https://cdn', interactive)
             self.assertNotIn('<link rel="stylesheet" href="https://cdn', interactive)
             post_window = summary["loss"]["post_first_threshold_window"]

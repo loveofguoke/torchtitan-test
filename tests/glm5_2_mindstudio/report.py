@@ -148,7 +148,49 @@ def _official_diagnostic_entries(
     return entries
 
 
-def _write_baseline_report_index(
+def _observation_html_document(
+    *,
+    title: str,
+    html_rows: Sequence[str],
+    evidence_sections: Sequence[str] = (),
+) -> str:
+    return (
+        "<!doctype html><html><head><meta charset=\"utf-8\">"
+        f"<title>{html.escape(title)}</title>"
+        "<style>body{font-family:system-ui,sans-serif;margin:32px;color:#172033}"
+        "table{border-collapse:collapse;width:100%;margin-top:20px}"
+        "th,td{border:1px solid #ccd4e0;padding:8px;text-align:left}"
+        "th{background:#eef3fa;position:sticky;top:0}"
+        "code{background:#f4f6f8;padding:2px 4px}"
+        "details{margin:20px 0;border:1px solid #ccd4e0;padding:12px}"
+        "summary{cursor:pointer;font-weight:700}"
+        "pre{white-space:pre-wrap;word-break:break-word;background:#f6f8fa;"
+        "padding:12px;max-height:520px;overflow:auto}"
+        ".chart{overflow:auto;margin:12px 0 28px}.chart svg{max-width:100%;height:auto}"
+        ".table-scroll{max-height:640px;overflow:auto}.metrics{font-size:12px}"
+        "</style></head><body>"
+        f"<h1>{html.escape(title)}</h1>"
+        "<p>Workflow: <code>training observation</code>.</p>"
+        "<p>This report compares uninstrumented GPU reference and NPU candidate "
+        "training metrics. It classifies the observed symptom and does not "
+        "define a universal delivery PASS/FAIL verdict.</p>"
+        "<h2>Training observations</h2><table><thead><tr>"
+        "<th>Topology</th><th>Observed symptom</th><th>Window</th>"
+        "<th>Mean Loss relative error</th>"
+        "<th>First Loss step above guidance</th>"
+        "<th>Mean error after first exceedance</th>"
+        "<th>Subsequent exceedance rate</th><th>Early Loss window</th>"
+        "<th>Mean signed Grad Norm error</th><th>NaN/Inf</th>"
+        "<th>Report</th>"
+        "</tr></thead><tbody>"
+        + "".join(html_rows)
+        + "</tbody></table>"
+        + "".join(evidence_sections)
+        + "</body></html>"
+    )
+
+
+def _write_observation_report_index(
     *,
     report_directory: Path,
     experiment_name: str,
@@ -201,6 +243,7 @@ def _write_baseline_report_index(
                     "candidate_first_nonfinite_metrics"
                 ],
                 "nonfinite_analysis": details.get("nonfinite_analysis"),
+                "topology_report": f"{row['topology']}.html",
                 "evidence": [str(path.resolve()) for path in evidence],
                 "runtime_log": str(Path(row["runtime_log"]).resolve()),
             }
@@ -240,7 +283,6 @@ def _write_baseline_report_index(
         "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     html_rows: list[str] = []
-    evidence_sections: list[str] = []
     for entry in observations:
         runtime_log = Path(entry["runtime_log"])
         runtime_link = _relative_link(runtime_log, report_directory)
@@ -315,6 +357,8 @@ def _write_baseline_report_index(
             else:
                 endpoint_nonfinite_text[role] = "none observed"
         window = f"{entry['first_step']}..{entry['last_step']}"
+        topology_report = report_directory / f"{entry['topology']}.html"
+        topology_report_link = topology_report.name
         markdown_lines.append(
             f"| {entry['topology']} | {entry['diagnostic_symptom']} | "
             f"{window} ({entry['step_count']} steps) | {mean_error_text} | "
@@ -334,10 +378,17 @@ def _write_baseline_report_index(
             f"<td>{html.escape(early_window_text)}</td>"
             f"<td>{html.escape(grad_signed_mean_text)}</td>"
             f"<td>{html.escape(nonfinite_text)}</td>"
-            "<td>embedded below</td>"
+            f'<td><a href="{html.escape(topology_report_link)}">open report</a></td>'
             "</tr>"
         )
-        markdown_lines.extend(("", f"### {entry['topology']} evidence", ""))
+        markdown_lines.extend(
+            (
+                "",
+                f"### {entry['topology']} evidence",
+                "",
+                f"- [Open self-contained topology report]({topology_report_link})",
+            )
+        )
         evidence_by_name: dict[str, Path] = {}
         for raw_path in entry["evidence"]:
             path = Path(raw_path)
@@ -390,7 +441,7 @@ def _write_baseline_report_index(
             else "<p>Observation summary is unavailable.</p>"
         )
         runtime_payload = _embedded_text_file(runtime_log)
-        evidence_sections.append(
+        evidence_section = (
             f"<section><h3>{html.escape(entry['topology'])} evidence</h3>"
             + chart_sections
             + f"<p><strong>NaN/Inf:</strong> {html.escape(nonfinite_text)}<br>"
@@ -409,43 +460,27 @@ def _write_baseline_report_index(
             + runtime_payload
             + "</details></section>"
         )
+        topology_row = html_rows[-1].replace(
+            f'<a href="{html.escape(topology_report_link)}">open report</a>',
+            "self-contained below",
+        )
+        topology_report.write_text(
+            _observation_html_document(
+                title=f"{experiment_name} / {entry['topology']}",
+                html_rows=(topology_row,),
+                evidence_sections=(evidence_section,),
+            ),
+            encoding="utf-8",
+        )
 
     markdown_path = report_directory / "README.md"
     markdown_path.write_text("\n".join(markdown_lines) + "\n", encoding="utf-8")
     html_path = report_directory / f"{experiment_name}.html"
     html_path.write_text(
-        "<!doctype html><html><head><meta charset=\"utf-8\">"
-        f"<title>{html.escape(experiment_name)}</title>"
-        "<style>body{font-family:system-ui,sans-serif;margin:32px;color:#172033}"
-        "table{border-collapse:collapse;width:100%;margin-top:20px}"
-        "th,td{border:1px solid #ccd4e0;padding:8px;text-align:left}"
-        "th{background:#eef3fa;position:sticky;top:0}"
-        "code{background:#f4f6f8;padding:2px 4px}"
-        "details{margin:20px 0;border:1px solid #ccd4e0;padding:12px}"
-        "summary{cursor:pointer;font-weight:700}"
-        "pre{white-space:pre-wrap;word-break:break-word;background:#f6f8fa;"
-        "padding:12px;max-height:520px;overflow:auto}"
-        ".chart{overflow:auto;margin:12px 0 28px}.chart svg{max-width:100%;height:auto}"
-        ".table-scroll{max-height:640px;overflow:auto}.metrics{font-size:12px}"
-        "</style></head><body>"
-        f"<h1>{html.escape(experiment_name)}</h1>"
-        "<p>Workflow: <code>training observation</code>.</p>"
-        "<p>This report compares uninstrumented GPU reference and NPU candidate "
-        "training metrics. It classifies the observed symptom and does not "
-        "define a universal delivery PASS/FAIL verdict.</p>"
-        "<h2>Training observations</h2><table><thead><tr>"
-        "<th>Topology</th><th>Observed symptom</th><th>Window</th>"
-        "<th>Mean Loss relative error</th>"
-        "<th>First Loss step above guidance</th>"
-        "<th>Mean error after first exceedance</th>"
-        "<th>Subsequent exceedance rate</th><th>Early Loss window</th>"
-        "<th>Mean signed Grad Norm error</th><th>NaN/Inf</th>"
-        "<th>Runtime log</th>"
-        "</tr></thead><tbody>"
-        + "".join(html_rows)
-        + "</tbody></table>"
-        + "".join(evidence_sections)
-        + "</body></html>",
+        _observation_html_document(
+            title=experiment_name,
+            html_rows=html_rows,
+        ),
         encoding="utf-8",
     )
     return html_path
@@ -461,8 +496,8 @@ def write_report_index(
     supplemental_report_patterns: Sequence[str],
 ) -> Path:
     report_directory.mkdir(parents=True, exist_ok=True)
-    if workflow == "baseline":
-        return _write_baseline_report_index(
+    if workflow == "observation":
+        return _write_observation_report_index(
             report_directory=report_directory,
             experiment_name=experiment_name,
             rows=rows,
