@@ -1623,6 +1623,7 @@ class TestMindStudioLifecycle(unittest.TestCase):
 
         def emit_dump(_command, *, environment, log_path, **_kwargs) -> None:
             official = Path(environment["GLM5_MINDSTUDIO_OUTPUT"])
+            self.assertTrue(official.is_dir())
             for step in config.dump.steps:
                 dump = official / f"step{step}" / "rank0" / "dump.json"
                 dump.parent.mkdir(parents=True, exist_ok=True)

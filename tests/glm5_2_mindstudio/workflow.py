@@ -1331,8 +1331,13 @@ def capture_official(
         fixture_name=fixture_name,
     )
     checkpoint_path, token_plan_path = resolve_fixture_inputs(root, formal)
-    fixture = json.loads(
-        (fixture_directory / "fixture.json").read_text(encoding="utf-8")
+    exact_fixture_directory = _fixture_directory(root, config, topology)
+    fixture = (
+        _fixture_manifest(root, config, topology)
+        if fixture_directory == exact_fixture_directory
+        else json.loads(
+            (fixture_directory / "fixture.json").read_text(encoding="utf-8")
+        )
     )
     generation = str(fixture["generation_id"])
     compatible_digests = _compatible_experiment_digests(
@@ -1492,6 +1497,9 @@ def capture_official(
     )
     run_directory.mkdir(parents=True, exist_ok=True)
     artifact_directory.mkdir(parents=True, exist_ok=True)
+    # Monitor V2 validates that output_dir already exists when CSVWriterV2 is
+    # constructed; it does not create a missing parent directory itself.
+    official_output.mkdir(parents=True, exist_ok=True)
     input_contract.mkdir(parents=True, exist_ok=True)
     write_json(config_path, official_config)
     write_experiment_overview(
