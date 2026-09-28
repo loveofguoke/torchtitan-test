@@ -406,37 +406,47 @@ def test_fixed_token_mapping_preserves_one_global_batch_across_dp_degrees() -> N
     assert pipeline == list(range(16))
 
 
-def _write_synthetic_token_plan(path: Path) -> tuple[str, ...]:
+def _write_synthetic_token_plan(
+    path: Path,
+    *,
+    steps: int = 1,
+) -> tuple[str, ...]:
     path.mkdir()
     inputs = []
     labels = []
     positions = []
     sample_hashes = []
-    for slot in range(4):
-        input_values = (slot, slot + 1)
-        # Deliberately do not require labels to be a shifted view of inputs.
-        # Packed datasets can cross a document boundary inside one sequence.
-        label_values = (slot + 1, 100 + slot)
-        position_values = (0, 1)
-        input_bytes = struct.pack("<2i", *input_values)
-        label_bytes = struct.pack("<2i", *label_values)
-        position_bytes = struct.pack("<2i", *position_values)
-        inputs.append(input_bytes)
-        labels.append(label_bytes)
-        positions.append(position_bytes)
-        sample_hashes.append(
-            sample_digest_v2(input_bytes, label_bytes, position_bytes)
-        )
+    step_hashes = []
+    for step in range(steps):
+        current_step_hashes = []
+        for slot in range(4):
+            value = step * 1000 + slot
+            input_values = (value, value + 1)
+            # Packed datasets can cross a document boundary inside one
+            # sequence, so labels need not be a shifted view of inputs.
+            label_values = (value + 1, 100 + value)
+            position_values = (0, 1)
+            input_bytes = struct.pack("<2i", *input_values)
+            label_bytes = struct.pack("<2i", *label_values)
+            position_bytes = struct.pack("<2i", *position_values)
+            inputs.append(input_bytes)
+            labels.append(label_bytes)
+            positions.append(position_bytes)
+            sample_hash = sample_digest_v2(
+                input_bytes, label_bytes, position_bytes
+            )
+            sample_hashes.append(sample_hash)
+            current_step_hashes.append(sample_hash)
+        step_hashes.append(step_digest(current_step_hashes))
     (path / "inputs.i32").write_bytes(b"".join(inputs))
     (path / "labels.i32").write_bytes(b"".join(labels))
     (path / "positions.i32").write_bytes(b"".join(positions))
-    step_hashes = (step_digest(sample_hashes),)
     (path / "manifest.json").write_text(
         json.dumps(
             {
                 "schema": TOKEN_PLAN_SCHEMA,
                 "schema_version": TOKEN_PLAN_VERSION,
-                "steps": 1,
+                "steps": steps,
                 "global_batch_size": 4,
                 "sequence_length": 2,
                 "sample_sha256": sample_hashes,
@@ -552,6 +562,47 @@ def test_runtime_input_contract_validates_model_parallel_replicas(
     assert summary["context_parallel_degree"] == context_parallel_degree
     assert summary["token_plan_step_series_sha256"] == step_series_digest(
         plan.step_sha256
+    )
+
+
+def test_runtime_input_contract_accepts_verified_token_plan_prefix(
+    tmp_path: Path,
+) -> None:
+    token_plan_path = tmp_path / "token-plan"
+    sample_hashes = _write_synthetic_token_plan(token_plan_path, steps=2)
+    plan = load_token_plan(token_plan_path)
+    contract_path = tmp_path / "contract"
+    contract_path.mkdir()
+    record = {
+        "global_rank": 0,
+        "dp_rank": 0,
+        "step": 1,
+        "dataloader_batch_size": 4,
+        "global_slots": [0, 1, 2, 3],
+        "sample_sha256": list(sample_hashes[:4]),
+    }
+    (contract_path / "rank-0.jsonl").write_text(
+        json.dumps(record) + "\n", encoding="utf-8"
+    )
+
+    summary = validate_runtime_input_contract(
+        contract_directory=contract_path,
+        plan=plan,
+        steps=1,
+        global_batch_size=4,
+        training_local_batch_size=4,
+        dp_world_size=1,
+        context_parallel_degree=1,
+        tensor_parallel_degree=1,
+        pipeline_parallel_degree=1,
+        node_rank=0,
+        num_processes_per_node=1,
+    )
+
+    assert summary["valid"]
+    assert summary["steps"] == 1
+    assert summary["token_plan_step_series_sha256"] == step_series_digest(
+        plan.step_sha256[:1]
     )
 
 
