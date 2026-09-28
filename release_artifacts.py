@@ -294,6 +294,7 @@ def create_archive(
     *,
     include: tuple[str, ...] = (),
     content: str = "full",
+    scopes: tuple[str, ...] = (),
 ) -> list[Path]:
     """Archive standard outputs for an experiment and explicit dependencies."""
     if content not in {"full", "analysis"}:
@@ -306,6 +307,22 @@ def create_archive(
             for path in find_experiment_paths(repository_root, name)
         )
     )
+    normalized_scopes = normalize_scopes(scopes)
+    if normalized_scopes:
+        scoped_paths: list[Path] = []
+        for path in paths:
+            if not path.is_dir():
+                continue
+            for scope in normalized_scopes:
+                candidate = path.joinpath(*PurePosixPath(scope).parts)
+                if candidate.exists():
+                    scoped_paths.append(candidate)
+        paths = list(dict.fromkeys(scoped_paths))
+        if not paths:
+            requested = ", ".join(normalized_scopes)
+            raise FileNotFoundError(
+                f"no requested scope was found for {experiment!r}: {requested}"
+            )
     progress = ArchiveProgress(
         archive_path,
         None if content == "full" else _analysis_archive_filter,
@@ -327,6 +344,39 @@ def create_archive(
     else:
         progress.finish()
     return paths
+
+
+def normalize_scopes(scopes: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    """Validate experiment-relative transfer scopes and return a stable order."""
+    normalized: list[str] = []
+    for value in scopes:
+        path = PurePosixPath(value.replace("\\", "/"))
+        if not value or path.is_absolute() or ".." in path.parts:
+            raise ValueError(
+                f"scope must be a non-empty experiment-relative path: {value!r}"
+            )
+        canonical = path.as_posix().strip("/")
+        if not canonical or canonical == ".":
+            raise ValueError(
+                f"scope must select a child of the experiment root: {value!r}"
+            )
+        normalized.append(canonical)
+    return tuple(sorted(dict.fromkeys(normalized)))
+
+
+def release_asset_names(
+    experiment: str,
+    scopes: tuple[str, ...] | list[str] = (),
+) -> tuple[str, str]:
+    """Return stable full or scoped archive and checksum asset names."""
+    normalized_scopes = normalize_scopes(scopes)
+    if normalized_scopes:
+        encoded = "\0".join(normalized_scopes).encode("utf-8")
+        scope_digest = hashlib.sha256(encoded).hexdigest()[:12]
+        archive_name = f"{experiment}.scope-{scope_digest}.tar.gz"
+    else:
+        archive_name = f"{experiment}.tar.gz"
+    return archive_name, f"{archive_name}.sha256"
 
 
 def _analysis_archive_filter(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
@@ -485,7 +535,9 @@ def upload(args: argparse.Namespace) -> None:
     repository_root = args.repository_root.resolve()
     experiment = validate_experiment_name(args.experiment)
     with tempfile.TemporaryDirectory(prefix="torchtitan-release-") as temp_dir:
-        archive_path = Path(temp_dir) / f"{experiment}.tar.gz"
+        scopes = normalize_scopes(args.scope)
+        archive_name, _ = release_asset_names(experiment, scopes)
+        archive_path = Path(temp_dir) / archive_name
         include = tuple(validate_experiment_name(name) for name in args.include)
         paths = create_archive(
             repository_root,
@@ -493,6 +545,7 @@ def upload(args: argparse.Namespace) -> None:
             archive_path,
             include=include,
             content=args.content,
+            scopes=scopes,
         )
         checksum_path = write_checksum(archive_path)
         assets = [str(archive_path), str(checksum_path)]
@@ -522,9 +575,15 @@ def upload(args: argparse.Namespace) -> None:
             included = "\n".join(
                 f"- `{path.relative_to(repository_root).as_posix()}`" for path in paths
             )
+            scope_note = (
+                "\n\nTransfer scopes:\n"
+                + "\n".join(f"- `{scope}`" for scope in scopes)
+                if scopes
+                else ""
+            )
             notes = (
                 f"Experiment artifacts for `{experiment}` "
-                f"(content: `{args.content}`).\n\n{included}"
+                f"(content: `{args.content}`).\n\n{included}{scope_note}"
             )
             run_gh(
                 "release",
@@ -540,7 +599,8 @@ def upload(args: argparse.Namespace) -> None:
                 args.repo,
             )
 
-    print(f"Uploaded release: {experiment}")
+    suffix = f" (scopes: {', '.join(scopes)})" if scopes else ""
+    print(f"Uploaded release: {experiment}{suffix}")
 
 
 def validate_archive_members(
@@ -623,8 +683,8 @@ def download(args: argparse.Namespace) -> None:
     destination = args.destination.resolve()
     destination.mkdir(parents=True, exist_ok=True)
     experiment = validate_experiment_name(args.experiment)
-    archive_name = f"{experiment}.tar.gz"
-    checksum_name = f"{archive_name}.sha256"
+    scopes = normalize_scopes(args.scope)
+    archive_name, checksum_name = release_asset_names(experiment, scopes)
 
     with tempfile.TemporaryDirectory(prefix="torchtitan-release-") as temp_dir:
         download_dir = Path(temp_dir)
@@ -655,7 +715,10 @@ def download(args: argparse.Namespace) -> None:
             validate_archive_members(archive, destination, args.overwrite)
             archive.extractall(destination, filter="data")
 
-    print(f"Downloaded and extracted release {experiment} into {destination}")
+    suffix = f" scopes {', '.join(scopes)}" if scopes else ""
+    print(
+        f"Downloaded and extracted release {experiment}{suffix} into {destination}"
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -693,6 +756,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="torchtitan-test root (default: current directory)",
     )
     upload_parser.add_argument(
+        "--scope",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "archive only this experiment-relative subtree; repeat for multiple "
+            "incremental subtrees"
+        ),
+    )
+    upload_parser.add_argument(
         "--content",
         choices=("full", "analysis"),
         default="full",
@@ -720,6 +793,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--insecure",
         action="store_true",
         help="wget only: explicitly disable TLS certificate verification",
+    )
+    download_parser.add_argument(
+        "--scope",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "download the scoped asset produced by matching upload --scope values; "
+            "repeat the exact same values"
+        ),
     )
     download_parser.add_argument(
         "--destination",

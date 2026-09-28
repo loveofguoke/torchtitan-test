@@ -14,11 +14,86 @@ from release_artifacts import (
     EXPERIMENT_ROOTS,
     create_archive,
     find_experiment_paths,
+    normalize_scopes,
+    release_asset_names,
     run_wget,
 )
 
 
 class TestReleaseArtifacts(unittest.TestCase):
+    def test_scoped_archive_collects_only_matching_experiment_subtrees(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            experiment = "migration-example"
+            scope = "fsdp8/observations/monitor/s27/candidate-r1"
+            selected = []
+            for output_root in ("mindstudio_runs", "mindstudio_artifacts"):
+                path = root / output_root / "accuracy" / experiment / scope
+                path.mkdir(parents=True)
+                (path / "manifest.json").write_text("{}", encoding="utf-8")
+                selected.append(
+                    f"{output_root}/accuracy/{experiment}/{scope}/manifest.json"
+                )
+            excluded = (
+                root
+                / "mindstudio_runs"
+                / "accuracy"
+                / experiment
+                / "single"
+                / "observations"
+                / "training"
+            )
+            excluded.mkdir(parents=True)
+            (excluded / "metrics.json").write_text("{}", encoding="utf-8")
+            archive_path = root / "scoped.tar.gz"
+
+            create_archive(
+                root,
+                experiment,
+                archive_path,
+                scopes=(scope,),
+            )
+
+            with tarfile.open(archive_path) as archive:
+                names = set(archive.getnames())
+            for expected in selected:
+                self.assertIn(expected, names)
+            self.assertFalse(any("/single/" in name for name in names))
+
+    def test_scoped_asset_name_is_stable_and_separate_from_full_asset(self) -> None:
+        experiment = "migration-example"
+        scopes = ("fsdp8/observations/monitor/s27/candidate-r1", "fsdp8/report")
+
+        full, full_checksum = release_asset_names(experiment)
+        scoped, scoped_checksum = release_asset_names(experiment, scopes)
+        reversed_scoped, _ = release_asset_names(experiment, tuple(reversed(scopes)))
+
+        self.assertEqual(full, f"{experiment}.tar.gz")
+        self.assertEqual(full_checksum, f"{full}.sha256")
+        self.assertRegex(scoped, rf"^{experiment}\.scope-[0-9a-f]{{12}}\.tar\.gz$")
+        self.assertEqual(scoped_checksum, f"{scoped}.sha256")
+        self.assertEqual(scoped, reversed_scoped)
+
+    def test_scope_rejects_paths_outside_experiment(self) -> None:
+        for scope in ("", ".", "../other", "/absolute"):
+            with self.subTest(scope=scope), self.assertRaises(ValueError):
+                normalize_scopes((scope,))
+
+    def test_scope_cli_is_available_for_upload_and_download(self) -> None:
+        from release_artifacts import build_parser
+
+        parser = build_parser()
+        scope = "fsdp8/observations/monitor/s27/candidate-r1"
+        upload_args = parser.parse_args([
+            "upload", "migration-example", "--scope", scope,
+        ])
+        download_args = parser.parse_args([
+            "download", "migration-example", "--scope", scope,
+        ])
+
+        self.assertEqual(upload_args.scope, [scope])
+        self.assertEqual(download_args.scope, [scope])
+
     def test_archive_reports_progress_for_recursive_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

@@ -288,11 +288,13 @@ Release CLI parameters:
 | `upload --include NAME` | Include another fixture/report/output identity in the same archive; repeat as needed. | none |
 | `upload --repository-root PATH` | Repository root used for output discovery and relative archive paths. | current directory |
 | `upload --content` | `analysis` keeps processed results and compact evidence; `full` preserves every matched file for lossless resume/re-analysis. | `full` |
+| `upload --scope PATH` | Upload only an experiment-relative subtree as a separate incremental asset; repeat for multiple subtrees. | whole experiment |
 | `download <experiment>` | Download, verify, and restore one release archive. | required download action |
 | `download --backend` | `gh` or trusted-network `wget`. | `gh` |
 | `download --insecure` | Explicitly disable TLS certificate verification for wget only. | disabled |
 | `download --destination PATH` | Root below which repository-relative paths are restored. | current directory |
 | `download --overwrite` | Permit archive files to replace existing local files. | disabled |
+| `download --scope PATH` | Download the incremental asset created by the exact same set of upload scopes. | full asset |
 
 If a release with that name already exists, its archive and checksum assets are
 replaced. Download and restore the original repository-relative directories:
@@ -325,3 +327,17 @@ The download refuses to replace existing files by default. Add `--overwrite`
 only when the local copies are intentionally being refreshed. Use
 `--repo OWNER/REPO` before the subcommand to select a repository other than
 `loveofguoke/torchtitan-test`.
+
+After the first full synchronization, transfer only newly generated work by
+selecting its path below the experiment root. Scoped assets coexist with the
+full asset and extraction merges them into the same repository layout:
+
+```bash
+SCOPE='fsdp8/observations/monitor/s27-ec705007/candidate-r1'
+python release_artifacts.py upload "$EXPERIMENT" --scope "$SCOPE"
+python release_artifacts.py download "$EXPERIMENT" \
+  --scope "$SCOPE" --backend wget --insecure
+```
+
+Every upload/download pair must use the exact same complete set of `--scope`
+values. Use `--overwrite` only when refreshing an already downloaded scope.

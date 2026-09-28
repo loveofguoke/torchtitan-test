@@ -329,6 +329,24 @@ python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
 python release_artifacts.py upload "$EXPERIMENT" --content full
 ```
 
+首次交换实验时使用 `--content full`，使两端获得共同 fixture 和已有证据。之后的
+Monitor、定点 dump、compare 等诊断不应反复传输整个实验；用实验根目录下的相对路径
+作为 `--scope`，只发布本次新增子树：
+
+```bash
+SCOPE='fsdp8/observations/monitor/s27-ec705007/candidate-r1'
+
+# 产生新证据的一端
+python release_artifacts.py upload "$EXPERIMENT" --scope "$SCOPE"
+
+# 另一端：scope 必须与上传时完全一致；内容合并回同一个实验目录
+python release_artifacts.py download "$EXPERIMENT" \
+  --scope "$SCOPE" --backend wget --insecure
+```
+
+同一组 scope 对应独立的 Release 资产，不覆盖全量资产。若接收端已经存在同名文件且
+确实需要刷新，再加 `--overwrite`；新生成的诊断子树通常不需要。
+
 adapter 解析所选 step/rank 的官方输出，再运行等价于：
 
 ```bash
