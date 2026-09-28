@@ -351,12 +351,14 @@ def interactive_table(
         "show_index": False,
         "header_filters": True,
         "sizing_mode": "stretch_width",
+        "header_align": "left",
+        "text_align": "left",
         # Long evidence stays in one filterable table, but scrolls inside a
         # bounded viewport instead of expanding the whole report page.
         "height": 720,
-        # Size columns from their content. Do not stretch short fields across
-        # the remaining viewport; wide evidence can scroll horizontally.
-        "layout": "fit_data_fill",
+        # Keep content-sized columns. fit_data_fill adds a synthetic-looking
+        # trailing fill area, while fit_data_stretch makes short fields huge.
+        "layout": "fit_data",
     }
     if pagination:
         options.update(pagination="local", page_size=page_size)
@@ -477,10 +479,11 @@ def save_panel_report(
     pn, inline, _ = _stack()
     css = """
     :root { --report-blue:#2563eb; --report-ink:#172033; --report-muted:#64748b; }
-    body { background:#f6f8fb; color:var(--report-ink); }
-    html, body { margin:0; padding:0; }
-    .report-shell { width:calc(100% - 64px) !important; max-width:none;
-      box-sizing:border-box; margin:32px auto 64px !important;
+    html { margin:0; padding:0; background:#f6f8fb; }
+    body { margin:0; padding:32px 48px 64px; box-sizing:border-box;
+      background:#f6f8fb; color:var(--report-ink); }
+    .report-shell { width:100% !important; max-width:none;
+      box-sizing:border-box; margin:0 !important;
       padding:44px 52px 68px !important; background:#fff;
       border:1px solid #dce3ec; border-radius:14px;
       box-shadow:0 6px 24px #17203312; }
@@ -502,8 +505,9 @@ def save_panel_report(
     .tabulator { font-variant-numeric:tabular-nums; }
     .bk-panel-models-layout-Card { margin:12px 0; }
     @media (max-width:900px) {
-      .report-shell { width:calc(100% - 28px) !important;
-        margin:14px auto 36px !important; padding:28px 22px 44px !important; }
+      body { padding:14px; }
+      .report-shell { width:100% !important; margin:0 !important;
+        padding:28px 22px 44px !important; }
     }
     """
     header = pn.pane.HTML(
