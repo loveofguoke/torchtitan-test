@@ -3298,6 +3298,7 @@ def compare_official(
                 reference_official=reference_artifact / "official",
                 candidate_official=candidate_artifact / "official",
                 output_directory=compare_directory,
+                monitor_config=asdict(config.monitor),
             )
             runtime_log.write_text(
                 "Rendered project-owned analysis of reference and candidate "

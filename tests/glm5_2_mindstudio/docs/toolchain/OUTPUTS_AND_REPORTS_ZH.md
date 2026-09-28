@@ -433,8 +433,12 @@ mindstudio_reports/accuracy/<experiment-id>/<topology>/<training-profile>/observ
 Monitor V2 当前只输出 CSV，没有官方 cross-device comparator 或 TensorBoard。
 `monitor_report.html` 是项目从官方 CSV 派生的自包含交互分析：按 rank、step、参数和
 `unreduced/reduced` scope 对齐，以热力图展示 rank × step 最大误差，列出 Top-K
-异常，并绘制异常 step 的逐层梯度曲线。报告还给出 reduce 前后差异的诊断方向，
-并将完整明细作为可筛选、排序、分页的表格内嵌到单个 HTML 中。
+异常，并分别绘制异常 step 的逐层梯度 Norm 与 min/mean/max 统计曲线。报告只对同一
+rank、step、参数的 `unreduced`（reduce 前）和 `reduced`（reduce 后、optimizer.step
+前）记录做成对判断；不会从一条 reduced 记录推断“reduce 前异常”。当 GPU norm 接近
+0 时，原始相对误差仅保留作证据，排序和热力图改用有界尺度化误差并同时展示绝对误差，
+避免除以近零值产生的巨大百分比主导结论。所有明细表不分页，列头支持按 rank、step、
+scope 和数值筛选、排序。
 `aligned_metrics.csv` 保存全部对齐结果，`anomaly_summary.csv` 保存可复制的异常摘要，
 `rank_step_summary.csv` 保存异常 step/rank 及 reduce 前后定界提示，`analysis.json`
 为机器可读分析。这些文件不生成项目 PASS/FAIL；它们用于选定下一步

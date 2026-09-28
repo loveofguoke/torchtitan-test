@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tests.glm5_2_mindstudio.monitor_analysis import (
+    _rank_step_summary,
     align_monitor_rows,
     read_monitor_rows,
     write_monitor_analysis,
@@ -40,6 +41,50 @@ class MonitorAnalysisTest(unittest.TestCase):
         self.assertEqual("matched", rows[0]["match_status"])
         self.assertEqual(3.0, rows[0]["signed_norm_difference"])
         self.assertEqual(1.5, rows[0]["relative_norm_error"])
+        self.assertEqual(0.6, rows[0]["scaled_norm_error"])
+
+    def test_reduce_localization_pairs_the_same_parameter(self) -> None:
+        rows = align_monitor_rows(
+            [
+                {
+                    "rank": 0, "monitor": "weight_grad", "vpp_stage": "0",
+                    "step": "22", "module_name": "p", "scope": scope,
+                    "micro_step": "1", "norm": reference,
+                }
+                for scope, reference in (("unreduced", "10"), ("reduced", "10"))
+            ],
+            [
+                {
+                    "rank": 0, "monitor": "weight_grad", "vpp_stage": "0",
+                    "step": "22", "module_name": "p", "scope": scope,
+                    "micro_step": "1", "norm": candidate,
+                }
+                for scope, candidate in (("unreduced", "10.1"), ("reduced", "20"))
+            ],
+        )
+
+        summary = _rank_step_summary(rows)
+
+        self.assertEqual("reduced", summary[0]["worst_scope"])
+        self.assertIn("reduce 后误差明显放大", summary[0]["localization_hint"])
+
+    def test_near_zero_reference_keeps_absolute_and_bounded_scaled_error(self) -> None:
+        rows = align_monitor_rows(
+            [{
+                "rank": 0, "monitor": "weight_grad", "vpp_stage": "0",
+                "step": "22", "module_name": "p", "scope": "reduced",
+                "micro_step": "1", "norm": "1e-14",
+            }],
+            [{
+                "rank": 0, "monitor": "weight_grad", "vpp_stage": "0",
+                "step": "22", "module_name": "p", "scope": "reduced",
+                "micro_step": "1", "norm": "1e-6",
+            }],
+        )
+
+        self.assertTrue(rows[0]["reference_norm_near_zero"])
+        self.assertAlmostEqual(1e-6, rows[0]["absolute_norm_difference"])
+        self.assertAlmostEqual(1.0, rows[0]["scaled_norm_error"])
 
     def test_report_uses_official_csv_and_writes_machine_readable_tables(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -65,10 +110,6 @@ class MonitorAnalysisTest(unittest.TestCase):
             with (
                 patch(
                     "tests.glm5_2_mindstudio.monitor_analysis.section_heading",
-                    return_value=object(),
-                ),
-                patch(
-                    "tests.glm5_2_mindstudio.monitor_analysis.summary_table",
                     return_value=object(),
                 ),
                 patch(

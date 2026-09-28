@@ -18,7 +18,6 @@ from tests.glm5_2_common.reporting import (
     interactive_table,
     save_panel_report,
     section_heading,
-    summary_table,
 )
 
 from .artifacts import write_json
@@ -34,6 +33,7 @@ IDENTITY_COLUMNS = (
     "micro_step",
 )
 METRIC_COLUMNS = ("min", "max", "mean", "norm", "nans")
+NEAR_ZERO_EPSILON = 1e-8
 
 
 def _float(value: Any) -> float | None:
@@ -118,10 +118,21 @@ def align_monitor_rows(
                 row[f"relative_{metric}_error"] = abs(signed) / max(
                     abs(reference_value), 1e-12
                 )
+                scale = max(
+                    abs(reference_value),
+                    abs(candidate_value),
+                    NEAR_ZERO_EPSILON,
+                )
+                row[f"scaled_{metric}_error"] = abs(signed) / scale
+                row[f"reference_{metric}_near_zero"] = (
+                    abs(reference_value) <= NEAR_ZERO_EPSILON
+                )
             else:
                 row[f"signed_{metric}_difference"] = None
                 row[f"absolute_{metric}_difference"] = None
                 row[f"relative_{metric}_error"] = None
+                row[f"scaled_{metric}_error"] = None
+                row[f"reference_{metric}_near_zero"] = None
         aligned.append(row)
     return aligned
 
@@ -138,11 +149,14 @@ def _write_aligned_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 def _top_anomalies(rows: list[dict[str, Any]], limit: int = 50) -> list[dict[str, Any]]:
     comparable = [
         row for row in rows
-        if row.get("relative_norm_error") is not None
+        if row.get("scaled_norm_error") is not None
     ]
     return sorted(
         comparable,
-        key=lambda row: float(row["relative_norm_error"]),
+        key=lambda row: (
+            float(row["scaled_norm_error"]),
+            float(row.get("absolute_norm_difference") or 0.0),
+        ),
         reverse=True,
     )[:limit]
 
@@ -158,7 +172,7 @@ def _layer_charts(rows: list[dict[str, Any]], anomalies: list[dict[str, Any]]) -
     ranked = sorted(
         groups.items(),
         key=lambda item: max(
-            (float(row.get("relative_norm_error") or 0.0) for row in item[1]),
+            (float(row.get("scaled_norm_error") or 0.0) for row in item[1]),
             default=0.0,
         ),
         reverse=True,
@@ -194,32 +208,78 @@ def _layer_charts(rows: list[dict[str, Any]], anomalies: list[dict[str, Any]]) -
                 height=760,
             )
         )
+        charts.append(
+            echarts_line(
+                title=(
+                    f"异常 Step {focus_step}：Rank {rank} / VPP {vpp_stage} / {scope} "
+                    "逐层梯度统计"
+                ),
+                subtitle=(
+                    "Monitor 不保存完整梯度 Tensor；这里展示官方 CSV 中的 "
+                    "min/mean/max 统计，用于观察分布范围和整体偏移。"
+                ),
+                x_values=[str(row["module_name"]) for row in ordered],
+                series=tuple(
+                    (
+                        f"{role} {metric}",
+                        [row.get(f"{prefix}_{metric}") for row in ordered],
+                        color,
+                    )
+                    for role, prefix, colors in (
+                        ("GPU", "reference", ("#1d4ed8", "#2563eb", "#60a5fa")),
+                        ("NPU", "candidate", ("#c2410c", "#ea580c", "#fb923c")),
+                    )
+                    for metric, color in zip(("min", "mean", "max"), colors, strict=True)
+                ),
+                x_name="反向层/参数顺序 / Backward parameter order",
+                y_name="梯度统计值 / Gradient statistic",
+                height=760,
+            )
+        )
     return charts
 
 
 def _rank_step_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
-        if row.get("monitor") == "weight_grad" and row.get("relative_norm_error") is not None:
+        if row.get("monitor") == "weight_grad" and row.get("scaled_norm_error") is not None:
             groups[(str(row["rank"]), str(row["step"]))].append(row)
     summary: list[dict[str, Any]] = []
     for (rank, step), group in groups.items():
-        worst = max(group, key=lambda row: float(row["relative_norm_error"]))
-        scopes = {
-            str(scope): max(
-                (float(row["relative_norm_error"]) for row in group if row.get("scope") == scope),
-                default=None,
-            )
-            for scope in {row.get("scope") for row in group}
+        worst = max(group, key=lambda row: float(row["scaled_norm_error"]))
+        paired_identity = (
+            str(worst.get("monitor", "")),
+            str(worst.get("vpp_stage", "")),
+            str(worst.get("module_name", "")),
+            str(worst.get("micro_step", "")),
+        )
+        paired = {
+            str(row.get("scope")): row
+            for row in group
+            if (
+                str(row.get("monitor", "")),
+                str(row.get("vpp_stage", "")),
+                str(row.get("module_name", "")),
+                str(row.get("micro_step", "")),
+            ) == paired_identity
         }
-        unreduced = scopes.get("unreduced")
-        reduced = scopes.get("reduced")
+        unreduced_row = paired.get("unreduced")
+        reduced_row = paired.get("reduced")
+        unreduced = (
+            float(unreduced_row["scaled_norm_error"])
+            if unreduced_row is not None else None
+        )
+        reduced = (
+            float(reduced_row["scaled_norm_error"])
+            if reduced_row is not None else None
+        )
         if unreduced is not None and reduced is not None:
-            localization = (
-                "reduce 前已异常：优先检查反向计算、累积和参数层"
-                if unreduced >= reduced * 0.5
-                else "reduce 后明显放大：优先检查通信、规约后处理和裁剪"
-            )
+            if reduced > max(unreduced * 2.0, 0.05):
+                localization = "同参数 reduce 后误差明显放大：检查通信、规约后处理和裁剪"
+            elif unreduced > max(reduced * 2.0, 0.05):
+                localization = "同参数 reduce 前误差更大、规约后收敛：检查反向累积和分片"
+            else:
+                localization = "同参数 reduce 前后均有相近差异：优先检查上游反向计算"
         elif unreduced is not None:
             localization = "仅采集到 reduce 前梯度"
         elif reduced is not None:
@@ -230,7 +290,13 @@ def _rank_step_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             {
                 "rank": rank,
                 "step": step,
-                "max_relative_norm_error": float(worst["relative_norm_error"]),
+                "max_scaled_norm_error": float(worst["scaled_norm_error"]),
+                "max_absolute_norm_difference": float(
+                    worst.get("absolute_norm_difference") or 0.0
+                ),
+                "reference_norm_near_zero": bool(
+                    worst.get("reference_norm_near_zero")
+                ),
                 "worst_parameter": worst["module_name"],
                 "worst_scope": worst["scope"],
                 "unreduced_max_error": unreduced,
@@ -240,7 +306,10 @@ def _rank_step_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         )
     return sorted(
         summary,
-        key=lambda row: float(row["max_relative_norm_error"]),
+        key=lambda row: (
+            float(row["max_scaled_norm_error"]),
+            float(row["max_absolute_norm_difference"]),
+        ),
         reverse=True,
     )
 
@@ -257,20 +326,20 @@ def _rank_step_heatmap(rows: list[dict[str, Any]]) -> Any | None:
         (
             x_index[str(row["step"])],
             y_index[str(row["rank"])],
-            100.0 * float(row["max_relative_norm_error"]),
+            100.0 * float(row["max_scaled_norm_error"]),
         )
         for row in summary
     ]
     return echarts_heatmap(
-        title="Rank × Step 最大梯度 Norm 相对误差",
+        title="Rank × Step 最大梯度 Norm 尺度化误差",
         subtitle=(
-            "每个格子取该 rank、step 下所有参数与 reduced/unreduced scope 的最大相对误差；"
+            "每个格子取该 rank、step 下所有参数与 reduced/unreduced scope 的最大尺度化误差；"
             "用于先发现局部尖刺，再进入下方逐层曲线。颜色是定位信号，不是通过阈值。"
         ),
         x_values=steps,
         y_values=ranks,
         values=values,
-        value_name="最大相对误差 / %",
+        value_name="最大尺度化误差 / %",
     )
 
 
@@ -279,6 +348,7 @@ def write_monitor_analysis(
     reference_official: Path,
     candidate_official: Path,
     output_directory: Path,
+    monitor_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a self-contained project analysis from official Monitor V2 CSVs."""
 
@@ -310,6 +380,7 @@ def write_monitor_analysis(
         "focus_step": anomalies[0]["step"] if anomalies else None,
         "top_anomalies": anomalies,
         "rank_step_summary": rank_step_summary,
+        "monitor_config": monitor_config or {},
     }
     output_directory.mkdir(parents=True, exist_ok=True)
     _write_aligned_csv(output_directory / "aligned_metrics.csv", aligned)
@@ -324,58 +395,60 @@ def write_monitor_analysis(
             "CSV 是 msProbe Monitor V2 官方输出；本页面的跨端对齐、误差和图表由项目生成，"
             "只用于定位，不构成官方 PASS/FAIL 判定。",
         ),
-        summary_table(
-            columns=("项目 / Item", "数值 / Value", "含义 / Interpretation"),
+        interactive_table(
             rows=(
-                ("GPU rows", str(len(reference_rows)), "GPU 官方 CSV 行数"),
-                ("NPU rows", str(len(candidate_rows)), "NPU 官方 CSV 行数"),
-                ("Matched", str(matched), "rank/step/module/scope 均匹配"),
-                ("GPU only", str(reference_only), "仅 GPU 出现，需检查结构或采集覆盖"),
-                ("NPU only", str(candidate_only), "仅 NPU 出现，需检查结构或采集覆盖"),
-                ("NaN rows", str(nonfinite_rows), "两端 nans 指标非零的匹配行"),
+                {"item": "GPU rows", "value": len(reference_rows), "meaning": "GPU 官方 CSV 行数"},
+                {"item": "NPU rows", "value": len(candidate_rows), "meaning": "NPU 官方 CSV 行数"},
+                {"item": "Matched", "value": matched, "meaning": "rank/step/module/scope 均匹配"},
+                {"item": "GPU only", "value": reference_only, "meaning": "仅 GPU 出现，需检查结构或采集覆盖"},
+                {"item": "NPU only", "value": candidate_only, "meaning": "仅 NPU 出现，需检查结构或采集覆盖"},
+                {"item": "NaN rows", "value": nonfinite_rows, "meaning": "两端 nans 指标非零的匹配行"},
             ),
+            columns=("item", "value", "meaning"),
+            pagination=False,
+        ),
+        section_heading(
+            "Monitor 采集配置 / Capture configuration",
+            "这是本次 TrainerMonitorV2 的实际配置。weight_grad 同时产生 "
+            "unreduced（reduce 前）与 reduced（reduce 后、optimizer.step 前）统计。",
+        ),
+        interactive_table(
+            rows=tuple(
+                {"option": str(key), "value": json.dumps(value, ensure_ascii=False)}
+                for key, value in (monitor_config or {}).items()
+            ) or ({"option": "配置", "value": "未记录"},),
+            columns=("option", "value"),
+            pagination=False,
         ),
         section_heading(
             "Step 与 Rank 定界 / Step and rank localization",
             "先确认异常是否只发生在单个 step/rank，还是跨 step/rank 持续传播。",
         ),
         *( [heatmap] if heatmap is not None else [] ),
-        summary_table(
+        interactive_table(
+            rows=rank_step_summary,
             columns=(
-                "Step", "Rank", "最大误差", "最异常参数", "Scope", "Reduce 前后判断",
+                "step", "rank", "max_scaled_norm_error",
+                "max_absolute_norm_difference", "reference_norm_near_zero",
+                "worst_parameter", "worst_scope", "unreduced_max_error",
+                "reduced_max_error", "localization_hint",
             ),
-            rows=tuple(
-                (
-                    str(row["step"]),
-                    str(row["rank"]),
-                    f"{100.0 * float(row['max_relative_norm_error']):.4f}%",
-                    str(row["worst_parameter"]),
-                    str(row["worst_scope"]),
-                    str(row["localization_hint"]),
-                )
-                for row in rank_step_summary[:50]
-            ) or (("-", "-", "-", "没有可比较数据", "-", "-"),),
+            pagination=False,
         ),
         section_heading(
             "自动提取异常 / Automatically extracted anomalies",
-            "按梯度 norm 相对误差排序，用于选择异常 step、rank、scope 和参数。",
+            "按尺度化梯度 norm 误差排序；GPU norm 接近零时同时查看绝对误差，"
+            "避免把除以近零值产生的巨大百分比误判为同等严重的问题。",
         ),
-        summary_table(
+        interactive_table(
+            rows=anomalies,
             columns=(
-                "Step", "Rank", "Scope", "Parameter", "GPU norm", "NPU norm", "Relative error",
+                "step", "rank", "scope", "module_name", "reference_norm",
+                "candidate_norm", "signed_norm_difference",
+                "absolute_norm_difference", "scaled_norm_error",
+                "reference_norm_near_zero", "relative_norm_error",
             ),
-            rows=tuple(
-                (
-                    str(row["step"]),
-                    str(row["rank"]),
-                    str(row["scope"]),
-                    str(row["module_name"]),
-                    f"{float(row['reference_norm']):.6g}",
-                    f"{float(row['candidate_norm']):.6g}",
-                    f"{100.0 * float(row['relative_norm_error']):.4f}%",
-                )
-                for row in anomalies
-            ) or (("-", "-", "-", "没有可比较 norm", "-", "-", "-"),),
+            pagination=False,
         ),
         section_heading(
             "异常 Step 逐层梯度 / Per-layer gradients at the anomalous step",
@@ -384,7 +457,8 @@ def write_monitor_analysis(
         *_layer_charts(aligned, anomalies),
         section_heading(
             "完整对齐明细 / Full aligned Monitor table",
-            "完整 GPU/NPU CSV 对齐结果已内嵌，可按任意列筛选、排序和分页；"
+            "完整 GPU/NPU CSV 对齐结果已连续内嵌，不分页；可在列头按 rank、step、"
+            "scope、数值大小等任意列筛选和排序；"
             "aligned_metrics.csv 同时保留便于脚本处理。",
         ),
         interactive_table(
@@ -392,10 +466,13 @@ def write_monitor_analysis(
             columns=(
                 "rank", "monitor", "step", "vpp_stage", "scope", "micro_step",
                 "module_name", "match_status", "reference_norm", "candidate_norm",
-                "signed_norm_difference", "relative_norm_error", "reference_mean",
+                "signed_norm_difference", "absolute_norm_difference",
+                "scaled_norm_error", "reference_norm_near_zero",
+                "relative_norm_error", "reference_mean",
                 "candidate_mean", "reference_min", "candidate_min", "reference_max",
                 "candidate_max", "reference_nans", "candidate_nans",
             ),
+            pagination=False,
         ),
     ]
     report = save_panel_report(

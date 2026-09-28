@@ -334,8 +334,9 @@ def interactive_table(
     rows: Sequence[dict[str, Any]],
     columns: Sequence[str],
     page_size: int = 30,
+    pagination: bool = True,
 ) -> Any:
-    """Render a filterable, sortable, offline table with local pagination."""
+    """Render a filterable, sortable, offline table."""
 
     pn, _, _ = _stack()
     import pandas as pd
@@ -344,16 +345,16 @@ def interactive_table(
         [{column: row.get(column) for column in columns} for row in rows],
         columns=list(columns),
     )
-    return pn.widgets.Tabulator(
-        frame,
-        show_index=False,
-        pagination="local",
-        page_size=page_size,
-        header_filters=True,
-        sizing_mode="stretch_width",
-        height=760,
-        layout="fit_data_stretch",
-    )
+    options: dict[str, Any] = {
+        "show_index": False,
+        "header_filters": True,
+        "sizing_mode": "stretch_width",
+        "height": 760 if pagination else min(6000, max(760, 36 * (len(frame) + 2))),
+        "layout": "fit_data_stretch",
+    }
+    if pagination:
+        options.update(pagination="local", page_size=page_size)
+    return pn.widgets.Tabulator(frame, **options)
 
 
 def section_heading(title: str, description: str) -> Any:
