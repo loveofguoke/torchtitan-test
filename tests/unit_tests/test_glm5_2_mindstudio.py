@@ -48,7 +48,9 @@ from tests.glm5_2_mindstudio.msprobe_adapter import (
 )
 from tests.glm5_2_mindstudio.report import write_report_index
 from tests.glm5_2_mindstudio.workflow import (
+    _capture_is_complete,
     _capture_toolchain_compatibility,
+    _compatible_experiment_digests,
     _comparison_directory,
     _comparison_is_current,
     _comparison_output_index,
@@ -230,6 +232,32 @@ def _write_fixture_and_capture(
 
 
 class TestMindStudioConfig(unittest.TestCase):
+    def test_observation_accepts_existing_training_capture_identity(self) -> None:
+        config = _experiment(workflow="observation")
+        topology = config.candidate.topology
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            artifact = _write_fixture_and_capture(root, config, "candidate")
+            manifest_path = artifact / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            legacy = _experiment_digest(
+                replace(config, workflow="baseline"),  # type: ignore[arg-type]
+                topology,
+                "candidate",
+            )
+            manifest["experiment_digest"] = legacy
+            write_json(manifest_path, manifest)
+
+            self.assertTrue(
+                _capture_is_complete(
+                    artifact,
+                    experiment_digests=_compatible_experiment_digests(
+                        config, topology, "candidate"
+                    ),
+                    fixture_generation_id="fixture-a",
+                )
+            )
+
     def test_dump_config_is_the_official_precision_debugger_schema(self) -> None:
         dump = MsProbeDumpConfig(
             task="tensor",

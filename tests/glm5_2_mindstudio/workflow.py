@@ -255,6 +255,24 @@ def _experiment_digest(
     )
 
 
+def _compatible_experiment_digests(
+    config: MindStudioExperimentConfig,
+    topology: ParallelTopology,
+    role: Role,
+) -> tuple[str, ...]:
+    """Return current and schema-compatible historical capture identities."""
+
+    current = _experiment_digest(config, topology, role)
+    if config.workflow != "observation":
+        return (current,)
+    legacy = _experiment_digest(
+        replace(config, workflow="baseline"),  # type: ignore[arg-type]
+        topology,
+        role,
+    )
+    return tuple(dict.fromkeys((current, legacy)))
+
+
 def _optional_file_identity(path: Path | None) -> dict[str, str] | None:
     if path is None:
         return None
@@ -591,13 +609,16 @@ def _capture_toolchain_compatibility(
 def _capture_is_complete(
     artifact_directory: Path,
     *,
-    experiment_digest: str,
+    experiment_digests: Sequence[str],
     fixture_generation_id: str,
 ) -> bool:
-    if not artifact_is_complete(
-        artifact_directory,
-        experiment_digest=experiment_digest,
-        fixture_generation_id=fixture_generation_id,
+    if not any(
+        artifact_is_complete(
+            artifact_directory,
+            experiment_digest=digest,
+            fixture_generation_id=fixture_generation_id,
+        )
+        for digest in experiment_digests
     ):
         return False
     try:
@@ -1264,7 +1285,10 @@ def capture_official(
     checkpoint_path, token_plan_path = resolve_fixture_inputs(root, formal)
     fixture = _fixture_manifest(root, config, topology)
     generation = str(fixture["generation_id"])
-    digest = _experiment_digest(config, topology, role)
+    compatible_digests = _compatible_experiment_digests(
+        config, topology, role
+    )
+    digest = compatible_digests[0]
     run_directory, artifact_directory, report_directory = _paths(
         root, config, topology, role, repeat
     )
@@ -1276,7 +1300,7 @@ def capture_official(
         )
     if not dry_run and _capture_is_complete(
         artifact_directory,
-        experiment_digest=digest,
+        experiment_digests=compatible_digests,
         fixture_generation_id=generation,
     ):
         print_output_path("Skip completed official capture", artifact_directory)
@@ -2510,11 +2534,16 @@ def compare_official(
     artifact_inputs: dict[str, Any] = {}
     capture_compatibility: dict[str, dict[str, Any]] = {}
     for selected_role, artifact in selected_artifacts.items():
-        digest = _experiment_digest(config, topology, selected_role)
-        if not artifact_is_complete(
-            artifact,
-            experiment_digest=digest,
-            fixture_generation_id=generation,
+        compatible_digests = _compatible_experiment_digests(
+            config, topology, selected_role
+        )
+        if not any(
+            artifact_is_complete(
+                artifact,
+                experiment_digest=digest,
+                fixture_generation_id=generation,
+            )
+            for digest in compatible_digests
         ):
             raise MindStudioArtifactError(
                 f"official capture is missing, stale, or corrupt: {artifact}"
