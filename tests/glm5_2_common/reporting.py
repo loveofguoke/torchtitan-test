@@ -186,15 +186,33 @@ def summary_table(
     """Render a compact summary table without external table dependencies."""
 
     pn, _, _ = _stack()
-    head = "".join(f"<th>{html.escape(column)}</th>" for column in columns)
+    header_style = (
+        "background:#eaf1fb;color:#24324a;font-size:20px;font-weight:700;"
+        "padding:18px 20px;text-align:left;border:1px solid #bcc8d8"
+    )
+    cell_style = (
+        "background:#fff;color:#172033;font-size:19px;line-height:1.55;"
+        "padding:17px 20px;text-align:left;border:1px solid #ccd5e2;"
+        "font-variant-numeric:tabular-nums"
+    )
+    head = "".join(
+        f'<th style="{header_style}">{html.escape(column)}</th>'
+        for column in columns
+    )
     body = "".join(
         "<tr>"
-        + "".join(f"<td>{html.escape(value)}</td>" for value in row)
+        + "".join(
+            f'<td style="{cell_style}">{html.escape(value)}</td>'
+            for value in row
+        )
         + "</tr>"
         for row in rows
     )
     return pn.pane.HTML(
-        '<div class="summary-table-wrap"><table class="summary-table">'
+        '<div class="summary-table-wrap" style="width:100%;overflow-x:auto;'
+        'margin:12px 0 30px"><table class="summary-table" style="width:100%;'
+        'border-collapse:collapse;background:#fff;border:1px solid #bcc8d8;'
+        'box-shadow:0 3px 12px #17203314">'
         f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>",
         sizing_mode="stretch_width",
     )
@@ -205,9 +223,13 @@ def section_heading(title: str, description: str) -> Any:
 
     pn, _, _ = _stack()
     return pn.pane.HTML(
-        '<section class="report-section"><h2>'
+        '<section class="report-section" style="margin:46px 0 20px;'
+        'border-left:7px solid #2563eb;background:#edf4ff;padding:20px 26px;'
+        'border-radius:9px"><h2 style="color:#172033;font-size:32px;'
+        'line-height:1.3;margin:0 0 9px">'
         + html.escape(title)
-        + "</h2><p>"
+        + '</h2><p style="color:#526178;font-size:19px;line-height:1.65;'
+        'margin:0">'
         + html.escape(description)
         + "</p></section>",
         sizing_mode="stretch_width",
@@ -246,8 +268,14 @@ def save_panel_report(
     .bk-panel-models-layout-Card { margin:12px 0; }
     """
     header = pn.pane.HTML(
-        '<header><h1 class="report-title">' + html.escape(title) + "</h1>"
-        '<p class="report-description">' + html.escape(description) + "</p></header>",
+        '<header style="margin:0 0 30px"><h1 class="report-title" '
+        'style="color:#172033;font-size:44px;line-height:1.25;font-weight:750;'
+        'margin:0 0 14px">'
+        + html.escape(title)
+        + '</h1><p class="report-description" style="color:#526178;'
+        'font-size:20px;line-height:1.7;margin:0">'
+        + html.escape(description)
+        + "</p></header>",
         sizing_mode="stretch_width",
     )
     body = pn.Column(header, *sections, css_classes=["report-shell"], sizing_mode="stretch_width")
