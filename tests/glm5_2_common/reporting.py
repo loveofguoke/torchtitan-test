@@ -435,7 +435,7 @@ def save_panel_report(
     :root { --report-blue:#2563eb; --report-ink:#172033; --report-muted:#64748b; }
     body { background:#f6f8fb; color:var(--report-ink); }
     html, body { margin:0; padding:0; }
-    .report-shell { width:calc(100% - 128px) !important; max-width:1360px;
+    .report-shell { width:calc(100% - 96px) !important; max-width:1400px;
       box-sizing:border-box; margin:36px auto 72px !important;
       padding:48px 64px 72px !important; background:#fff;
       border:1px solid #dce3ec; border-radius:14px;
@@ -478,16 +478,6 @@ def save_panel_report(
         *sections,
         css_classes=["report-shell"],
         sizing_mode="stretch_width",
-        max_width=1360,
-        align="center",
-        margin=(36, 64, 72, 64),
-        styles={
-            "box-sizing": "border-box",
-            "background": "#ffffff",
-            "border": "1px solid #dce3ec",
-            "border-radius": "14px",
-            "box-shadow": "0 6px 24px #17203312",
-        },
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     body.save(path, resources=inline, embed=True, title=title, max_states=1, css=[css])
