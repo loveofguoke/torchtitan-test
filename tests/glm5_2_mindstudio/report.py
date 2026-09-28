@@ -9,7 +9,6 @@ import csv
 import html
 import json
 import os
-import shutil
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -288,7 +287,7 @@ def _write_observation_report_index(
                     "candidate_first_nonfinite_metrics"
                 ],
                 "nonfinite_analysis": details.get("nonfinite_analysis"),
-                "topology_report": f"topologies/{row['topology']}.html",
+                "topology_report": str(Path(row["download_report"]).resolve()),
                 "evidence": [str(path.resolve()) for path in evidence],
                 "runtime_log": str(Path(row["runtime_log"]).resolve()),
             }
@@ -402,16 +401,12 @@ def _write_observation_report_index(
             else:
                 endpoint_nonfinite_text[role] = "none observed"
         window = f"{entry['first_step']}..{entry['last_step']}"
-        topology_report = (
-            report_directory / "topologies" / f"{entry['topology']}.html"
-        )
+        topology_report = Path(entry["topology_report"])
         topology_report.parent.mkdir(parents=True, exist_ok=True)
         legacy_topology_report = report_directory / f"{entry['topology']}.html"
         if legacy_topology_report.is_file():
             legacy_topology_report.unlink()
-        topology_report_link = topology_report.relative_to(
-            report_directory
-        ).as_posix()
+        topology_report_link = _relative_link(topology_report, report_directory)
         markdown_lines.append(
             f"| {entry['topology']} | {entry['diagnostic_symptom']} | "
             f"{window} ({entry['step_count']} steps) | {mean_error_text} | "
@@ -627,15 +622,10 @@ def write_report_index(
         ) or "not parsed"
         official = Path(row["official_result"])
         runtime_log = Path(row["runtime_log"])
-        if is_monitor:
-            collected_report = (
-                report_directory / "topologies" / f"{topology}.html"
+        if is_monitor and row.get("download_report"):
+            official_link = _relative_link(
+                Path(row["download_report"]), report_directory
             )
-            collected_report.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(official, collected_report)
-            official_link = collected_report.relative_to(
-                report_directory
-            ).as_posix()
         else:
             official_link = _relative_link(official, report_directory)
         runtime_link = _relative_link(runtime_log, report_directory)

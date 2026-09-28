@@ -711,10 +711,10 @@ Grad Norm、绝对差、倍数、相对误差、同 step Loss 误差和相邻 st
 双击/按钮复位；图内保留指导线、异常点和诊断区间。静态 SVG 继续作为无 JavaScript
 的兜底证据。`500` 只是本次观察窗口，不是官方固定标准；命令必须覆盖实际问题。
 
-实验报告根目录生成轻量 `<experiment-id>.html` 总索引；`single.html`、
-`fsdp8.html` 等每拓扑独立的自包含报告集中放在 `topologies/` 子目录。总索引不重复
-嵌入所有拓扑曲线；需要同步全部拓扑报告时直接下载该子目录，需要单独分享时取对应
-HTML。
+实验报告根目录生成轻量 `<experiment-id>.html` 总索引；所有可下载自包含报告集中在
+`html_reports/`，并按 `<topology>/<training-profile>/<workflow>/<profile>/report.html`
+组织。该镜像层级与真实实验一致，不使用扁平 `topologies/`；下载 `html_reports/`
+即可离线查看全部拓扑和诊断步骤。
 
 正常训练观察发现长程趋势异常、尖刺，或已经知道异常 step 但尚不知道异常
 rank/module/parameter 时，运行 Monitor V2 缩小第一现场；只有把范围收敛到少量 step、
@@ -819,12 +819,18 @@ rank/step/module/scope 对齐两端 CSV，以热力图定位异常 step/rank，�
 逐层梯度曲线，判断差异在 reduce 前已出现还是 reduce 后放大，并把完整 CSV 对齐表
 内嵌为可筛选、排序和分页的表格，但不计算官方 PASS/FAIL。
 它用于筛出异常 step/rank/module，再用 L0/L1 dump 和正式多 step precision 定位、验收。
-每个 operation profile 的索引写入
-`mindstudio_reports/.../<experiment>/operation_indexes/<operation-scope>/`，不会再覆盖
-实验根目录已有的训练观察报告；真正的 Monitor 内容仍由拓扑/profile 下的
-`monitor_analysis/monitor_report.html` 承载。同时各拓扑的自包含 HTML 会集中复制到
-该 operation index 的 `topologies/<topology>.html`，下载一个目录即可离线查看全部
-拓扑；原始 CSV、JSON 和日志仍留在各自拓扑 scope 中。
+每个流程 profile 的跨拓扑入口写入
+`mindstudio_reports/.../<experiment>/html_reports/<workflow>/<profile>/`，不会覆盖实验
+根目录已有的训练观察报告。真正的 Monitor 内容仍由拓扑/profile 下的
+`monitor_analysis/monitor_report.html` 承载；它的自包含 HTML 镜像放在
+`html_reports/<topology>/<workflow>/<profile>/report.html`。因此下载整个
+`html_reports/` 就能按与实验一致的层级离线查看全部拓扑和流程步骤；原始 CSV、JSON
+和日志仍留在各自拓扑 scope 中。
+
+第一次用新代码运行某个既有 stage 时，launcher 会把该 stage 的旧
+`inputs/<profile>`、`observations/`、`captures/`、`diagnostics/`、`topologies/` 或
+`operation_indexes/` 路径原样移动到 training-window-first 层级，不重写 capture
+文件。若新旧目标同时存在则立即报冲突，绝不合并或覆盖；`--dry-run` 不执行迁移。
 
 ## 8. NPU 性能标准流程
 

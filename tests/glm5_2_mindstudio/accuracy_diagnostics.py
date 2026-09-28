@@ -235,12 +235,12 @@ def create_case(
         "experiment": {
             "storage_name": experiment_name,
             "stages": {
-                "inputs": "<topology>/inputs/<fixture-profile>",
-                "dump": "<topology>/captures/<dump-profile>",
+                "inputs": "<topology>/<training-profile>/inputs",
+                "dump": "<topology>/<training-profile>/dump/<dump-profile>",
                 "configuration_check": (
-                    "<topology>/checklist/configuration-check"
+                    "<topology>/<training-profile>/checklist/configuration-check"
                 ),
-                "monitor": "<topology>/observations/monitor/<monitor-profile>",
+                "monitor": "<topology>/<training-profile>/monitor/<monitor-profile>",
             },
         },
         "stages": {

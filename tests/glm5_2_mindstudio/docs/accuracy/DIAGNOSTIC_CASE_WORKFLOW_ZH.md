@@ -71,8 +71,8 @@ manifest 未变化就跳过，失败产物则归档后重试。原有 r1 不会�
 python tests/glm5_2_mindstudio/accuracy_diagnostic_benchmark.py record glm5-first-loss-001 \
   --stage checklist \
   --conclusion pass \
-  --evidence mindstudio_reports/accuracy/<experiment-id>/<topology>/checklist/configuration-check \
-  --evidence mindstudio_fixtures/accuracy/<experiment-id>/<topology>/inputs/<fixture-profile>/fixture.json \
+  --evidence mindstudio_reports/accuracy/<experiment-id>/<topology>/<training-profile>/checklist/configuration-check \
+  --evidence mindstudio_fixtures/accuracy/<experiment-id>/<topology>/<training-profile>/inputs/fixture.json \
   --notes "Reviewed all rank sheets; CUDA/NPU-only packages are expected differences."
 ```
 

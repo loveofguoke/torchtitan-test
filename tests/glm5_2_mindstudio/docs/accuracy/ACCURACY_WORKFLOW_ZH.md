@@ -56,11 +56,12 @@ hook** 的正常训练，保存逐 step Loss、Grad Norm 和训练日志，再�
 ```text
 mindstudio_{fixtures,runs,artifacts,reports}/accuracy/<experiment-id>/
 └── <topology>/
-    ├── inputs/<fixture-profile>/              # checkpoint、token plan、fixture
-    ├── checklist/configuration-check/         # 训练前合同检查
-    ├── observations/training/<training-profile>/ # 无工具 hook 的正常训练
-    ├── captures/<dump-profile>/               # 任意 step/task/level 的 msProbe 采集
-    └── observations/monitor/<monitor-profile>/# 任意长度的训练状态监测
+    └── <training-profile>/                    # 例如 s500-fb08c375
+        ├── inputs/                            # checkpoint、token plan、fixture
+        ├── checklist/configuration-check/     # 训练前合同检查
+        ├── observation/training/              # 无工具 hook 的正常训练
+        ├── monitor/<monitor-profile>/         # 长程状态监测
+        └── dump/<dump-profile>/               # 定点 statistics/tensor
 
 mindstudio_artifacts/accuracy/<experiment-id>/diagnoses/<case-id>/
 └── case.json                                  # 诊断控制面，不另建实验根
@@ -334,7 +335,7 @@ Monitor、定点 dump、compare 等诊断不应反复传输整个实验；用实
 作为 `--scope`，只发布本次新增子树：
 
 ```bash
-SCOPE='fsdp8/observations/monitor/s27-ec705007/candidate-r1'
+SCOPE='fsdp8/s27-8be76f82/monitor/monitor-ec705007/candidate-r1'
 
 # 产生新证据的一端
 python release_artifacts.py upload "$EXPERIMENT" --scope "$SCOPE"
@@ -914,10 +915,11 @@ rank/step/module/scope 对齐两端 CSV，展示覆盖情况、Top-K 异常、�
 dump。Monitor 的 CSV、训练日志和官方 dump/compare 共同组成这套独立 msProbe
 实验的长程与定位证据，不引用其他实验目录的结论。
 
-训练观察保留实验根报告；Monitor、定点 dump、配置检查等后续操作的索引分别写入
-`operation_indexes/<operation-scope>/`。因此执行新的诊断不会把先前阶段的 HTML、
-`report.json` 或 `README.md` 替换掉。每个拓扑的实际交互内容仍位于对应 operation
-scope 下，例如 `fsdp8/observations/monitor/<profile>/monitor_analysis/monitor_report.html`。
+训练观察保留实验根报告；Monitor、定点 dump、配置检查等后续操作的跨拓扑入口分别
+写入 `html_reports/<workflow>/<profile>/`。每个拓扑的自包含报告镜像按
+`html_reports/<topology>/<workflow>/<profile>/report.html` 组织，不再使用
+`operation_indexes` 或扁平 `topologies/`。实际证据仍位于对应实验 scope 下，例如
+`fsdp8/<training-profile>/monitor/<profile>/monitor_analysis/monitor_report.html`。
 
 分布式先验证 FSDP/TP/EP 的 sharded 参数与 optimizer 容器，再验证 PP 的 model-parts
 名称和 optimizer ownership。当前 workflow 会警告 PP 尚需服务器专项验收，并拒绝

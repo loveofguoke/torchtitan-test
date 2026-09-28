@@ -75,25 +75,23 @@ compile-npu-inductor-bf16-random-s1-b64-seq128-seed61-e5f6a7b8
 ```text
 <experiment-id>                         # 模型、设备对、dtype、输入契约等整体身份
 └── <topology>                          # single、fsdp8、tp8、pp8、hsdp2x4 等
-    └── <stage-family>/<stage>           # 检查、正常观察、采集或按现象诊断
-        └── <stage-profile>              # 本阶段的步数、范围和配置 hash
+    └── <training-profile>               # 训练窗口与输入契约，例如 s500-fb08c375
+        └── <workflow>/<profile>         # 标准流程步骤及该步骤的工具配置
             └── <role>-r<repeat>         # GPU reference / NPU candidate / 重复编号
 ```
 
-所以 `single` 下出现多个一级分类是预期行为：它们不是重复实验，而是同一 topology
-的标准精度流程。
+`training-profile` 是该拓扑下一轮诊断的根。正常观察、Monitor、dump 和后续验证必须
+围绕同一个训练窗口展开，不能先按工具产物类别拆散到多个一级目录。
 
 | 目录 | 作用 | 什么时候产生 |
 | --- | --- | --- |
-| `checklist/configuration-check` | 排除超参、版本、模型结构、权重、输入和 rank 映射不一致 | 标准流程第一阶段 |
-| `observations/training/<profile>` | 无 PrecisionDebugger、无 Monitor hook 的正常训练；观察 Loss、Grad Norm、NaN/Inf、首步差异、长稳漂移和尖刺 | CheckList 之后，细粒度 dump 之前 |
-| `observations/monitor/<profile>` | 使用 Monitor V2 低开销监控所选参数、梯度、模块或通信统计量 | 长程异常存在但第一现场 step/module 不明确时 |
-| `captures/<dump-profile>` | 使用 PrecisionDebugger 采集指定 step/rank 的 statistics/tensor/md5 数据 | 已确定需要细粒度比较的位置时 |
-| `diagnostics/dump/<dump-profile>` | 在既有实验内追加不同 scope、level、task 或 step 的定点 dump | 对首个可疑模块/API 继续缩小范围时 |
-| `diagnostics/monitor/<profile>` | 在既有实验内追加特定窗口或对象的 Monitor 诊断 | 正常训练观察/初次 monitor 后继续定点监控时 |
+| `<training-profile>/checklist/configuration-check` | 排除超参、版本、模型结构、权重、输入和 rank 映射不一致 | 标准流程第一阶段 |
+| `<training-profile>/observation/training` | 无工具 hook 的正常训练；观察 Loss、Grad Norm、NaN/Inf、首步差异、长稳漂移和尖刺 | CheckList 之后，细粒度 dump 之前 |
+| `<training-profile>/monitor/<monitor-profile>` | 使用 Monitor V2 低开销监控所选参数、梯度、模块或通信统计量 | 长程异常存在但第一现场 step/module 不明确时 |
+| `<training-profile>/dump/<dump-profile>` | 使用 PrecisionDebugger 采集指定 step/rank 的 statistics/tensor/md5 数据 | 已确定需要细粒度比较的位置时 |
 
 当前用户接口和内部 workflow 均称为 `observation`，目录固定为
-`observations/training`。它表示“无精度工具 hook 的正常训练观察”，与
+`<training-profile>/observation/training`。它表示“无精度工具 hook 的正常训练观察”，与
 `reference/candidate` 设备角色是两个正交维度。旧 `observations/baseline` 布局不再
 扫描、迁移或生成。同一个 observation profile
 内同时有 `reference-r1`（GPU）和 `candidate-r1`（NPU），两端运行相同 checkpoint、
@@ -117,7 +115,7 @@ token plan 和训练契约，再比较逐 step 训练现象。它回答：
 
 ```text
 mindstudio_fixtures/accuracy/<experiment-id>/<topology>/
-└── inputs/<input-profile>/
+└── <training-profile>/inputs/
     ├── fixture.json                 # generation ID、配置、文件 hash 和完整性状态
     ├── checkpoint/                  # GPU/NPU 共用的初始化权重
     ├── token_plan.*                 # 每个训练 step 的固定 token/sample 计划
@@ -132,24 +130,11 @@ DP/TP/PP/CP 等切分会改变 rank 消费输入的方式。
 
 ```text
 mindstudio_runs/accuracy/<experiment-id>/<topology>/
-├── checklist/
-│   └── configuration-check/
-│       ├── reference-r1/            # GPU ConfigChecker 采集现场
-│       └── candidate-r1/            # NPU ConfigChecker 采集现场
-├── observations/
-│   ├── training/<profile>/
-│   │   ├── reference-r1/            # GPU 无 hook 正常训练
-│   │   └── candidate-r1/            # NPU 无 hook 正常训练
-│   └── monitor/<profile>/
-│       ├── reference-r1/            # GPU Monitor V2（工具支持时）
-│       └── candidate-r1/            # NPU Monitor V2
-├── captures/
-│   └── <dump-profile>/
-│       ├── reference-r1/            # GPU PrecisionDebugger 采集现场
-│       └── candidate-r1/            # NPU PrecisionDebugger 采集现场
-└── diagnostics/
-    ├── dump/<dump-profile>/<role>-rN/
-    └── monitor/<profile>/<role>-rN/
+└── <training-profile>/
+    ├── checklist/configuration-check/<role>-rN/
+    ├── observation/training/<role>-rN/
+    ├── monitor/<monitor-profile>/<role>-rN/
+    └── dump/<dump-profile>/<role>-rN/
 ```
 
 每个 `<role>-rN/` 运行目录使用同一套外围文件：
@@ -178,11 +163,11 @@ artifact 路径镜像 run 的 stage/profile/role 路径：
 
 ```text
 mindstudio_artifacts/accuracy/<experiment-id>/<topology>/
-├── checklist/configuration-check/<role>-rN/
-├── observations/training/<profile>/<role>-rN/
-├── observations/monitor/<profile>/<role>-rN/
-├── captures/<dump-profile>/<role>-rN/
-└── diagnostics/{dump|monitor}/<profile>/<role>-rN/
+└── <training-profile>/
+    ├── checklist/configuration-check/<role>-rN/
+    ├── observation/training/<role>-rN/
+    ├── monitor/<monitor-profile>/<role>-rN/
+    └── dump/<dump-profile>/<role>-rN/
 ```
 
 每个 endpoint artifact 的外围结构一致：
@@ -198,16 +183,16 @@ mindstudio_artifacts/accuracy/<experiment-id>/<topology>/
 msProbe 生成。各阶段内容如下：
 
 ```text
-checklist/.../official/
+<training-profile>/checklist/.../official/
 └── config_check_rankN.zip           # 官方 ConfigChecker 每 rank 数据包
 
-observations/training/.../official/
+<training-profile>/observation/training/.../official/
 └── training_metrics.jsonl           # 从 run 选择出的正式逐 step 训练指标
 
-observations/monitor/.../official/
+<training-profile>/monitor/.../official/
 └── rank_N/**/*.csv                  # Monitor V2 按 rank/对象输出的时间序列
 
-captures/<dump-profile>/.../official/
+<training-profile>/dump/<dump-profile>/.../official/
 └── stepN/rankN/
     ├── dump.json                    # Module/API 输入输出统计或 tensor 索引
     ├── construct.json               # Module/API 层级结构
@@ -234,27 +219,19 @@ mindstudio_artifacts/accuracy/<experiment-id>/<topology>/
 ```text
 mindstudio_reports/accuracy/<experiment-id>/
 ├── <experiment-id>.html             # 轻量总索引，只汇总拓扑现象并链接独立报告
-├── topologies/                      # 所有拓扑自包含报告集中存放，便于整目录下载
-│   ├── single.html                  # single 自包含交互报告
-│   ├── fsdp8.html                   # fsdp8 自包含交互报告
-│   └── <topology>.html              # 其他已比较拓扑各一份
 ├── README.md                        # Markdown 入口
 ├── report.json                      # 机器可读聚合数据
-└── <topology>/
-    ├── checklist/configuration-check/
-    │   └── official_compare/        # 官方 config_check 逐 rank 比较
-    ├── observations/training/<profile>/
-    │   └── comparison/              # 项目实现的整网训练现象比较，不是 msprobe compare
-    ├── observations/monitor/<profile>/
-    │   └── monitor_analysis/        # 项目派生的 Monitor CSV 对齐与可视化；无 PASS/FAIL
-    ├── captures/<dump-profile>/
-    │   ├── official_compare/        # 官方 msprobe compare CSV/JSON/XLSX
-    │   ├── precision_precheck/
-    │   │   └── compare-rN/          # 官方两端 API 预检比较及 HTML 索引
-    │   ├── trend-<role>-rN/         # 官方 data2db 生成的 .trend.db
-    │   └── overflow-<role>-rN/      # 官方首溢出分析
-    └── diagnostics/{dump|monitor}/<profile>/
-        └── 对应的 compare/trend/overflow 派生结果
+├── html_reports/                    # 与真实证据同构的自包含 HTML 镜像
+│   └── <topology>/<training-profile>/<workflow>/<profile>/report.html
+└── <topology>/<training-profile>/
+    ├── checklist/configuration-check/official_compare/
+    ├── observation/training/comparison/
+    ├── monitor/<monitor-profile>/monitor_analysis/
+    └── dump/<dump-profile>/
+        ├── official_compare/        # 官方 msprobe compare CSV/JSON/XLSX
+        ├── precision_precheck/compare-rN/
+        ├── trend-<role>-rN/
+        └── overflow-<role>-rN/
 ```
 
 observation 的 `comparison/` 内容全部由项目基于官方诊断流程生成：
@@ -417,7 +394,7 @@ mindstudio_artifacts/<experiment-id>/<topology>/precision_precheck/candidate-r1/
 并在 manifest 中索引官方实际文件，不再创造一层虚构的 `official_raw/`：
 
 ```text
-mindstudio_artifacts/accuracy/<experiment-id>/<topology>/captures/<dump-profile>/<role>-r1/
+mindstudio_artifacts/accuracy/<experiment-id>/<topology>/<training-profile>/dump/<dump-profile>/<role>-r1/
 ├── official/
 │   └── stepN/rankN/
 │       ├── dump.json
@@ -437,10 +414,10 @@ artifact 的 `precision_precheck/<role>-rN/.../official/`；两端
 Monitor capture 沿用普通 endpoint artifact：
 
 ```text
-mindstudio_artifacts/accuracy/<experiment-id>/<topology>/observations/monitor/<profile>/<role>-r1/official/
+mindstudio_artifacts/accuracy/<experiment-id>/<topology>/<training-profile>/monitor/<profile>/<role>-r1/official/
 └── rank_<rank>/**/*.csv
 
-mindstudio_reports/accuracy/<experiment-id>/<topology>/observations/monitor/<profile>/monitor_analysis/
+mindstudio_reports/accuracy/<experiment-id>/<topology>/<training-profile>/monitor/<profile>/monitor_analysis/
 ├── monitor_report.html
 ├── aligned_metrics.csv
 ├── anomaly_summary.csv
@@ -462,19 +439,24 @@ L0/L1 dump 的 step/rank/module。
 实验根目录下的训练观察报告不会被后续操作替换。非 observation 操作各自生成：
 
 ```text
-mindstudio_reports/accuracy/<experiment-id>/operation_indexes/<operation-scope>/
-├── <experiment-id>.html
-├── report.json
-├── README.md
-└── topologies/                      # Monitor 时集中存放自包含拓扑报告
-    ├── single.html
-    ├── fsdp8.html
-    └── <topology>.html
+mindstudio_reports/accuracy/<experiment-id>/html_reports/
+├── <topology>/                      # 拓扑优先，与真实实验层级一致
+│   └── <training-profile>/<workflow>/<profile>/
+│       └── report.html              # 自包含、可直接下载的拓扑报告
+└── <training-profile>/<workflow>/<profile>/ # 同一次流程操作的跨拓扑入口
+    ├── <experiment-id>.html
+    ├── report.json
+    └── README.md
 ```
 
-该目录是同一次 operation 的可下载交付入口。Monitor 的每个拓扑报告是自包含 HTML，
-因此额外汇集到 `topologies/`，下载这个 operation 目录即可离线查看所有拓扑。原拓扑
-scope 仍保留 CSV、JSON、运行日志和生命周期状态，集中 HTML 不替代这些原始证据。
+`html_reports/` 是同一实验的可下载 HTML 镜像树，不是新的实验阶段。拓扑报告按
+“拓扑 -> 标准流程步骤 -> profile”组织；跨拓扑入口按同一个标准流程路径组织，
+不再使用 `operation_indexes` 或扁平的 `topologies/`。原拓扑 scope 仍保留 CSV、
+JSON、运行日志和生命周期状态，HTML 镜像不替代这些原始证据。
+
+首次对既有 stage 执行非 dry-run 命令时会自动迁移旧布局：目录使用同文件系统
+rename 原样移动，不重新 capture、不改写 manifest 或数据文件。目标已存在时拒绝
+合并和覆盖，要求先人工确认冲突；`--dry-run` 始终保持只读。
 
 分级图把处理后数据库与 tracked 索引分开：
 

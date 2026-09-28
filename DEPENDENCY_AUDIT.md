@@ -67,11 +67,20 @@ See `tests/glm5_2_graph/docs/NPU_CODEGEN.md` for loader names and validation sco
 | shared interactive report stack | all project-owned HTML generators, report unit tests, offline single-file portability, Release analysis content; external tool-native pages remain untouched |
 
 MindStudio training-observation comparison writes one lightweight experiment
-index plus one self-contained root-level HTML report per topology. A selected
+index plus one self-contained HTML mirror per topology under `html_reports/`. A selected
 topology report is part of that topology's compare generation and must be
 invalidated or reset with it. Keep the summary as a readable table rather than
 independent metric cards; detailed evidence stays in interactive charts and
 embedded raw tables.
+
+MindStudio accuracy storage is training-window first. Below one experiment and
+topology, `s<steps>-<training-hash>/` owns the shared inputs and every diagnostic
+step derived from that exact training contract: checklist, uninstrumented
+observation, Monitor, targeted dump, compare, visualization, and validation.
+Do not split one window into top-level `captures/`, `observations/`, or
+`diagnostics/` families. Self-contained HTML copies live under `html_reports/`
+with the same topology/training-window/workflow hierarchy; source CSV, JSON,
+logs, lifecycle state, and the original in-scope HTML remain in place.
 
 ## Current GLM graph/parity boundary
 

@@ -133,8 +133,22 @@ def _report_index_directory(
 ) -> Path:
     directory = _output_root(root, config.report_root, config)
     if config.workflow != "observation":
-        directory = directory / "operation_indexes" / config.operation_relative_root
+        directory = directory / "html_reports" / config.operation_relative_root
     return directory
+
+
+def _collected_html_report(
+    root: Path,
+    config: MindStudioExperimentConfig,
+    topology: ParallelTopology,
+) -> Path:
+    return (
+        _output_root(root, config.report_root, config)
+        / "html_reports"
+        / topology.slug
+        / config.operation_relative_root
+        / "report.html"
+    )
 
 
 def _comparison_directory(
@@ -178,21 +192,17 @@ def _stage_scoped_config(
             f"s{config.training.steps}-"
             f"{config_digest(asdict(config.training), length=8)}"
         )
-        fixture_subdirectory = f"inputs/{fixture_profile}"
+        fixture_subdirectory = f"{fixture_profile}/inputs"
         if config.workflow == "config-check":
             return replace(
                 config,
-                output_subdirectory="checklist/configuration-check",
+                output_subdirectory=f"{fixture_profile}/checklist/configuration-check",
                 fixture_subdirectory=fixture_subdirectory,
             )
         if config.workflow == "observation":
-            profile = (
-                f"s{config.training.steps}-"
-                f"{config_digest(asdict(config.training), length=8)}"
-            )
             return replace(
                 config,
-                output_subdirectory=f"observations/training/{profile}",
+                output_subdirectory=f"{fixture_profile}/observation/training",
                 fixture_subdirectory=fixture_subdirectory,
             )
         if config.workflow == "migration":
@@ -203,24 +213,25 @@ def _stage_scoped_config(
             )
             return replace(
                 config,
-                output_subdirectory=f"captures/{profile}",
+                output_subdirectory=f"{fixture_profile}/dump/{profile}",
                 fixture_subdirectory=fixture_subdirectory,
             )
         if config.workflow == "monitor":
-            identity = {
-                "training": asdict(config.training),
-                "monitor": asdict(config.monitor),
-            }
-            profile = f"s{config.training.steps}-{config_digest(identity, length=8)}"
+            identity = asdict(config.monitor)
+            profile = f"monitor-{config_digest(identity, length=8)}"
             return replace(
                 config,
-                output_subdirectory=f"observations/monitor/{profile}",
+                output_subdirectory=f"{fixture_profile}/monitor/{profile}",
                 fixture_subdirectory=fixture_subdirectory,
             )
 
     if config.experiment_storage_name is None:
         return config
     if config.workflow == "migration" and config.dump != base_config.dump:
+        training_profile = (
+            f"s{config.training.steps}-"
+            f"{config_digest(asdict(config.training), length=8)}"
+        )
         profile = (
             f"{config.dump.task}-{config.dump.level}-"
             f"{config.dump.summary_mode}-"
@@ -228,33 +239,137 @@ def _stage_scoped_config(
         )
         return replace(
             config,
-            output_subdirectory=f"diagnostics/dump/{profile}",
+            output_subdirectory=f"{training_profile}/dump/{profile}",
         )
     if config.workflow == "observation":
-        profile = (
+        training_profile = (
             f"s{config.training.steps}-"
             f"{config_digest(asdict(config.training), length=8)}"
         )
         return replace(
             config,
-            output_subdirectory=f"observations/training/{profile}",
+            output_subdirectory=f"{training_profile}/observation/training",
         )
     if config.workflow == "monitor":
-        identity = {
-            "training": asdict(config.training),
-            "monitor": asdict(config.monitor),
-        }
-        profile = (
+        training_profile = (
             f"s{config.training.steps}-"
-            f"{config_digest(identity, length=8)}"
+            f"{config_digest(asdict(config.training), length=8)}"
         )
-        relative = f"diagnostics/monitor/{profile}"
+        identity = asdict(config.monitor)
+        profile = f"monitor-{config_digest(identity, length=8)}"
+        relative = f"{training_profile}/monitor/{profile}"
         return replace(
             config,
             output_subdirectory=relative,
-            fixture_subdirectory=relative,
+            fixture_subdirectory=f"{training_profile}/inputs",
         )
     return config
+
+
+def _legacy_stage_scoped_config(
+    config: MindStudioExperimentConfig,
+    base_config: MindStudioExperimentConfig,
+    experiment_name: str | None = None,
+) -> MindStudioExperimentConfig:
+    """Resolve the layout used before training-window-first storage."""
+
+    if experiment_name is not None or config.experiment_storage_name is not None:
+        config = replace(config, experiment_storage_name=base_config.storage_name)
+        training_profile = (
+            f"s{config.training.steps}-"
+            f"{config_digest(asdict(config.training), length=8)}"
+        )
+        fixture_subdirectory = f"inputs/{training_profile}"
+        if config.workflow == "config-check":
+            output_subdirectory = "checklist/configuration-check"
+        elif config.workflow == "observation":
+            output_subdirectory = f"observations/training/{training_profile}"
+        elif config.workflow == "migration":
+            dump_profile = (
+                f"{config.dump.task}-{config.dump.level}-"
+                f"{config.dump.summary_mode}-"
+                f"{config_digest(asdict(config.dump), length=8)}"
+            )
+            output_subdirectory = f"captures/{dump_profile}"
+        elif config.workflow == "monitor":
+            monitor_identity = {
+                "training": asdict(config.training),
+                "monitor": asdict(config.monitor),
+            }
+            output_subdirectory = (
+                f"observations/monitor/s{config.training.steps}-"
+                f"{config_digest(monitor_identity, length=8)}"
+            )
+        else:
+            return config
+        return replace(
+            config,
+            output_subdirectory=output_subdirectory,
+            fixture_subdirectory=fixture_subdirectory,
+        )
+    return config
+
+
+def _move_legacy_path(source: Path, destination: Path) -> None:
+    if not source.exists() or source.resolve() == destination.resolve():
+        return
+    if destination.exists():
+        raise FileExistsError(
+            "legacy and training-window-first outputs both exist; refusing to "
+            f"merge or overwrite them: legacy={source}, destination={destination}"
+        )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    source.rename(destination)
+    print(
+        f"Migrated legacy MindStudio layout: {source} -> {destination}",
+        flush=True,
+    )
+
+
+def _migrate_legacy_stage_layout(
+    root: Path,
+    legacy: MindStudioExperimentConfig,
+    current: MindStudioExperimentConfig,
+    topologies: Sequence[ParallelTopology],
+) -> None:
+    """Move the selected legacy stage without rewriting captured files."""
+
+    if legacy.operation_relative_root == current.operation_relative_root:
+        return
+    for topology in topologies:
+        _move_legacy_path(
+            _fixture_directory(root, legacy, topology),
+            _fixture_directory(root, current, topology),
+        )
+        for configured_root in (
+            current.run_root,
+            current.artifact_root,
+            current.report_root,
+        ):
+            base = root / configured_root / current.output_relative_root / topology.slug
+            _move_legacy_path(
+                base / legacy.operation_relative_root,
+                base / current.operation_relative_root,
+            )
+        legacy_collected = (
+            _output_root(root, current.report_root, current)
+            / "topologies"
+            / f"{topology.slug}.html"
+        )
+        _move_legacy_path(
+            legacy_collected,
+            _collected_html_report(root, current, topology),
+        )
+    if current.workflow != "observation":
+        legacy_index = (
+            _output_root(root, current.report_root, current)
+            / "operation_indexes"
+            / legacy.operation_relative_root
+        )
+        _move_legacy_path(
+            legacy_index,
+            _report_index_directory(root, current),
+        )
 
 
 def _fixture_manifest(
@@ -1290,7 +1405,10 @@ def reset_selected_outputs(
                 aggregate / "README.md",
             )
         )
-        paths.extend(aggregate / f"{topology.slug}.html" for topology in topologies)
+        paths.extend(
+            _collected_html_report(root, config, topology)
+            for topology in topologies
+        )
     for path in paths:
         _assert_tree_not_active(path)
     reset_output_generation(paths, label="MindStudio official workflow")
@@ -1311,10 +1429,10 @@ def reset_compare_outputs(
         aggregate / "report.json",
         aggregate / "README.md",
     ]
-    if config.workflow == "observation":
-        paths.extend(aggregate / f"{topology.slug}.html" for topology in topologies)
-    elif config.workflow == "monitor":
-        paths.append(aggregate / "topologies")
+    paths.extend(
+        _collected_html_report(root, config, topology)
+        for topology in topologies
+    )
     active: list[Path] = []
     for topology in topologies:
         _, _, report = _paths(root, config, topology, "reference", repeat)
@@ -1343,8 +1461,6 @@ def _aggregate_report_paths(
         aggregate / "report.json",
         aggregate / "README.md",
     )
-    if config.workflow == "monitor":
-        return (*paths, aggregate / "topologies")
     return paths
 
 
@@ -1356,9 +1472,8 @@ def _invalidate_aggregate_report(
     topology: ParallelTopology | None = None,
 ) -> None:
     paths = list(_aggregate_report_paths(root, config))
-    if topology is not None and config.workflow == "observation":
-        aggregate = _report_index_directory(root, config)
-        paths.append(aggregate / f"{topology.slug}.html")
+    if topology is not None:
+        paths.append(_collected_html_report(root, config, topology))
     if not any(path.exists() for path in paths):
         return
     reset_output_generation(
@@ -3463,6 +3578,9 @@ def run_mindstudio_cli(
         monitor=monitor_config,
         training=training,
     )
+    legacy_config = _legacy_stage_scoped_config(
+        config, base_config, args.experiment
+    )
     config = _stage_scoped_config(config, base_config, args.experiment)
     if args.npu_codegen:
         def select_codegen(endpoint):
@@ -3482,6 +3600,7 @@ def run_mindstudio_cli(
     )
     selected = tuple(registry[name] for name in selected_names)
     if not args.dry_run:
+        _migrate_legacy_stage_layout(root, legacy_config, config, selected)
         write_experiment_overview(
             _output_root(root, config.run_root, config),
             title=f"GLM5.2 MindStudio {config.workflow} experiment",
@@ -3898,13 +4017,22 @@ def run_mindstudio_cli(
     ]
     if args.dry_run:
         return
+    prepared_rows: list[dict[str, Any]] = []
+    for row, topology in zip(rows, selected, strict=True):
+        prepared = dict(row)
+        collected = _collected_html_report(root, config, topology)
+        prepared["download_report"] = str(collected.resolve())
+        if config.workflow == "monitor":
+            collected.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(Path(row["official_result"]), collected)
+        prepared_rows.append(prepared)
     report_directory = _report_index_directory(root, config)
     path = write_report_index(
         repository_root=root,
         report_directory=report_directory,
         experiment_name=config.storage_name,
         workflow=config.workflow,
-        rows=rows,
+        rows=prepared_rows,
         supplemental_report_patterns=(),
     )
     print_output_path("MindStudio report", path)
