@@ -37,13 +37,16 @@ def _capture_artifact(
     role: str,
     repeat: int,
 ) -> Path:
-    return (
-        root
-        / config.artifact_root
-        / config.storage_name
-        / topology.slug
-        / f"{role}-r{repeat}"
+    from .workflow import _paths
+
+    _, artifact, _ = _paths(
+        root,
+        config,
+        topology,
+        role,  # type: ignore[arg-type]
+        repeat,
     )
+    return artifact
 
 
 def _visualization_paths(
@@ -53,8 +56,9 @@ def _visualization_paths(
     repeat: int,
 ) -> tuple[Path, Path, Path]:
     relative = (
-        Path(config.storage_name)
+        config.output_relative_root
         / topology.slug
+        / config.operation_relative_root
         / f"graph-visualize-r{repeat}"
     )
     return (

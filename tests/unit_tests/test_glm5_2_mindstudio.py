@@ -3124,6 +3124,14 @@ class TestMindStudioLifecycle(unittest.TestCase):
             _experiment(),
             dump=MsProbeDumpConfig(level="L0", steps=(0,)),
         )
+        config = replace(
+            config,
+            experiment_storage_name="accuracy-experiment",
+            output_subdirectory=(
+                "s500-parent/dump/statistics-L0-statistics-profile"
+            ),
+            fixture_subdirectory="s500-parent/inputs",
+        )
         topology = config.candidate.topology
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -3177,6 +3185,7 @@ class TestMindStudioLifecycle(unittest.TestCase):
                 / config.artifact_root
                 / config.storage_name
                 / topology.slug
+                / config.operation_relative_root
                 / "graph-visualize-r1"
             )
             self.assertTrue(
