@@ -325,6 +325,46 @@ class TestMindStudioConfig(unittest.TestCase):
                 )
                 self.assertEqual(configured_root.encode(), destination.read_bytes())
 
+    def test_legacy_migration_keeps_different_training_fixture_profiles(self) -> None:
+        base = _experiment()
+        legacy_stage = replace(base, workflow="config-check")
+        legacy = replace(
+            _legacy_stage_scoped_config(
+                legacy_stage, base, experiment_name="shared"
+            ),
+            fixture_subdirectory="inputs/s2-legacy",
+        )
+        current_stage = replace(
+            legacy_stage,
+            fixture_training=replace(base.training, steps=500),
+        )
+        current = replace(
+            _stage_scoped_config(
+                current_stage, base, experiment_name="shared"
+            ),
+            fixture_subdirectory="s500-current/inputs",
+        )
+        topology = base.candidate.topology
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            legacy_fixture = _fixture_directory(root, legacy, topology)
+            current_fixture = _fixture_directory(root, current, topology)
+            legacy_fixture.mkdir(parents=True)
+            current_fixture.mkdir(parents=True)
+            (legacy_fixture / "token_generation.log").write_text("s2")
+            (current_fixture / "token_generation.log").write_text("s500")
+
+            _migrate_legacy_stage_layout(
+                root, legacy, current, (topology,)
+            )
+
+            self.assertEqual(
+                "s2", (legacy_fixture / "token_generation.log").read_text()
+            )
+            self.assertEqual(
+                "s500", (current_fixture / "token_generation.log").read_text()
+            )
+
     def test_monitor_reuses_normal_training_profile_not_short_run_profile(
         self,
     ) -> None:

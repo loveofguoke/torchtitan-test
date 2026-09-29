@@ -603,10 +603,13 @@ def _migrate_legacy_stage_layout(
         for legacy in legacy_configs:
             if legacy.operation_relative_root == current.operation_relative_root:
                 continue
-            _move_legacy_path(
-                _fixture_directory(root, legacy, topology),
-                _fixture_directory(root, current, topology),
-            )
+            legacy_fixture = _fixture_directory(root, legacy, topology)
+            current_fixture = _fixture_directory(root, current, topology)
+            if (
+                _training_profile_from_fixture(legacy_fixture)
+                == _training_profile_from_fixture(current_fixture)
+            ):
+                _move_legacy_path(legacy_fixture, current_fixture)
             for configured_root in (
                 current.run_root,
                 current.artifact_root,
@@ -3855,9 +3858,10 @@ def run_mindstudio_cli(
         if args.training_steps < 1:
             parser.error("--training-steps must be positive")
         training = replace(training, steps=args.training_steps)
-    required_steps = max(dump.steps) + 1
-    if training.steps < required_steps:
-        training = replace(training, steps=required_steps)
+    if config.workflow in {"migration", "compile"}:
+        required_steps = max(dump.steps) + 1
+        if training.steps < required_steps:
+            training = replace(training, steps=required_steps)
     compile_config = config.compile
     if args.backend is not None:
         compile_config = replace(compile_config, backend=args.backend)
