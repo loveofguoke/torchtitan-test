@@ -914,6 +914,44 @@ j_t=\frac{|x_t-x_{t-1}|}{\max(|x_{t-1}|,10^{-12})}>q
 4. NPU 是否出现 GPU 没有或更频繁的 Loss/Grad Norm 尖刺；
 5. 若本窗口没有复现，扩大正常训练观察窗口，而不是直接扩大 dump 窗口。
 
+#### 9.2.2 什么时候需要比较训练中 checkpoint
+
+初始化 checkpoint 一致属于 CheckList 的固定前置条件；训练中间 checkpoint 对比则不是
+每个精度问题都必须执行的固定步骤。它回答的是“前面观察到的梯度或 optimizer 异常，
+是否真正改变了参数/优化器状态并被后续 step 继承”，不能替代 Module/API 首差异定位。
+
+建议在以下场景启用训练中 checkpoint 对比：
+
+- Grad Norm/梯度出现尖刺，但 Loss 暂时正常，需要确认 clipping 后参数更新是否已经分叉；
+- 前期 Loss 对齐、后期逐渐漂移，需要寻找最早发生持久状态分叉的 step；
+- 怀疑 optimizer、融合 Adam、loss scale、master weight 或 checkpoint 恢复语义；
+- 训练 Loss 接近但下游任务变差，需要检查权重差异是否长期积累。
+
+应至少在可疑更新前后保存相同逻辑 step 的状态。设更新前参数为 `W_t`，更新后为
+`W_{t+1}`，先比较参数增量而不是只比较两个大 checkpoint：
+
+\[
+\Delta W_t=W_{t+1}-W_t,
+\qquad
+E_{\Delta W}=\frac{\|\Delta W_{NPU}-\Delta W_{GPU}\|_2}
+{\max(\|\Delta W_{GPU}\|_2,\epsilon)}.
+\]
+
+同时比较每个参数的 `W`、gradient shard 对应的逻辑参数、Adam `exp_avg/exp_avg_sq`、
+step 计数、loss scale 和 scheduler 状态。FSDP/TP/EP 下不能直接按本地文件名或 local shard
+逐字节比较：必须先按 DCP/DTensor metadata 恢复相同逻辑 FQN、global shape 和 placement，
+再比较相同逻辑 Tensor；否则 rank layout 差异会被误报为参数差异。
+
+对于当前 FSDP8 step 22 尖刺，正确顺序是先用 Monitor/dump 找 `dW` 首差异，再视需要保存
+step 21 更新前与 step 22 更新后的参数/optimizer 状态，判断全局 clipping 后是否留下持久
+权重差异。Loss 当步正常不代表 checkpoint 一定一致，但在未定位梯度首错前先做全量
+checkpoint compare，通常只能看到大量后果，不能解释根因。
+
+当前 MindStudio 标准流程已经校验初始 fixture checkpoint 哈希，并可用 Monitor 的
+`param/optimizer` 做低成本状态摘要；尚未提供一个能够跨任意 DTensor 拓扑规范化重组并
+逐 FQN 比较训练中 checkpoint 的独立自动阶段。正式增加该阶段时必须复用 TorchTitan DCP
+读写与 metadata，而不能另写一套只适用于单卡 checkpoint 的比较器。
+
 ### 9.3 训练状态监控
 
 官方训练状态监控面向长程运行中的激活、梯度、参数、优化器和通信异常。当前
@@ -1137,6 +1175,37 @@ backward、梯度裁剪和 optimizer 周边能被官方 hook 捕获的内容。�
 | `data_mode=["forward"]` | 只采前向输入输出/参数相关证据 |
 | `data_mode=["backward"]` | 只采反向输入输出/参数梯度相关证据 |
 | `data_mode=["all"]` | 同时采 forward 与 backward；需要判断权重梯度异常来自前向激活还是上游梯度时优先使用 |
+
+这里的 backward `input/output` 仍然是 Tensor，只是它们不是 forward activation，而是
+autograd 沿计算图反向传递的 activation gradient（更严格地说是 loss 对相应中间 Tensor
+的 cotangent）。以 `Y=XW^T` 为例：
+
+\[
+G_Y=\frac{\partial L}{\partial Y},\qquad
+G_X=\frac{\partial L}{\partial X}=G_YW,\qquad
+G_W=\frac{\partial L}{\partial W}=G_Y^TX.
+\]
+
+- 本 Module backward 的上游输入通常对应 `G_Y=grad_output`；
+- 本 Module 传给前一层的输出通常对应 `G_X=grad_input`；
+- 参数梯度 `G_W` 不沿 activation edge 传给前一层，而是累加到 `W.grad`，L0 另以
+  `parameters_grad` 记录；
+- L1/mix 中具体 API backward 的输入输出命名取决于 autograd backward 函数和官方
+  wrapper，必须结合 tag、shape 和 stack 判断，不能只凭 `input/output` 单词猜方向。
+
+因此“backward 阶段传输的不是 grad”是不准确的：沿 autograd 图反向流动的确实是
+`dL/dActivation`，只是它不是参数梯度 `dL/dW`。FSDP ReduceScatter 通信的是各 DP rank
+对参数产生的 `dL/dW` 贡献，而不是 Module 间传递的 `dL/dActivation`；TP/CP/EP 等并行
+策略则可能让 activation gradient 自身也发生 collective 或 P2P 通信。
+
+`statistics` 对上述每个命中 Tensor 只保存 shape/dtype/Max/Min/Mean/L2 Norm 等摘要。
+所以能看到某个 backward input、backward output 或 `parameters_grad` 自身的 L2 norm，
+但它不是 TorchTitan 日志中“所有参数、跨必要 shard 汇总”的全模型 Grad Norm。
+`tensor` task 才保存相应命中 Tensor 的真实逐元素值；它也不是无条件保存程序内的
+“每一个 Tensor”，仍受 step、rank、level、scope/list、data_mode、官方支持的 Module/API、
+融合算子和 hook 可见性约束。遇到未包装的自定义算子、C++/融合算子内部临时值或被过滤
+对象，必须补自定义 API、显式 hook/保存或单算子复现，不能把 dump 中不存在解释成该
+Tensor 在训练中不存在。
 
 `rank` 和 `step` 选择设备与零基训练 step；`scope`、`list`、`tensor_list` 用于进一步
 过滤命中对象。`list` 中的短名称必须实际匹配官方 Module/API tag，不能假设参数短名

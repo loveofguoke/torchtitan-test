@@ -191,6 +191,28 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
     def test_graph_accuracy_stages_share_one_experiment_root(self) -> None:
         for config in GRAPH_STAGE_CONFIGS.values():
             self.assertEqual(GRAPH_BASE_CONFIG.storage_name, config.storage_name)
+            self.assertEqual(
+                "graph/npu-inductor-ascend-triton",
+                config.execution_branch,
+            )
+            self.assertFalse(config.owns_fixture)
+        self.assertEqual(
+            "candidate",
+            GRAPH_STAGE_CONFIGS[
+                "observation"
+            ].reuse_eager_role_as_reference,
+        )
+        self.assertIsNone(
+            GRAPH_STAGE_CONFIGS[
+                "compile-checker"
+            ].reuse_eager_role_as_reference
+        )
+        self.assertEqual(
+            MIGRATION_CONFIG.storage_name,
+            GRAPH_BASE_CONFIG.storage_name,
+        )
+        self.assertEqual(500, GRAPH_BASE_CONFIG.training.steps)
+        self.assertEqual(500, GRAPH_STAGE_CONFIGS["observation"].training.steps)
         self.assertEqual(
             (),
             GRAPH_STAGE_CONFIGS["compile-checker"].candidate.extra_args,
@@ -202,8 +224,47 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
         checker = _stage_scoped_config(
             GRAPH_STAGE_CONFIGS["compile-checker"],
             GRAPH_BASE_CONFIG,
+            training_profile="s500-contract",
         )
-        self.assertIn("/compile-checker/", checker.output_subdirectory)
+        self.assertTrue(
+            checker.output_subdirectory.startswith(
+                "s500-contract/graph/npu-inductor-ascend-triton/"
+                "compile-checker/"
+            )
+        )
+        self.assertEqual(
+            "s500-contract/inputs",
+            checker.fixture_subdirectory,
+        )
+        graph_observation = _stage_scoped_config(
+            GRAPH_STAGE_CONFIGS["observation"],
+            GRAPH_BASE_CONFIG,
+            training_profile="s500-contract",
+        )
+        eager_observation = _stage_scoped_config(
+            replace(
+                OBSERVATION_CONFIG,
+                training=graph_observation.training,
+            ),
+            MIGRATION_CONFIG,
+            training_profile="s500-contract",
+        )
+        root = Path("repo")
+        graph_reference = _paths(
+            root,
+            graph_observation,
+            graph_observation.reference.topology,
+            "reference",
+            1,
+        )[1]
+        eager_candidate = _paths(
+            root,
+            eager_observation,
+            eager_observation.candidate.topology,
+            "candidate",
+            1,
+        )[1]
+        self.assertEqual(eager_candidate, graph_reference)
         formal = GRAPH_BASE_CONFIG.formal_fixture_config(
             GRAPH_BASE_CONFIG.candidate.topology
         )
@@ -236,6 +297,10 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
         self.assertEqual("cuda", base.reference.device_type)
         self.assertEqual("cuda", base.candidate.device_type)
         self.assertEqual({}, base.reference.environment)
+        self.assertEqual(
+            "reference",
+            stages["observation"].reuse_eager_role_as_reference,
+        )
         self.assertIn("--compile.enable", stages["dump"].candidate.extra_args)
         formal = base.formal_fixture_config(base.candidate.topology)
         self.assertEqual("self_consistency", formal.kind)
@@ -251,7 +316,8 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
             graph_backend="inductor",
             codegen_backend="dvm",
         )
-        self.assertNotEqual(triton.storage_name, dvm.storage_name)
+        self.assertEqual(triton.storage_name, dvm.storage_name)
+        self.assertNotEqual(triton.execution_branch, dvm.execution_branch)
         self.assertEqual(
             "default",
             triton.candidate.environment["TORCHINDUCTOR_NPU_BACKEND"],

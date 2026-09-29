@@ -241,6 +241,10 @@ class MindStudioExperimentConfig:
     artifact_root: str = "mindstudio_artifacts/accuracy"
     report_root: str = "mindstudio_reports/accuracy"
     experiment_storage_name: str | None = None
+    execution_branch: str | None = None
+    reuse_eager_role_as_reference: (
+        Literal["reference", "candidate"] | None
+    ) = None
     output_subdirectory: str | None = None
     fixture_subdirectory: str | None = None
     owns_fixture: bool = True
@@ -250,12 +254,17 @@ class MindStudioExperimentConfig:
             _validate_repository_root(name, getattr(self, name))
         for name in (
             "experiment_storage_name",
+            "execution_branch",
             "output_subdirectory",
             "fixture_subdirectory",
         ):
             value = getattr(self, name)
             if value is not None:
                 _validate_repository_root(name, value)
+        if self.reuse_eager_role_as_reference and self.execution_branch is None:
+            raise ValueError(
+                "reusing an eager endpoint requires an execution branch"
+            )
         if self.workflow in {"config-check", "observation", "migration", "monitor"}:
             if self.reference.topology != self.candidate.topology:
                 raise ValueError("migration requires equal reference/candidate topology")

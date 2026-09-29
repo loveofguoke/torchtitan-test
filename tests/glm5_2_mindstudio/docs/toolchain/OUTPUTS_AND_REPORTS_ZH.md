@@ -281,18 +281,37 @@ mindstudio_reports/accuracy/<experiment-id>/<topology>/graph-visualize-rN/
 └── index.json                        # 数据库相对路径、大小、hash 和来源
 ```
 
-compile accuracy 是独立实验族，而非统一 eager 诊断四阶段之一：
+旧入口 `compile_accuracy_benchmark.py` 仍产生独立 compile 实验；正式图模式精度流程
+使用 `graph_accuracy_benchmark.py`，把 checker 作为同一 eager/graph 实验中正常训练、
+Monitor 和定点 dump 之后的定位阶段。正式结构为：
 
 ```text
-mindstudio_runs/accuracy/<compile-experiment>/<topology>/candidate-rN/
-mindstudio_artifacts/accuracy/<compile-experiment>/<topology>/candidate-rN/
-└── official/
-    ├── precision_rankN_partM.csv     # 官方 PrecisionChecker 原始分片结果
-    ├── precision_rankN.csv           # 项目聚合后的逐 rank 结果
-    └── compile_coverage_rankN.json   # 前向/反向和目标模块覆盖证据
-mindstudio_reports/accuracy/<compile-experiment>/<topology>/official_compare/
-└── compile_all_ranks.csv             # 跨 rank 汇总；判定仍来自官方行
+mindstudio_runs/accuracy/<accuracy-experiment>/<topology>/<training-profile>/
+└── graph/<device>-<graph-backend>-<codegen>/
+    └── compile-checker/<checker-profile>/candidate-rN/
+
+mindstudio_artifacts/accuracy/<accuracy-experiment>/<topology>/<training-profile>/
+└── graph/<device>-<graph-backend>-<codegen>/compile-checker/<checker-profile>/candidate-rN/
+    ├── official/
+    │   ├── precision_rankN_partM.csv     # 官方 PrecisionChecker 原始分片结果
+    │   ├── precision_rankN.csv           # 项目聚合后的逐 rank 结果
+    │   ├── compile_coverage_rankN.json   # 前向/反向和目标模块覆盖证据
+    │   └── graphs/                       # checker 捕获的 graph 代码
+    ├── manifest.json
+    └── complete.json
+
+mindstudio_reports/accuracy/<accuracy-experiment>/<topology>/<training-profile>/
+└── graph/<device>-<graph-backend>-<codegen>/compile-checker/<checker-profile>/
+    └── official_compare/compile_all_ranks.csv
+
+mindstudio_reports/accuracy/<accuracy-experiment>/html_reports/<training-profile>/
+└── graph/<device>-<graph-backend>-<codegen>/compile-checker/<checker-profile>/<topology>.html
 ```
+
+single-pass 在 candidate 进程内部用相同模块输入重放 eager `_orig_mod`，所以 checker
+阶段没有单独 `reference-rN`；这与 observation/config-check/dump 中 eager reference 和
+graph candidate 分别运行不同。旧入口的历史 artifact 保留原结构，不应迁移后伪装成
+统一图模式实验证据。
 
 若官方工具只能在指定相对结构中工作，`official/` 内完整保留该结构；项目层不把
 其文件全部扁平化重命名。目录树是导航契约，实际文件清单和 SHA-256 仍以

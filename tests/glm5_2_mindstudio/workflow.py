@@ -96,9 +96,24 @@ def _paths(
     repeat: int,
 ) -> tuple[Path, Path, Path]:
     relative = config.output_relative_root / topology.slug
+    endpoint_role = role
     if config.output_subdirectory is not None:
-        relative /= config.output_subdirectory
-    relative /= f"{role}-r{repeat}"
+        operation = Path(config.output_subdirectory)
+        if role == "reference" and config.reuse_eager_role_as_reference:
+            branch = Path(config.execution_branch or "")
+            parts = operation.parts
+            branch_parts = branch.parts
+            if parts[1 : 1 + len(branch_parts)] != branch_parts:
+                raise ValueError(
+                    "graph reference reuse cannot remove the configured "
+                    f"execution branch from {operation}"
+                )
+            operation = Path(
+                parts[0], *parts[1 + len(branch_parts) :]
+            )
+            endpoint_role = config.reuse_eager_role_as_reference
+        relative /= operation
+    relative /= f"{endpoint_role}-r{repeat}"
     return (
         root / config.run_root / relative,
         root / config.artifact_root / relative,
@@ -224,16 +239,23 @@ def _stage_scoped_config(
             f"{config_digest(asdict(config.training), length=8)}"
         )
         fixture_subdirectory = f"{fixture_profile}/inputs"
+        operation_root = Path(fixture_profile)
+        if config.execution_branch is not None:
+            operation_root /= config.execution_branch
         if config.workflow == "config-check":
             return replace(
                 config,
-                output_subdirectory=f"{fixture_profile}/checklist/configuration-check",
+                output_subdirectory=(
+                    operation_root / "checklist/configuration-check"
+                ).as_posix(),
                 fixture_subdirectory=fixture_subdirectory,
             )
         if config.workflow == "observation":
             return replace(
                 config,
-                output_subdirectory=f"{fixture_profile}/observations/training",
+                output_subdirectory=(
+                    operation_root / "observations/training"
+                ).as_posix(),
                 fixture_subdirectory=fixture_subdirectory,
             )
         if config.workflow == "migration":
@@ -244,7 +266,9 @@ def _stage_scoped_config(
             )
             return replace(
                 config,
-                output_subdirectory=f"{fixture_profile}/dump/{profile}",
+                output_subdirectory=(
+                    operation_root / "dump" / profile
+                ).as_posix(),
                 fixture_subdirectory=fixture_subdirectory,
             )
         if config.workflow == "monitor":
@@ -259,8 +283,8 @@ def _stage_scoped_config(
             return replace(
                 config,
                 output_subdirectory=(
-                    f"{fixture_profile}/observations/monitor/{profile}"
-                ),
+                    operation_root / "observations/monitor" / profile
+                ).as_posix(),
                 fixture_subdirectory=fixture_subdirectory,
             )
         if config.workflow == "compile":
@@ -271,8 +295,8 @@ def _stage_scoped_config(
             return replace(
                 config,
                 output_subdirectory=(
-                    f"{fixture_profile}/compile-checker/{profile}"
-                ),
+                    operation_root / "compile-checker" / profile
+                ).as_posix(),
                 fixture_subdirectory=fixture_subdirectory,
             )
 
@@ -283,6 +307,9 @@ def _stage_scoped_config(
             f"s{config.training.steps}-"
             f"{config_digest(asdict(config.training), length=8)}"
         )
+        operation_root = Path(training_profile)
+        if config.execution_branch is not None:
+            operation_root /= config.execution_branch
         profile = (
             f"{config.dump.task}-{config.dump.level}-"
             f"{config.dump.summary_mode}-"
@@ -290,16 +317,21 @@ def _stage_scoped_config(
         )
         return replace(
             config,
-            output_subdirectory=f"{training_profile}/dump/{profile}",
+            output_subdirectory=(operation_root / "dump" / profile).as_posix(),
         )
     if config.workflow == "observation":
         training_profile = training_profile or (
             f"s{config.training.steps}-"
             f"{config_digest(asdict(config.training), length=8)}"
         )
+        operation_root = Path(training_profile)
+        if config.execution_branch is not None:
+            operation_root /= config.execution_branch
         return replace(
             config,
-            output_subdirectory=f"{training_profile}/observations/training",
+            output_subdirectory=(
+                operation_root / "observations/training"
+            ).as_posix(),
         )
     if config.workflow == "monitor":
         training_profile = training_profile or (
@@ -314,7 +346,10 @@ def _stage_scoped_config(
             f"s{config.training.steps}-"
             f"{config_digest(identity, length=8)}"
         )
-        relative = f"{training_profile}/observations/monitor/{profile}"
+        operation_root = Path(training_profile)
+        if config.execution_branch is not None:
+            operation_root /= config.execution_branch
+        relative = (operation_root / "observations/monitor" / profile).as_posix()
         return replace(
             config,
             output_subdirectory=relative,
@@ -329,11 +364,14 @@ def _stage_scoped_config(
             f"{config.compile.backend}-{config.compile.policy}-"
             f"{config_digest(asdict(config.compile), length=8)}"
         )
+        operation_root = Path(training_profile)
+        if config.execution_branch is not None:
+            operation_root /= config.execution_branch
         return replace(
             config,
             output_subdirectory=(
-                f"{training_profile}/compile-checker/{profile}"
-            ),
+                operation_root / "compile-checker" / profile
+            ).as_posix(),
             fixture_subdirectory=f"{training_profile}/inputs",
         )
     return config
@@ -4044,6 +4082,15 @@ def run_mindstudio_cli(
             )
             print_output_path("Prepared MindStudio fixture", path)
         return
+
+    if (
+        args.capture == "reference"
+        and config.reuse_eager_role_as_reference
+    ):
+        parser.error(
+            "this graph branch reuses the completed eager endpoint as its "
+            "reference; do not capture a duplicate reference"
+        )
 
     if args.capture:
         role: Role = args.capture

@@ -39,23 +39,59 @@ config-check
 -> 修复后重跑异常窗口和长程训练
 ```
 
-标准入口把所有阶段保存在一个图模式精度实验根中：
+标准入口把图模式阶段保存在已有 eager/migration 精度实验根中。fixture、运行日志、正式 artifact
+和报告是四棵同构但职责不同的树，不能把 `inputs` 写成 runs/artifacts 下的子目录：
 
 ```text
-mindstudio_{fixtures,runs,artifacts,reports}/accuracy/<graph-experiment-id>/
-└── <topology>/<training-profile>/
-    ├── inputs/
-    ├── checklist/configuration-check/
-    ├── observations/training/
-    ├── observations/monitor/<monitor-profile>/
-    ├── dump/<dump-profile>/
-    └── compile-checker/<checker-profile>/
+mindstudio_fixtures/accuracy/<accuracy-experiment-id>/
+└── <topology>/s500-<training-hash>/inputs/
+    ├── checkpoint/
+    ├── token_plan.*
+    └── fixture.json
+
+mindstudio_runs/accuracy/<accuracy-experiment-id>/
+└── <topology>/s500-<training-hash>/
+    ├── checklist/...、observations/...、dump/...  # 已有 GPU/NPU eager 主线
+    └── graph/<device>-<graph-backend>-<codegen>/
+        ├── checklist/configuration-check/{reference,candidate}-rN/
+        ├── observations/training/{reference,candidate}-rN/
+        ├── observations/monitor/<monitor-profile>/{reference,candidate}-rN/
+        ├── dump/<dump-profile>/{reference,candidate}-rN/
+        └── compile-checker/<checker-profile>/candidate-rN/
+
+mindstudio_artifacts/accuracy/<accuracy-experiment-id>/
+└── <topology>/s500-<training-hash>/
+    └── 与 runs 相同的阶段层级；每次 capture 额外包含 official/、manifest.json、complete.json
+
+mindstudio_reports/accuracy/<accuracy-experiment-id>/
+├── <topology>/s500-<training-hash>/
+│   ├── checklist/configuration-check/
+│   ├── observations/training/
+│   ├── observations/monitor/<monitor-profile>/
+│   ├── dump/<dump-profile>/
+│   └── compile-checker/<checker-profile>/
+└── html_reports/s500-<training-hash>/
+    └── graph/<device>-<graph-backend>-<codegen>/
+        ├── observations/training/<topology>.html
+        ├── observations/monitor/<monitor-profile>/<topology>.html
+        ├── dump/<dump-profile>/<topology>.html
+        └── compile-checker/<checker-profile>/<topology>.html
 ```
 
-`reference` 是所选设备的 eager，`candidate` 是相同设备、checkpoint、token plan、
-seed、dtype 和拓扑下的 TorchTitan 图模式。因此这是同设备 self-consistency，不是
-GPU/NPU migration。`--graph-backend` 与 `--codegen-backend` 都是显式实验维度并进入
-identity。当前 NPU 支持 `inductor/npugraphs + ascend-triton/dvm` 的合法组合，GPU
+父级 `s500-<training-hash>/inputs` 由原 eager 精度实验生成，graph 分支只引用它，不再
+创建 graph 专属 checkpoint/token plan。正常层级中的 report 保存本阶段完整报告和官方输出索引；`html_reports/` 是为一次性下载
+而生成的自包含 HTML 镜像，仍按同一 `training-profile → 阶段 → profile → topology`
+语义组织，不创造另一套实验身份。`compile-checker` 的 eager reference 在 candidate
+进程内部由 PrecisionChecker single-pass 重放，所以只有 `candidate-rN`，不是漏采
+独立 reference；其他阶段仍分别保存 eager `reference-rN` 和 graph `candidate-rN`。
+
+`reference` 是原精度实验中已经完成的 NPU eager `candidate-rN`，`candidate` 是相同
+设备、checkpoint、token plan、seed、dtype 和拓扑下的 TorchTitan 图模式。因此这是
+同设备 self-consistency，不是重新创建一份 GPU/NPU migration。graph 分支不会复制
+eager artifact：compare 直接读取父实验对应阶段的 NPU eager candidate；如果对应 eager
+observation/Monitor/dump 尚未完成，必须先用 `accuracy_benchmark.py` 完成它。`--graph-backend`
+与 `--codegen-backend` 是 graph 子分支维度，不再改变顶层实验 identity。当前 NPU 支持
+`inductor/npugraphs + ascend-triton/dvm` 的合法组合，GPU
 当前支持 `inductor + triton`。GPU 已接入统一合同，但尚未完成服务器验收。
 
 正常训练 observation 必须先运行。它不安装 Monitor、PrecisionDebugger 或
@@ -77,29 +113,48 @@ weight/gradient、parameter、optimizer 和 communication。`--monitor-module` �
 
 ### 0.1 标准执行顺序
 
-先准备同一份共享输入：
+先通过原 eager 精度入口按本轮最长正常训练窗口准备共享输入。不能用默认 2-step dump 配置生成 fixture，
+再直接运行 500-step observation；短 token plan 无法覆盖长观察窗口。下面显式用 observation
+阶段生成 500-step checkpoint/token plan，后续 config-check、dump 和 compile-checker 都复用
+这一份输入：
 
 ```bash
-python tests/glm5_2_mindstudio/graph_accuracy_benchmark.py \
-  --device npu --graph-backend inductor --codegen-backend ascend-triton --stage dump --data --data-device npu --topology single
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage observation \
+  --data --data-device npu --topology single --training-steps 500
 ```
 
-先跑无工具 hook 的短程或长程正常训练；`--training-steps` 必须按复现窗口显式给出：
+随后先保证原 NPU eager CheckList candidate 已完成，再只采 graph candidate 并 compare。
+graph compare 会直接把前者作为 reference；显式执行 graph `--capture reference` 会报错，
+避免重复采集：
 
 ```bash
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
+  --capture candidate --topology single
 python tests/glm5_2_mindstudio/graph_accuracy_benchmark.py \
-  --device npu --graph-backend inductor --codegen-backend ascend-triton --stage observation --capture reference --topology single --training-steps 100
+  --device npu --graph-backend inductor --codegen-backend ascend-triton --stage config-check \
+  --capture candidate --topology single --training-steps 500
 python tests/glm5_2_mindstudio/graph_accuracy_benchmark.py \
-  --device npu --graph-backend inductor --codegen-backend ascend-triton --stage observation --capture candidate --topology single --training-steps 100
+  --device npu --graph-backend inductor --codegen-backend ascend-triton --stage config-check \
+  --compare --topology single --training-steps 500
+```
+
+先确保原 NPU eager 500-step observation candidate 已完成，再运行 graph candidate 和
+compare；`--training-steps` 必须与父训练窗口一致：
+
+```bash
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage observation \
+  --capture candidate --topology single --training-steps 500
 python tests/glm5_2_mindstudio/graph_accuracy_benchmark.py \
-  --device npu --graph-backend inductor --codegen-backend ascend-triton --stage observation --compare --topology single --training-steps 100
+  --device npu --graph-backend inductor --codegen-backend ascend-triton --stage observation --capture candidate --topology single --training-steps 500
+python tests/glm5_2_mindstudio/graph_accuracy_benchmark.py \
+  --device npu --graph-backend inductor --codegen-backend ascend-triton --stage observation --compare --topology single --training-steps 500
 ```
 
 确认异常窗口后，再按需要执行 Monitor。图模式端禁止 `--monitor-module`：
 
 ```bash
-python tests/glm5_2_mindstudio/graph_accuracy_benchmark.py \
-  --device npu --graph-backend inductor --codegen-backend ascend-triton --stage monitor --capture reference --topology single --training-steps 100
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage monitor \
+  --capture candidate --topology single --training-steps 100
 python tests/glm5_2_mindstudio/graph_accuracy_benchmark.py \
   --device npu --graph-backend inductor --codegen-backend ascend-triton --stage monitor --capture candidate --topology single --training-steps 100
 python tests/glm5_2_mindstudio/graph_accuracy_benchmark.py \
@@ -109,8 +164,7 @@ python tests/glm5_2_mindstudio/graph_accuracy_benchmark.py \
 将窗口缩小到确定 step 后，采集 statistics，再按结果决定是否采集 tensor：
 
 ```bash
-python tests/glm5_2_mindstudio/graph_accuracy_benchmark.py \
-  --device npu --graph-backend inductor --codegen-backend ascend-triton --stage dump --capture reference --topology single \
+python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump --capture candidate --topology single \
   --dump-task statistics --level L0 --dump-step 0
 python tests/glm5_2_mindstudio/graph_accuracy_benchmark.py \
   --device npu --graph-backend inductor --codegen-backend ascend-triton --stage dump --capture candidate --topology single \

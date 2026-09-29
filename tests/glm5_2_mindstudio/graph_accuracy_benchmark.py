@@ -14,7 +14,6 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tests.glm5_2_common.execution import TrainingFeature  # noqa: E402
-from tests.glm5_2_common.naming import config_name  # noqa: E402
 from tests.glm5_2_common.topology import standard_topologies  # noqa: E402
 from tests.glm5_2_graph.config import GraphFeatureConfig  # noqa: E402
 from tests.glm5_2_mindstudio.config import (  # noqa: E402
@@ -24,6 +23,9 @@ from tests.glm5_2_mindstudio.config import (  # noqa: E402
     MsProbeMonitorConfig,
 )
 from tests.glm5_2_mindstudio.workflow import run_mindstudio_cli  # noqa: E402
+from tests.glm5_2_mindstudio.migration_benchmark import (  # noqa: E402
+    CONFIG as EAGER_ACCURACY_CONFIG,
+)
 from tests.glm5_2_precision.workflow import (  # noqa: E402
     FormalTrainingConfig,
     TrainingEndpoint,
@@ -34,7 +36,7 @@ TOPOLOGIES = standard_topologies()
 ALL_DEVICES = "0,1,2,3,4,5,6,7"
 
 TRAINING = FormalTrainingConfig(
-    steps=2,
+    steps=500,
     local_batch_size=8,
     global_batch_size=64,
     sequence_length=128,
@@ -129,15 +131,17 @@ def _stage_configs(
             steps=(0, 1),
             summary_mode="statistics",
         ),
+        execution_branch=(
+            f"graph/{device}-{graph_backend}-{codegen_backend}"
+        ),
+        reuse_eager_role_as_reference=(
+            "candidate" if device == "npu" else "reference"
+        ),
+        owns_fixture=False,
     )
     base = replace(
         unscoped,
-        experiment_storage_name=config_name(
-            f"graph-accuracy-{device}-{graph_backend}-{codegen_backend}-"
-            "bf16-random-"
-            "s2-b64-seq128-seed61",
-            unscoped.identity,
-        ),
+        experiment_storage_name=EAGER_ACCURACY_CONFIG.storage_name,
     )
     checker_endpoint = replace(
         eager_endpoint,
@@ -152,7 +156,6 @@ def _stage_configs(
         "observation": replace(
             base,
             workflow="observation",
-            training=replace(TRAINING, steps=100),
         ),
         "monitor": replace(
             base,
@@ -181,6 +184,7 @@ def _stage_configs(
                 capture_input=True,
                 policy="glm5-block",
             ),
+            reuse_eager_role_as_reference=None,
             owns_fixture=False,
         ),
     }
