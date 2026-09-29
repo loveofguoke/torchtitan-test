@@ -49,6 +49,7 @@ from tests.glm5_2_mindstudio.workflow import (
     _fixture_directory,
     _paths,
     _stage_scoped_config,
+    _training_profile_from_fixture,
     reset_selected_outputs,
 )
 from tests.glm5_2_precision.workflow import (
@@ -198,8 +199,8 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
         )
         self.assertEqual(MIGRATION_CONFIG.storage_name, short.storage_name)
         self.assertEqual(MIGRATION_CONFIG.storage_name, long.storage_name)
-        self.assertTrue(short.output_subdirectory.startswith("captures/"))
-        self.assertTrue(long.output_subdirectory.startswith("observations/monitor/"))
+        self.assertIn("/dump/", short.output_subdirectory)
+        self.assertIn("/observations/monitor/", long.output_subdirectory)
         self.assertNotEqual(short.fixture_subdirectory, long.fixture_subdirectory)
 
     def test_short_monitor_reuses_longer_compatible_fixture(self) -> None:
@@ -215,7 +216,7 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             exact = _fixture_directory(root, scoped, topology)
-            longer = exact.parent / "s500-compatible"
+            longer = exact.parent.parent / "s500-compatible" / "inputs"
             longer.mkdir(parents=True)
             stored_training = asdict(replace(scoped.training, steps=500))
             stored_training["converged_checkpoint"] = None
@@ -235,6 +236,57 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
             )
             manifest = _compatible_fixture_manifest(root, scoped, topology)
             self.assertEqual(manifest["token_plan"]["steps"], 500)
+
+    def test_step_21_dump_reuses_parent_training_window_layout(self) -> None:
+        requested = _stage_scoped_config(
+            replace(
+                MIGRATION_CONFIG,
+                training=replace(MIGRATION_CONFIG.training, steps=22),
+                dump=replace(
+                    MIGRATION_CONFIG.dump,
+                    steps=(21,),
+                    ranks=tuple(range(8)),
+                    data_mode=("backward",),
+                ),
+            ),
+            MIGRATION_CONFIG,
+            "accuracy-experiment",
+        )
+        topology = requested.candidate.topology
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            exact = _fixture_directory(root, requested, topology)
+            parent = exact.parent.parent / "s500-parent" / "inputs"
+            parent.mkdir(parents=True)
+            stored_training = asdict(replace(requested.training, steps=500))
+            stored_training["converged_checkpoint"] = None
+            (parent / "fixture.json").write_text(
+                json.dumps(
+                    {
+                        "training": stored_training,
+                        "token_plan": {"steps": 500},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            selected = _compatible_fixture_directory(root, requested, topology)
+            self.assertEqual(parent, selected)
+            profile = _training_profile_from_fixture(selected)
+            scoped = _stage_scoped_config(
+                replace(
+                    MIGRATION_CONFIG,
+                    training=replace(MIGRATION_CONFIG.training, steps=22),
+                    dump=requested.dump,
+                ),
+                MIGRATION_CONFIG,
+                "accuracy-experiment",
+                training_profile=profile,
+            )
+            self.assertEqual("s500-parent/inputs", scoped.fixture_subdirectory)
+            self.assertTrue(
+                scoped.output_subdirectory.startswith("s500-parent/dump/")
+            )
 
     def test_finished_monitor_run_can_be_finalized_without_training(self) -> None:
         topology = MONITOR_CONFIG.candidate.topology

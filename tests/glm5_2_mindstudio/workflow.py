@@ -1797,7 +1797,9 @@ def capture_official(
             f"fixture={fixture_training_steps}, execution={config.training.steps}"
         )
     lr_schedule_steps = (
-        fixture_training_steps if config.workflow == "monitor" else None
+        fixture_training_steps
+        if config.workflow in {"migration", "monitor"}
+        else None
     )
     compatible_digests = _compatible_experiment_digests(
         config, topology, role
