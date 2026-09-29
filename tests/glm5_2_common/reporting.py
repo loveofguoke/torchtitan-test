@@ -485,9 +485,7 @@ def save_panel_report(
     :root { --report-blue:#2563eb; --report-ink:#172033; --report-muted:#64748b; }
     html, body { margin:0; padding:0; background:#f6f8fb;
       color:var(--report-ink); }
-    .report-shell { width:100% !important; max-width:1900px;
-      box-sizing:border-box; margin:0 auto !important;
-      padding:36px 44px !important; background:#fff;
+    .report-shell { box-sizing:border-box; background:#fff;
       border:1px solid #dce3ec; border-radius:14px;
       box-shadow:0 6px 24px #17203312; }
     .report-title { font-size:40px; font-weight:750; margin:0 0 10px; }
@@ -508,8 +506,7 @@ def save_panel_report(
     .tabulator { font-variant-numeric:tabular-nums; }
     .bk-panel-models-layout-Card { margin:12px 0; }
     @media (max-width:900px) {
-      .report-shell { width:100% !important; margin:0 auto !important;
-        padding:24px 20px 40px !important; }
+      .report-shell { box-sizing:border-box; }
     }
     """
     header = pn.pane.HTML(
@@ -528,6 +525,7 @@ def save_panel_report(
         *sections,
         css_classes=["report-shell"],
         sizing_mode="stretch_width",
+        margin=(36, 44, 64, 44),
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     body.save(path, resources=inline, embed=True, title=title, max_states=1, css=[css])
