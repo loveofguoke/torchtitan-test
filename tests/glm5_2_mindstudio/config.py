@@ -233,6 +233,7 @@ class MindStudioExperimentConfig:
             sequence_length=128,
         )
     )
+    fixture_training: FormalTrainingConfig | None = None
     dump: MsProbeDumpConfig = field(default_factory=MsProbeDumpConfig)
     compile: MsProbeCompileConfig = field(default_factory=MsProbeCompileConfig)
     monitor: MsProbeMonitorConfig = field(default_factory=MsProbeMonitorConfig)
@@ -272,7 +273,23 @@ class MindStudioExperimentConfig:
             self.reference.device_type != self.candidate.device_type
         ):
             raise ValueError("compile accuracy requires one device type")
-        if max(self.dump.steps) >= self.training.steps:
+        fixture_training = self.fixture_training or self.training
+        execution_contract = asdict(self.training)
+        fixture_contract = asdict(fixture_training)
+        execution_steps = int(execution_contract.pop("steps"))
+        fixture_steps = int(fixture_contract.pop("steps"))
+        if execution_contract != fixture_contract:
+            raise ValueError(
+                "fixture training must differ from execution training only "
+                "in steps"
+            )
+        if fixture_steps < execution_steps:
+            raise ValueError(
+                "fixture training steps must cover execution training steps"
+            )
+        if self.workflow in {"migration", "compile"} and (
+            max(self.dump.steps) >= self.training.steps
+        ):
             raise ValueError(
                 "training steps must be greater than every zero-based dump step"
             )
@@ -332,6 +349,8 @@ class MindStudioExperimentConfig:
             "reference": endpoint_value(self.reference),
             "candidate": endpoint_value(self.candidate),
         }
+        if self.fixture_training is not None:
+            identity["fixture_training"] = asdict(self.fixture_training)
         # Monitor settings are irrelevant to the existing dump, compile, and
         # config-check workflows. Keeping them out of those identities avoids
         # invalidating previously captured experiments when Monitor V2 support
@@ -388,7 +407,7 @@ class MindStudioExperimentConfig:
             kind=experiment_kind,
             reference=replace(self.reference, topology=topology),
             candidate=replace(self.candidate, topology=topology),
-            training=self.training,
+            training=self.fixture_training or self.training,
             fixture_root=self.fixture_root,
             artifact_root=self.artifact_root,
             report_root=self.report_root,

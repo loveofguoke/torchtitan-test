@@ -34,6 +34,7 @@ from tests.glm5_2_precision.workflow import (  # noqa: E402
 
 TOPOLOGIES = standard_topologies()
 ALL_DEVICES = "0,1,2,3,4,5,6,7"
+NPU_INDUCTOR_FALLBACKS = "aten.sum,_c10d_functional.all_reduce"
 
 TRAINING = FormalTrainingConfig(
     steps=500,
@@ -110,13 +111,18 @@ def _stage_configs(
         environment=eager_feature.environment,
         extra_args=eager_feature.arguments,
     )
+    graph_environment = dict(graph_feature.environment)
+    if device == "npu" and graph_backend == "inductor":
+        graph_environment["NPU_INDUCTOR_FALLBACK_LIST"] = (
+            NPU_INDUCTOR_FALLBACKS
+        )
     graph_endpoint = TrainingEndpoint(
         name=f"{device}-graph-candidate",
         device_type=device_type,
         visible_devices=ALL_DEVICES,
         topology=TOPOLOGIES["single"],
         repeats=1,
-        environment=graph_feature.environment,
+        environment=graph_environment,
         extra_args=graph_feature.arguments,
     )
     unscoped = MindStudioExperimentConfig(
@@ -151,6 +157,8 @@ def _stage_configs(
         "config-check": replace(
             base,
             workflow="config-check",
+            training=replace(TRAINING, steps=1),
+            fixture_training=TRAINING,
             owns_fixture=False,
         ),
         "observation": replace(
@@ -161,6 +169,7 @@ def _stage_configs(
             base,
             workflow="monitor",
             training=replace(TRAINING, steps=100),
+            fixture_training=TRAINING,
             monitor=MsProbeMonitorConfig(
                 ranks=(0,),
                 start_step=0,
@@ -177,6 +186,7 @@ def _stage_configs(
             reference=checker_endpoint,
             candidate=checker_endpoint,
             training=replace(TRAINING, steps=1),
+            fixture_training=TRAINING,
             dump=replace(base.dump, steps=(0,)),
             compile=MsProbeCompileConfig(
                 backend=graph_backend,

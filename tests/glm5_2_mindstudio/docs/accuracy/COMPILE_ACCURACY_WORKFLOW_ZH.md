@@ -125,7 +125,8 @@ python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage observation \
 
 随后先保证原 NPU eager CheckList candidate 已完成，再只采 graph candidate 并 compare。
 graph compare 会直接把前者作为 reference；显式执行 graph `--capture reference` 会报错，
-避免重复采集：
+避免重复采集。CheckList 实际只执行 1 step，但输入与输出仍归属于父级 `s500` 合同；
+复用 500-step token plan 不等于执行 500-step CheckList：
 
 ```bash
 python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \

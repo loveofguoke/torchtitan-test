@@ -212,6 +212,11 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
             GRAPH_BASE_CONFIG.storage_name,
         )
         self.assertEqual(500, GRAPH_BASE_CONFIG.training.steps)
+        self.assertEqual(1, GRAPH_STAGE_CONFIGS["config-check"].training.steps)
+        self.assertEqual(
+            500,
+            GRAPH_STAGE_CONFIGS["config-check"].fixture_training.steps,
+        )
         self.assertEqual(500, GRAPH_STAGE_CONFIGS["observation"].training.steps)
         self.assertEqual(
             (),
@@ -220,6 +225,27 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
         self.assertIn(
             "--compile.enable",
             GRAPH_STAGE_CONFIGS["observation"].candidate.extra_args,
+        )
+        self.assertEqual(
+            "aten.sum,_c10d_functional.all_reduce",
+            GRAPH_STAGE_CONFIGS["observation"].candidate.environment[
+                "NPU_INDUCTOR_FALLBACK_LIST"
+            ],
+        )
+        graph_checklist = _stage_scoped_config(
+            GRAPH_STAGE_CONFIGS["config-check"],
+            GRAPH_BASE_CONFIG,
+        )
+        self.assertTrue(
+            graph_checklist.output_subdirectory.startswith(
+                "s500-"
+                ""
+            )
+        )
+        self.assertEqual(
+            graph_checklist.output_subdirectory.split("/", 1)[0]
+            + "/inputs",
+            graph_checklist.fixture_subdirectory,
         )
         checker = _stage_scoped_config(
             GRAPH_STAGE_CONFIGS["compile-checker"],

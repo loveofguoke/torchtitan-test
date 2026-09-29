@@ -96,6 +96,59 @@ CANN 9.0 header 不含这些类型，而 2.14 源码已经在编译接口中引�
 上限为 1,572,864 bit，最终报 `No valid triton configs for kernel`。当前仅将
 `aten.sum` 回退 ACLNN。
 
+这里的“回退”不是把张量复制到 CPU。Inductor 仍保留已编译的 wrapper 和其余融合
+kernel，只把 `aten.sum` 作为外部 ATen 调用留在图中；PyTorch NPU dispatch 最终调用
+ACLNN，计算仍发生在 NPU。代价是 `sum` 两侧不再跨节点融合，可能增加一次 NPU kernel
+launch、中间 GM buffer 读写和同步边界。官方环境变量语义见
+[NPU_INDUCTOR_FALLBACK_LIST](https://github.com/Ascend/pytorch/blob/master/docs/zh/api/environment_variable/inductor/NPU_INDUCTOR_FALLBACK_LIST.md)。
+
+#### 4.1.1 为什么普通的 `aten.sum` 会生成超限 kernel
+
+问题不在 `sum` 的数学定义，而在它进入 Inductor 后已不再是一个孤立算子。链路是：
+
+```text
+TorchDynamo 捕获 Python/ATen 图
+  -> AOTAutograd 生成 forward/backward 图
+  -> Inductor scheduler 按依赖、layout、设备和可融合性形成 fusion group
+  -> pointwise cast/add/mul/view 与 reduction sum 被放进一个 group
+  -> codegen 生成一个 Triton kernel
+  -> Triton-Ascend lowering 为每个 program 选择 tile/block
+  -> BiShengIR/HIVM 把 load/cast/vector/reduce/store 降到 AIV 指令
+  -> PlanMemory 根据各中间 buffer 的大小和生命期分配 UB 地址
+```
+
+本次实际 kernel 是
+`triton_per_fused__to_copy_add_mul_sum_view_33`：多路 BF16 输入先进入 UB，转成
+FP32，保留若干 add/mul 中间量，再为 `sum` 分配 reduction 临时 buffer 和输出。
+因此需要计算的是整个融合块同时存活的 UB working set，而不是“一个 sum 的输出有多大”。
+
+fusion group 由 Inductor scheduler 从 FX/Inductor IR 形成。它倾向于融合生产者、消费者，
+以消除中间 GM 写回和多次 kernel launch；view 通常只改变索引表达，不单独 launch。
+融合越大，潜在带宽收益越高，但同时存活的输入 tile、中间 FP32 tile、reduction scratch、
+mask/padding 和流水 buffer 也越多。超过 UB 后并不是运行变慢，而是编译器根本无法为
+所有局部 buffer 分配合法地址，kernel 不会生成。
+
+tile 是单个 program/core 一次搬入和计算的数据块。较大 tile 能摊薄 launch/循环开销，
+提高连续搬运和向量利用率；但 UB 占用大致随
+
+```text
+sum(输入 tile 字节) + sum(同时存活的中间 tile 字节)
++ reduction scratch + 对齐/padding + multi-buffer 额外副本
+```
+
+增长。Atlas A2/910B2 的 UB 上限是 192 KiB（1,572,864 bit）。本次新现场需要
+1,867,776 bit（约 228 KiB），超出约 36 KiB；编译器关闭 code motion 重试后仍超限。
+官方 Triton-Ascend 指南同样要求 UB overflow 时缩小 tile 或拆成 sub-block：
+[Vector Operator Programming Guide](https://github.com/Ascend/triton-ascend/blob/main/docs/en/programming_guide/vector_operator.md)、
+[Triton-Ascend Programming Guide](https://github.com/triton-lang/triton-ascend/blob/main/docs/en/programming_guide.md)。
+
+BiShengIR 是 Triton-Ascend 后端调用的昇腾编译 IR/编译流水线。Triton kernel 经
+TTIR/后端 lowering 后进入 BiShengIR/HIVM；其中 PlanMemory 根据 buffer 生命期、对齐和
+硬件存储层级为 UB/L1/L0 等片上内存分配地址。日志中的
+`Failed to run BiShengHIR pipeline` 和 `hivm-plan-memory` 表示失败已经发生在设备
+kernel 编译阶段，而不是磁盘、Host 内存、NPU HBM 或训练运行时阶段。PlanMemory 原理见
+[AscendNPU IR Plan Memory](https://ascendnpu-ir.gitcode.com/en/developer_guide/features/PlanMemory/PlanMemory.html)。
+
 已安装 torch_npu 的关键位置：
 
 - `torch_npu/_inductor/lowering.py::make_reduction`（约 137 行）：NPU reduction
@@ -130,6 +183,30 @@ vector-core exception，所以不能把“切 experimental backend”当成修�
 - 禁止只利用旧 cache 判定通过；分别验证 default 与 experimental codegen；
 - 根治验收：删除 `aten.sum` fallback 后，single、TP、PP、EP 和最复杂组合均通过，
   并与 eager 做逐 step loss/gradient 数值比较，而非只看 10-step 退出码。
+
+### 4.4 2026-09-29 上游提交审计
+
+已检查 Ascend PyTorch `master` 至 `2516c6185f` 的近期 Inductor 提交。存在 reduction
+相关改进，但尚不能认定本例已被根治：
+
+- [`ff7f3c4905`](https://github.com/Ascend/pytorch/commit/ff7f3c49057e125845a2436c98d8b9f9e228c0e2)
+  为 `grid==1` 的动态 reduction 增加 grouped autotune bucket；本例是固定 shape 的
+  fused BF16/FP32 reduction，提交没有给出该 kernel 的零 fallback 验证；
+- [`050988db34`](https://github.com/Ascend/pytorch/commit/050988db34)
+  调整 pre-A5 的 `triton_experimental` AutoBlockify reduction；当前失败来自默认 Ascend
+  Triton/BiShengIR 路径，不能仅凭该提交判定修复；
+- [`1c1268b9ad`](https://github.com/Ascend/pytorch/commit/1c1268b9ad)
+  修复 experimental reduction mask、子轴 numel 和 downcast 正确性，也不是本例静态
+  fusion UB 合法性修复；
+- [`6401604a53`](https://github.com/Ascend/pytorch/commit/6401604a53)
+  从内置 fallback 列表移除了一批已验证算子，但变更列表不包含 `aten.sum` 的本例
+  shape/融合回归。
+
+因此当前结论是“可以修、上游也在持续改 reduction tiling，但未找到已证明覆盖本例的
+提交”，不是“硬件决定永远无法实现”。验证新版本必须使用同一 checkpoint、token plan、
+shape、dtype 和冷 cache，显式清空 `NPU_INDUCTOR_FALLBACK_LIST`，确认本 kernel 能编译，
+再完成 eager/compiled 逐 step 数值比较和多拓扑回归；仅看到仓库中有 reduction commit
+或开启自动 fallback 均不能宣称根治。
 
 ## 5. G011：compiled functional all-reduce 数值异常
 

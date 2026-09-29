@@ -234,9 +234,10 @@ def _stage_scoped_config(
             config,
             experiment_storage_name=base_config.storage_name,
         )
+        fixture_training = config.fixture_training or config.training
         fixture_profile = training_profile or (
-            f"s{config.training.steps}-"
-            f"{config_digest(asdict(config.training), length=8)}"
+            f"s{fixture_training.steps}-"
+            f"{config_digest(asdict(fixture_training), length=8)}"
         )
         fixture_subdirectory = f"{fixture_profile}/inputs"
         operation_root = Path(fixture_profile)
@@ -666,7 +667,8 @@ def _compatible_fixture_directory(
         / config.storage_name
         / topology.slug
     )
-    expected = json.loads(json.dumps(asdict(config.training), sort_keys=True))
+    fixture_training = config.fixture_training or config.training
+    expected = json.loads(json.dumps(asdict(fixture_training), sort_keys=True))
     expected["converged_checkpoint"] = None
     requested_steps = int(expected.pop("steps"))
     compatible: list[tuple[bool, int, Path]] = []

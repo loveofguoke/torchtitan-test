@@ -686,6 +686,14 @@ cache 对照和复用。
 掩盖 NPU Inductor reduction tile 对 UB 约束处理不足。生产交付应在 torch_npu reduction
 tiling/codegen 过滤非法候选，并通过关闭 fallback 的回归验证。
 
+更完整地说，`aten.sum` 本身并不复杂，复杂的是 Inductor 可能把它和前面的 cast、add、
+mul、view 融合成一个 reduction kernel。融合减少 GM 往返和 launch，但扩大了同一时刻
+必须驻留 UB 的输入 tile、FP32 中间量和 reduction scratch。Triton-Ascend 选择 tile 后，
+BiShengIR/HIVM 的 PlanMemory 按生命期为这些 buffer 分配 UB；若工作集超过 910B2 的
+192 KiB，编译期就会失败。当前 fallback 只是让 `sum` 作为外部 ATen/ACLNN NPU kernel
+执行，不是回到 CPU，也不是根治。完整链路、公式、日志和上游审计见
+[LOWER_LAYER_ISSUE_HANDOFF.md 的 G003](LOWER_LAYER_ISSUE_HANDOFF.md#g003reduction-tile-全部超过-ub)。
+
 ### Q19：空 expert 为什么会击穿 grouped-mm？
 
 答：某 expert 没 token 时 offsets 会重复，甚至 routed matrix 全部为零行。底层 grouped
