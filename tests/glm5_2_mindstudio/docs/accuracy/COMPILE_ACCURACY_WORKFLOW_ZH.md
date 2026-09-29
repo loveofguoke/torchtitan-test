@@ -132,10 +132,10 @@ python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage config-check \
   --capture candidate --topology single
 python tests/glm5_2_mindstudio/graph_accuracy_benchmark.py \
   --device npu --graph-backend inductor --codegen-backend ascend-triton --stage config-check \
-  --capture candidate --topology single --training-steps 500
+  --capture candidate --topology single
 python tests/glm5_2_mindstudio/graph_accuracy_benchmark.py \
   --device npu --graph-backend inductor --codegen-backend ascend-triton --stage config-check \
-  --compare --topology single --training-steps 500
+  --compare --topology single
 ```
 
 先确保原 NPU eager 500-step observation candidate 已完成，再运行 graph candidate 和
