@@ -41,7 +41,8 @@ schedule 窗口时切到 Ascend PyTorch Profiler。系统调优、单算子调�
 | GPU/NPU 完整精度流程 | 已实现统一入口 | `accuracy_benchmark.py --stage {config-check,observation,monitor,dump}` |
 | 同一 GPU 官方链路自检 | 已实现 | `self_consistency_benchmark.py` |
 | 官方离线 `msprobe compare` | 已实现 | `accuracy_benchmark.py --stage dump --compare` |
-| NPU eager/compile 模块前向与反向比较 | 已实现 | `compile_accuracy_benchmark.py` |
+| 同设备 eager/graph 完整精度流程 | NPU 已实现；GPU 已接入、待服务器验收 | `graph_accuracy_benchmark.py --device {gpu,npu} --stage {config-check,observation,monitor,dump,compile-checker}` |
+| 同设备 eager/compile 模块前向与反向比较 | 已实现，属于图模式定位阶段 | `graph_accuracy_benchmark.py --device {gpu,npu} --stage compile-checker`；旧入口 `compile_accuracy_benchmark.py` 仅兼容独立 checker |
 | GPU/NPU 训练前配置检查与逐 rank compare | 已实现 | `accuracy_benchmark.py --stage config-check` |
 | 无工具 hook 的正常训练与现象分类 | 已实现 | `accuracy_benchmark.py --stage observation`，输出 Loss/Grad Norm/NaN/Inf 证据与曲线 |
 | API 精度预检与两端预检结果比对 | 已实现 | `--precheck`、`--precheck-compare` |

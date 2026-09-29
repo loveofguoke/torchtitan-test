@@ -263,6 +263,18 @@ def _stage_scoped_config(
                 ),
                 fixture_subdirectory=fixture_subdirectory,
             )
+        if config.workflow == "compile":
+            profile = (
+                f"{config.compile.backend}-{config.compile.policy}-"
+                f"{config_digest(asdict(config.compile), length=8)}"
+            )
+            return replace(
+                config,
+                output_subdirectory=(
+                    f"{fixture_profile}/compile-checker/{profile}"
+                ),
+                fixture_subdirectory=fixture_subdirectory,
+            )
 
     if config.experiment_storage_name is None:
         return config
@@ -306,6 +318,22 @@ def _stage_scoped_config(
         return replace(
             config,
             output_subdirectory=relative,
+            fixture_subdirectory=f"{training_profile}/inputs",
+        )
+    if config.workflow == "compile":
+        training_profile = training_profile or (
+            f"s{config.training.steps}-"
+            f"{config_digest(asdict(config.training), length=8)}"
+        )
+        profile = (
+            f"{config.compile.backend}-{config.compile.policy}-"
+            f"{config_digest(asdict(config.compile), length=8)}"
+        )
+        return replace(
+            config,
+            output_subdirectory=(
+                f"{training_profile}/compile-checker/{profile}"
+            ),
             fixture_subdirectory=f"{training_profile}/inputs",
         )
     return config
@@ -1488,13 +1516,22 @@ def _validate_monitor_execution(
     ranks = config.monitor.ranks or tuple(range(topology.world_size))
     if any(rank >= topology.world_size for rank in ranks):
         raise ValueError("monitor rank is outside the selected topology")
-    if any(
+    compile_enabled = any(
         argument.lower().startswith("--compile.enable")
         for argument in endpoint.extra_args
-    ):
+    )
+    if compile_enabled and config.monitor.module:
         raise ValueError(
-            "TrainerMonitorV2 plus torch.compile is not validated by this "
-            "workflow; use the compile accuracy workflow independently"
+            "module Monitor hooks can change the compiled graph; graph-mode "
+            "Monitor supports weight/gradient, parameter, optimizer, and "
+            "communication state only"
+        )
+    if compile_enabled:
+        print(
+            "Warning: graph-mode Monitor observes training state outside "
+            "compiled module internals. Use PrecisionChecker and compiler "
+            "diagnostics for eager/compiled module localization.",
+            flush=True,
         )
     if topology.pipeline_parallel_degree > 1:
         print(

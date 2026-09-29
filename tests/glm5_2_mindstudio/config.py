@@ -369,18 +369,14 @@ class MindStudioExperimentConfig:
 
         topology = topology or self.candidate.topology
 
+        experiment_kind = (
+            "self_consistency"
+            if self.reference.device_type == self.candidate.device_type
+            else "migration"
+        )
         return FormalExperimentConfig(
             name=self.name,
-            kind=(
-                "migration"
-                if self.workflow in {
-                    "config-check",
-                    "observation",
-                    "migration",
-                    "monitor",
-                }
-                else "self_consistency"
-            ),
+            kind=experiment_kind,
             reference=replace(self.reference, topology=topology),
             candidate=replace(self.candidate, topology=topology),
             training=self.training,

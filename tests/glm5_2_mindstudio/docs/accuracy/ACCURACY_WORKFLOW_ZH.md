@@ -77,6 +77,11 @@ V2，只有确定可疑 step 后才用 L0 -> L1/mix -> tensor 或 L2 逐层下�
 本文说明如何按 MindStudio 26.1 官方训练精度指南完成 CheckList、问题复现、状态监测、
 模块/API 采集、预检、比较、分级可视化和修复后验收。
 
+图模式不是一条跳过训练现象层的独立捷径。NPU eager/graph 仍按本文的 CheckList、
+正常训练 observation、Monitor、定点 dump 和修复后验收顺序执行；图模式另外增加
+PrecisionChecker 与编译器证据。统一入口、阶段边界和目录结构见
+[NPU eager/graph 官方精度流程](COMPILE_ACCURACY_WORKFLOW_ZH.md)。
+
 官方依据：
 
 - [MindStudio 文档总入口](https://www.hiascend.com/document/detail/zh/mindstudio/latest/index/index.html)
@@ -689,6 +694,23 @@ rope.input:            already different
 
 ## 9. 配置检查、状态监控与预检的边界
 
+整条标准链路的比较对象不是同一种数据不断换界面，而是从低开销全局标量逐步增加
+空间分辨率和数据精度：
+
+| 阶段 | 原始采集对象 | 基本粒度 | 主要产物 | 本阶段回答的问题 |
+| --- | --- | --- | --- | --- |
+| ConfigChecker | 环境、版本、超参、权重、dataset、随机调用 | rank / micro-step / 配置项 | `config_check_rankN.zip`、`result.xlsx` | 两端是不是同一个实验 |
+| 正常 training observation | TorchTitan logger 已归约的 Loss、全局 Grad Norm 及其他数值指标 | optimizer step / 整网 | `training_metrics.jsonl`、交互 HTML | 是 NaN/Inf、首步、长稳还是尖刺 |
+| Monitor V2 | 参数梯度、Module 边界张量、参数、优化器状态、通信摘要 | step / rank / parameter 或 module | 每 rank CSV、项目派生 HTML | 异常集中在哪个窗口、rank、参数和阶段 |
+| PrecisionDebugger statistics | Module/API 前反向输入输出、参数和参数梯度的统计摘要 | 指定 step / rank / Module/API | `dump.json`、`construct.json`、`stack.json` | 哪个节点首次产生或放大误差 |
+| PrecisionDebugger tensor | 同一候选节点的真实 Tensor | 指定 Tensor | `dump.json` 与 `*.npy` | 逐元素误差是否真实、形态如何 |
+| `msprobe compare` | 两端对应 dump | 对应 Module/API/Tensor | 官方 CSV/XLSX | 结构是否匹配、输入到输出是否突然恶化 |
+| `graph_visualize` | 两端 construct + dump + stack | 模型层级中的节点 | `.vis.db` + TensorBoard | 首差异在模型层级中如何产生并传播 |
+| precision pre-check / 单算子 | capture 构造或保存的候选 API 输入 | 单 API | result/details CSV | 同输入下 API 自身是否满足算子精度标准 |
+
+前一阶段负责缩小后一阶段的采集范围；后一阶段不能反过来替代前一阶段。例如一次 API
+tensor 对齐不能证明 500-step Loss 收敛，一条整网 Loss 曲线也不能定位具体错误算子。
+
 ### 9.1 配置检查
 
 配置检查应该在数值 dump 前回答：
@@ -745,6 +767,32 @@ python release_artifacts.py upload "$EXPERIMENT" --content full
 分布式时不能只看 rank0。每个 rank 可能拥有不同 PP stage、DTensor shard 或环境，
 所以项目逐 rank 生成包并逐 rank compare，再由总报告索引这些结果。
 
+#### 9.1.1 ConfigChecker 实际采集和比较的数据
+
+当前项目使用动态采集：进程构造前调用 `ConfigChecker.apply_patches("pytorch")`，模型与
+优化器准备完成后，将 model 和最终启动脚本交给 `ConfigChecker`。每个 rank 产生一个
+`config_check_rankN.zip`，官方 compare 解包 GPU `bench` 与 NPU `cmp` 后生成
+`result.xlsx`。它比较的是实验合同，不是训练数值曲线：
+
+| 官方检查项 | 实际数据 | 为什么必须先检查 |
+| --- | --- | --- |
+| `env` | 两端环境变量 | dtype、确定性、通信或算子开关不同会直接改变计算路径 |
+| `pip` | Python/框架/第三方库版本 | PyTorch、torch_npu、训练框架实现不同可能改变算子和通信行为 |
+| `hyperparameters` | 最终启动脚本/配置解析出的训练参数 | batch、sequence、LR、并行度、混合精度等必须同义 |
+| `weights` | 动态 forward 前捕获的模型权重证据，按 rank/micro-step 保存 | 排除初始化 checkpoint 或 shard 不一致 |
+| `dataset` | 动态 forward 输入的数据集证据，按 rank/micro-step 保存 | 排除 token、顺序、batch 分配不一致 |
+| `random` | 被 patch 的随机函数调用/结果证据 | 排除 Dropout、采样或随机初始化轨迹不同 |
+
+`summary` sheet 只汇总 `pass/error/warning`，其余 sheet 保存逐项详情；`step` 在该工具中
+表示 micro-step，不能和 observation 的 optimizer step 混用。官方要求 env、dataset、
+weights、hyperparameters、random 等精度关键项在数值比较前通过或得到明确解释。
+ConfigChecker 不替代项目自己的 fixture/input-contract：后者还用 checkpoint/token plan
+哈希、每 rank 实际消费记录和拓扑映射证明两端确实执行同一输入合同。
+
+官方字段与动态/静态采集边界见
+[msProbe 训练前配置检查](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msProbe/docs/zh/user_guide/config_check_instruct.md)，项目接入见
+`tests/glm5_2_mindstudio/capture_training.py::_install_config_checker`。
+
 ### 9.2 正常训练现象观察
 
 完成 CheckList 后先执行正常训练观察，不安装 PrecisionDebugger 或 TrainerMonitorV2 hook：
@@ -790,6 +838,66 @@ step/数值、图例开关、框选放大、滚轮缩放、缩放后平移和复
 NaN/Inf 分析覆盖 logger 中的全部数值指标，而不只 Loss 和 Grad Norm。报告在没有异常时
 明确显示 `Neither endpoint observed NaN/Inf`；存在异常时给出两端各指标首次出现的 step
 以及 `nan`、`+inf` 或 `-inf` 类型。
+
+#### 9.2.1 正常 training 到底采集了什么
+
+这一阶段不采集 Module/API Tensor。`capture_training.py::_install_training_metrics_capture`
+只在 `LOG_RANK` 对 TorchTitan `MetricsProcessor` 已经完成并行归约、准备交给 logger 的
+数值字典做旁路复制，不改变 loss、梯度或训练过程。原始文件每行格式为：
+
+```json
+{"step":22,"rank":0,"metrics":{"loss_metrics/global_avg_loss":2.8238,"loss_metrics/global_max_loss":2.8238,"grad_norm":23.4962}}
+```
+
+实际字典还可能包含学习率、token 数、吞吐、TFLOPS、MFU、内存和时间等 logger 数值；
+这些字段随 TorchTitan 配置和版本变化。当前 observation 的强制合同和跨设备数值分析只
+使用下表三项，NaN/Inf 扫描则遍历该行中的全部数值字段：
+
+| 原始字段 | 实际数据 | 公式或采集时点 | 用途 |
+| --- | --- | --- | --- |
+| `loss_metrics/global_avg_loss` | 当前完整 optimizer step 的全局 token 加权平均 Loss | `sum_r(local_loss_sum_r) / global_valid_tokens`；TorchTitan 在 loss mesh 上求和 | GPU/NPU 主 Loss 曲线、首 Steps 与长稳判断 |
+| `loss_metrics/global_max_loss` | 各数据并行/上下文并行 rank 本地平均 Loss 的最大值 | `max_r(local_loss_sum_r / local_valid_tokens_r)` | 发现平均值掩盖的 rank 局部异常；当前主图未将它混成另一条平均 Loss |
+| `grad_norm` | 当前整网、clipping 前的全局梯度 L2 norm | `G=sqrt(sum_p sum_i abs(g[p,i])^2)`；DTensor/FSDP shard 与 PP stage 按 TorchTitan 分布式实现汇总，函数返回 `G` 后才执行裁剪 | 整体反向稳定性、尖刺与 NaN/Inf；不是某层 norm，也不是各参数 norm 的平均值 |
+
+TorchTitan 的关键顺序可在 `torchtitan/trainer.py::Trainer.train_step` 和
+`torchtitan/distributed/utils.py::clip_grad_norm_` 中核对：
+
+```python
+grad_norm = clip_grad_norm_(all_parameters, max_norm, ...)
+optimizers.step()
+metrics_processor.log(..., float(grad_norm.item()), ...)
+```
+
+`clip_grad_norm_` 先通过 `get_total_norm` 计算并返回 `G`，随后才通过
+`clip_grads_with_norm_` 缩放梯度。因此 observation 中的 `grad_norm` 是裁剪前值，
+不是 optimizer 实际收到的裁剪后梯度 norm。算法定义参考
+[PyTorch `clip_grad_norm_`](https://pytorch.org/docs/stable/generated/torch.nn.utils.clip_grad_norm_.html)。
+
+GPU/NPU 两端先按相同展示 step 做一一匹配，再生成以下项目派生字段。设标杆为
+`R_t`，NPU 为 `C_t`：
+
+\[
+\Delta_t=C_t-R_t,\qquad
+e_t=\frac{|C_t-R_t|}{\max(|R_t|,10^{-12})}.
+\]
+
+Loss 与 Grad Norm 都记录 `reference`、`candidate`、有符号差 `Delta_t` 和误差幅度
+`e_t`。为兼容已有 Precision 展示，另记录有符号相对误差
+`(R_t-C_t)/R_t`；它的正号表示 NPU 值低于 GPU，和 `candidate-reference` 的正负方向
+相反，阅读图表时不能混用。若显式配置尖刺阈值 `q`，相邻跳变按
+
+\[
+j_t=\frac{|x_t-x_{t-1}|}{\max(|x_{t-1}|,10^{-12})}>q
+\]
+
+登记为候选尖刺。近零分母会放大相对误差，所以报告必须同时展示两端原值和绝对差。
+`NaN/+Inf/-Inf` 不参与均值，而是按 endpoint、字段分别记录首次出现的 step。
+
+代码入口：
+
+- 原始采集：`tests/glm5_2_mindstudio/capture_training.py::_install_training_metrics_capture`；
+- 字段读取、公式与现象摘要：`tests/glm5_2_mindstudio/training_observation.py`；
+- 自包含图表：`tests/glm5_2_mindstudio/observation_report.py`。
 
 首步/前几步另取最前面的 10 个已观测 step 生成放大图，避免在 500-step 或更长曲线中
 被压缩到左侧。摘要给出该窗口首步误差、平均误差、最大误差、首个超过 1% 的 step 和
@@ -862,10 +970,16 @@ Monitor V2 CSV 使用从 0 开始的 step，TorchTitan 正常训练观察和 HTM
 - `unreduced`：在反向传播阶段通过梯度 hook 记录，更接近梯度生成与累积过程；
 - `reduced`：在调用 `optimizer.step()` 前记录，是当前 step 最终交给优化器前的梯度形态。
 
-这两个名字不能脱离并行实现机械理解成“一次 AllReduce 的严格前后”。在普通
-DDP、FSDP、梯度累积、gradient clipping 或其他梯度变换下，两个采集点之间可能包含
-不同处理。官方 Monitor V2 会在 PyTorch FSDP 场景自动尝试 reduce 前采集
-`unreduced`；项目仍需在目标拓扑检查参数覆盖、scope 和数值是否符合实际执行顺序。
+这两个名字不能脱离并行实现机械理解成“一次 AllReduce 的严格前后”。官方 V2 文档
+简介把 `reduced` 写成“梯度聚合前”，但后面的功能说明和源码都把它定义为
+`optimizer.step()` 前快照；两处文字本身不一致。当前源码的普通 PyTorch 路径通过
+parameter grad hook 采 `unreduced`，FSDP 路径则在完整 `torch.autograd.backward()`
+返回后读取本地 DTensor grad，而 `reduced` 始终在包装的 optimizer step 入口读取。
+FSDP reduce-scatter 通常已在 backward hook 中发生，所以 FSDP 的 `unreduced` 未经
+调用栈验证不能声称是严格 reduce-scatter 前。TorchTitan 又会在 optimizer step 前执行
+全局 norm 和 clipping，因此当前 FSDP8 中两者更准确的名字是“backward 返回后、
+clipping 前的本地 shard 快照”和“clipping 后、optimizer 更新前的本地 shard 快照”。
+源码依据见 [Monitor V2 `weight_grad.py`](https://github.com/Ascend/msprobe/blob/master/python/msprobe/core/monitor_v2/weight_grad.py)。
 
 官方定义、配置字段和 CSV schema 见
 [msProbe Monitor V2 使用指南](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msProbe/docs/zh/user_guide/monitor_v2_instruct.md)。当前框架对应配置生成见
@@ -879,6 +993,52 @@ TorchTitan Trainer.train
   ├─ ...
   └─ finally → monitor.stop()
 ```
+
+#### 9.3.1 Monitor CSV 的对象、字段与公式
+
+Monitor V2 不保存完整 Tensor。每个启用对象按 rank 写成 CSV 行，公共主键是
+`step + vpp_stage + module_name + scope`，开启微步后还包含 `micro_step`。没有 PP/VPP
+时 `vpp_stage=0` 只是默认字段，不表示 FSDP8 存在虚拟流水级。
+
+对某个被监测张量 `X={x_i}`，当前可选统计量为：
+
+\[
+\min(X),\quad \max(X),\quad
+\operatorname{mean}(X)=\frac{1}{n}\sum_i x_i,\quad
+\operatorname{norm}(X)=\sqrt{\sum_i |x_i|^2},\quad
+\operatorname{nans}(X)=\sum_i [\operatorname{isnan}(x_i)].
+\]
+
+`min/max/mean/norm/nans` 是同一个 Tensor 的摘要，不是 GPU/NPU 差异指标；跨设备差异
+是项目在两份官方 CSV 按主键对齐后另外计算的诊断证据。`mean` 可能因正负抵消接近零，
+`norm` 只反映总体幅度，摘要相同也不能证明逐元素相同。
+
+| monitor | `module_name` 指向什么 | `scope` 与实际采集数据 | 主要回答的问题 |
+| --- | --- | --- | --- |
+| `weight_grad` | 一个命名参数，如 `layers.0.attention.wkv_a.weight` | `unreduced/reduced` 两个时点的该 rank 本地 `.grad/.main_grad`（FSDP 为本地 shard）；不是整网 Grad Norm | 哪个 step、rank、参数的梯度摘要先异常 |
+| `module` | 目标 Module 的 input/output/grad_input/grad_output | `forward` 或 `backward`，分别是模块边界的前向张量与反向梯度张量 | 异常进入模块前是否已存在，还是模块输出后首次出现 |
+| `param` | 一个模型参数 | `param_origin/param_updated`，optimizer step 前后的参数 Tensor 摘要 | 参数是否在更新时发生异常变化 |
+| `optimizer` | 参数对应的优化器状态 | Adam 常见为 `exp_avg/exp_avg_sq` | 一阶矩、二阶矩是否突变或漂移 |
+| `cc` | 通信 tag/序号/源码位置 | `comm`，依据 `cc_pre_hook` 选择通信输入等统计 | 可疑 rank/通信调用的数值摘要；不能代替 profiler 的时序分析 |
+
+注意三种 norm 不是一回事：
+
+```text
+training grad_norm
+  = 全模型、跨必要 shard/stage 汇总、clipping 前的一个标量
+
+Monitor weight_grad row norm
+  = 一个 rank 上一个参数（FSDP 时为本地 shard）的 L2 norm
+
+项目 Monitor 报告的 rank/scope 汇总 norm
+  = sqrt(sum_parameter monitor_row_norm^2)，是项目派生趋势，不是官方新采集字段，
+    也不保证等于 TorchTitan 的全局 grad_norm
+```
+
+官方字段和输出 schema 见
+[Monitor V2 使用指南](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msProbe/docs/zh/user_guide/monitor_v2_instruct.md)。项目生成的
+`monitor_report.html/aligned_metrics.csv/analysis.json` 是对两端官方 CSV 的对齐和
+可视化，不是 msProbe 官方跨设备 comparator，也不产生 PASS/FAIL。
 
 配置固定 `patch_optimizer_step=false`，否则官方自动 patch 与项目的显式 `step()` 会
 重复计数。single 最小闭环：
@@ -913,11 +1073,14 @@ python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage monitor \
 ```
 
 分析时先按 step 对齐 Loss、Grad Norm 与 Monitor CSV，再按 rank、parameter 和
-`scope=unreduced/reduced` 找到最早异常。如果 `unreduced` 已异常，优先下钻反向
-生成和累积链路；如果 `unreduced` 正常而 `reduced` 异常，则检查两采集点之间的
-通信、累积、裁剪及其他梯度处理。确定第一现场以后，再对该 step 的 backward 或
-“上一步 backward + 当前 forward”运行窄范围 dump。这里得到的是诊断方向，不是
-Monitor 自动给出的根因或跨设备 PASS/FAIL。
+`scope=unreduced/reduced` 找到最早异常。对普通非 FSDP parameter-hook 路径，第一份
+快照更贴近梯度生成/累积过程；对当前 FSDP2 路径，`unreduced` 已是完整 backward
+返回后的本地 gradient shard，因此即使它异常也不能排除 backward hook 内已经发生的
+ReduceScatter。若只有 `reduced` 异常，则检查从 backward 返回到 optimizer 入口之间的
+clipping 和其他梯度处理；没有真正位于 collective 前后的探针时，不得把两个 scope
+解释为通信前后。确定候选 step/rank/parameter 后，再对该 step 的 backward 或“上一步
+backward + 当前 forward”运行窄范围 dump。这里得到的是诊断方向，不是 Monitor 自动
+给出的根因或跨设备 PASS/FAIL。
 
 每个端点的 `official/rank_<rank>/**/*.csv` 是权威监控数据。官方 Monitor V2 当前只
 支持 CSV，不提供 TensorBoard、csv2tensorboard/csv2db 或 GPU/NPU cross-device
@@ -942,10 +1105,88 @@ dump。Monitor 的 CSV、训练日志和官方 dump/compare 共同组成这套�
 名称和 optimizer ownership。当前 workflow 会警告 PP 尚需服务器专项验收，并拒绝
 Monitor V2 与正式 `--compile.enable` 组合，避免静默产生不可解释数据。
 
-### 9.4 分级图可视化
+### 9.4 PrecisionDebugger 定点 dump 采集什么
 
-分级图不是重新 capture。它读取同 generation、同 L0/mix 配置的 GPU/NPU
-`construct.json`，调用官方 `graph_visualize` 生成 `.vis.db`：
+Monitor 锁定 step/rank/parameter/module 后，`PrecisionDebugger` 才在窄窗口采集计算链。
+项目在每个 `Trainer.train_step` 前执行 `debugger.start(model=model_parts)`，完整 step 结束
+后依次执行 `debugger.stop()` 与 `debugger.step()`；所以 dump 覆盖该 step 的 forward、
+backward、梯度裁剪和 optimizer 周边能被官方 hook 捕获的内容。配置生成入口是
+`tests/glm5_2_mindstudio/config.py::MsProbeDumpConfig.official_config`，生命周期接入是
+`capture_training.py::_install_dump_capture`。
+
+#### 9.4.1 task 决定保存值还是摘要
+
+| `task` | 实际采集内容 | 典型用途 |
+| --- | --- | --- |
+| `statistics` | 对命中的 Tensor 保存 dtype、shape、requires_grad 与 Max/Min/Mean/L2 Norm 等摘要到 `dump.json` | 第一轮低成本定位、构图和 statistics compare |
+| `tensor` | 保存真实 Tensor 数据并在 `dump.json` 中建立索引 | 候选 API/参数的逐元素验证；数据量大且可能包含训练数据和权重 |
+| `structure` | 结构信息而非数值精度明细 | 只核对执行/模型结构时使用 |
+| `nan_check` | 针对 API 执行 NaN/Inf 检查，项目要求 L1 | 溢出/NaN 分支的首异常 API 定位 |
+
+`summary_mode=statistics` 表示保存数值摘要；`md5/xor` 是内容指纹，用于同端重复性或
+快速一致性检查，不能解释误差大小。异步 dump、MD5 与 tensor list 存在官方约束，
+以 [PyTorch 数据采集文档](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msProbe/docs/zh/user_guide/dump/pytorch_data_dump_instruct.md) 为准。
+
+#### 9.4.2 level 和 data_mode 决定在哪一层、哪个方向采集
+
+| 配置 | 实际含义 |
+| --- | --- |
+| `L0` | Module 边界：forward input/output、参数，backward input/output，以及 `Module.<name>.<type>.parameters_grad.<N>` 参数梯度 |
+| `L1` | PyTorch/Tensor API 调用级输入输出与调用栈，适合已知模块后的内部算子下钻 |
+| `mix` | 同时保存 L0 Module 和 L1 API 证据，支持从整网层级一路下钻到内部 API |
+| `data_mode=["forward"]` | 只采前向输入输出/参数相关证据 |
+| `data_mode=["backward"]` | 只采反向输入输出/参数梯度相关证据 |
+| `data_mode=["all"]` | 同时采 forward 与 backward；需要判断权重梯度异常来自前向激活还是上游梯度时优先使用 |
+
+`rank` 和 `step` 选择设备与零基训练 step；`scope`、`list`、`tensor_list` 用于进一步
+过滤命中对象。`list` 中的短名称必须实际匹配官方 Module/API tag，不能假设参数短名
+一定能展开到预期模块。
+
+每个 `stepN/rankN/` 的核心原始数据是：
+
+```text
+dump.json       # 数值摘要、属性，或真实 tensor 的索引
+construct.json  # Module/API 父子层级和执行结构
+stack.json      # API 到训练源码的调用栈
+*.npy           # tensor task 的真实数据（按官方版本/配置生成）
+```
+
+### 9.5 msprobe compare 比较什么
+
+官方 compare 直接读取 GPU/NPU 对应 step/rank 的 `dump.json`，先匹配 Module/API/参数，
+再比较结构属性和数值；项目不重新计算或替代官方 Result。命令中的 `-gp` 是 GPU golden，
+`-tp` 是 NPU target，输出为官方 CSV/XLSX。
+
+statistics 模式首先比较两端各自的
+`Max/Min/Mean/L2 Norm`。对摘要函数 `s`，表中的绝对差与相对差概念为：
+
+\[
+\Delta_s=s(NPU)-s(GPU),\qquad
+r_s=\frac{|s(NPU)-s(GPU)|}{|s(GPU)|}.
+\]
+
+注意 `L2norm diff = norm(NPU)-norm(GPU)`，不是 `norm(NPU-GPU)`。切换到 tensor task
+后才能得到逐元素证据，例如：
+
+\[
+AE_i=|N_i-G_i|,\quad RE_i=\frac{|N_i-G_i|}{|G_i|},\quad
+\operatorname{Cosine}=\frac{N\cdot G}{\|N\|_2\|G\|_2},\quad
+\operatorname{EucDist}=\|N-G\|_2.
+\]
+
+此外还有 MaxAbsErr、MaxRelativeErr、千分之一/千分之五相对误差达标比例。近零 golden
+会令相对误差爆炸，所以必须同时看原值、绝对误差、shape/dtype 和 `Err_message`。
+`Result` 是“输入仍对齐而输出明显恶化”的定位启发式，不是整网交付结论。正确目标是
+沿执行顺序寻找第一个输入仍对齐、输出或参数梯度开始异常的节点，而不是找百分比最大的
+末端节点。字段、公式、匹配与 Result 规则详见
+[msProbe 结果阅读手册](MSPROBE_RESULT_READING_ZH.md)和
+[官方 PyTorch 精度比对文档](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msProbe/docs/zh/user_guide/accuracy_compare/pytorch_accuracy_compare_instruct.md)。
+
+### 9.6 分级图可视化
+
+分级图不是重新 capture，也不是把 compare CSV 机械画出来。它读取同 generation、
+同 L0/mix 配置的 GPU/NPU 原始目录：用 `construct.json` 重建 Module/API 层级，
+用 `dump.json` 组织节点精度比较，用 `stack.json` 关联源码位置，最后生成 `.vis.db`：
 
 ```bash
 python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage dump \
@@ -962,7 +1203,14 @@ Ascend Graph 插件。可用 `--fuzzy-match`、`--graph-overflow-check`、
 路径、SHA-256、runtime log 和启动命令。Release `analysis` 会保留处理后的数据库，
 但上传前仍要审查模块名、统计量和源码/服务器路径。
 
-### 9.5 precision pre-check
+界面中的颜色、节点统计和调用栈仍来自上述三份原始文件；它不新增更高精度的 Tensor。
+白色/米白色通常表示已匹配且通过，灰色表示未匹配，具体以安装版本图例为准。分析时先
+选择正确 step/rank，再从模型顶层展开颜色可疑节点，结合 compare 表格定位的 API 搜索，
+最终仍寻找“输入一致、输出首次恶化”的节点。`L0` 适合模块边界，`mix` 才能从 Module
+继续展开内部 API。官方说明见
+[PyTorch 分级可视化构图比对](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msProbe/docs/zh/user_guide/accuracy_compare/pytorch_visualization_instruct.md)。
+
+### 9.7 precision pre-check
 
 pre-check 不是对同一条网络执行结果再算一组统计量，而是把 L1/mix capture 中
 记录的 API、shape、dtype 和数据特征交给官方 checker，为每个 API 构造可复现的

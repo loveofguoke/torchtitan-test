@@ -34,6 +34,12 @@ from tests.glm5_2_mindstudio.capture_training import (
 from tests.glm5_2_mindstudio.configuration_check_benchmark import (
     CONFIG as CONFIG_CHECK_CONFIG,
 )
+from tests.glm5_2_mindstudio.graph_accuracy_benchmark import (
+    BASE_CONFIG as GRAPH_BASE_CONFIG,
+    STAGE_CONFIGS as GRAPH_STAGE_CONFIGS,
+    _stage_configs as graph_stage_configs,
+    _select_stage as select_graph_stage,
+)
 from tests.glm5_2_mindstudio.migration_benchmark import CONFIG as MIGRATION_CONFIG
 from tests.glm5_2_mindstudio.training_observation_benchmark import (
     CONFIG as OBSERVATION_CONFIG,
@@ -181,6 +187,85 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
         self.assertEqual(
             ["--capture", "candidate", "--topology", "single"], remaining
         )
+
+    def test_graph_accuracy_stages_share_one_experiment_root(self) -> None:
+        for config in GRAPH_STAGE_CONFIGS.values():
+            self.assertEqual(GRAPH_BASE_CONFIG.storage_name, config.storage_name)
+        self.assertEqual(
+            (),
+            GRAPH_STAGE_CONFIGS["compile-checker"].candidate.extra_args,
+        )
+        self.assertIn(
+            "--compile.enable",
+            GRAPH_STAGE_CONFIGS["observation"].candidate.extra_args,
+        )
+        checker = _stage_scoped_config(
+            GRAPH_STAGE_CONFIGS["compile-checker"],
+            GRAPH_BASE_CONFIG,
+        )
+        self.assertIn("/compile-checker/", checker.output_subdirectory)
+        formal = GRAPH_BASE_CONFIG.formal_fixture_config(
+            GRAPH_BASE_CONFIG.candidate.topology
+        )
+        self.assertEqual("self_consistency", formal.kind)
+
+    def test_graph_accuracy_entry_selects_compile_checker(self) -> None:
+        stage, remaining = select_graph_stage(
+            [
+                "--stage",
+                "compile-checker",
+                "--device",
+                "npu",
+                "--graph-backend",
+                "inductor",
+                "--codegen-backend",
+                "ascend-triton",
+                "--capture",
+                "candidate",
+            ]
+        )
+        self.assertEqual("compile-checker", stage)
+        self.assertEqual(["--capture", "candidate"], remaining)
+
+    def test_graph_accuracy_supports_gpu_self_consistency(self) -> None:
+        base, stages = graph_stage_configs(
+            "gpu",
+            graph_backend="inductor",
+            codegen_backend="triton",
+        )
+        self.assertEqual("cuda", base.reference.device_type)
+        self.assertEqual("cuda", base.candidate.device_type)
+        self.assertEqual({}, base.reference.environment)
+        self.assertIn("--compile.enable", stages["dump"].candidate.extra_args)
+        formal = base.formal_fixture_config(base.candidate.topology)
+        self.assertEqual("self_consistency", formal.kind)
+
+    def test_graph_accuracy_backend_selection_changes_identity(self) -> None:
+        triton, _ = graph_stage_configs(
+            "npu",
+            graph_backend="inductor",
+            codegen_backend="ascend-triton",
+        )
+        dvm, _ = graph_stage_configs(
+            "npu",
+            graph_backend="inductor",
+            codegen_backend="dvm",
+        )
+        self.assertNotEqual(triton.storage_name, dvm.storage_name)
+        self.assertEqual(
+            "default",
+            triton.candidate.environment["TORCHINDUCTOR_NPU_BACKEND"],
+        )
+        self.assertEqual(
+            "dvm",
+            dvm.candidate.environment["TORCHINDUCTOR_NPU_BACKEND"],
+        )
+        with self.assertRaisesRegex(ValueError, "invalid for gpu"):
+            graph_stage_configs(
+                "gpu",
+                graph_backend="inductor",
+                codegen_backend="dvm",
+            )
 
     def test_named_experiment_contains_variable_operation_scopes(self) -> None:
         experiment = "fsdp8-accuracy-001"

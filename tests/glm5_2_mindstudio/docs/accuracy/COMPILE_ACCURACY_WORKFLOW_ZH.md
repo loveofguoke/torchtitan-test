@@ -1,8 +1,9 @@
-# GLM-5.2 NPU eager/compile 官方精度流程
+# GLM-5.2 同设备 eager/compile 官方精度流程
 
-本文说明本仓库怎样使用 msProbe `PrecisionChecker` 检查同一 NPU 环境中
-eager 与 `torch.compile` 的模块级前向/反向差异，以及该结果与正式图模式实验
-之间的边界。
+本文说明本仓库怎样沿官方训练精度定位主线检查同设备 eager 与图模式训练，并在
+局部定位阶段使用 msProbe `PrecisionChecker` 检查同一设备环境中 eager 与
+`torch.compile` 的模块级前向/反向差异。`PrecisionChecker` 是标准流程中的一个
+定位阶段，不是完整图模式精度流程。
 
 从 single/backend smoke 扩到 FSDP、TP、PP、EP 和 all topology 前，按
 [服务器验收矩阵](../toolchain/SERVER_VALIDATION_MATRIX_ZH.md) 逐级验证。PrecisionChecker
@@ -15,6 +16,122 @@ single-pass 完成只证明被标记模块的官方比较阶段完成，不等�
 - [msProbe PrecisionChecker 源码](https://github.com/Ascend/msprobe/blob/master/python/msprobe/pytorch/compile_accuracy_checker/precision_checker.py)
 - [PyTorch torch.compile 文档](https://docs.pytorch.org/docs/stable/generated/torch.compile.html)
 - [Ascend Extension for PyTorch torch.compile 文档](https://www.hiascend.com/document/detail/zh/Pytorch/latest/userguide/torchcompile/docs/zh/torch_compile/pytorch_compilation_mode.md)
+
+## 0. 图模式仍遵循完整训练精度流程
+
+统一入口是：
+
+```bash
+python tests/glm5_2_mindstudio/graph_accuracy_benchmark.py \
+  --device <gpu|npu> --graph-backend <backend> \
+  --codegen-backend <codegen> --stage <stage> ...
+```
+
+阶段顺序与 eager 标准流程一致，只在局部定位和编译证据上增加图模式能力：
+
+```text
+config-check
+-> observation（无 msProbe hook 的短程或长程 eager/graph 正常训练）
+-> monitor（图外权重、梯度、参数、优化器或通信状态）
+-> dump（已知异常 step 的 statistics/tensor）
+-> compile-checker（相同输入下的模块 eager/compiled 局部比较）
+-> compiler diagnostics（graph break、recompile、IR 与生成代码）
+-> 修复后重跑异常窗口和长程训练
+```
+
+标准入口把所有阶段保存在一个图模式精度实验根中：
+
+```text
+mindstudio_{fixtures,runs,artifacts,reports}/accuracy/<graph-experiment-id>/
+└── <topology>/<training-profile>/
+    ├── inputs/
+    ├── checklist/configuration-check/
+    ├── observations/training/
+    ├── observations/monitor/<monitor-profile>/
+    ├── dump/<dump-profile>/
+    └── compile-checker/<checker-profile>/
+```
+
+`reference` 是所选设备的 eager，`candidate` 是相同设备、checkpoint、token plan、
+seed、dtype 和拓扑下的 TorchTitan 图模式。因此这是同设备 self-consistency，不是
+GPU/NPU migration。`--graph-backend` 与 `--codegen-backend` 都是显式实验维度并进入
+identity。当前 NPU 支持 `inductor/npugraphs + ascend-triton/dvm` 的合法组合，GPU
+当前支持 `inductor + triton`。GPU 已接入统一合同，但尚未完成服务器验收。
+
+正常训练 observation 必须先运行。它不安装 Monitor、PrecisionDebugger 或
+PrecisionChecker，用整网 Loss、Grad Norm、NaN/Inf、尖刺和趋势判断问题是否存在。
+短程与长程没有硬编码的官方步数，使用 `--training-steps` 指定能覆盖问题的窗口。
+
+图模式 Monitor 只支持不依赖 compiled module 内部 forward hook 的状态，包括
+weight/gradient、parameter、optimizer 和 communication。`--monitor-module` 会改变或
+打断编译图，框架会明确拒绝。模块内部 eager/compiled 定位交给
+`compile-checker` 和编译器诊断，不能把被 hook 改写后的运行当作正常图模式证据。
+
+图模式 dump 同样只应在 observation/Monitor 已经确定异常 step 后使用。编译可能融合
+或消除 eager API/Module 边界，因此必须同时核对 graph break、fallback 和捕获覆盖率；
+一次 dump 成功不证明内部 eager API 粒度仍然完整。
+
+兼容入口 `compile_accuracy_benchmark.py` 仍可单独运行 PrecisionChecker，但其输出属于
+独立 checker 实验，不构成上述完整标准流程。新的正式实验统一使用
+`graph_accuracy_benchmark.py`。
+
+### 0.1 标准执行顺序
+
+先准备同一份共享输入：
+
+```bash
+python tests/glm5_2_mindstudio/graph_accuracy_benchmark.py \
+  --device npu --graph-backend inductor --codegen-backend ascend-triton --stage dump --data --data-device npu --topology single
+```
+
+先跑无工具 hook 的短程或长程正常训练；`--training-steps` 必须按复现窗口显式给出：
+
+```bash
+python tests/glm5_2_mindstudio/graph_accuracy_benchmark.py \
+  --device npu --graph-backend inductor --codegen-backend ascend-triton --stage observation --capture reference --topology single --training-steps 100
+python tests/glm5_2_mindstudio/graph_accuracy_benchmark.py \
+  --device npu --graph-backend inductor --codegen-backend ascend-triton --stage observation --capture candidate --topology single --training-steps 100
+python tests/glm5_2_mindstudio/graph_accuracy_benchmark.py \
+  --device npu --graph-backend inductor --codegen-backend ascend-triton --stage observation --compare --topology single --training-steps 100
+```
+
+确认异常窗口后，再按需要执行 Monitor。图模式端禁止 `--monitor-module`：
+
+```bash
+python tests/glm5_2_mindstudio/graph_accuracy_benchmark.py \
+  --device npu --graph-backend inductor --codegen-backend ascend-triton --stage monitor --capture reference --topology single --training-steps 100
+python tests/glm5_2_mindstudio/graph_accuracy_benchmark.py \
+  --device npu --graph-backend inductor --codegen-backend ascend-triton --stage monitor --capture candidate --topology single --training-steps 100
+python tests/glm5_2_mindstudio/graph_accuracy_benchmark.py \
+  --device npu --graph-backend inductor --codegen-backend ascend-triton --stage monitor --compare --topology single --training-steps 100
+```
+
+将窗口缩小到确定 step 后，采集 statistics，再按结果决定是否采集 tensor：
+
+```bash
+python tests/glm5_2_mindstudio/graph_accuracy_benchmark.py \
+  --device npu --graph-backend inductor --codegen-backend ascend-triton --stage dump --capture reference --topology single \
+  --dump-task statistics --level L0 --dump-step 0
+python tests/glm5_2_mindstudio/graph_accuracy_benchmark.py \
+  --device npu --graph-backend inductor --codegen-backend ascend-triton --stage dump --capture candidate --topology single \
+  --dump-task statistics --level L0 --dump-step 0
+python tests/glm5_2_mindstudio/graph_accuracy_benchmark.py \
+  --device npu --graph-backend inductor --codegen-backend ascend-triton --stage dump --compare --topology single \
+  --dump-task statistics --level L0 --dump-step 0
+```
+
+最后对可疑模块运行官方 PrecisionChecker：
+
+```bash
+python tests/glm5_2_mindstudio/graph_accuracy_benchmark.py \
+  --device npu --graph-backend inductor --codegen-backend ascend-triton --stage compile-checker --capture candidate --topology single
+python tests/glm5_2_mindstudio/graph_accuracy_benchmark.py \
+  --device npu --graph-backend inductor --codegen-backend ascend-triton --stage compile-checker --compare --topology single
+```
+
+配置检查同样分别采集 eager/graph 两端并 compare。分布式拓扑只需将 `single` 替换为
+目标 topology。正式结果必须保留 reference/candidate 的 resolved launch、环境、输入
+合同和编译后端，不能只保留最终 CSV。
 
 ## 1. 为什么先做 NPU eager/graph，而不是 GPU/graph
 

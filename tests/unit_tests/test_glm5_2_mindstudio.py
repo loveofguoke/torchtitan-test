@@ -3081,7 +3081,7 @@ class TestMindStudioLifecycle(unittest.TestCase):
                     world_size=2,
                 )
 
-    def test_monitor_execution_rejects_unvalidated_compile_and_invalid_rank(
+    def test_monitor_execution_limits_compiled_module_hooks_and_invalid_rank(
         self,
     ) -> None:
         config = _experiment(workflow="monitor")
@@ -3095,14 +3095,23 @@ class TestMindStudioLifecycle(unittest.TestCase):
                 topology,
                 config.candidate,
             )
-        with self.assertRaisesRegex(ValueError, "torch.compile"):
+        compiled_endpoint = replace(
+            config.candidate,
+            extra_args=("--compile.enable",),
+        )
+        _validate_monitor_execution(
+            config,
+            topology,
+            compiled_endpoint,
+        )
+        with self.assertRaisesRegex(ValueError, "module Monitor hooks"):
             _validate_monitor_execution(
-                config,
-                topology,
                 replace(
-                    config.candidate,
-                    extra_args=("--compile.enable=true",),
+                    config,
+                    monitor=replace(config.monitor, module=True),
                 ),
+                topology,
+                compiled_endpoint,
             )
 
     @staticmethod

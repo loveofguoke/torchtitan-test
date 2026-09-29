@@ -85,6 +85,16 @@ JSON, logs, lifecycle state, and the original in-scope HTML remain in place.
 Layout migration is resumable: merge disjoint entries, deduplicate byte-identical
 files, and reject same-path content conflicts instead of overwriting either side.
 
+MindStudio graph accuracy uses the same training-window-first contract. Each
+graph experiment is same-device self-consistency: the selected GPU or NPU eager
+reference is compared with its graph candidate. It owns `checklist/`,
+`observations/`, `dump/`, and
+`compile-checker/` siblings below one experiment root. PrecisionChecker is a
+localization stage, not a replacement for uninstrumented short/long training
+observation. Graph-mode Monitor may inspect weight/gradient, parameter,
+optimizer, and communication state outside compiled module internals; module
+Monitor hooks are rejected because they can change the graph being diagnosed.
+
 ## Current GLM graph/parity boundary
 
 The current compatibility baseline is TorchTitan `59899ade`, Turbo
