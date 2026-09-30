@@ -148,6 +148,19 @@ def write_training_metrics_report(
     ]
     sections: list[Any] = [
         section_heading(
+            "执行合同 / Execution Contract",
+            "执行模式和代码生成后端属于实验身份；不同合同不会复用同一目录。",
+        ),
+        summary_table(
+            columns=("Field", "Value", "Meaning"),
+            rows=(
+                ("Graph mode", config.get("graph_mode", "eager"), "eager、Inductor 或 NPU Graphs"),
+                ("Compile components", ", ".join(config.get("compile_components", ("model",))), "进入图编译的训练组件"),
+                ("NPU codegen", config.get("npu_codegen") or "installed default", "DVM 或 Ascend Triton 代码生成后端"),
+                ("Compiler diagnostics", str(bool(config.get("compiler_diagnostics", False))), "graph break/recompile/dynamic shape 日志"),
+            ),
+        ),
+        section_heading(
             "总体摘要 / Overview",
             "Profiler-off 用于性能数值结论；Profiler-active 只用于定位原因。",
         ),

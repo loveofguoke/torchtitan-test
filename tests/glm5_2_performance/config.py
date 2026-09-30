@@ -288,6 +288,10 @@ class PerformanceConfig:
     profiler_enabled: bool = True
     collector: str = PerformanceCollector.TORCH_NPU_PROFILER.value
     collector_args: tuple[str, ...] = ()
+    graph_mode: str = "eager"
+    compile_components: tuple[str, ...] = ("model",)
+    compiler_diagnostics: bool = False
+    npu_codegen: str | None = None
     local_batch_size: int = 2
     global_batch_size: int = 2
     sequence_length: int = 128
@@ -337,6 +341,25 @@ class PerformanceConfig:
             raise ValueError("profiler skip and warmup steps must be non-negative")
         if self.replicate < 0:
             raise ValueError("replicate must be non-negative")
+        if self.graph_mode not in {"eager", "inductor", "npugraphs"}:
+            raise ValueError(
+                "graph_mode must be eager, inductor, or npugraphs"
+            )
+        if not self.compile_components or any(
+            component not in {"model", "loss"}
+            for component in self.compile_components
+        ):
+            raise ValueError(
+                "compile_components must contain model and/or loss"
+            )
+        if self.graph_mode == "npugraphs" and self.compile_components != ("model",):
+            raise ValueError("npugraphs supports model compilation only")
+        if self.graph_mode == "eager" and self.compile_components != ("model",):
+            raise ValueError("compile_components apply only to graph-mode runs")
+        if self.graph_mode == "eager" and self.compiler_diagnostics:
+            raise ValueError("compiler_diagnostics require a graph-mode run")
+        if self.npu_codegen not in {None, "dvm", "ascend-triton"}:
+            raise ValueError("npu_codegen must be dvm or ascend-triton")
         if self.mixed_precision_reduce not in {
             "float32",
             "float16",

@@ -171,6 +171,39 @@ class TestPerformanceConfig(unittest.TestCase):
         self.assertIn("-overview-offline-", offline_name)
         self.assertNotEqual(sync_name, offline_name)
 
+    def test_run_name_exposes_graph_and_codegen_contract(self):
+        eager = PerformanceConfig(
+            name="glm5-probe",
+            graph_mode="eager",
+            npu_codegen="ascend-triton",
+        )
+        compiled = replace(eager, graph_mode="inductor")
+
+        eager_name = _run_name(eager, "npu")
+        compiled_name = _run_name(compiled, "npu")
+
+        self.assertIn("-eager-ascend-triton-", eager_name)
+        self.assertIn("-inductor-ascend-triton-", compiled_name)
+        self.assertNotEqual(eager_name, compiled_name)
+
+    def test_performance_config_validates_graph_contract(self):
+        with self.assertRaisesRegex(ValueError, "graph_mode"):
+            PerformanceConfig(name="bad", graph_mode="unknown")
+        with self.assertRaisesRegex(ValueError, "model and/or loss"):
+            PerformanceConfig(name="bad", compile_components=("optimizer",))
+        with self.assertRaisesRegex(ValueError, "model compilation only"):
+            PerformanceConfig(
+                name="bad",
+                graph_mode="npugraphs",
+                compile_components=("model", "loss"),
+            )
+        with self.assertRaisesRegex(ValueError, "graph-mode"):
+            PerformanceConfig(
+                name="bad",
+                graph_mode="eager",
+                compile_components=("model", "loss"),
+            )
+
     def test_distributed_npu_sync_parse_moves_offline(self):
         sync = profiler_presets()["overview"]
 

@@ -20,6 +20,8 @@ CONFIG = PerformanceConfig(
     # Communication data for every rank.
     preset="standard",
     collector="torch_npu_profiler",
+    graph_mode="eager",
+    npu_codegen="ascend-triton",
     steps=30,
     skip_steps=10,
     warmup_steps=2,

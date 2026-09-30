@@ -99,6 +99,10 @@ sequence length 32.
 | `--training-dtype` | Override the TorchTitan training dtype for an identified experiment. | `float32` |
 | `--mixed-precision-param` | Override parameter mixed precision. | `bfloat16` |
 | `--mixed-precision-reduce` | Override collective reduction precision. | `float32` |
+| `--graph` | Training execution mode: `eager`, `inductor`, or `npugraphs`. The value enters the directory name, manifest, report, and resume identity. | `eager` |
+| `--compile-loss` | Compile the loss component together with the model. Use with `--graph inductor`; NPU Graphs remains model-only. | disabled |
+| `--compiler-diagnostics` | Record graph-break, recompile, and dynamic-shape diagnostics for graph-mode attribution. | disabled |
+| `--npu-codegen` | NPU code generator: `dvm` or `ascend-triton`. This also controls internally compiled FlexAttention in eager mode. | entry-point policy |
 | `--run-root` | Raw capture root. Put this on node-local storage for large profiles. | `performance_runs` |
 | `--parse-mode` | `sync`, `async`, or `offline`; overrides the preset parse mode. Multi-rank NPU sync capture is safely parsed offline after training. | preset-specific (`distributed` uses `offline`, others `sync`) |
 | `--offline` | Compatibility alias for `--parse-mode offline`. | disabled |
@@ -108,7 +112,7 @@ sequence length 32.
 | `--cluster` | Run `msprof-analyze cluster -m all`; intended for multi-rank captures. | disabled |
 | `--analysis-tools` | `none`, `offline`, `advisor`, `cluster`, or `all`. `all` parses offline presets, runs advisor, and runs cluster only for multi-rank captures. | `none` |
 | `--compare-baseline` | Baseline profiler path passed to `msprof-analyze compare`. | unset |
-| `--extra-train-arg` | Append one raw TorchTitan argument; repeat the flag for multiple arguments. | none |
+| `--extra-train-arg` | Append one non-compile TorchTitan argument; repeat the flag for multiple arguments. Raw `--compile.*` arguments are rejected because they would bypass graph experiment identity. | none |
 | `--force` | Remove and recapture completed output. Incomplete output is archived and retried without it. | disabled |
 
 Advanced collection overrides apply to one concrete preset and are rejected

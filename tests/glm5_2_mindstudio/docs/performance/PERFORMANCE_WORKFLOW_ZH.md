@@ -533,7 +533,8 @@ export ASCEND_RT_VISIBLE_DEVICES=4
 for r in 1 2 3; do
   python tests/glm5_2_mindstudio/performance_benchmark.py \
     --capture --device npu --profiler-off \
-    --topology single --replicate "$r"
+    --topology single --graph eager --npu-codegen ascend-triton \
+    --replicate "$r"
 done
 
 # 一个分布式拓扑 3 次
@@ -541,14 +542,16 @@ export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 for r in 1 2 3; do
   python tests/glm5_2_mindstudio/performance_benchmark.py \
     --capture --device npu --profiler-off \
-    --topology fsdp8 --replicate "$r"
+    --topology fsdp8 --graph eager --npu-codegen ascend-triton \
+    --replicate "$r"
 done
 
 # 所有不超过 8 卡的拓扑各 3 次
 for r in 1 2 3; do
   python tests/glm5_2_mindstudio/performance_benchmark.py \
     --capture --device npu --profiler-off \
-    --topology all --replicate "$r"
+    --topology all --graph eager --npu-codegen ascend-triton \
+    --replicate "$r"
 done
 ```
 
@@ -567,7 +570,8 @@ min/median/max 作为性能数值。下面 profiler-active 的结果只做归因
 export ASCEND_RT_VISIBLE_DEVICES=4
 python tests/glm5_2_mindstudio/performance_benchmark.py \
   --probe --device npu --collector torch_npu_profiler \
-  --topology single --preset standard --analysis-tools all
+  --topology single --preset standard --analysis-tools all \
+  --graph eager --npu-codegen ascend-triton
 ```
 
 一个分布式拓扑：
@@ -576,7 +580,8 @@ python tests/glm5_2_mindstudio/performance_benchmark.py \
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 python tests/glm5_2_mindstudio/performance_benchmark.py \
   --probe --device npu --collector torch_npu_profiler \
-  --topology fsdp8 --preset distributed --analysis-tools all
+  --topology fsdp8 --preset distributed --analysis-tools all \
+  --graph eager --npu-codegen ascend-triton
 ```
 
 所有不超过八卡的拓扑：

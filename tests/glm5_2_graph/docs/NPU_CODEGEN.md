@@ -21,7 +21,7 @@ python tests/glm5_2_smoke/train_smoke.py --device npu --topology single --graph 
 python tests/glm5_2_smoke/train_smoke.py --device npu --topology all --graph inductor --npu-codegen dvm --steps 2
 
 # MindStudio 性能：后端选择不隐式开启整模型编译。
-python tests/glm5_2_mindstudio/performance_benchmark.py --probe --device npu --topology single --preset distributed --npu-codegen dvm --extra-train-arg=--compile.enable --extra-train-arg=--compile.backend=inductor
+python tests/glm5_2_mindstudio/performance_benchmark.py --probe --device npu --topology single --preset distributed --graph inductor --npu-codegen dvm
 ```
 
 同一参数也接入原 performance workflow、组合实验、checkpoint、原 precision

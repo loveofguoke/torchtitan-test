@@ -540,6 +540,9 @@ def _run_name(
         base += f"-r{config.replicate}"
     if preset_overridden:
         base += f"-{effective_preset.parse_mode}"
+    base += f"-{config.graph_mode}"
+    if config.npu_codegen:
+        base += f"-{config.npu_codegen}"
     identity = config.as_dict()
     for key in ("name", "device", "run_root", "artifact_root", "report_root"):
         identity.pop(key, None)
@@ -3081,6 +3084,23 @@ def run_profiler_cli(
     parser.add_argument("--mixed-precision-param")
     parser.add_argument("--mixed-precision-reduce")
     parser.add_argument(
+        "--graph",
+        choices=("eager", "inductor", "npugraphs"),
+        help="training execution mode; it is part of experiment identity",
+    )
+    parser.add_argument(
+        "--compile-loss",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="compile loss together with the model (Inductor only)",
+    )
+    parser.add_argument(
+        "--compiler-diagnostics",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="enable graph-break, recompile, and dynamic-shape diagnostics",
+    )
+    parser.add_argument(
         "--run-root",
         help="raw output root; use node-local storage for large cluster captures",
     )
@@ -3236,7 +3256,7 @@ def run_profiler_cli(
         default=[],
         help="append a raw TorchTitan CLI argument",
     )
-    from tests.glm5_2_graph.config import add_npu_codegen_argument, npu_codegen_environment
+    from tests.glm5_2_graph.config import GraphFeatureConfig, add_npu_codegen_argument
     add_npu_codegen_argument(parser)
     args = parser.parse_args()
 
@@ -3269,20 +3289,43 @@ def run_profiler_cli(
         "training_dtype": args.training_dtype,
         "mixed_precision_param": args.mixed_precision_param,
         "mixed_precision_reduce": args.mixed_precision_reduce,
+        "graph_mode": args.graph,
+        "compiler_diagnostics": args.compiler_diagnostics,
+        "npu_codegen": args.npu_codegen,
         "run_root": args.run_root,
     }
-    effective = replace(
+    if args.compile_loss is not None:
+        overrides["compile_components"] = (
+            ("model", "loss") if args.compile_loss else ("model",)
+        )
+    preliminary = replace(
         config,
         **{key: value for key, value in overrides.items() if value is not None},
-        extra_args=config.extra_args + tuple(args.extra_train_arg),
-        environment={**config.environment, **npu_codegen_environment(args.npu_codegen)},
+    )
+    root = _repository_root(script_path)
+    device = _resolve_device(preliminary.device)
+    graph_feature = GraphFeatureConfig(
+        mode=preliminary.graph_mode,
+        components=preliminary.compile_components,
+        diagnostics=preliminary.compiler_diagnostics,
+        npu_codegen=preliminary.npu_codegen,
+    ).feature(device_type=device)
+    raw_extra_args = config.extra_args + tuple(args.extra_train_arg)
+    if any(argument.startswith("--compile.") for argument in raw_extra_args):
+        parser.error(
+            "raw --compile.* arguments are not allowed in performance runs; "
+            "use --graph, --compile-loss, and --compiler-diagnostics so the "
+            "execution contract enters experiment identity"
+        )
+    effective = replace(
+        preliminary,
+        extra_args=raw_extra_args + graph_feature.arguments,
+        environment={**config.environment, **graph_feature.environment},
     )
     if effective.profiler_enabled:
         # Reject registered-but-unverified collectors before ``--force`` can
         # clear any prior generation.
         require_training_collector(effective.collector)
-    root = _repository_root(script_path)
-    device = _resolve_device(effective.device)
     if device != "npu":
         raise NotImplementedError(
             "the performance profiler currently supports only Ascend NPU; "

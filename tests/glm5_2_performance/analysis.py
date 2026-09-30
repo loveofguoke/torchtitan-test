@@ -1309,7 +1309,7 @@ def render_html_report(
             '<div class="card"><span>Profiler parser wall time</span>'
             f'<strong>{_format_number(compiler["all_parse_seconds"])} s</strong></div>'
         )
-    compile_enabled = any(
+    compile_enabled = config.get("graph_mode", "eager") != "eager" or any(
         "--compile." in str(value) for value in config.get("extra_args", [])
     )
     if compile_enabled:
