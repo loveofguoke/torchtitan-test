@@ -1644,6 +1644,35 @@ time is extracted from the Ascend profiler completion messages.</p>
             '<a href="https://ui.perfetto.dev/">Perfetto</a>; '
             '<code>chrome://tracing</code></td></tr>'
         )
+
+    self_diagnosis = analysis.get("self_diagnosis", {})
+    diagnosis_rows = ""
+    for key, branch in self_diagnosis.get("branches", {}).items():
+        evidence = branch.get("evidence", [])
+        evidence_text = html.escape(json.dumps(evidence, ensure_ascii=False))
+        actions = "".join(
+            f"<li>{html.escape(action)}</li>"
+            for action in branch.get("next_actions", [])
+        ) or "<li>No additional action selected from current evidence.</li>"
+        diagnosis_rows += (
+            f"<tr><td><code>{html.escape(key)}</code></td>"
+            f"<td><span class=\"status "
+            f"{('pending' if branch['status'] in {'suspect', 'not_available'} else 'ready')}\">"
+            f"{html.escape(branch['status'])}</span></td>"
+            f"<td>{html.escape(branch['summary'])}</td>"
+            f"<td><details><summary>{len(evidence)} evidence rows</summary>"
+            f"<pre>{evidence_text}</pre></details></td>"
+            f"<td><ul>{actions}</ul></td></tr>"
+        )
+    diagnosis_section = (
+        '<section><h2>单拓扑性能诊断 / Single-topology diagnosis</h2>'
+        '<p class="subtle">先回答当前拓扑自身是否存在计算、通信、Host、显存、图编译或 rank 偏斜信号，再进入跨平台比较。状态是诊断路由，不是 PASS/FAIL；数值阈值仅为项目分诊指导。</p>'
+        '<table><thead><tr><th>Branch</th><th>Status</th><th>Summary</th>'
+        '<th>Evidence</th><th>Next actions</th></tr></thead>'
+        f'<tbody>{diagnosis_rows}</tbody></table></section>'
+        if diagnosis_rows
+        else ""
+    )
     if not ascend_rows:
         ascend_rows = '<tr><td colspan="6">No Ascend profile root discovered</td></tr>'
         trace_rows = '<tr><td colspan="3">No interactive trace discovered</td></tr>'
@@ -1844,6 +1873,7 @@ a{{color:#155eef}} h3{{font-size:15px;margin:16px 0 6px}} h4{{font-size:14px;mar
 <div class="pipeline">{pipeline}</div>
 <div class="cards">{''.join(cards) or '<div class="card"><span>Training metrics</span><strong>Unavailable</strong></div>'}</div>
 {profile_duration_warning}
+{diagnosis_section}
 <section><h2>中文阅读路线</h2>
 <p>这份 HTML 是实验摘要，不会把官方时间线压扁成一张静态表。建议依次查看：训练卡片和曲线确认整体吞吐；Profiler phase 判断采集开销；Distributed/Communication 判断通信暴露和 rank 偏斜；Top operator、shape、L2 定位算子；最后打开 MindStudio Timeline、火焰图和显存时间线下钻。</p>
 <table><thead><tr><th>对象/指标</th><th>表示什么</th><th>通常如何解释</th></tr></thead><tbody>

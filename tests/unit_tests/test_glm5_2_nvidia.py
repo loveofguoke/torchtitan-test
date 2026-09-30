@@ -8,14 +8,17 @@ from tests.glm5_2_nvidia.workflow import (
     DEFAULT_STATS,
     PROFILE_PRESETS,
     _adopt_legacy_experiment_layout,
+    _adopt_legacy_diagnosis,
     _adopt_legacy_outputs,
     _contract,
     _identity_name,
+    _write_report,
 )
 from tests.glm5_2_nvidia.diagnostics import diagnose
 from tests.glm5_2_nvidia.ncu_workflow import (
     _completed as ncu_completed,
     _contract as ncu_contract,
+    _write_report as write_ncu_report,
 )
 
 
@@ -37,6 +40,8 @@ def _args() -> Namespace:
         duration=None,
         stats_reports=DEFAULT_STATS,
         profile="standard",
+        profiler_off=False,
+        replicate=0,
     )
 
 
@@ -135,6 +140,24 @@ def test_legacy_nsys_roots_are_adopted_by_nvidia_suite() -> None:
         assert not legacy_report.exists()
 
 
+def test_legacy_nvidia_diagnosis_is_adopted_into_self_scope() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        run = root / "run"
+        output = run / "trainer_output" / "profiling" / "nsys"
+        legacy = output / "diagnosis"
+        legacy.mkdir(parents=True)
+        (legacy / "diagnosis.json").write_text("{}\n", encoding="utf-8")
+        (legacy / "diagnosis.md").write_text("legacy\n", encoding="utf-8")
+
+        destination = _adopt_legacy_diagnosis(run, output)
+
+        assert destination == run / "diagnosis" / "self"
+        assert (destination / "diagnosis.json").read_text() == "{}\n"
+        assert (destination / "diagnosis.md").read_text() == "legacy\n"
+        assert not legacy.exists()
+
+
 def test_layered_profiles_preserve_a_light_standard_first_pass() -> None:
     assert "nccl" not in PROFILE_PRESETS["standard"]["trace"]
     assert PROFILE_PRESETS["standard"]["sample"] == "none"
@@ -157,13 +180,65 @@ def test_automatic_diagnosis_is_evidence_linked() -> None:
             encoding="utf-8",
         )
 
-        result = diagnose(stats, root / "diagnosis")
+        result = diagnose(
+            stats,
+            root / "diagnosis" / "self",
+            metadata={"topology": "single", "profile": "standard"},
+        )
 
         payload = json.loads(Path(result["json"]).read_text(encoding="utf-8"))
-        assert payload["interpretation"] == "triage_only"
+        assert payload["verdict_policy"] == "diagnostic_only_no_pass_fail"
+        assert payload["scope"] == "single_topology"
+        assert payload["metadata"]["topology"] == "single"
+        assert payload["branches"]["communication"]["status"] == "suspect"
         assert {item["category"] for item in payload["findings"]} >= {
             "communication", "host_or_synchronization", "kernel_hotspots"
         }
+
+
+def test_nvidia_report_embeds_self_diagnosis() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        run = root / "run"
+        artifact = root / "artifact"
+        artifact.mkdir()
+        diagnosis = run / "diagnosis" / "self"
+        diagnosis.mkdir(parents=True)
+        (diagnosis / "diagnosis.json").write_text(
+            json.dumps(
+                {
+                    "branches": {
+                        "communication": {
+                            "status": "suspect",
+                            "evidence": [{"name": "ncclKernel"}],
+                            "next_action": "Inspect collective arrival.",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        (artifact / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "statistics": ["cuda_gpu_kern_sum.csv"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        report = root / "report.html"
+
+        _write_report(
+            report,
+            topology=standard_topologies()["single"],
+            run_dir=run,
+            artifact_dir=artifact,
+        )
+
+        content = report.read_text(encoding="utf-8")
+        assert "GPU 单拓扑性能诊断" in content
+        assert "communication" in content
+        assert "ncclKernel" in content
 
 
 def test_ncu_contract_records_replay_and_selection() -> None:
@@ -178,6 +253,32 @@ def test_ncu_contract_records_replay_and_selection() -> None:
     assert contract["kernel_name"] == "regex:.*gemm.*"
     assert contract["launch_skip"] == 2
     assert contract["replay_mode"] == "kernel"
+
+
+def test_ncu_report_explains_targeted_replay_boundary() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        report = root / "kernel-123.ncu-rep"
+        report.write_bytes(b"native")
+        output = root / "index.html"
+        write_ncu_report(
+            output,
+            contract={
+                "kernel_name": "regex:.*gemm.*",
+                "nvtx_include": None,
+                "section_set": "detailed",
+                "replay_mode": "kernel",
+                "launch_skip": 2,
+                "launch_count": 1,
+            },
+            reports=[report],
+            runtime_log=root / "runtime.log",
+        )
+
+        content = output.read_text(encoding="utf-8")
+        assert "GPU 定点算子分析" in content
+        assert "SpeedOfLight" in content
+        assert "不能用于判断跨 rank 原始耗时" in content
 
 
 def test_ncu_resume_requires_matching_complete_report() -> None:

@@ -6,9 +6,9 @@ its collection and analysis are independent from the NPU path. It does not
 modify TorchTitan or TorchTitanTurbo.
 
 The package is named after the NVIDIA experiment family instead of one tool.
-Nsight Systems is the first implemented collector. Nsight Compute belongs here
-as a separate kernel-analysis workflow once its capture, replay, report, and
-lifecycle contracts are implemented. Nsight Systems and Nsight Compute outputs
+Nsight Systems is the system collector. Nsight Compute is implemented as a
+separate, targeted kernel-analysis workflow with its own replay and lifecycle
+contract. Nsight Systems and Nsight Compute outputs
 remain separate because they answer different questions and use different file
 formats.
 
@@ -51,6 +51,10 @@ Official references:
 - [Nsight Systems getting started](https://developer.nvidia.com/nsight-systems/get-started)
 - [Nsight Systems user guide](https://docs.nvidia.com/nsight-systems/UserGuide/)
 - [Post-collection analysis guide](https://docs.nvidia.com/nsight-systems/AnalysisGuide/)
+- [Nsight Compute CLI](https://docs.nvidia.com/nsight-compute/NsightComputeCli/index.html)
+- [Nsight Compute profiling guide](https://docs.nvidia.com/nsight-compute/ProfilingGuide/)
+- [MLPerf Training rules](https://github.com/mlcommons/training_policies/blob/master/training_rules.adoc)
+- [MLPerf result messaging guidelines](https://github.com/mlcommons/policies/blob/master/MLPerf_Results_Messaging_Guidelines.adoc)
 
 ## Preflight
 
@@ -88,6 +92,18 @@ python tests/glm5_2_nvidia/performance_benchmark.py \
 
 ## Layered diagnosis
 
+First collect at least three profiler-off repeats. These runs are the authority
+for step time, throughput, TFLOPS, MFU, and peak memory; Nsys and NCU explain
+causes but do not replace the uninstrumented measurement:
+
+```bash
+for REPEAT in 1 2 3; do
+  python tests/glm5_2_nvidia/performance_benchmark.py \
+    --probe --profiler-off --replicate "${REPEAT}" \
+    --topology fsdp8 --steps 50
+done
+```
+
 Start with the standard pass. It captures CUDA/PyTorch/NVTX, memory allocation,
 kernel, API, and OS-runtime evidence. The current integration profiles the
 selected training process; use `--delay`/`--duration` when a bounded wall-clock
@@ -99,7 +115,7 @@ python tests/glm5_2_nvidia/performance_benchmark.py \
   --probe --profile standard --topology ddp2
 ```
 
-Read `diagnosis/diagnosis.md` and open `profile.nsys-rep`. Rerun only the
+Read `diagnosis/self/diagnosis.md` and open `profile.nsys-rep`. Rerun only the
 relevant deeper policy; each policy has a distinct capture identity:
 
 ```bash
@@ -168,6 +184,8 @@ python tests/glm5_2_nvidia/performance_benchmark.py \
 | `--sequence-length` | Tokens per sample. | `128` |
 | `--trace` | Nsight Systems trace domains. Add `nccl` only when supported by the installed NCCL. | `cuda,nvtx,osrt,cublas,cudnn` |
 | `--profile` | Collection policy: `standard`, `communication`, `host`, `memory`, or `deep`. | `standard` |
+| `--profiler-off` | Run normal training without Nsys; this is the performance-number baseline. | disabled |
+| `--replicate` | Optional independent run index in the identity. Use 1, 2, 3 for formal baselines. | `0` |
 | `--pytorch` | Automatic PyTorch NVTX annotations. | `functions-trace-shapes,autograd-nvtx` |
 | `--sample` | CPU sampling scope; `none` avoids permission and overhead surprises in the standard run. | `none` |
 | `--cuda-memory-usage` | Record CUDA allocation/residency information. | enabled |
@@ -187,6 +205,7 @@ members while retaining completed ones.
 
 ```text
 nvidia_runs/performance/system/<N-card>/<topology>/<experiment>/
+  # profiler-off members use runtime.log + metrics.jsonl
   nsys_profile.log
   training.log
   trainer_output/profiling/nsys/
@@ -195,8 +214,9 @@ nvidia_runs/performance/system/<N-card>/<topology>/<experiment>/
     export_sqlite.log
     stats/*.csv
     stats/*.log
-    diagnosis/diagnosis.json
-    diagnosis/diagnosis.md
+  diagnosis/self/
+    diagnosis.json
+    diagnosis.md
   run_state.json
 
 nvidia_artifacts/performance/system/<N-card>/<topology>/<experiment>/
@@ -210,6 +230,37 @@ nvidia_runs/performance/operator/<N-card>/<topology>/<experiment>/
 
 nvidia_artifacts/performance/operator/<N-card>/<topology>/<experiment>/
   manifest.json
+
+nvidia_reports/performance/operator/<N-card>/<topology>/<experiment>.html
+
+# Shared NPU/GPU or before/after profiler-off aggregation:
+<selected-output>/
+  README.md
+  comparison.json
+  comparison.html
+```
+
+Aggregate one platform or compare two contract-compatible groups after capture:
+
+```bash
+# Single-platform repeat stability.
+python -m tests.glm5_2_performance.comparison \
+  --reference-label GPU \
+  --reference-run /path/to/gpu-r1 \
+  --reference-run /path/to/gpu-r2 \
+  --reference-run /path/to/gpu-r3 \
+  --skip-steps 10 \
+  --output nvidia_reports/performance/comparisons/gpu-fsdp8
+
+# GPU reference versus NPU candidate. Both groups must have the same model,
+# topology, batch, sequence, seed, dtype, and mixed-precision contract.
+python -m tests.glm5_2_performance.comparison \
+  --reference-label GPU --reference-run /path/to/gpu-r1 \
+  --reference-run /path/to/gpu-r2 --reference-run /path/to/gpu-r3 \
+  --candidate-label NPU --candidate-run /path/to/npu-r1 \
+  --candidate-run /path/to/npu-r2 --candidate-run /path/to/npu-r3 \
+  --skip-steps 10 \
+  --output performance_reports/comparisons/gpu-npu-fsdp8
 ```
 
 The `nvidia_artifacts/performance/system` tree contains only orchestration metadata. Official
@@ -239,3 +290,14 @@ Nsight Systems `stats`/SQLite and Nsight Compute `.ncu-rep` remain the source of
 truth. NVIDIA's Nsys recipes and NCU rules can be added as official derived
 stages after their installed-version command and output contracts are validated;
 their data must not be rewritten into invented formats.
+
+## MLPerf boundary
+
+MLPerf is not a profiler and this GLM experiment is not an MLPerf submission.
+The framework adopts its measurement discipline only: declare the system and
+software configuration, preserve complete logs, keep preprocessing and quality
+semantics explicit, use multiple independent runs, and do not compare unlike
+benchmarks or scenarios. Local step-time, throughput, MFU, Nsys, or NCU results
+must therefore be described as project measurements. They must not be labelled
+as MLPerf results unless the exact MLCommons benchmark, rules, checker, required
+run count, target quality, and submission package have all been satisfied.

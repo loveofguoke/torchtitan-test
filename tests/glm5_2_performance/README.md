@@ -403,6 +403,32 @@ error instead of silently changing the analysis.
 
 ## Official diagnosis, comparison, and cluster analysis
 
+Before comparing profiler traces, aggregate the profiler-off authority runs.
+The shared command accepts NPU runs from this workflow and GPU runs from
+`tests/glm5_2_nvidia`; it validates model, topology, batch, sequence, seed, and
+dtype before calculating any delta:
+
+```bash
+python -m tests.glm5_2_performance.comparison \
+  --reference-label GPU \
+  --reference-run /path/to/gpu-r1 \
+  --reference-run /path/to/gpu-r2 \
+  --reference-run /path/to/gpu-r3 \
+  --candidate-label NPU \
+  --candidate-run /path/to/npu-r1 \
+  --candidate-run /path/to/npu-r2 \
+  --candidate-run /path/to/npu-r3 \
+  --skip-steps 10 \
+  --output performance_reports/comparisons/gpu-npu-fsdp8
+```
+
+Omit every `--candidate-run` to produce a single-platform repeat-stability
+report. The output contains `comparison.html`, `comparison.json`, and
+`README.md`. It reports repeat count and CV; fewer than three repeats are
+visible evidence insufficiency, not an automatic failure. Repeating identical
+inputs reuses the report; changed inputs require another `--output` or an
+explicit `--force`, which replaces only that selected comparison directory.
+
 The HTML report is the experiment summary. The official deep-analysis entry
 points remain explicit CLI actions:
 

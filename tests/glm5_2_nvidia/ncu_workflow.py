@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
+import html
 import json
 import os
 from pathlib import Path
@@ -84,6 +85,49 @@ def _run(command: list[str], log: Path, env: dict[str, str]) -> None:
         raise LoggedProcessError(return_code, command, log_path=log)
 
 
+def _write_report(
+    path: Path,
+    *,
+    contract: dict[str, Any],
+    reports: list[Path],
+    runtime_log: Path,
+) -> None:
+    report_rows = "".join(
+        f"<tr><td><code>{html.escape(report.name)}</code></td>"
+        f"<td><code>{html.escape(str(report))}</code></td></tr>"
+        for report in reports
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>GLM Nsight Compute targeted analysis</title><style>"
+        "body{margin:0;background:#f5f7fb;color:#172033;font:15px/1.6 system-ui}"
+        "main{max-width:1180px;margin:auto;padding:36px 32px}section{background:#fff;"
+        "border:1px solid #dfe5ef;border-radius:12px;padding:22px;margin:20px 0;overflow:auto}"
+        "table{border-collapse:collapse;width:100%}th,td{padding:10px;border-bottom:1px solid #e5eaf2;text-align:left}"
+        "th{background:#f7f9fc}code{white-space:pre-wrap;word-break:break-all}"
+        "</style></head><body><main><h1>GPU 定点算子分析 / Nsight Compute</h1>"
+        "<p>这是 NSys 单拓扑分析后的定点重放，不是自然运行时间线，也不能用于判断跨 rank 原始耗时。</p>"
+        "<section><h2>采集契约</h2><table><tbody>"
+        f"<tr><th>Kernel selector</th><td><code>{html.escape(contract['kernel_name'])}</code></td></tr>"
+        f"<tr><th>NVTX range</th><td><code>{html.escape(str(contract.get('nvtx_include') or '-'))}</code></td></tr>"
+        f"<tr><th>Section set</th><td>{html.escape(contract['section_set'])}</td></tr>"
+        f"<tr><th>Replay mode</th><td>{html.escape(contract['replay_mode'])}</td></tr>"
+        f"<tr><th>Launch window</th><td>skip {contract['launch_skip']}, count {contract['launch_count']}</td></tr>"
+        f"<tr><th>Runtime log</th><td><code>{html.escape(str(runtime_log))}</code></td></tr>"
+        "</tbody></table></section>"
+        f"<section><h2>官方 .ncu-rep</h2><table><thead><tr><th>File</th><th>Path</th></tr></thead><tbody>{report_rows}</tbody></table>"
+        "<p>用 Nsight Compute UI 打开报告。建议依次检查 SpeedOfLight、MemoryWorkloadAnalysis、SchedulerStats、WarpStateStats；"
+        "只有证据指向特定算子后才扩大 section 或 launch count。</p></section>"
+        "<section><h2>解释边界</h2><ul><li>NCU replay 会序列化或重复 kernel，时间不能替代 profiler-off 基线。</li>"
+        "<li>多进程报告使用 %i 防止覆盖；每个文件仍需结合 rank/process 归属解释。</li>"
+        "<li>优化后先回到 profiler-off 重复实验验收，再用 NSys 解释收益来源。</li></ul></section>"
+        "</main></body></html>",
+        encoding="utf-8",
+    )
+
+
 def run_cli() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--topology", default="single")
@@ -125,6 +169,7 @@ def run_cli() -> int:
     card_group = f"{topology.world_size}-card"
     run_dir = _root() / "nvidia_runs" / "performance" / "operator" / card_group / topology.slug / identity
     artifact_dir = _root() / "nvidia_artifacts" / "performance" / "operator" / card_group / topology.slug / identity
+    report_path = _root() / "nvidia_reports" / "performance" / "operator" / card_group / topology.slug / f"{identity}.html"
     report_dir = run_dir / "trainer_output" / "profiling" / "ncu"
     manifest_path = artifact_dir / "manifest.json"
     report_pattern = report_dir / "profile-%i"
@@ -137,16 +182,26 @@ def run_cli() -> int:
                     "artifact": display_repository_path(artifact_dir),
                     "report_pattern": display_repository_path(report_pattern)
                     + ".ncu-rep",
+                    "report": display_repository_path(report_path),
                 },
                 indent=2,
             )
         )
         return 0
     if not args.force and _completed(manifest_path, report_dir, contract):
+        reports = sorted(report_dir.glob("*.ncu-rep"))
+        if not report_path.is_file():
+            _write_report(
+                report_path,
+                contract=contract,
+                reports=reports,
+                runtime_log=run_dir / "ncu_profile.log",
+            )
         print_output_path("Skip completed Nsight Compute profile", report_dir)
+        print_output_path("Nsight Compute index", report_path)
         return 0
     if run_dir.exists() or artifact_dir.exists():
-        reset_output_generation((run_dir, artifact_dir), active_run_directories=(run_dir,), label="Nsight Compute profile")
+        reset_output_generation((run_dir, artifact_dir, report_path), active_run_directories=(run_dir,), label="Nsight Compute profile")
     report_dir.mkdir(parents=True, exist_ok=True)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     train_command = [
@@ -182,9 +237,16 @@ def run_cli() -> int:
     if not reports:
         attempt.update("failed")
         raise RuntimeError(f"ncu completed without producing reports under {report_dir}; runtime log: {(run_dir / 'ncu_profile.log').resolve()}")
-    manifest.update({"status": "completed", "reports": [str(path) for path in reports]})
+    _write_report(
+        report_path,
+        contract=contract,
+        reports=reports,
+        runtime_log=run_dir / "ncu_profile.log",
+    )
+    manifest.update({"status": "completed", "reports": [str(path) for path in reports], "report": str(report_path)})
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     attempt.update("completed")
     for report in reports:
         print_output_path("Nsight Compute report", report)
+    print_output_path("Nsight Compute index", report_path)
     return 0

@@ -42,7 +42,12 @@ def _top(path: Path, limit: int = 10) -> list[dict[str, Any]]:
     return result[:limit]
 
 
-def diagnose(stats_dir: Path, output_dir: Path) -> dict[str, Any]:
+def diagnose(
+    stats_dir: Path,
+    output_dir: Path,
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Create conservative triage; findings point to evidence, not verdicts."""
 
     kernels = _top(stats_dir / "cuda_gpu_kern_sum.csv")
@@ -83,15 +88,54 @@ def diagnose(stats_dir: Path, output_dir: Path) -> dict[str, Any]:
             "next_step": "Select a stable hotspot and run kernel_benchmark.py with a narrow kernel/NVTX filter before collecting detailed or full NCU sections.",
         })
 
+    branches = {
+        "host": {
+            "status": "suspect" if sync else "observed",
+            "evidence": sync[:5],
+            "next_action": (
+                "Inspect CUDA API-to-kernel correlation and GPU gaps in the "
+                ".nsys-rep; recapture with the host profile only when CPU "
+                "attribution is required."
+            ),
+        },
+        "communication": {
+            "status": "suspect" if nccl else "not_available",
+            "evidence": nccl[:5],
+            "next_action": (
+                "Use the communication profile on every rank and compare "
+                "collective arrival with execution intervals."
+            ),
+        },
+        "operator": {
+            "status": "observed" if kernels else "not_available",
+            "evidence": kernels[:5],
+            "next_action": (
+                "Select one stable hotspot and use targeted Nsight Compute "
+                "replay with a narrow kernel or NVTX filter."
+            ),
+        },
+        "memory": {
+            "status": "observed" if memory else "not_available",
+            "evidence": memory[:5],
+            "next_action": (
+                "Inspect allocation and memcpy intervals; use a PyTorch "
+                "memory snapshot for tensor and allocator ownership."
+            ),
+        },
+    }
     payload = {
-        "schema": "torchtitan.glm5_2.nvidia.system_diagnosis",
-        "schema_version": 1,
-        "interpretation": "triage_only",
+        "schema": "torchtitan.glm5_2.performance.self_diagnosis.v1",
+        "scope": "single_topology",
+        "platform": "cuda",
+        "verdict_policy": "diagnostic_only_no_pass_fail",
+        "capture_semantics": "instrumented_localization",
+        "metadata": metadata or {},
         "inputs": {path.name: str(path) for path in sorted(stats_dir.glob("*.csv"))},
         "top_kernels": kernels,
         "top_cuda_apis": apis,
         "top_memory_operations": memory,
         "top_nvtx_ranges": nvtx,
+        "branches": branches,
         "findings": findings,
     }
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -110,4 +154,9 @@ def diagnose(stats_dir: Path, output_dir: Path) -> dict[str, Any]:
             f"- Next step: {finding['next_step']}", "",
         ))
     markdown_path.write_text("\n".join(lines), encoding="utf-8")
-    return {"json": str(json_path), "markdown": str(markdown_path), "findings": findings}
+    return {
+        "json": str(json_path),
+        "markdown": str(markdown_path),
+        "branches": branches,
+        "findings": findings,
+    }

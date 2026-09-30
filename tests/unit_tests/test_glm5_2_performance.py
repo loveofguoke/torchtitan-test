@@ -23,6 +23,11 @@ from tests.glm5_2_performance.dynamic_profile import (
     build_dynamic_profile_config,
     write_dynamic_profile_config,
 )
+from tests.glm5_2_performance.comparison import build_comparison
+from tests.glm5_2_performance.diagnosis import (
+    build_self_diagnosis,
+    write_self_diagnosis,
+)
 from tests.glm5_2_performance.workflow import (
     _config_is_compatible,
     _device_selection,
@@ -153,6 +158,174 @@ class TestPerformanceConfig(unittest.TestCase):
         config = PerformanceConfig(name="glm5-probe", replicate=2)
 
         self.assertIn("-r2-", _run_name(config, "npu"))
+
+    def test_profiler_off_comparison_aggregates_repeats(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+
+            def make_run(name: str, device: str, scale: float) -> Path:
+                run = root / name
+                run.mkdir()
+                configuration = PerformanceConfig(
+                    name=name,
+                    device=device,
+                    steps=14,
+                    skip_steps=2,
+                    active_steps=1,
+                    profiler_enabled=False,
+                ).as_dict()
+                overview = (
+                    {
+                        "contract": {
+                            **configuration,
+                            "config": configuration["model_config"],
+                            "topology": {
+                                "name": "single",
+                                "world_size": 1,
+                                "data_parallel_replicate_degree": 1,
+                                "data_parallel_shard_degree": 1,
+                                "tensor_parallel_degree": 1,
+                                "pipeline_parallel_degree": 1,
+                                "context_parallel_degree": 1,
+                                "expert_parallel_degree": 1,
+                            },
+                        }
+                    }
+                    if device == "cuda"
+                    else {"configuration": configuration, "topology": "single"}
+                )
+                (run / "experiment.json").write_text(
+                    json.dumps(overview),
+                    encoding="utf-8",
+                )
+                records = [
+                    {
+                        "step": step,
+                        "metrics": {
+                            "time_metrics/end_to_end(s)": scale * step,
+                            "throughput(tps)": 1000.0 / (scale * step),
+                            "tflops": 2.0 / scale,
+                            "mfu": 10.0 / scale,
+                            "memory/max_active(GiB)": 3.0,
+                        },
+                    }
+                    for step in range(1, 15)
+                ]
+                (run / "metrics.jsonl").write_text(
+                    "".join(json.dumps(record) + "\n" for record in records),
+                    encoding="utf-8",
+                )
+                return run
+
+            reference = [
+                make_run(f"gpu-{index}", "cuda", 1.0) for index in range(3)
+            ]
+            candidate = [
+                make_run(f"npu-{index}", "npu", 2.0) for index in range(3)
+            ]
+            output = root / "comparison"
+            payload = build_comparison(
+                reference_runs=reference,
+                reference_label="GPU",
+                candidate_runs=candidate,
+                candidate_label="NPU",
+                skip_steps=2,
+                output=output,
+            )
+
+            self.assertEqual(payload["reference"]["repeat_count"], 3)
+            self.assertTrue(
+                payload["reference"]["measurement_policy"][
+                    "repeat_count_sufficient"
+                ]
+            )
+            self.assertAlmostEqual(
+                payload["comparison"]["metrics"][
+                    "step_time_median_s"
+                ]["candidate_vs_reference_percent"],
+                100.0,
+            )
+            self.assertTrue((output / "comparison.html").is_file())
+            self.assertIn(
+                "Profiler-off 重复实验",
+                (output / "comparison.html").read_text(encoding="utf-8"),
+            )
+            self.assertEqual(
+                build_comparison(
+                    reference_runs=reference,
+                    reference_label="GPU",
+                    candidate_runs=candidate,
+                    candidate_label="NPU",
+                    skip_steps=2,
+                    output=output,
+                ),
+                payload,
+            )
+            with self.assertRaisesRegex(FileExistsError, "different inputs"):
+                build_comparison(
+                    reference_runs=reference,
+                    reference_label="GPU",
+                    candidate_runs=candidate,
+                    candidate_label="NPU",
+                    skip_steps=3,
+                    output=output,
+                )
+            replaced = build_comparison(
+                reference_runs=reference,
+                reference_label="GPU",
+                candidate_runs=candidate,
+                candidate_label="NPU",
+                skip_steps=3,
+                output=output,
+                force=True,
+            )
+            self.assertEqual(
+                replaced["reference"]["measurement_policy"]["skip_steps"],
+                3,
+            )
+
+    def test_performance_comparison_rejects_contract_mismatch(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+
+            def make_run(name: str, sequence_length: int) -> Path:
+                run = root / name
+                run.mkdir()
+                config = PerformanceConfig(
+                    name=name,
+                    steps=12,
+                    skip_steps=1,
+                    active_steps=1,
+                    sequence_length=sequence_length,
+                    profiler_enabled=False,
+                ).as_dict()
+                (run / "experiment.json").write_text(
+                    json.dumps({"configuration": config}), encoding="utf-8"
+                )
+                (run / "metrics.jsonl").write_text(
+                    json.dumps(
+                        {
+                            "step": 2,
+                            "metrics": {
+                                "time_metrics/end_to_end(s)": 1.0,
+                                "throughput(tps)": 1000.0,
+                            },
+                        }
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                return run
+
+            with self.assertRaisesRegex(ValueError, "contracts differ"):
+                build_comparison(
+                    reference_runs=[make_run("reference", 128)],
+                    reference_label="reference",
+                    candidate_runs=[make_run("candidate", 256)],
+                    candidate_label="candidate",
+                    skip_steps=1,
+                    output=root / "out",
+                )
 
     def test_isolated_msprof_analyze_executable_can_be_selected(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -321,6 +494,92 @@ class TestPerformanceConfig(unittest.TestCase):
 
 
 class TestPerformanceAnalysis(unittest.TestCase):
+    def test_self_diagnosis_routes_rank_communication_and_host_evidence(self):
+        config = PerformanceConfig(
+            name="diagnosis",
+            topology="fsdp2",
+            profiler_enabled=True,
+        )
+        manifest = {
+            "run_name": "diagnosis-run",
+            "device": "npu",
+            "topology": "fsdp2",
+            "preset": "distributed",
+            "config": config.as_dict(),
+        }
+        analysis = {
+            "metrics": {
+                "summary": {
+                    "time_metrics/end_to_end(s)": {"median": 1.0},
+                    "throughput(tps)": {"mean": 512.0},
+                }
+            },
+            "profile_phases": {"comparison": {}},
+            "distributed_step_trace": {
+                "ranks": [
+                    {
+                        "exposed_communication_percent": 25.0,
+                        "free_percent": 30.0,
+                    }
+                ],
+                "cross_rank": {
+                    "median_stage_ms": {
+                        "max_over_median": 1.2,
+                        "max_rank": 1,
+                    }
+                },
+            },
+            "communication_summary": {
+                "rows": [{"wait_percent": 75.0}]
+            },
+            "compiler_diagnostics": {
+                "npu_cpu_fallbacks": 1,
+                "aicpu_fallbacks": 0,
+            },
+            "memory_visualizations": {"ready": False},
+            "top_csv_tables": [],
+        }
+
+        diagnosis = build_self_diagnosis(
+            manifest=manifest,
+            analysis=analysis,
+        )
+
+        self.assertEqual(diagnosis["branches"]["baseline"]["status"], "observed")
+        self.assertEqual(
+            diagnosis["capture_semantics"],
+            "instrumented_localization",
+        )
+        self.assertEqual(diagnosis["branches"]["rank_balance"]["status"], "suspect")
+        self.assertEqual(diagnosis["branches"]["communication"]["status"], "suspect")
+        self.assertEqual(diagnosis["branches"]["host"]["status"], "suspect")
+        self.assertIn("parameter_all_gather", diagnosis["topology_focus"])
+        self.assertIn("gradient_reduce_scatter", diagnosis["topology_focus"])
+
+    def test_self_diagnosis_bundle_is_run_owned(self):
+        diagnosis = {
+            "run_name": "run",
+            "device": "npu",
+            "topology": "single",
+            "preset": "standard",
+            "suspect_branches": [],
+            "branches": {
+                "baseline": {
+                    "status": "observed",
+                    "summary": "steady",
+                }
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            outputs = write_self_diagnosis(root, diagnosis)
+
+            self.assertEqual(
+                Path(outputs["json"]),
+                root / "diagnosis" / "self" / "diagnosis.json",
+            )
+            self.assertTrue(Path(outputs["readme"]).is_file())
+
     def test_official_mindstudio_flamegraph_renderer(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

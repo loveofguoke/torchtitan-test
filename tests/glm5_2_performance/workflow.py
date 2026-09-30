@@ -66,6 +66,7 @@ from .config import (
     profiler_presets,
 )
 from .documentation import card_scope, write_run_readme
+from .diagnosis import build_self_diagnosis, write_self_diagnosis
 from .visualization import (
     find_flamegraph_script,
     find_mindstudio_flamegraph_script,
@@ -2852,6 +2853,15 @@ def analyze(
             run_directory,
             config=manifest.get("config"),
             profiler_environment=manifest.get("profiler_environment"),
+        )
+        self_diagnosis = build_self_diagnosis(
+            manifest=manifest,
+            analysis=analysis,
+        )
+        analysis["self_diagnosis"] = self_diagnosis
+        analysis["self_diagnosis_outputs"] = write_self_diagnosis(
+            run_directory,
+            self_diagnosis,
         )
         analysis["analysis_toolchain"] = analysis_toolchain
         analysis["analysis_operation"] = request

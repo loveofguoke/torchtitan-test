@@ -23,6 +23,11 @@ from tests.glm5_2_common.cli import (
     write_experiment_overview,
 )
 from tests.glm5_2_nvidia.diagnostics import diagnose
+from tests.glm5_2_performance.analysis import read_metrics, summarize_metrics
+from tests.glm5_2_performance.diagnosis import (
+    build_self_diagnosis,
+    write_self_diagnosis,
+)
 from tests.glm5_2_common.naming import config_name
 from tests.glm5_2_common.topology import (
     ParallelTopology,
@@ -125,7 +130,7 @@ def _contract(
 ) -> dict[str, Any]:
     topology_value = asdict(topology)
     topology_value["extra_args"] = list(topology_value["extra_args"])
-    return {
+    contract = {
         "schema_version": 1,
         "device": "cuda",
         "topology": topology_value,
@@ -146,6 +151,28 @@ def _contract(
         "duration": args.duration,
         "stats_reports": list(args.stats_reports),
     }
+    if args.profiler_off:
+        contract = {
+            key: value
+            for key, value in contract.items()
+            if key
+            not in {
+                "nsys_version",
+                "trace",
+                "pytorch",
+                "sample",
+                "cuda_memory_usage",
+                "cuda_graph_trace",
+                "delay",
+                "duration",
+                "stats_reports",
+            }
+        }
+        contract["profiler_enabled"] = False
+        contract["replicate"] = args.replicate
+    elif args.replicate:
+        contract["replicate"] = args.replicate
+    return contract
 
 
 def _identity_name(
@@ -153,11 +180,67 @@ def _identity_name(
     topology: ParallelTopology,
     contract: dict[str, Any],
 ) -> str:
+    mode = args.profile if not args.profiler_off else "profiler-off"
+    repeat = f"-r{args.replicate}" if args.replicate else ""
     base = (
         f"cuda-{topology.slug}-bf16-s{args.steps}-l{args.local_batch_size}-"
-        f"b{args.global_batch_size}-seq{args.sequence_length}-seed{args.seed}-{args.profile}"
+        f"b{args.global_batch_size}-seq{args.sequence_length}-seed{args.seed}-{mode}"
+        f"{repeat}"
     )
     return config_name(base, contract)
+
+
+def _metrics_rank(topology: ParallelTopology) -> int:
+    if topology.pp == 1 or topology.pp_schedule == "ZBVZeroBubble":
+        return 0
+    return (topology.world_size // topology.pp) * (topology.pp - 1)
+
+
+def _training_command(
+    args: argparse.Namespace,
+    topology: ParallelTopology,
+    run_dir: Path,
+) -> list[str]:
+    torchrun = shutil.which("torchrun") or str(
+        Path(sys.executable).with_name("torchrun")
+    )
+    return [
+        torchrun,
+        "--nnodes=1",
+        "--node_rank=0",
+        f"--nproc_per_node={topology.world_size}",
+        "--rdzv_backend=c10d",
+        "--rdzv_endpoint=localhost:0",
+        f"--rdzv_id=nvidia-performance-{topology.slug}-{args.replicate}",
+        f"--local-ranks-filter={_metrics_rank(topology)}",
+        "--role=rank",
+        "--tee=3",
+        "-m",
+        "tests.glm5_2_performance.capture_metrics",
+        "--module",
+        args.module,
+        "--config",
+        args.config,
+        f"--dump_folder={run_dir / 'trainer_output'}",
+        f"--training.steps={args.steps}",
+        *training_command_args(
+            local_batch_size=args.local_batch_size,
+            global_batch_size=args.global_batch_size,
+            sequence_length=args.sequence_length,
+            topology=topology,
+        ),
+        "--training.dtype=float32",
+        "--training.mixed_precision_param=bfloat16",
+        "--training.mixed_precision_reduce=float32",
+        f"--debug.seed={args.seed}",
+        "--debug.no-enable-structured-logging",
+        "--metrics.log_freq=1",
+        "--metrics.enable_tensorboard",
+        "--metrics.disable_color_printing",
+        "--metrics.save_tb_folder=tensorboard",
+        "--training.disable_cuda_graphs",
+        *topology.command_args(),
+    ]
 
 
 def _read_manifest(path: Path) -> dict[str, Any]:
@@ -227,6 +310,36 @@ def _adopt_legacy_outputs(run_dir: Path, artifact_dir: Path) -> Path:
     return output
 
 
+def _adopt_legacy_diagnosis(run_dir: Path, output_dir: Path) -> Path:
+    """Move older diagnosis files into the shared run-owned self scope."""
+
+    diagnosis_root = run_dir / "diagnosis"
+    diagnosis_dir = diagnosis_root / "self"
+    legacy_files = tuple(
+        root / name
+        for root in (output_dir / "diagnosis", diagnosis_root)
+        for name in ("diagnosis.json", "diagnosis.md")
+    )
+    for source in legacy_files:
+        if not source.is_file():
+            continue
+        diagnosis_dir.mkdir(parents=True, exist_ok=True)
+        destination = diagnosis_dir / source.name
+        if destination.exists() and destination.read_bytes() != source.read_bytes():
+            raise FileExistsError(
+                "legacy and unified NVIDIA diagnosis outputs conflict: "
+                f"{source} -> {destination}"
+            )
+        if destination.exists():
+            source.unlink()
+        else:
+            source.replace(destination)
+    legacy_root = output_dir / "diagnosis"
+    if legacy_root.is_dir() and not any(legacy_root.iterdir()):
+        legacy_root.rmdir()
+    return diagnosis_dir
+
+
 def _adopt_legacy_experiment_layout(
     *,
     run_dir: Path,
@@ -265,12 +378,14 @@ def _capture(
     output_dir = _adopt_legacy_outputs(run_dir, artifact_dir)
     record = _read_manifest(artifact_dir)
     report = output_dir / "profile.nsys-rep"
+    metrics_path = run_dir / "metrics.jsonl"
+    expected_output = report if not args.profiler_off else metrics_path
     if (
         record.get("capture_status") == "completed"
         and record.get("contract") == contract
-        and report.is_file()
+        and expected_output.is_file()
     ):
-        print_output_path("Skip completed Nsight Systems capture", artifact_dir)
+        print_output_path("Skip completed NVIDIA performance capture", artifact_dir)
         return
     if artifact_dir.exists() or run_dir.exists():
         reset_output_generation(
@@ -280,13 +395,20 @@ def _capture(
         )
     run_dir.mkdir(parents=True, exist_ok=True)
     artifact_dir.mkdir(parents=True, exist_ok=True)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if not args.profiler_off:
+        output_dir.mkdir(parents=True, exist_ok=True)
     write_experiment_overview(
         run_dir,
-        title=f"GLM NVIDIA system profile: {topology.slug}",
+        title=(
+            f"GLM NVIDIA profiler-off baseline: {topology.slug}"
+            if args.profiler_off
+            else f"GLM NVIDIA system profile: {topology.slug}"
+        ),
         summary={
-            "workflow": "performance/system",
-            "profile": args.profile,
+            "workflow": "performance/system/baseline"
+            if args.profiler_off
+            else "performance/system/profile",
+            "profile": "profiler-off" if args.profiler_off else args.profile,
             "topology": topology.slug,
             "contract": contract,
         },
@@ -294,27 +416,14 @@ def _capture(
     )
     attempt = RunAttempt.start(
         run_dir,
-        kind="nsys-performance",
+        kind="nvidia-performance-baseline"
+        if args.profiler_off
+        else "nsys-performance",
         context={"topology": topology.slug, "steps": args.steps},
     )
     train_log = run_dir / "training.log"
-    train_command = [
-        "bash",
-        str(_root() / "run_train.sh"),
-        f"--dump_folder={run_dir / 'trainer_output'}",
-        f"--training.steps={args.steps}",
-        "--training.disable_cuda_graphs",
-        *training_command_args(
-            local_batch_size=args.local_batch_size,
-            global_batch_size=args.global_batch_size,
-            sequence_length=args.sequence_length,
-            topology=topology,
-        ),
-        f"--debug.seed={args.seed}",
-        "--metrics.log_freq=1",
-        *topology.command_args(),
-    ]
-    command = [
+    train_command = _training_command(args, topology, run_dir)
+    profile_command = [
         args.nsys,
         "profile",
         f"--trace={args.trace}",
@@ -328,10 +437,11 @@ def _capture(
         f"--output={output_dir / 'profile'}",
     ]
     if args.delay is not None:
-        command.append(f"--delay={args.delay}")
+        profile_command.append(f"--delay={args.delay}")
     if args.duration is not None:
-        command.append(f"--duration={args.duration}")
-    command.extend(train_command)
+        profile_command.append(f"--duration={args.duration}")
+    profile_command.extend(train_command)
+    command = train_command if args.profiler_off else profile_command
     env = os.environ.copy()
     env.update(
         {
@@ -342,7 +452,11 @@ def _capture(
             "MODULE": args.module,
             "CONFIG": args.config,
             "CUDA_VISIBLE_DEVICES": args.visible_devices,
+            "GLM5_PERFORMANCE_METRICS_PATH": str(metrics_path),
         }
+    )
+    runtime_log = run_dir / (
+        "runtime.log" if args.profiler_off else "nsys_profile.log"
     )
     manifest = {
         "capture_status": "running",
@@ -350,16 +464,16 @@ def _capture(
         "contract": contract,
         "command": command,
         "training_command": train_command,
-        "runtime_log": str(run_dir / "nsys_profile.log"),
+        "runtime_log": str(runtime_log),
         "training_log": str(train_log),
         "attempt_id": attempt.attempt_id,
-        "official_output": str(output_dir),
+        "official_output": str(output_dir) if not args.profiler_off else None,
     }
     (artifact_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     try:
-        _run_logged(command, cwd=_root(), log=run_dir / "nsys_profile.log", env=env)
+        _run_logged(command, cwd=_root(), log=runtime_log, env=env)
     except BaseException:
         manifest["capture_status"] = "failed"
         (artifact_dir / "manifest.json").write_text(
@@ -367,15 +481,21 @@ def _capture(
         )
         attempt.update("failed")
         raise
-    if not report.is_file():
+    if not expected_output.is_file():
         attempt.update("failed")
-        raise RuntimeError(f"nsys completed without producing {report}")
+        raise RuntimeError(
+            "NVIDIA performance capture completed without producing "
+            f"{expected_output}"
+        )
     manifest["capture_status"] = "completed"
     (artifact_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     attempt.update("completed")
-    print_output_path("Nsight Systems capture", report)
+    print_output_path(
+        "NVIDIA performance baseline" if args.profiler_off else "Nsight Systems capture",
+        expected_output,
+    )
 
 
 def _analyze(
@@ -388,6 +508,62 @@ def _analyze(
     output_dir = _adopt_legacy_outputs(run_dir, artifact_dir)
     manifest = _read_manifest(artifact_dir)
     report = output_dir / "profile.nsys-rep"
+    metrics_path = run_dir / "metrics.jsonl"
+    if args.profiler_off:
+        if (
+            manifest.get("capture_status") != "completed"
+            or manifest.get("contract") != contract
+            or not metrics_path.is_file()
+        ):
+            raise RuntimeError(
+                f"matching completed profiler-off capture not found: {artifact_dir}"
+            )
+        diagnosis_dir = run_dir / "diagnosis" / "self"
+        if (
+            manifest.get("analysis_status") == "completed"
+            and (diagnosis_dir / "diagnosis.json").is_file()
+        ):
+            print_output_path("Skip completed NVIDIA baseline analysis", artifact_dir)
+            return
+        metric_summary = summarize_metrics(read_metrics(metrics_path))
+        analysis = {
+            "metrics": metric_summary,
+            "profile_phases": {"comparison": {}},
+            "distributed_step_trace": {"ranks": [], "cross_rank": {}},
+            "communication_summary": {"rows": []},
+            "compiler_diagnostics": {},
+            "memory_visualizations": {"ready": False},
+            "top_csv_tables": [],
+        }
+        diagnosis_manifest = {
+            "run_name": run_dir.name,
+            "device": "cuda",
+            "topology": contract["topology"]["name"],
+            "preset": "profiler-off",
+            "config": {"profiler_enabled": False},
+        }
+        self_diagnosis = build_self_diagnosis(
+            manifest=diagnosis_manifest,
+            analysis=analysis,
+        )
+        diagnosis_outputs = write_self_diagnosis(run_dir, self_diagnosis)
+        analysis["self_diagnosis"] = self_diagnosis
+        analysis["self_diagnosis_outputs"] = diagnosis_outputs
+        analysis_path = artifact_dir / "analysis.json"
+        analysis_path.write_text(
+            json.dumps(analysis, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        manifest["analysis_status"] = "completed"
+        manifest["metrics"] = str(metrics_path)
+        manifest["analysis"] = str(analysis_path)
+        manifest["diagnosis"] = diagnosis_outputs
+        (artifact_dir / "manifest.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        print_output_path("NVIDIA baseline diagnosis", Path(diagnosis_outputs["readme"]))
+        return
     if (
         manifest.get("capture_status") != "completed"
         or manifest.get("contract") != contract
@@ -397,7 +573,7 @@ def _analyze(
     stats_dir = output_dir / "stats"
     sqlite_path = output_dir / "profile.sqlite"
     expected = [stats_dir / f"{name}.csv" for name in args.stats_reports]
-    diagnosis_dir = output_dir / "diagnosis"
+    diagnosis_dir = _adopt_legacy_diagnosis(run_dir, output_dir)
     if (
         manifest.get("analysis_status") == "completed"
         and sqlite_path.is_file()
@@ -455,7 +631,16 @@ def _analyze(
         output.write_text(result.stdout, encoding="utf-8")
         print_output_path("Nsight Systems statistic", output)
         print_runtime_log(stats_log)
-    diagnosis = diagnose(stats_dir, diagnosis_dir)
+    diagnosis = diagnose(
+        stats_dir,
+        diagnosis_dir,
+        metadata={
+            "topology": contract["topology"]["name"],
+            "profile": args.profile,
+            "tool": "nsight-systems",
+            "tool_version": contract["nsys_version"],
+        },
+    )
     print_output_path("NVIDIA automatic diagnosis", Path(diagnosis["markdown"]))
     manifest["analysis_status"] = "completed"
     manifest["sqlite"] = str(sqlite_path)
@@ -477,13 +662,30 @@ def _write_report(
     output_dir = _adopt_legacy_outputs(run_dir, artifact_dir)
     manifest = _read_manifest(artifact_dir)
     rows = "".join(
-        f"<li><code>{html.escape(path)}</code></li>"
+        f"<tr><td><code>{html.escape(Path(path).name)}</code></td>"
+        f"<td><code>{html.escape(path)}</code></td></tr>"
         for path in manifest.get("statistics", [])
     )
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(
-        "<!doctype html><meta charset='utf-8'><title>GLM Nsight Systems report</title>"
-        f"<h1>GLM CUDA Nsight Systems: {html.escape(topology.slug)}</h1>"
+    diagnosis_path = run_dir / "diagnosis" / "self" / "diagnosis.json"
+    diagnosis = (
+        json.loads(diagnosis_path.read_text(encoding="utf-8"))
+        if diagnosis_path.is_file()
+        else {"branches": {}}
+    )
+    diagnosis_rows = "".join(
+        "<tr>"
+        f"<td><code>{html.escape(name)}</code></td>"
+        f"<td>{html.escape(branch['status'])}</td>"
+        f"<td><pre>{html.escape(json.dumps(branch.get('evidence', []), ensure_ascii=False))}</pre></td>"
+        f"<td>{html.escape('; '.join(branch.get('next_actions', [])) or branch.get('next_action', ''))}</td>"
+        "</tr>"
+        for name, branch in diagnosis.get("branches", {}).items()
+    )
+    profiler_enabled = manifest.get("contract", {}).get(
+        "profiler_enabled", True
+    )
+    official_section = (
+        "<section><h2>官方 Nsight Systems 交付物</h2>"
         "<p>Capture: <code>"
         f"{html.escape(str(output_dir / 'profile.nsys-rep'))}</code></p>"
         "<p>SQLite: <code>"
@@ -492,10 +694,41 @@ def _write_report(
         "Use the CSV summaries for CUDA API, kernel, memory, NVTX, and OS "
         "runtime aggregation.</p>"
         "<p>Automatic triage: <code>"
-        f"{html.escape(str(output_dir / 'diagnosis' / 'diagnosis.md'))}</code>. "
+        f"{html.escape(str(run_dir / 'diagnosis' / 'self' / 'diagnosis.md'))}</code>. "
         "Triage findings select the next investigation; they are not pass/fail "
-        "claims.</p>"
-        f"<h2>Statistics</h2><ul>{rows}</ul>",
+        "claims.</p></section>"
+        if profiler_enabled
+        else "<section><h2>Profiler-off baseline</h2><p>该运行没有加载 NSys；"
+        "step time、throughput、TFLOPS、MFU 和显存指标来自正常训练记录，"
+        "用于性能数值基线。</p></section>"
+    )
+    statistics_section = (
+        "<section><h2>官方统计表</h2><table><thead><tr>"
+        f"<th>Report</th><th>Path</th></tr></thead><tbody>{rows}</tbody>"
+        "</table></section>"
+        if rows
+        else ""
+    )
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        "<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>GLM Nsight Systems report</title><style>"
+        "body{font:15px/1.6 system-ui;background:#f5f7fb;color:#172033;margin:0}"
+        "main{max-width:1180px;margin:auto;padding:32px 28px}"
+        "section{background:white;border:1px solid #dfe5ef;border-radius:12px;"
+        "padding:20px;margin:18px 0;overflow:auto}"
+        "table{border-collapse:collapse;width:100%}th,td{padding:10px;"
+        "border-bottom:1px solid #dfe5ef;text-align:left;vertical-align:top}"
+        "th{background:#f8fafc}code{background:#edf2ff;padding:2px 5px;"
+        "border-radius:4px}pre{white-space:pre-wrap;word-break:break-word;margin:0}"
+        "</style></head><body><main>"
+        f"<h1>GPU 单拓扑性能诊断：{html.escape(topology.slug)}</h1>"
+        "<p>先阅读当前拓扑自身的 Host、通信、算子和显存证据，再决定是否进行深层采集或 GPU/NPU 对比。状态仅用于诊断路由，不是 PASS/FAIL。</p>"
+        "<section><h2>单拓扑诊断 / Self diagnosis</h2>"
+        "<table><thead><tr><th>Branch</th><th>Status</th><th>Evidence</th>"
+        f"<th>Next action</th></tr></thead><tbody>{diagnosis_rows}</tbody></table></section>"
+        f"{official_section}{statistics_section}</main></body></html>",
         encoding="utf-8",
     )
     print_output_path("Nsight Systems report", report_path)
@@ -532,6 +765,17 @@ def run_cli() -> int:
         choices=tuple(PROFILE_PRESETS),
         default="standard",
         help="layered collection policy; standard is the low-overhead first pass",
+    )
+    parser.add_argument(
+        "--profiler-off",
+        action="store_true",
+        help="run an uninstrumented performance baseline",
+    )
+    parser.add_argument(
+        "--replicate",
+        type=int,
+        default=0,
+        help="optional independent run index included in experiment identity",
     )
     parser.add_argument("--trace")
     parser.add_argument("--pytorch", default=DEFAULT_PYTORCH)
@@ -576,7 +820,17 @@ def run_cli() -> int:
         parser.error("steps, batch sizes, and sequence length must be positive")
     if not args.visible_devices:
         parser.error("export CUDA_VISIBLE_DEVICES or pass --visible-devices")
-    version = "dry-run" if args.dry_run else _nsys_version(args.nsys)
+    if args.replicate < 0:
+        parser.error("--replicate must be non-negative")
+    if args.profiler_off and args.profile != "standard":
+        parser.error("--profiler-off does not accept an NSys --profile preset")
+    version = (
+        "profiler-off"
+        if args.profiler_off
+        else "dry-run"
+        if args.dry_run
+        else _nsys_version(args.nsys)
+    )
     topologies = standard_topologies()
     available = tuple(
         name for name, value in topologies.items() if value.world_size <= 8
