@@ -333,6 +333,8 @@ def compare_training_metrics(
     grad_norm_relative_threshold: float | None = None,
     spike_relative_threshold: float | None = None,
     early_window_size: int = 10,
+    reference_label: str = "Reference",
+    candidate_label: str = "Candidate",
 ) -> Path:
     reference = read_training_metrics(reference_path)
     candidate = read_training_metrics(candidate_path)
@@ -398,8 +400,8 @@ def compare_training_metrics(
         title="Training Loss",
         y_label="Loss",
         series=(
-            ("GPU reference", "#2563eb", reference_loss),
-            ("NPU candidate", "#dc2626", candidate_loss),
+            (reference_label, "#2563eb", reference_loss),
+            (candidate_label, "#dc2626", candidate_loss),
         ),
         include_zero=True,
     )
@@ -408,8 +410,8 @@ def compare_training_metrics(
         title="Gradient Norm",
         y_label="L2 norm",
         series=(
-            ("GPU reference", "#2563eb", reference_grad),
-            ("NPU candidate", "#dc2626", candidate_grad),
+            (reference_label, "#2563eb", reference_grad),
+            (candidate_label, "#dc2626", candidate_grad),
         ),
         include_zero=True,
     )
@@ -418,8 +420,8 @@ def compare_training_metrics(
         title=f"Early-step Loss (first {len(early_steps)} observed steps)",
         y_label="Loss",
         series=(
-            ("GPU reference", "#2563eb", early_reference_loss),
-            ("NPU candidate", "#dc2626", early_candidate_loss),
+            (reference_label, "#2563eb", early_reference_loss),
+            (candidate_label, "#dc2626", early_candidate_loss),
         ),
         include_zero=True,
     )
@@ -497,11 +499,14 @@ def compare_training_metrics(
     _svg_chart(
         output_directory / "loss_signed_difference.svg",
         title="Loss Signed Difference",
-        y_label="NPU candidate - GPU reference",
+        y_label=f"{candidate_label} - {reference_label}",
         series=(("Loss signed difference", "#7c3aed", loss_signed_difference),),
         reference_lines=(("Zero-difference baseline", "#dc2626", 0.0),),
         include_zero=True,
-        subtitle="Positive means NPU Loss is above GPU; negative means it is below GPU",
+        subtitle=(
+            f"Positive means {candidate_label} Loss is above {reference_label}; "
+            "negative means it is below"
+        ),
     )
     grad_reference_lines = [("Zero-error baseline", "#dc2626", 0.0)]
     if grad_norm_relative_threshold is not None:
@@ -529,19 +534,22 @@ def compare_training_metrics(
     _svg_chart(
         output_directory / "grad_norm_signed_difference.svg",
         title="Gradient Norm Signed Difference",
-        y_label="NPU candidate - GPU reference",
+        y_label=f"{candidate_label} - {reference_label}",
         series=(("Grad Norm signed difference", "#059669", grad_signed_difference),),
         reference_lines=(("Zero-difference baseline", "#dc2626", 0.0),),
         include_zero=True,
         subtitle=(
-            "Positive means NPU Grad Norm is above GPU; negative means it is below GPU"
+            f"Positive means {candidate_label} Grad Norm is above "
+            f"{reference_label}; negative means it is below"
         ),
     )
     grad_signed_mean = _finite_mean(value for _, value in grad_signed_relative_error)
     _svg_chart(
         output_directory / "grad_norm_signed_relative_error.svg",
         title="Gradient Norm Signed Relative Error",
-        y_label="(GPU reference - NPU candidate) / GPU reference (%)",
+        y_label=(
+            f"({reference_label} - {candidate_label}) / {reference_label} (%)"
+        ),
         series=(
             ("Grad Norm signed relative error", "#059669", grad_signed_relative_error),
         ),
@@ -713,6 +721,10 @@ def compare_training_metrics(
         "schema_version": 2,
         "reference": str(reference_path.resolve()),
         "candidate": str(candidate_path.resolve()),
+        "endpoints": {
+            "reference_label": reference_label,
+            "candidate_label": candidate_label,
+        },
         "step_count": len(rows),
         "observation": {
             "first_step": first_observed_step,

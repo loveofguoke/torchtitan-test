@@ -477,6 +477,7 @@ def save_panel_report(
     title: str,
     sections: Sequence[Any],
     description: str = "",
+    page_margin: tuple[int, int, int, int] = (36, 44, 64, 44),
 ) -> Path:
     """Save a self-contained, offline Panel report."""
 
@@ -525,7 +526,7 @@ def save_panel_report(
         *sections,
         css_classes=["report-shell"],
         sizing_mode="stretch_width",
-        margin=(36, 44, 64, 44),
+        margin=page_margin,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     body.save(path, resources=inline, embed=True, title=title, max_states=1, css=[css])

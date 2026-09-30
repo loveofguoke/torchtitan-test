@@ -60,6 +60,7 @@ from tests.glm5_2_mindstudio.workflow import (
     _compile_rank_csv_files,
     _compatible_fixture_directory,
     _experiment_digest,
+    _endpoint_display_labels,
     _fixture_directory,
     _legacy_stage_scoped_config,
     _intermediate_training_window_config,
@@ -240,6 +241,25 @@ def _write_fixture_and_capture(
 
 
 class TestMindStudioConfig(unittest.TestCase):
+    def test_graph_observation_labels_describe_actual_endpoints(self) -> None:
+        from tests.glm5_2_mindstudio.graph_accuracy_benchmark import (
+            _stage_configs,
+        )
+
+        config = _stage_configs(
+            "npu",
+            graph_backend="inductor",
+            codegen_backend="ascend-triton",
+        )[1]["observation"]
+
+        self.assertEqual(
+            (
+                "NPU eager",
+                "NPU graph (Inductor + Ascend Triton)",
+            ),
+            _endpoint_display_labels(config),
+        )
+
     def test_stage_paths_are_grouped_below_the_training_profile(self) -> None:
         base = _experiment()
         expected_prefix = f"s2-{config_digest(asdict(base.training), length=8)}"
@@ -1407,6 +1427,10 @@ class TestMindStudioReport(unittest.TestCase):
             compare.mkdir(parents=True)
             observation = {
                 "step_count": 500,
+                "endpoints": {
+                    "reference_label": "GPU",
+                    "candidate_label": "NPU",
+                },
                 "observation": {
                     "diagnostic_symptom": "later-window-loss-difference",
                     "first_step": 0,

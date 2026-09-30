@@ -221,6 +221,64 @@ def _comparison_summary_path(compare_directory: Path, workflow: str) -> Path:
     return compare_directory / "official_summary.json"
 
 
+def _endpoint_display_labels(
+    config: MindStudioExperimentConfig,
+) -> tuple[str, str]:
+    """Describe the actual endpoints without assuming a GPU/NPU migration."""
+
+    device_names = {"cuda": "GPU", "npu": "NPU", "cpu": "CPU"}
+
+    def endpoint_name(endpoint: TrainingEndpoint) -> str:
+        words = endpoint.name.replace("_", "-").split("-")
+        labels = {
+            "gpu": "GPU",
+            "cuda": "GPU",
+            "npu": "NPU",
+            "cpu": "CPU",
+            "dvm": "DVM",
+        }
+        rendered = [labels.get(word, word.capitalize()) for word in words]
+        return " ".join(rendered)
+
+    if config.execution_branch is None:
+        return endpoint_name(config.reference), endpoint_name(config.candidate)
+
+    branch = Path(config.execution_branch).parts
+    if len(branch) != 2 or branch[0] != "graph":
+        return endpoint_name(config.reference), endpoint_name(config.candidate)
+
+    device = device_names.get(
+        config.candidate.device_type, config.candidate.device_type.upper()
+    )
+    backend = next(
+        (
+            argument.split("=", maxsplit=1)[1]
+            for argument in config.candidate.extra_args
+            if argument.startswith("--compile.backend=")
+        ),
+        "graph",
+    )
+    branch_prefix = f"{config.candidate.device_type}-{backend}-"
+    codegen = (
+        branch[1][len(branch_prefix) :]
+        if branch[1].startswith(branch_prefix)
+        else branch[1]
+    )
+    pretty_names = {
+        "inductor": "Inductor",
+        "npugraphs": "NPU Graphs",
+        "ascend-triton": "Ascend Triton",
+        "triton": "Triton",
+        "dvm": "DVM",
+    }
+    backend_label = pretty_names.get(backend, backend)
+    codegen_label = pretty_names.get(codegen, codegen)
+    return (
+        f"{device} eager",
+        f"{device} graph ({backend_label} + {codegen_label})",
+    )
+
+
 def _stage_scoped_config(
     config: MindStudioExperimentConfig,
     base_config: MindStudioExperimentConfig,
@@ -3451,6 +3509,7 @@ def compare_official(
                 encoding="utf-8",
             )
         elif config.workflow == "observation":
+            reference_label, candidate_label = _endpoint_display_labels(config)
             summary_path = compare_training_metrics(
                 reference_path=(
                     reference_artifact / "official/training_metrics.jsonl"
@@ -3459,6 +3518,8 @@ def compare_official(
                     candidate_artifact / "official/training_metrics.jsonl"
                 ),
                 output_directory=compare_directory,
+                reference_label=reference_label,
+                candidate_label=candidate_label,
             )
             runtime_log.write_text(
                 "Compared uninstrumented whole-training Loss and Grad Norm.\n"

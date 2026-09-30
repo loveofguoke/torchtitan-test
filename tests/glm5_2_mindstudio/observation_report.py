@@ -46,6 +46,10 @@ def write_observation_report(
     early = loss["early_window"]
     first_exceeded = loss["first_step_above_threshold"]
     nonfinite = summary["observation"]["nonfinite_analysis"]
+    endpoints = summary.get("endpoints", {})
+    reference_label = str(endpoints.get("reference_label", "Reference"))
+    candidate_label = str(endpoints.get("candidate_label", "Candidate"))
+    comparison_label = f"{reference_label} vs {candidate_label}"
     steps = [int(row["step"]) for row in rows]
     early_rows = [
         row
@@ -80,7 +84,7 @@ def write_observation_report(
             (
                 "Compared step window",
                 f"{steps[0]}-{steps[-1]} ({summary['step_count']} steps)",
-                "The common GPU/NPU observation interval.",
+                f"The common {comparison_label} observation interval.",
             ),
             (
                 "Loss mean relative error",
@@ -98,19 +102,22 @@ def write_observation_report(
                 "Use together with the median and largest-error steps below.",
             ),
             (
-                "GPU NaN/Inf metrics",
+                f"{reference_label} NaN/Inf metrics",
                 str(nonfinite["reference"]["metric_count"]),
                 "Number of monitored metrics containing a non-finite value.",
             ),
             (
-                "NPU NaN/Inf metrics",
+                f"{candidate_label} NaN/Inf metrics",
                 str(nonfinite["candidate"]["metric_count"]),
                 "Number of monitored metrics containing a non-finite value.",
             ),
         ),
     )
     nonfinite_rows = []
-    for endpoint, label in (("reference", "GPU 标杆 / Reference"), ("candidate", "NPU 调试 / Candidate")):
+    for endpoint, label in (
+        ("reference", reference_label),
+        ("candidate", candidate_label),
+    ):
         result = nonfinite[endpoint]
         details = "; ".join(
             f"{item['metric']}: {item['kind']} at step {item['first_step']}"
@@ -131,8 +138,8 @@ def write_observation_report(
     spike_rows = []
     for metric, values in (("Loss", loss), ("Grad Norm", grad)):
         for endpoint, label in (
-            ("reference", "GPU 标杆 / Reference"),
-            ("candidate", "NPU 调试 / Candidate"),
+            ("reference", reference_label),
+            ("candidate", candidate_label),
         ):
             spike_steps = values.get(f"{endpoint}_spike_steps", [])
             spike_rows.append(
@@ -156,8 +163,8 @@ def write_observation_report(
     grad_anomaly_table = summary_table(
         columns=(
             "Step",
-            "GPU Grad Norm",
-            "NPU Grad Norm",
+            f"{reference_label} Grad Norm",
+            f"{candidate_label} Grad Norm",
             "相对误差 / Relative error",
             "定位提示 / Diagnostic note",
         ),
@@ -185,8 +192,8 @@ def write_observation_report(
             subtitle=f"平均相对误差 {_percent(loss['mean_relative_error'])}; 首次超过指导线: {first_exceeded if first_exceeded is not None else '无'}",
             x_values=steps,
             series=[
-                ("GPU reference", _values(rows, "reference_loss"), "#2563eb"),
-                ("NPU candidate", _values(rows, "candidate_loss"), "#dc2626"),
+                (reference_label, _values(rows, "reference_loss"), "#2563eb"),
+                (candidate_label, _values(rows, "candidate_loss"), "#dc2626"),
             ],
             y_name="Loss / 损失",
             mark_areas=areas,
@@ -196,8 +203,8 @@ def write_observation_report(
             subtitle=f"仅显示 step {early['first_step']}..{early['last_step']}，不混入后续训练窗口",
             x_values=early_steps,
             series=[
-                ("GPU 标杆 / Reference", _values(early_rows, "reference_loss"), "#2563eb"),
-                ("NPU 调试 / Candidate", _values(early_rows, "candidate_loss"), "#dc2626"),
+                (reference_label, _values(early_rows, "reference_loss"), "#2563eb"),
+                (candidate_label, _values(early_rows, "candidate_loss"), "#dc2626"),
             ],
             y_name="Loss / 损失",
         ),
@@ -220,10 +227,13 @@ def write_observation_report(
         ),
         echarts_line(
             title="Loss 有符号差值 / Signed Difference",
-            subtitle=f"平均有符号差值 {_number(_mean(rows, 'loss_signed_difference'))}; NPU - GPU",
+            subtitle=(
+                f"平均有符号差值 {_number(_mean(rows, 'loss_signed_difference'))}; "
+                f"{candidate_label} - {reference_label}"
+            ),
             x_values=steps,
             series=[("Signed difference", _values(rows, "loss_signed_difference"), "#7c3aed")],
-            y_name="NPU - GPU / 差值",
+            y_name=f"{candidate_label} - {reference_label} / 差值",
             mark_lines=[("Zero baseline", 0.0, "#475569")],
         ),
     ]
@@ -233,8 +243,8 @@ def write_observation_report(
             subtitle=f"平均相对误差 {_percent(grad['mean_relative_error'])}; 中位数 {_percent(grad.get('median_relative_error'))}",
             x_values=steps,
             series=[
-                ("GPU reference", _values(rows, "reference_grad_norm"), "#2563eb"),
-                ("NPU candidate", _values(rows, "candidate_grad_norm"), "#dc2626"),
+                (reference_label, _values(rows, "reference_grad_norm"), "#2563eb"),
+                (candidate_label, _values(rows, "candidate_grad_norm"), "#dc2626"),
             ],
             y_name="L2 Norm / 范数",
         ),
@@ -252,7 +262,7 @@ def write_observation_report(
             subtitle=f"平均有符号差值 {_number(_mean(rows, 'grad_norm_signed_difference'))}; 零线用于观察持续偏斜",
             x_values=steps,
             series=[("Signed difference", _values(rows, "grad_norm_signed_difference"), "#059669")],
-            y_name="NPU - GPU / 差值",
+            y_name=f"{candidate_label} - {reference_label} / 差值",
             mark_lines=[("Zero baseline", 0.0, "#475569")],
         ),
         echarts_line(
@@ -260,13 +270,15 @@ def write_observation_report(
             subtitle=f"平均有符号相对误差 {_percent(grad['mean_signed_relative_error'])}; ±5% 仅为诊断指导线",
             x_values=steps,
             series=[("Signed relative error", _values(rows, "grad_norm_signed_relative_error", percent=True), "#059669")],
-            y_name="(GPU - NPU) / GPU (%)",
+            y_name=(
+                f"({reference_label} - {candidate_label}) / {reference_label} (%)"
+            ),
             mark_lines=[("Zero baseline", 0.0, "#475569"), ("Upper guidance +5%", 5.0, "#f59e0b"), ("Lower guidance -5%", -5.0, "#f59e0b")],
         ),
     ]
     return save_panel_report(
         path=output_directory / "training_observation.html",
-        title="GPU / NPU 训练观察（Training Observation）",
+        title=f"{comparison_label} 训练观察（Training Observation）",
         description="交互式离线证据：悬停查看精确值，框选或滚轮缩放，拖动平移，切换曲线，并可从工具箱查看数据或导出图片。",
         sections=[
             section_heading("总体摘要 / Overview", "先看现象分类，再进入分支定位；表中阈值是诊断指导，不自动等同于交付结论。"),
@@ -275,7 +287,9 @@ def write_observation_report(
             nonfinite_table,
             section_heading(
                 "尖刺检查 / Spike Analysis",
-                "尖刺是与 NaN/Inf、首 Steps 差异和长稳差异并列的精度问题类型。这里分别列出 GPU/NPU 的 Loss 与 Grad Norm 尖刺，重点关注 NPU 独有或更频繁的尖刺。",
+                "尖刺是与 NaN/Inf、首 Steps 差异和长稳差异并列的精度问题类型。"
+                f"这里分别列出 {reference_label} 与 {candidate_label} 的 Loss 和 "
+                "Grad Norm 尖刺，重点关注仅在一侧出现或明显更频繁的尖刺。",
             ),
             spike_table,
             section_heading("Loss 对齐分析", "依次查看全程曲线、真正截取的首 Steps 窗口、全程相对误差和有符号差值。"),
@@ -284,4 +298,5 @@ def write_observation_report(
             grad_anomaly_table,
             *grad_charts,
         ],
+        page_margin=(36, 0, 64, 0),
     )

@@ -175,6 +175,9 @@ def _embedded_html_document(path: Path) -> str:
 
 def _copy_ready_grad_anomaly_summary(entry: dict[str, Any]) -> str:
     grad = entry["grad_norm"]
+    endpoints = entry.get("endpoints", {})
+    reference_label = str(endpoints.get("reference_label", "Reference"))
+    candidate_label = str(endpoints.get("candidate_label", "Candidate"))
     anomalies = grad.get("prominent_anomalies") or []
     median_error = grad.get("median_relative_error")
     median_text = "N/A" if median_error is None else f"{median_error:.2%}"
@@ -192,10 +195,11 @@ def _copy_ready_grad_anomaly_summary(entry: dict[str, Any]) -> str:
         ratio = anomaly.get("candidate_to_reference_ratio")
         ratio_text = "N/A" if ratio is None else f"{ratio:.4g}x"
         lines.append(
-            f"step {anomaly['step']}：GPU={anomaly['reference']:.6g}，"
-            f"NPU={anomaly['candidate']:.6g}，"
+            f"step {anomaly['step']}：{reference_label}="
+            f"{anomaly['reference']:.6g}，{candidate_label}="
+            f"{anomaly['candidate']:.6g}，"
             f"绝对差={anomaly['absolute_difference']:.6g}，"
-            f"NPU/GPU={ratio_text}，"
+            f"{candidate_label}/{reference_label}={ratio_text}，"
             f"Grad Norm 相对误差={anomaly['relative_error']:.2%}，"
             f"同 step Loss 相对误差={anomaly['loss_relative_error']:.2%}。"
         )
@@ -300,6 +304,7 @@ def _observation_html_document(
     title: str,
     html_rows: Sequence[str],
     evidence_sections: Sequence[str] = (),
+    comparison_label: str = "Reference vs Candidate",
 ) -> str:
     return (
         "<!doctype html><html><head><meta charset=\"utf-8\">"
@@ -322,7 +327,7 @@ def _observation_html_document(
         "</style></head><body>"
         f"<h1>{html.escape(title)}</h1>"
         "<p>流程 / Workflow: <code>training observation</code>.</p>"
-        "<p>本报告比较未注入调试工具的 GPU 标杆与 NPU 调试侧训练指标，用于现象分类，"
+        f"<p>本报告比较未注入调试工具的 {html.escape(comparison_label)} 训练指标，用于现象分类，"
         "不声明通用的交付 PASS/FAIL 结论。</p>"
         "<h2>训练观察 / Training observations</h2><table><thead><tr>"
         "<th>拓扑 / Topology</th><th>观察现象 / Symptom</th><th>窗口 / Window</th>"
@@ -384,6 +389,13 @@ def _write_observation_report_index(
                 "first_step": details["first_step"],
                 "last_step": details["last_step"],
                 "step_count": observation["step_count"],
+                "endpoints": observation.get(
+                    "endpoints",
+                    {
+                        "reference_label": "Reference",
+                        "candidate_label": "Candidate",
+                    },
+                ),
                 "loss": observation["loss"],
                 "grad_norm": observation["grad_norm"],
                 "reference_first_nonfinite_metrics": details[
@@ -409,18 +421,31 @@ def _write_observation_report_index(
             "training_observations": observations,
             "delivery_verdict": None,
             "meaning": (
-                "Baseline classifies whole-training symptoms. It does not "
+                "Training observation classifies whole-training symptoms. "
+                "It does not "
                 "define a universal delivery pass/fail verdict."
             ),
         },
     )
 
+    endpoint_pairs = {
+        (
+            str(entry["endpoints"]["reference_label"]),
+            str(entry["endpoints"]["candidate_label"]),
+        )
+        for entry in observations
+    }
+    comparison_label = (
+        f"{next(iter(endpoint_pairs))[0]} vs {next(iter(endpoint_pairs))[1]}"
+        if len(endpoint_pairs) == 1
+        else "configured reference vs candidate endpoints"
+    )
     markdown_lines = [
         f"# {experiment_name}",
         "",
         "Workflow: `training observation`",
         "",
-        "This report compares uninstrumented GPU reference and NPU candidate "
+        f"This report compares uninstrumented {comparison_label} "
         "training metrics. It classifies the observed symptom and does not "
         "define a universal delivery PASS/FAIL verdict.",
         "",
@@ -482,6 +507,9 @@ def _write_observation_report_index(
             else "NaN/Inf observed; inspect endpoint details"
         )
         endpoint_nonfinite_text: dict[str, str] = {}
+        endpoints = entry["endpoints"]
+        reference_label = str(endpoints["reference_label"])
+        candidate_label = str(endpoints["candidate_label"])
         for role, fallback in (
             ("candidate", candidate_nonfinite),
             ("reference", reference_nonfinite),
@@ -552,9 +580,9 @@ def _write_observation_report_index(
         markdown_lines.extend(
             (
                 f"- NaN/Inf: {nonfinite_text}",
-                "- Candidate NaN/Inf details: "
+                f"- {candidate_label} NaN/Inf details: "
                 f"{endpoint_nonfinite_text['candidate']}",
-                "- Reference NaN/Inf details: "
+                f"- {reference_label} NaN/Inf details: "
                 f"{endpoint_nonfinite_text['reference']}",
             )
         )
@@ -609,9 +637,12 @@ def _write_observation_report_index(
             + "<section class=\"supporting-evidence\">"
             + "<h2>补充证据 / Supporting evidence</h2>"
             + f"<p><strong>NaN/Inf:</strong> {html.escape(nonfinite_text)}<br>"
-            + "Candidate details: "
+            + html.escape(candidate_label)
+            + " details: "
             + html.escape(endpoint_nonfinite_text["candidate"])
-            + "<br>Reference details: "
+            + "<br>"
+            + html.escape(reference_label)
+            + " details: "
             + html.escape(endpoint_nonfinite_text["reference"])
             + "</p>"
             + "<details><summary>Per-step metric comparison</summary>"
@@ -630,9 +661,13 @@ def _write_observation_report_index(
         )
         topology_report.write_text(
             _observation_html_document(
-                title=f"训练观察：{experiment_name} / {entry['topology']}",
+                title=(
+                    f"训练观察：{reference_label} vs {candidate_label} / "
+                    f"{entry['topology']}"
+                ),
                 html_rows=(topology_row,),
                 evidence_sections=(evidence_section,),
+                comparison_label=f"{reference_label} vs {candidate_label}",
             ),
             encoding="utf-8",
         )
@@ -642,8 +677,9 @@ def _write_observation_report_index(
     html_path = report_directory / f"{experiment_name}.html"
     html_path.write_text(
         _observation_html_document(
-            title=experiment_name,
+            title=f"训练观察：{comparison_label}",
             html_rows=html_rows,
+            comparison_label=comparison_label,
         ),
         encoding="utf-8",
     )
