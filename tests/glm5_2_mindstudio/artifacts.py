@@ -146,6 +146,10 @@ def reusable_artifact_is_complete(
     except (KeyError, OSError, TypeError, ValueError, MindStudioArtifactError):
         return False
     digest = manifest.get("experiment_digest")
+    recorded_workflow = manifest.get("workflow")
+    workflow_matches = recorded_workflow == workflow or (
+        workflow == "observation" and recorded_workflow == "baseline"
+    )
     return (
         isinstance(digest, str)
         and bool(digest)
@@ -154,6 +158,6 @@ def reusable_artifact_is_complete(
             experiment_digest=digest,
             fixture_generation_id=fixture_generation_id,
         )
-        and manifest.get("workflow") == workflow
+        and workflow_matches
         and manifest.get("role") == role
     )

@@ -901,6 +901,17 @@ class TestMindStudioArtifacts(unittest.TestCase):
                     role="reference",
                 )
             )
+
+            manifest["workflow"] = "baseline"
+            write_json(artifact / "manifest.json", manifest)
+            self.assertTrue(
+                reusable_artifact_is_complete(
+                    artifact,
+                    fixture_generation_id="fixture-a",
+                    workflow="observation",
+                    role="candidate",
+                )
+            )
     def test_output_index_rejects_symbolic_links(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             official = Path(temporary_directory) / "official"
