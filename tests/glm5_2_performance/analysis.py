@@ -1843,6 +1843,18 @@ structured trace contains model source code but no weights.</p>
             '<div class="callout warning">The active profiling window exceeded '
             "the official five-minute recommendation. Reduce active steps.</div>"
         )
+    interactive_training_report = ""
+    if analysis.get("interactive_training_report"):
+        interactive_href = report_href(
+            Path(analysis["interactive_training_report"])
+        )
+        interactive_training_report = (
+            '<div class="callout"><strong>交互训练指标 / Interactive '
+            "training metrics:</strong> <a href=\""
+            + html.escape(interactive_href, quote=True)
+            + '\">'
+            "打开独立离线报告</a></div>"
+        )
 
     report = f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
@@ -1872,6 +1884,7 @@ a{{color:#155eef}} h3{{font-size:15px;margin:16px 0 6px}} h4{{font-size:14px;mar
 <p class="subtle">{html.escape(manifest['run_name'])} · {html.escape(manifest['device'])} · {html.escape(manifest['topology'])} · {html.escape(manifest['preset'])}</p>
 <div class="pipeline">{pipeline}</div>
 <div class="cards">{''.join(cards) or '<div class="card"><span>Training metrics</span><strong>Unavailable</strong></div>'}</div>
+{interactive_training_report}
 {profile_duration_warning}
 {diagnosis_section}
 <section><h2>中文阅读路线</h2>

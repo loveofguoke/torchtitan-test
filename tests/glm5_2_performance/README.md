@@ -157,6 +157,13 @@ to avoid measuring a different execution policy. These values live in
 
 ## Report contents
 
+Project-owned reports are self-contained offline Panel + ECharts HTML. Hover,
+zoom, pan, legend selection, data view, and chart export work without a report
+server. Profiler-off reports are the numerical authority: they separate warmup
+from steady state and plot per-step time, throughput, TFLOPS, MFU, and active
+memory. Profiler-active reports add the same training view for context, but use
+the native Timeline/database and official summaries for attribution.
+
 Each HTML report identifies the device, topology, preset, collection schedule,
 software/source metadata, and raw-profile location. It summarizes step time,
 throughput, model FLOPS utilization when available, memory, and the exact active

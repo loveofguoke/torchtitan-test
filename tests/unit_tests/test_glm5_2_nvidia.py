@@ -2,6 +2,7 @@ from argparse import Namespace
 import json
 from pathlib import Path
 import tempfile
+from unittest import mock
 
 from tests.glm5_2_common.topology import standard_topologies
 from tests.glm5_2_nvidia.workflow import (
@@ -42,6 +43,7 @@ def _args() -> Namespace:
         profile="standard",
         profiler_off=False,
         replicate=0,
+        skip_steps=10,
     )
 
 
@@ -239,6 +241,56 @@ def test_nvidia_report_embeds_self_diagnosis() -> None:
         assert "GPU 单拓扑性能诊断" in content
         assert "communication" in content
         assert "ncclKernel" in content
+
+
+def test_nvidia_metrics_use_shared_interactive_report() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        run = root / "run"
+        artifact = root / "artifact"
+        run.mkdir()
+        artifact.mkdir()
+        (run / "metrics.jsonl").write_text(
+            json.dumps(
+                {
+                    "step": 1,
+                    "metrics": {
+                        "time_metrics/end_to_end(s)": 1.0,
+                        "throughput(tps)": 100.0,
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (artifact / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "contract": {
+                        "profiler_enabled": False,
+                        "config": "glm5_debugmodel",
+                        "steps": 20,
+                        "skip_steps": 10,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        report = root / "report.html"
+
+        with mock.patch(
+            "tests.glm5_2_nvidia.workflow.write_training_metrics_report"
+        ) as write_report:
+            _write_report(
+                report,
+                topology=standard_topologies()["single"],
+                run_dir=run,
+                artifact_dir=artifact,
+            )
+
+        write_report.assert_called_once()
+        analysis = write_report.call_args.kwargs["analysis"]
+        assert analysis["tool_outputs"][0]["type"] == "TorchTitan metrics"
 
 
 def test_ncu_contract_records_replay_and_selection() -> None:

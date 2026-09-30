@@ -23,7 +23,14 @@ from tests.glm5_2_common.cli import (
     write_experiment_overview,
 )
 from tests.glm5_2_nvidia.diagnostics import diagnose
-from tests.glm5_2_performance.analysis import read_metrics, summarize_metrics
+from tests.glm5_2_performance.analysis import (
+    read_metrics,
+    summarize_metrics,
+    summarize_profile_phases,
+)
+from tests.glm5_2_performance.interactive_report import (
+    write_training_metrics_report,
+)
 from tests.glm5_2_performance.diagnosis import (
     build_self_diagnosis,
     write_self_diagnosis,
@@ -170,6 +177,7 @@ def _contract(
         }
         contract["profiler_enabled"] = False
         contract["replicate"] = args.replicate
+        contract["skip_steps"] = args.skip_steps
     elif args.replicate:
         contract["replicate"] = args.replicate
     return contract
@@ -525,15 +533,40 @@ def _analyze(
         ):
             print_output_path("Skip completed NVIDIA baseline analysis", artifact_dir)
             return
-        metric_summary = summarize_metrics(read_metrics(metrics_path))
+        metric_records = read_metrics(metrics_path)
+        metric_summary = summarize_metrics(metric_records)
         analysis = {
             "metrics": metric_summary,
-            "profile_phases": {"comparison": {}},
+            "profile_phases": summarize_profile_phases(
+                metric_records,
+                config={
+                    "skip_steps": contract["skip_steps"],
+                    "profiler_enabled": False,
+                    "topology": contract["topology"]["name"],
+                },
+                profiler_environment=None,
+            ),
             "distributed_step_trace": {"ranks": [], "cross_rank": {}},
             "communication_summary": {"rows": []},
             "compiler_diagnostics": {},
             "memory_visualizations": {"ready": False},
             "top_csv_tables": [],
+            "tool_outputs": [
+                {
+                    "type": "TorchTitan metrics",
+                    "role": "profiler-off baseline",
+                    "path": display_repository_path(metrics_path),
+                    "inspect": "Use this interactive report or inspect JSONL.",
+                },
+                {
+                    "type": "runtime log",
+                    "role": "execution provenance",
+                    "path": display_repository_path(
+                        Path(manifest["runtime_log"])
+                    ),
+                    "inspect": "Inspect launch, environment, and runtime failures.",
+                },
+            ],
         }
         diagnosis_manifest = {
             "run_name": run_dir.name,
@@ -562,7 +595,9 @@ def _analyze(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        print_output_path("NVIDIA baseline diagnosis", Path(diagnosis_outputs["readme"]))
+        print_output_path(
+            "NVIDIA baseline diagnosis", Path(diagnosis_outputs["readme"])
+        )
         return
     if (
         manifest.get("capture_status") != "completed"
@@ -684,6 +719,99 @@ def _write_report(
     profiler_enabled = manifest.get("contract", {}).get(
         "profiler_enabled", True
     )
+    metrics_path = run_dir / "metrics.jsonl"
+    metric_records = read_metrics(metrics_path)
+    if metric_records:
+        contract = manifest.get("contract", {})
+        skip_steps = int(contract.get("skip_steps", 0))
+        metric_summary = summarize_metrics(metric_records)
+        active_profile_phases = {
+            "phase_order": ["profile_active"],
+            "phases": {
+                "profile_active": {
+                    "steps": metric_summary["steps"],
+                    "summary": metric_summary["summary"],
+                }
+            },
+            "comparison": {
+                "parse_mode": "nsight-systems",
+                "note": "Attribution evidence; not a profiler-off baseline.",
+            },
+        }
+        fallback_phases = (
+            active_profile_phases
+            if profiler_enabled
+            else summarize_profile_phases(
+                metric_records,
+                config={
+                    "skip_steps": skip_steps,
+                    "profiler_enabled": False,
+                    "topology": topology.name,
+                },
+                profiler_environment=None,
+            )
+        )
+        analysis_path = artifact_dir / "analysis.json"
+        analysis = (
+            json.loads(analysis_path.read_text(encoding="utf-8"))
+            if analysis_path.is_file()
+            else {
+                "metrics": metric_summary,
+                "profile_phases": fallback_phases,
+                "self_diagnosis": diagnosis,
+            }
+        )
+        tool_outputs = [
+            {
+                "type": "TorchTitan metrics",
+                "role": "per-step training evidence",
+                "path": display_repository_path(metrics_path),
+                "inspect": "Use the charts in this HTML or inspect JSONL.",
+            }
+        ]
+        if profiler_enabled:
+            tool_outputs[:0] = [
+                {
+                    "type": "Nsight Systems report",
+                    "role": "interactive system timeline",
+                    "path": display_repository_path(
+                        output_dir / "profile.nsys-rep"
+                    ),
+                    "inspect": "Open with NVIDIA Nsight Systems.",
+                },
+                {
+                    "type": "Nsight Systems SQLite",
+                    "role": "queryable profiler database",
+                    "path": display_repository_path(
+                        output_dir / "profile.sqlite"
+                    ),
+                    "inspect": "Use SQLite or generated official statistics.",
+                },
+                *[
+                    {
+                        "type": "Nsight Systems statistic",
+                        "role": "official aggregate table",
+                        "path": display_repository_path(Path(path)),
+                        "inspect": "Inspect CSV rows cited by automatic diagnosis.",
+                    }
+                    for path in manifest.get("statistics", [])
+                ],
+            ]
+        analysis["tool_outputs"] = tool_outputs
+        write_training_metrics_report(
+            manifest={
+                "topology": topology.slug,
+                "config": {
+                    **contract,
+                    "model_config": contract.get("config", "-"),
+                    "skip_steps": skip_steps,
+                },
+            },
+            analysis=analysis,
+            output_path=report_path,
+        )
+        print_output_path("NVIDIA performance report", report_path)
+        return
     official_section = (
         "<section><h2>官方 Nsight Systems 交付物</h2>"
         "<p>Capture: <code>"
@@ -750,6 +878,12 @@ def run_cli() -> int:
     topology_group.add_argument("--topology", default="single")
     topology_group.add_argument("--topologies")
     parser.add_argument("--steps", type=int, default=30)
+    parser.add_argument(
+        "--skip-steps",
+        type=int,
+        default=10,
+        help="warmup steps excluded from profiler-off steady-state conclusions",
+    )
     parser.add_argument("--local-batch-size", type=int, default=8)
     parser.add_argument("--global-batch-size", type=int, default=64)
     parser.add_argument("--sequence-length", type=int, default=128)
@@ -822,6 +956,8 @@ def run_cli() -> int:
         parser.error("export CUDA_VISIBLE_DEVICES or pass --visible-devices")
     if args.replicate < 0:
         parser.error("--replicate must be non-negative")
+    if args.profiler_off and not 0 <= args.skip_steps < args.steps:
+        parser.error("--skip-steps must be non-negative and smaller than --steps")
     if args.profiler_off and args.profile != "standard":
         parser.error("--profiler-off does not accept an NSys --profile preset")
     version = (

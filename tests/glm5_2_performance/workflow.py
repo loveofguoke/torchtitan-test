@@ -67,6 +67,7 @@ from .config import (
 )
 from .documentation import card_scope, write_run_readme
 from .diagnosis import build_self_diagnosis, write_self_diagnosis
+from .interactive_report import write_training_metrics_report
 from .visualization import (
     find_flamegraph_script,
     find_mindstudio_flamegraph_script,
@@ -2206,6 +2207,7 @@ def _analysis_output_paths(
         artifact_directory / "analysis_state.json",
         artifact_directory / "analysis_state.json.lock",
         report_path,
+        report_path.with_name(f"{report_path.stem}.training.html"),
         exploration_directory / "analysis.json",
         exploration_directory / "mindstudio_insight_handoff.json",
         exploration_directory / "artifacts.json",
@@ -2252,6 +2254,7 @@ def _analysis_outputs_exist(
         artifact_directory / "analysis.json",
         artifact_directory / "mindstudio_insight_handoff.json",
         report_path,
+        report_path.with_name(f"{report_path.stem}.training.html"),
         run_directory / "advisor",
         run_directory / "advisor.json",
         run_directory / "cluster.json",
@@ -2878,11 +2881,28 @@ def analyze(
             "portable_import_targets": handoff["portable_import_targets"],
         }
         _write_json(artifact_directory / "analysis.json", analysis)
-        render_html_report(
-            manifest=manifest,
-            analysis=analysis,
-            output_path=report_path,
-        )
+        if manifest["config"].get("profiler_enabled", True) is False:
+            write_training_metrics_report(
+                manifest=manifest,
+                analysis=analysis,
+                output_path=report_path,
+            )
+        else:
+            interactive_path = report_path.with_name(
+                f"{report_path.stem}.training.html"
+            )
+            write_training_metrics_report(
+                manifest=manifest,
+                analysis=analysis,
+                output_path=interactive_path,
+            )
+            analysis["interactive_training_report"] = str(interactive_path)
+            _write_json(artifact_directory / "analysis.json", analysis)
+            render_html_report(
+                manifest=manifest,
+                analysis=analysis,
+                output_path=report_path,
+            )
         _sync_exploration_bundle(
             root,
             topology=config.topology,
@@ -3481,6 +3501,7 @@ def run_profiler_cli(
                         run_directory,
                         artifact_parent / run_name,
                         report_parent / f"{run_name}.html",
+                        report_parent / f"{run_name}.training.html",
                         _exploration_directory(root, topology_name, run_name),
                     )
                 )

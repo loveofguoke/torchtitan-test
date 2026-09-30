@@ -180,6 +180,7 @@ python tests/glm5_2_nvidia/performance_benchmark.py \
 | `--topology` | One common topology or `all`. | `single` |
 | `--topologies` | Comma-separated topology subset. | unset |
 | `--steps` | Training optimizer steps. | `30` |
+| `--skip-steps` | Warmup steps excluded from profiler-off steady-state conclusions. | `10` |
 | `--local-batch-size` / `--global-batch-size` | Shared sample-batch contract. | `8` / `64` |
 | `--sequence-length` | Tokens per sample. | `128` |
 | `--trace` | Nsight Systems trace domains. Add `nccl` only when supported by the installed NCCL. | `cuda,nvtx,osrt,cublas,cudnn` |
@@ -239,6 +240,14 @@ nvidia_reports/performance/operator/<N-card>/<topology>/<experiment>.html
   comparison.json
   comparison.html
 ```
+
+The system report is one self-contained interactive HTML. It contains the
+per-step training curves, warmup/steady-state split, summary tables, diagnostic
+branches, and an inventory linking the native `.nsys-rep`, SQLite database,
+official CSV statistics, metrics JSONL, and logs. The HTML does not replace the
+native Nsight Systems timeline; it provides the portable reading entry point.
+The shared comparison HTML overlays all repeats and supports hover, zoom,
+filtering, and candidate/reference relative-change inspection.
 
 Aggregate one platform or compare two contract-compatible groups after capture:
 

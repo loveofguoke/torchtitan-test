@@ -28,6 +28,9 @@ from tests.glm5_2_performance.diagnosis import (
     build_self_diagnosis,
     write_self_diagnosis,
 )
+from tests.glm5_2_performance.interactive_report import (
+    write_training_metrics_report,
+)
 from tests.glm5_2_performance.workflow import (
     _config_is_compatible,
     _device_selection,
@@ -49,6 +52,61 @@ from tests.glm5_2_performance.visualization import (
 
 
 class TestPerformanceConfig(unittest.TestCase):
+    def test_interactive_performance_report_builds_metrics_and_tool_inventory(self):
+        analysis = {
+            "metrics": {
+                "steps": [1, 2],
+                "series": {
+                    "time_metrics/end_to_end(s)": [(1, 2.0), (2, 1.0)],
+                    "throughput(tps)": [(1, 100.0), (2, 200.0)],
+                },
+                "summary": {
+                    "time_metrics/end_to_end(s)": {"median": 1.5},
+                    "throughput(tps)": {"mean": 150.0},
+                },
+            },
+            "profile_phases": {"phase_order": [], "phases": {}},
+            "self_diagnosis": {"branches": {}},
+            "tool_outputs": [
+                {"type": "timeline", "path": "profile.db"}
+            ],
+        }
+        manifest = {
+            "topology": "single",
+            "config": {
+                "profiler_enabled": False,
+                "skip_steps": 1,
+                "steps": 2,
+                "model_config": "glm5_debugmodel",
+            },
+        }
+        with mock.patch(
+            "tests.glm5_2_performance.interactive_report.echarts_line",
+            side_effect=lambda **kwargs: kwargs,
+        ) as chart, mock.patch(
+            "tests.glm5_2_performance.interactive_report.summary_table",
+            side_effect=lambda **kwargs: kwargs,
+        ), mock.patch(
+            "tests.glm5_2_performance.interactive_report.interactive_table",
+            side_effect=lambda **kwargs: kwargs,
+        ) as table, mock.patch(
+            "tests.glm5_2_performance.interactive_report.section_heading",
+            side_effect=lambda *args: args,
+        ), mock.patch(
+            "tests.glm5_2_performance.interactive_report.save_panel_report",
+            return_value=Path("report.html"),
+        ) as save:
+            result = write_training_metrics_report(
+                manifest=manifest,
+                analysis=analysis,
+                output_path=Path("report.html"),
+            )
+
+        self.assertEqual(result, Path("report.html"))
+        self.assertEqual(chart.call_count, 2)
+        self.assertEqual(table.call_count, 1)
+        self.assertTrue(save.called)
+
     def test_run_name_uses_readable_config_and_digest(self):
         config = PerformanceConfig(name="glm5-probe")
         run_name = _run_name(config, "npu")
@@ -224,14 +282,25 @@ class TestPerformanceConfig(unittest.TestCase):
                 make_run(f"npu-{index}", "npu", 2.0) for index in range(3)
             ]
             output = root / "comparison"
-            payload = build_comparison(
-                reference_runs=reference,
-                reference_label="GPU",
-                candidate_runs=candidate,
-                candidate_label="NPU",
-                skip_steps=2,
-                output=output,
+            def render_stub(path, _payload):
+                path.mkdir(parents=True, exist_ok=True)
+                (path / "comparison.html").write_text(
+                    "Profiler-off 重复实验", encoding="utf-8"
+                )
+
+            render_patch = mock.patch(
+                "tests.glm5_2_performance.comparison._render",
+                side_effect=render_stub,
             )
+            with render_patch:
+                payload = build_comparison(
+                    reference_runs=reference,
+                    reference_label="GPU",
+                    candidate_runs=candidate,
+                    candidate_label="NPU",
+                    skip_steps=2,
+                    output=output,
+                )
 
             self.assertEqual(payload["reference"]["repeat_count"], 3)
             self.assertTrue(
@@ -250,35 +319,36 @@ class TestPerformanceConfig(unittest.TestCase):
                 "Profiler-off 重复实验",
                 (output / "comparison.html").read_text(encoding="utf-8"),
             )
-            self.assertEqual(
-                build_comparison(
-                    reference_runs=reference,
-                    reference_label="GPU",
-                    candidate_runs=candidate,
-                    candidate_label="NPU",
-                    skip_steps=2,
-                    output=output,
-                ),
-                payload,
-            )
-            with self.assertRaisesRegex(FileExistsError, "different inputs"):
-                build_comparison(
+            with render_patch:
+                self.assertEqual(
+                    build_comparison(
+                        reference_runs=reference,
+                        reference_label="GPU",
+                        candidate_runs=candidate,
+                        candidate_label="NPU",
+                        skip_steps=2,
+                        output=output,
+                    ),
+                    payload,
+                )
+                with self.assertRaisesRegex(FileExistsError, "different inputs"):
+                    build_comparison(
+                        reference_runs=reference,
+                        reference_label="GPU",
+                        candidate_runs=candidate,
+                        candidate_label="NPU",
+                        skip_steps=3,
+                        output=output,
+                    )
+                replaced = build_comparison(
                     reference_runs=reference,
                     reference_label="GPU",
                     candidate_runs=candidate,
                     candidate_label="NPU",
                     skip_steps=3,
                     output=output,
+                    force=True,
                 )
-            replaced = build_comparison(
-                reference_runs=reference,
-                reference_label="GPU",
-                candidate_runs=candidate,
-                candidate_label="NPU",
-                skip_steps=3,
-                output=output,
-                force=True,
-            )
             self.assertEqual(
                 replaced["reference"]["measurement_policy"]["skip_steps"],
                 3,

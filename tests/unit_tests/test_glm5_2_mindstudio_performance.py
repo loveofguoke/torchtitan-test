@@ -1003,6 +1003,9 @@ class MindStudioPerformanceTest(unittest.TestCase):
                 "tests.glm5_2_performance.workflow.render_html_report",
                 side_effect=report_side_effect,
             ), patch(
+                "tests.glm5_2_performance.workflow.write_training_metrics_report",
+                side_effect=report_side_effect,
+            ), patch(
                 "tests.glm5_2_performance.workflow._sync_exploration_bundle"
             ):
                 result = analyze(
@@ -1063,6 +1066,9 @@ class MindStudioPerformanceTest(unittest.TestCase):
                 return_value=handoff,
             ), patch(
                 "tests.glm5_2_performance.workflow.render_html_report",
+                side_effect=report_side_effect,
+            ), patch(
+                "tests.glm5_2_performance.workflow.write_training_metrics_report",
                 side_effect=report_side_effect,
             ), patch(
                 "tests.glm5_2_performance.workflow._sync_exploration_bundle"

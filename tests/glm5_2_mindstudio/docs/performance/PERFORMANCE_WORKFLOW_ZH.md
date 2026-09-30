@@ -761,6 +761,12 @@ PASS/FAIL。这里借鉴 MLPerf 的申报与重复测量纪律，但 GLM 本地�
 benchmark，也不得称为 MLPerf 结果。相同输入会安全复用已有报告；输入变化默认拒绝
 覆盖，只有显式 `--force` 才替换所选 comparison 目录，不会删除任何原始 capture。
 
+项目自有性能 HTML 使用与精度实验相同的 Panel + pyecharts/ECharts 离线栈：单端
+profiler-off 报告展示暖机/稳态、逐 Step 耗时、吞吐、TFLOPS、MFU、显存和诊断分支；
+profiler-active 报告保留同一训练视图，同时索引 Insight/Timeline、数据库和官方统计；
+重复实验报告叠加每次运行曲线，展示 median/p90/p95、CV 与候选相对基准变化。
+外部工具的原生 Timeline、数据库和工作簿不被重新包装成“官方结论”，只作为可追溯入口。
+
 ```text
 mindstudio_runs/performance/system/<card-scope>/<topology>/<run>/
   runtime.log / run_state.json

@@ -3,14 +3,24 @@
 from __future__ import annotations
 
 import argparse
-import html
 import json
 import math
 from pathlib import Path
 import statistics
 from typing import Any, Iterable
 
-from tests.glm5_2_common.cli import print_output_path, reset_output_generation
+from tests.glm5_2_common.cli import (
+    display_repository_path,
+    print_output_path,
+    reset_output_generation,
+)
+from tests.glm5_2_common.reporting import (
+    echarts_line,
+    interactive_table,
+    save_panel_report,
+    section_heading,
+    summary_table,
+)
 from tests.glm5_2_performance.analysis import read_metrics
 
 
@@ -160,6 +170,16 @@ def _run_summary(run_dir: Path, *, skip_steps: int) -> dict[str, Any]:
             "mfu_mean_percent": aggregate(("mfu",), "mean"),
             "peak_active_memory_gib": aggregate(("max_active",), "max"),
         },
+        "series": {
+            "step": [int(record["step"]) for record in records],
+            "step_time_s": step_times,
+            "throughput_tps": throughputs,
+            "tflops": series.get(_metric_name(series, ("tflops",)) or "", []),
+            "mfu_percent": series.get(_metric_name(series, ("mfu",)) or "", []),
+            "active_memory_gib": series.get(
+                _metric_name(series, ("max_active",)) or "", []
+            ),
+        },
     }
 
 
@@ -184,6 +204,13 @@ def _aggregate_group(
     runs = [_run_summary(path.resolve(), skip_steps=skip_steps) for path in run_dirs]
     if not runs:
         raise ValueError(f"{label} must contain at least one run")
+    expected_steps = runs[0]["series"]["step"]
+    for run in runs[1:]:
+        if run["series"]["step"] != expected_steps:
+            raise ValueError(
+                "profiler-off runs have different measured step windows; "
+                "repeat comparison requires identical per-step evidence"
+            )
     contract = _validate_group(runs, label)
     metric_names = tuple(runs[0]["measurement"])
     aggregate: dict[str, Any] = {}
@@ -226,6 +253,14 @@ def _compare(reference: dict[str, Any], candidate: dict[str, Any]) -> dict[str, 
             "reference and candidate contracts differ; refusing performance comparison:\n"
             f"reference={reference['contract']}\ncandidate={candidate['contract']}"
         )
+    if (
+        reference["runs"][0]["series"]["step"]
+        != candidate["runs"][0]["series"]["step"]
+    ):
+        raise ValueError(
+            "reference and candidate measured step windows differ; refusing "
+            "per-step performance comparison"
+        )
     metrics: dict[str, Any] = {}
     for name, reference_value in reference["aggregate"].items():
         candidate_value = candidate["aggregate"].get(name)
@@ -263,64 +298,189 @@ def _render(output: Path, payload: dict[str, Any]) -> None:
     groups = [payload["reference"]]
     if payload.get("candidate"):
         groups.append(payload["candidate"])
-    group_rows = "".join(
-        "<tr>"
-        f"<td>{html.escape(group['label'])}</td>"
-        f"<td>{group['repeat_count']}</td>"
-        f"<td>{'yes' if group['measurement_policy']['repeat_count_sufficient'] else 'no'}</td>"
-        f"<td><code>{html.escape(group['contract']['topology'])}</code></td>"
-        "</tr>"
-        for group in groups
+    group_table = summary_table(
+        columns=("Group", "Repeats", ">=3", "Topology", "Warmup skipped"),
+        rows=tuple(
+            (
+                group["label"],
+                str(group["repeat_count"]),
+                "yes"
+                if group["measurement_policy"]["repeat_count_sufficient"]
+                else "no",
+                str(group["contract"]["topology"]),
+                str(group["measurement_policy"]["skip_steps"]),
+            )
+            for group in groups
+        ),
     )
     metric_names = sorted(
         {name for group in groups for name in group["aggregate"]}
     )
-    metric_rows = "".join(
-        "<tr>"
-        f"<td><code>{html.escape(name)}</code></td>"
-        + "".join(
-            f"<td>{_format(group['aggregate'].get(name, {}).get('median'))}</td>"
-            f"<td>{_format(group['aggregate'].get(name, {}).get('cv_percent'))}%</td>"
-            for group in groups
+    aggregate_columns = ["Metric"]
+    for group in groups:
+        aggregate_columns.extend(
+            (f"{group['label']} median", f"{group['label']} CV")
         )
-        + (
-            f"<td>{_format(payload['comparison']['metrics'].get(name, {}).get('candidate_vs_reference_percent'))}%</td>"
-            if payload.get("comparison")
-            else ""
-        )
-        + "</tr>"
-        for name in metric_names
+    if payload.get("comparison"):
+        aggregate_columns.append("Candidate vs reference")
+    aggregate_rows = []
+    for name in metric_names:
+        row = [name]
+        for group in groups:
+            values = group["aggregate"].get(name, {})
+            row.extend(
+                (
+                    _format(values.get("median")),
+                    f"{_format(values.get('cv_percent'))}%",
+                )
+            )
+        if payload.get("comparison"):
+            relative_change = payload["comparison"]["metrics"].get(
+                name, {}
+            ).get("candidate_vs_reference_percent")
+            row.append(
+                f"{_format(relative_change)}%"
+            )
+        aggregate_rows.append(tuple(row))
+    aggregate_table = summary_table(
+        columns=tuple(aggregate_columns), rows=tuple(aggregate_rows)
     )
-    headers = "".join(
-        f"<th>{html.escape(group['label'])} median</th><th>{html.escape(group['label'])} CV</th>"
+    run_rows = [
+        {
+            "Group": group["label"],
+            "Repeat": index,
+            "Measured steps": (
+                f"{run['measurement']['first_step']}-"
+                f"{run['measurement']['last_step']}"
+            ),
+            "Median step time (s)": run["measurement"]["step_time_median_s"],
+            "P90 step time (s)": run["measurement"]["step_time_p90_s"],
+            "P95 step time (s)": run["measurement"]["step_time_p95_s"],
+            "Median throughput (tps)": run["measurement"][
+                "throughput_median_tps"
+            ],
+            "Path": display_repository_path(Path(run["run"])),
+        }
         for group in groups
+        for index, run in enumerate(group["runs"], start=1)
+    ]
+    sections: list[Any] = [
+        section_heading(
+            "实验合同与重复数 / Contract and Repeats",
+            "仅聚合 profiler-off 正常训练。少于三次时明确显示证据不足。",
+        ),
+        group_table,
+        section_heading(
+            "聚合指标 / Aggregate Metrics",
+            "Step time 和显存越低越好；吞吐、TFLOPS、MFU 越高越好；CV 衡量重复稳定性。",
+        ),
+        aggregate_table,
+    ]
+    chart_specs = (
+        ("step_time_s", "逐 Step 耗时 / Step Time", "秒 / Seconds"),
+        ("throughput_tps", "逐 Step 吞吐 / Throughput", "Tokens/s"),
+        ("tflops", "逐 Step TFLOPS", "TFLOPS"),
+        ("mfu_percent", "逐 Step MFU", "MFU (%)"),
+        ("active_memory_gib", "逐 Step 活跃显存 / Active Memory", "GiB"),
+    )
+    colors = ("#2563eb", "#dc2626", "#059669", "#7c3aed", "#d97706", "#0891b2")
+    metric_charts = []
+    for metric, title, y_name in chart_specs:
+        chart_series = []
+        x_values = None
+        color_index = 0
+        for group in groups:
+            for repeat, run in enumerate(group["runs"], start=1):
+                values = run["series"].get(metric, [])
+                if not values:
+                    continue
+                x_values = run["series"]["step"]
+                chart_series.append(
+                    (
+                        f"{group['label']} r{repeat}",
+                        values,
+                        colors[color_index % len(colors)],
+                    )
+                )
+                color_index += 1
+        if chart_series and x_values:
+            metric_charts.append(
+                echarts_line(
+                    title=title,
+                    subtitle="叠加全部重复运行；悬停读取点值，缩放检查长尾与漂移。",
+                    x_values=x_values,
+                    series=chart_series,
+                    y_name=y_name,
+                )
+            )
+    sections.extend(
+        (
+            section_heading(
+                "逐 Step 重复性 / Per-step Repeatability",
+                "不同 repeat 叠加后可直接观察启动偏差、稳态漂移和孤立长尾。",
+            ),
+            *metric_charts,
+        )
     )
     if payload.get("comparison"):
-        headers += "<th>Candidate vs reference</th>"
-    run_rows = "".join(
-        "<tr>"
-        f"<td>{html.escape(group['label'])}</td>"
-        f"<td><code>{html.escape(run['run'])}</code></td>"
-        f"<td>{run['measurement']['first_step']}-{run['measurement']['last_step']}</td>"
-        f"<td>{_format(run['measurement']['step_time_median_s'])}</td>"
-        f"<td>{_format(run['measurement']['throughput_median_tps'])}</td>"
-        "</tr>"
-        for group in groups
-        for run in group["runs"]
+        changes = payload["comparison"]["metrics"]
+        sections.extend(
+            (
+                section_heading(
+                    "候选相对基准变化 / Candidate vs Reference",
+                    "正值表示候选数值更大；Step time/显存与吞吐/MFU 的好坏方向不同，不自动形成 PASS/FAIL。",
+                ),
+                echarts_line(
+                    title="指标相对变化 / Relative Change",
+                    subtitle="候选中位数相对 reference 中位数的百分比变化。",
+                    x_values=list(changes),
+                    series=[
+                        (
+                            "Candidate vs reference",
+                            [
+                                values.get("candidate_vs_reference_percent")
+                                for values in changes.values()
+                            ],
+                            "#7c3aed",
+                        )
+                    ],
+                    y_name="变化 / Change (%)",
+                    x_name="指标 / Metric",
+                    mark_lines=(("Zero baseline", 0.0, "#475569"),),
+                    height=680,
+                ),
+            )
+        )
+    sections.extend(
+        (
+            section_heading(
+                "逐次运行明细 / Run Inventory",
+                "表格支持筛选和排序；路径用于回溯原始 metrics、日志与实验合同。",
+            ),
+            interactive_table(
+                title="Profiler-off repeats",
+                description="每一行是一份独立正常训练证据。",
+                rows=run_rows,
+                columns=(
+                    "Group",
+                    "Repeat",
+                    "Measured steps",
+                    "Median step time (s)",
+                    "P90 step time (s)",
+                    "P95 step time (s)",
+                    "Median throughput (tps)",
+                    "Path",
+                ),
+                pagination=False,
+            ),
+        )
     )
-    document = f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>GLM5.2 profiler-off performance evidence</title><style>
-body{{margin:0;background:#f5f7fb;color:#172033;font:15px/1.6 system-ui}}
-main{{max-width:1280px;margin:auto;padding:36px 32px}}section{{background:#fff;border:1px solid #dfe5ef;border-radius:12px;padding:22px;margin:20px 0;overflow:auto}}
-table{{border-collapse:collapse;width:100%}}th,td{{border-bottom:1px solid #e5eaf2;padding:10px;text-align:left;vertical-align:top}}th{{background:#f7f9fc}}code{{white-space:pre-wrap;word-break:break-all}}.note{{color:#516074}}
-</style></head><body><main><h1>Profiler-off 重复实验与性能对比</h1>
-<p class="note">只比较通过实验契约校验的正常训练。重复数不足三次会明确展示，但不会伪造 PASS/FAIL。这里借鉴 MLPerf 的测量纪律，不声称是 MLPerf 结果。</p>
-<section><h2>实验组</h2><table><thead><tr><th>Group</th><th>Repeats</th><th>>=3</th><th>Topology</th></tr></thead><tbody>{group_rows}</tbody></table></section>
-<section><h2>聚合指标</h2><table><thead><tr><th>Metric</th>{headers}</tr></thead><tbody>{metric_rows}</tbody></table><p class="note">Step time/显存越低越好；吞吐、TFLOPS、MFU 越高越好。CV 用于判断重复稳定性。</p></section>
-<section><h2>逐次运行</h2><table><thead><tr><th>Group</th><th>Run</th><th>Measured steps</th><th>Median step time (s)</th><th>Median throughput (tps)</th></tr></thead><tbody>{run_rows}</tbody></table></section>
-</main></body></html>"""
-    (output / "comparison.html").write_text(document, encoding="utf-8")
+    save_panel_report(
+        path=output / "comparison.html",
+        title="Profiler-off 重复实验与性能对比",
+        description="交互式离线证据：重复数不足三次不会伪造结论；采用 MLPerf 风格测量纪律，但不是 MLPerf 结果。",
+        sections=sections,
+    )
 
 
 def build_comparison(
