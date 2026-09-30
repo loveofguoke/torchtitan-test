@@ -19,6 +19,112 @@ def _relative_link(path: Path, base: Path) -> str:
     return Path(os.path.relpath(path.resolve(), base.resolve())).as_posix()
 
 
+def _repository_display_path(path: Path, repository_root: Path) -> str:
+    """Return a terminal-friendly path rooted at the repository directory."""
+
+    resolved = path.resolve()
+    repository = repository_root.resolve()
+    try:
+        relative = resolved.relative_to(repository).as_posix()
+    except ValueError:
+        return str(resolved)
+    return f"{repository.name}/{relative}"
+
+
+def _html_table(headers: Sequence[Any], rows: Sequence[Sequence[Any]]) -> str:
+    header = "".join(
+        f"<th>{html.escape(str(value if value is not None else ''))}</th>"
+        for value in headers
+    )
+    body = "".join(
+        "<tr>"
+        + "".join(
+            f"<td>{html.escape(str(value if value is not None else ''))}</td>"
+            for value in row
+        )
+        + "</tr>"
+        for row in rows
+    )
+    return (
+        '<div class="table-scroll"><table><thead><tr>'
+        + header
+        + "</tr></thead><tbody>"
+        + body
+        + "</tbody></table></div>"
+    )
+
+
+def _config_check_workbook_evidence(
+    *,
+    repository_root: Path,
+    row: dict[str, Any],
+) -> tuple[list[str], str]:
+    """Embed every official ConfigChecker sheet and expose its source path."""
+
+    try:
+        import openpyxl
+    except ImportError:
+        return (
+            ["- ConfigChecker XLSX rendering unavailable: install openpyxl."],
+            "<p>ConfigChecker XLSX rendering unavailable: install openpyxl.</p>",
+        )
+
+    compare_directory = Path(row["official_result"]).resolve().parent
+    workbooks = sorted(compare_directory.glob("rank*/result.xlsx"))
+    if not workbooks:
+        return (
+            [
+                "- No ConfigChecker `rankN/result.xlsx` workbook was found under "
+                f"`{_repository_display_path(compare_directory, repository_root)}`."
+            ],
+            "<p>No ConfigChecker rank workbook was found.</p>",
+        )
+
+    markdown: list[str] = []
+    html_sections: list[str] = []
+    for workbook_path in workbooks:
+        rank = workbook_path.parent.name
+        source_path = _repository_display_path(workbook_path, repository_root)
+        markdown.extend((f"### {rank}", "", f"- Source: `{source_path}`", ""))
+        workbook = openpyxl.load_workbook(
+            workbook_path, read_only=True, data_only=True
+        )
+        try:
+            sheet_sections: list[str] = []
+            for sheet in workbook.worksheets:
+                values = list(sheet.iter_rows(values_only=True))
+                if values:
+                    headers = tuple(values[0])
+                    rows = [tuple(value) for value in values[1:]]
+                else:
+                    headers = ()
+                    rows = []
+                markdown.append(
+                    f"- `{sheet.title}`: {len(rows)} data row(s)"
+                )
+                table = (
+                    _html_table(headers, rows)
+                    if headers
+                    else "<p>Empty sheet.</p>"
+                )
+                opened = " open" if sheet.title.lower() == "summary" else ""
+                sheet_sections.append(
+                    f"<details{opened}><summary>{html.escape(sheet.title)} "
+                    f"({len(rows)} rows)</summary>{table}</details>"
+                )
+            html_sections.append(
+                f"<section><h3>{html.escape(rank)}</h3>"
+                "<p><strong>Information source / 信息源：</strong>"
+                f"<code>{html.escape(source_path)}</code></p>"
+                + "".join(sheet_sections)
+                + "</section>"
+            )
+        finally:
+            workbook.close()
+        markdown.append("")
+    return markdown, "".join(html_sections)
+
+
 def _embedded_csv_table(path: Path) -> str:
     with path.open(encoding="utf-8", newline="") as stream:
         reader = csv.DictReader(stream)
@@ -613,6 +719,8 @@ def write_report_index(
         "|---|---|---|---|---|",
     ]
     html_rows: list[str] = []
+    config_check_markdown: list[str] = []
+    config_check_html: list[str] = []
     for row in rows:
         topology = str(row["topology"])
         verdict = str(row["verdict"])
@@ -644,6 +752,32 @@ def write_report_index(
             f"{'analysis report' if is_monitor else 'official output'}</a></td>"
             f"<td><a href=\"{html.escape(runtime_link)}\">runtime log</a></td>"
             "</tr>"
+        )
+        if workflow == "config-check":
+            detail_markdown, detail_html = _config_check_workbook_evidence(
+                repository_root=repository_root,
+                row=row,
+            )
+            config_check_markdown.extend(
+                (f"### {topology}", "", *detail_markdown)
+            )
+            config_check_html.append(
+                f"<section><h3>{html.escape(topology)}</h3>"
+                + detail_html
+                + "</section>"
+            )
+    if workflow == "config-check":
+        markdown_lines.extend(
+            (
+                "",
+                "## Config Check details / 配置检查明细",
+                "",
+                "The tables below are copied from official msProbe "
+                "`rankN/result.xlsx` workbooks. Source paths are rooted at "
+                "`torchtitan-test/`.",
+                "",
+                *config_check_markdown,
+            )
         )
     markdown_lines.extend(("", f"## {diagnostic_title}", ""))
     if official_diagnostics:
@@ -708,9 +842,14 @@ def write_report_index(
         "<!doctype html><html><head><meta charset=\"utf-8\">"
         f"<title>{html.escape(experiment_name)}</title>"
         "<style>body{font-family:system-ui,sans-serif;margin:32px;color:#172033}"
+        "body{max-width:1900px;margin:36px auto;padding:0 28px}"
         "table{border-collapse:collapse;width:100%;margin-top:20px}"
         "th,td{border:1px solid #ccd4e0;padding:8px;text-align:left}"
         "th{position:sticky;top:0;background:#eef3fa}"
+        ".table-scroll{max-height:680px;overflow:auto;margin:12px 0 28px}"
+        "details{border:1px solid #ccd4e0;border-radius:6px;padding:10px 14px;"
+        "margin:14px 0}summary{cursor:pointer;font-weight:700}"
+        "section{margin:28px 0 48px}"
         ".verdict{font-weight:700}.pass{color:#137333}.warning,.unparsed{color:#9a6700}"
         ".error,.failed{color:#b3261e}code{background:#f4f6f8;padding:2px 4px}"
         "</style></head><body>"
@@ -722,7 +861,16 @@ def write_report_index(
         "<th>Result counts</th>"
         f"<th>{html.escape(result_column)}</th><th>Runtime log</th></tr></thead><tbody>"
         + "".join(html_rows)
-        + f"</tbody></table><h2>{html.escape(diagnostic_title)}</h2><ul>"
+        + "</tbody></table>"
+        + (
+            "<h2>Config Check details / 配置检查明细</h2>"
+            "<p>下列表格直接内嵌自官方 msProbe <code>rankN/result.xlsx</code>；"
+            "每组同时给出以 <code>torchtitan-test/</code> 为根的信息源路径。</p>"
+            + "".join(config_check_html)
+            if workflow == "config-check"
+            else ""
+        )
+        + f"<h2>{html.escape(diagnostic_title)}</h2><ul>"
         + diagnostic_html
         + "</ul><h2>Supplemental long-run evidence</h2><ul>"
         + supplemental_html

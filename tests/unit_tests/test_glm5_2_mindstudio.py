@@ -14,6 +14,7 @@ import os
 import shlex
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -1278,6 +1279,22 @@ class TestMindStudioOfficialAdapter(unittest.TestCase):
                 summary["status_counts"],
             )
 
+    def test_config_checker_pass_check_column_is_an_official_verdict(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory)
+            (output / "summary.csv").write_text(
+                "filename,pass_check\nweights,pass\ndataset,error\n",
+                encoding="utf-8",
+            )
+
+            summary = summarize_official_results(output)
+
+            self.assertEqual("error", summary["verdict"])
+            self.assertEqual(
+                {"error": 1, "pass": 1},
+                summary["status_counts"],
+            )
+
     def test_unparsed_decisive_result_prevents_a_false_pass(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             output = Path(temporary_directory)
@@ -1533,6 +1550,74 @@ class TestMindStudioReport(unittest.TestCase):
             page = output.read_text(encoding="utf-8")
             self.assertIn("single.html", page)
             self.assertIn("Not synchronized", page)
+
+    def test_config_check_report_embeds_workbook_and_repository_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "torchtitan-test"
+            compare = root / "mindstudio_reports" / "experiment" / "official_compare"
+            rank = compare / "rank0"
+            rank.mkdir(parents=True)
+            workbook_path = rank / "result.xlsx"
+            workbook_path.write_bytes(b"official workbook")
+            summary_path = compare / "official_summary.json"
+            summary_path.write_text("{}", encoding="utf-8")
+            runtime_log = compare / "runtime.log"
+            runtime_log.write_text("complete", encoding="utf-8")
+            report_directory = root / "mindstudio_reports" / "experiment"
+
+            class FakeSheet:
+                title = "summary"
+
+                @staticmethod
+                def iter_rows(*, values_only: bool):
+                    self.assertTrue(values_only)
+                    return iter(
+                        (
+                            ("filename", "pass_check"),
+                            ("weights", "pass"),
+                            ("dataset", "error"),
+                        )
+                    )
+
+            fake_workbook = SimpleNamespace(
+                worksheets=[FakeSheet()],
+                close=lambda: None,
+            )
+            fake_openpyxl = SimpleNamespace(
+                load_workbook=lambda *args, **kwargs: fake_workbook
+            )
+            with patch.dict(sys.modules, {"openpyxl": fake_openpyxl}):
+                output = write_report_index(
+                    repository_root=root,
+                    report_directory=report_directory,
+                    experiment_name="experiment",
+                    workflow="config-check",
+                    rows=(
+                        {
+                            "topology": "single",
+                            "verdict": "error",
+                            "status_counts": {"error": 1, "pass": 1},
+                            "official_result": str(summary_path),
+                            "runtime_log": str(runtime_log),
+                        },
+                    ),
+                    supplemental_report_patterns=(),
+                )
+
+            page = output.read_text(encoding="utf-8")
+            markdown = (report_directory / "README.md").read_text(
+                encoding="utf-8"
+            )
+            source = (
+                "torchtitan-test/mindstudio_reports/experiment/"
+                "official_compare/rank0/result.xlsx"
+            )
+            self.assertIn("Config Check details", page)
+            self.assertIn(source, page)
+            self.assertIn("weights", page)
+            self.assertIn("dataset", page)
+            self.assertIn("error", page)
+            self.assertIn(source, markdown)
 
     def test_report_indexes_official_derived_diagnostics_separately(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

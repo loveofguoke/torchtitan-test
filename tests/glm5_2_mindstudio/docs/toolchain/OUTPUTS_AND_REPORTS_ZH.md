@@ -261,6 +261,23 @@ comparison/
 └── compare_run_state.json            # compare attempt/PID/完成状态
 ```
 
+Config Check 的 `official_compare/` 逐 rank 保留官方工作簿：
+
+```text
+official_compare/
+├── rankN/
+│   ├── result.xlsx                  # 官方 summary/env/pip/hyperparameters/weights/dataset/random sheets
+│   ├── invocation.json
+│   ├── runtime.log
+│   └── official_summary.json        # 只聚合官方 pass_check，不重算结论
+├── official_summary.json            # 跨 rank 官方结论聚合
+└── runtime.log
+```
+
+Config Check HTML 必须内嵌每个 `rankN/result.xlsx` 的 summary 和明细 sheet，且显示
+以 `torchtitan-test/` 为根的信息源路径，不能只给出 `unparsed` 或含义不明的
+`official output` 链接。Excel 仍是官方原始结果，HTML 只是可读镜像。
+
 名字 `official_compare` 只保留给确实调用官方比较器，或直接索引官方输出的阶段。
 observation 使用 `comparison/`，因为 CSV、SVG、summary 均由项目生成。
 

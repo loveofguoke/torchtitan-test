@@ -334,6 +334,7 @@ def _normalized_status(value: str) -> str | None:
 
 
 _STATUS_FIELDS = {
+    "pass_check",
     "result",
     "status",
     "compare result",
