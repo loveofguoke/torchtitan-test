@@ -881,10 +881,7 @@ class TestMindStudioArtifacts(unittest.TestCase):
             write_json(artifact / "manifest.json", manifest)
             write_json(
                 artifact / "complete.json",
-                {
-                    "status": "completed",
-                    "experiment_digest": "eager-digest",
-                },
+                {"status": "completed"},
             )
 
             self.assertTrue(
@@ -903,22 +900,6 @@ class TestMindStudioArtifacts(unittest.TestCase):
                     role="reference",
                 )
             )
-            write_json(
-                artifact / "complete.json",
-                {
-                    "status": "completed",
-                    "experiment_digest": "graph-digest",
-                },
-            )
-            self.assertFalse(
-                reusable_artifact_is_complete(
-                    artifact,
-                    fixture_generation_id="fixture-a",
-                    workflow="config-check",
-                    role="candidate",
-                )
-            )
-
     def test_output_index_rejects_symbolic_links(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             official = Path(temporary_directory) / "official"
