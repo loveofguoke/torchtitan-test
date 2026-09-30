@@ -50,6 +50,7 @@ def write_observation_report(
     reference_label = str(endpoints.get("reference_label", "Reference"))
     candidate_label = str(endpoints.get("candidate_label", "Candidate"))
     comparison_label = f"{reference_label} vs {candidate_label}"
+    spike_threshold = summary["observation"].get("spike_relative_threshold")
     steps = [int(row["step"]) for row in rows]
     early_rows = [
         row
@@ -146,8 +147,15 @@ def write_observation_report(
                 (
                     metric,
                     label,
-                    str(len(spike_steps)),
-                    ", ".join(str(step) for step in spike_steps) or "未发现 / None",
+                    "未启用 / Disabled"
+                    if spike_threshold is None
+                    else str(len(spike_steps)),
+                    "未启用 / Disabled"
+                    if spike_threshold is None
+                    else (
+                        ", ".join(str(step) for step in spike_steps)
+                        or "未发现 / None"
+                    ),
                 )
             )
     spike_table = summary_table(
@@ -185,6 +193,31 @@ def write_observation_report(
         (("最大相对误差", max_grad_step, float(max_grad_error) * 100.0, "#dc2626"),)
         if max_grad_step is not None and max_grad_error is not None
         else ()
+    )
+    row_by_step = {int(row["step"]): row for row in rows}
+    grad_spike_points = tuple(
+        (
+            f"{label} spike",
+            step,
+            float(row_by_step[step][value_key]),
+            color,
+        )
+        for step_key, value_key, label, color in (
+            (
+                "reference_spike_steps",
+                "reference_grad_norm",
+                reference_label,
+                "#2563eb",
+            ),
+            (
+                "candidate_spike_steps",
+                "candidate_grad_norm",
+                candidate_label,
+                "#dc2626",
+            ),
+        )
+        for step in grad.get(step_key, [])
+        if step in row_by_step
     )
     loss_charts = [
         echarts_line(
@@ -247,6 +280,7 @@ def write_observation_report(
                 (candidate_label, _values(rows, "candidate_grad_norm"), "#dc2626"),
             ],
             y_name="L2 Norm / 范数",
+            mark_points=grad_spike_points,
         ),
         echarts_line(
             title="梯度范数相对误差 / Grad Norm Relative Error",
@@ -289,7 +323,15 @@ def write_observation_report(
                 "尖刺检查 / Spike Analysis",
                 "尖刺是与 NaN/Inf、首 Steps 差异和长稳差异并列的精度问题类型。"
                 f"这里分别列出 {reference_label} 与 {candidate_label} 的 Loss 和 "
-                "Grad Norm 尖刺，重点关注仅在一侧出现或明显更频繁的尖刺。",
+                "Grad Norm 尖刺，重点关注仅在一侧出现或明显更频繁的尖刺。"
+                + (
+                    "当前检测未启用。"
+                    if spike_threshold is None
+                    else (
+                        "当前规则：相邻 step 的绝对相对跳变量超过 "
+                        f"{float(spike_threshold):.0%}。"
+                    )
+                ),
             ),
             spike_table,
             section_heading("Loss 对齐分析", "依次查看全程曲线、真正截取的首 Steps 窗口、全程相对误差和有符号差值。"),

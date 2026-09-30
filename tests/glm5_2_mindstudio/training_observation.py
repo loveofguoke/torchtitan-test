@@ -331,7 +331,7 @@ def compare_training_metrics(
     output_directory: Path,
     loss_relative_threshold: float = 0.01,
     grad_norm_relative_threshold: float | None = None,
-    spike_relative_threshold: float | None = None,
+    spike_relative_threshold: float | None = 0.5,
     early_window_size: int = 10,
     reference_label: str = "Reference",
     candidate_label: str = "Candidate",
@@ -729,6 +729,7 @@ def compare_training_metrics(
         "observation": {
             "first_step": first_observed_step,
             "last_step": max(reference),
+            "spike_relative_threshold": spike_relative_threshold,
             "diagnostic_symptom": symptom,
             "reference_first_nonfinite_metrics": _first_nonfinite_metrics(
                 reference_path
