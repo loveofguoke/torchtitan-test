@@ -3,7 +3,6 @@ import unittest
 from tests.glm5_2_graph.config import (
     GraphFeatureConfig,
     npu_codegen_environment,
-    npu_flexattention_environment,
 )
 
 
@@ -30,28 +29,14 @@ class TestNpuCodegen(unittest.TestCase):
         with self.assertRaises(ValueError):
             GraphFeatureConfig(npu_codegen="dvm").feature(device_type="cuda")
 
-    def test_flexattention_mask_mode(self):
-        self.assertEqual(
-            npu_flexattention_environment("mask-in"),
-            {"TORCHINDUCTOR_FLEXATTENTION_MASKOUT": "0"},
-        )
-        self.assertEqual(
-            npu_flexattention_environment("mask-out"),
-            {"TORCHINDUCTOR_FLEXATTENTION_MASKOUT": "1"},
-        )
-        feature = GraphFeatureConfig(
-            npu_codegen="ascend-triton",
-            npu_flexattention_mask_mode="mask-in",
-        ).feature(device_type="npu")
-        self.assertEqual(feature.environment["TORCHINDUCTOR_NPU_BACKEND"], "default")
-        self.assertEqual(
-            feature.environment["TORCHINDUCTOR_FLEXATTENTION_MASKOUT"], "0"
-        )
-        with self.assertRaises(ValueError):
-            GraphFeatureConfig(
-                npu_flexattention_mask_mode="mask-in"
-            ).feature(device_type="cuda")
-
+    def test_flexattention_dispatch_remains_torchnpu_owned(self):
+        for backend in (None, "dvm", "ascend-triton"):
+            feature = GraphFeatureConfig(
+                "eager", npu_codegen=backend
+            ).feature(device_type="npu")
+            self.assertNotIn(
+                "TORCHINDUCTOR_FLEXATTENTION_MASKOUT", feature.environment
+            )
 
 if __name__ == "__main__":
     unittest.main()

@@ -42,6 +42,12 @@ accuracy, precision topology suites, and checkpoint CLI when changing it.
 Explicit codegen belongs in endpoint/feature environment and experiment
 identity; never switch DVM/Triton through an unrecorded ambient variable.
 See `tests/glm5_2_graph/docs/NPU_CODEGEN.md` for loader names and validation scope.
+TorchNPU owns the automatic FlexAttention mask-in/mask-out dispatch. Experiment
+entry points must not override `TORCHINDUCTOR_FLEXATTENTION_MASKOUT` or expose
+that backend implementation detail as a normal CLI option. A lower-layer
+developer may use the environment variable in a standalone reproducer, but it
+is not part of any training, smoke, accuracy, or performance experiment
+contract.
 
 | Changed module | Required consumers to inspect |
 |---|---|

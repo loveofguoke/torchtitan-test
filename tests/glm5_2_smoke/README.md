@@ -66,30 +66,6 @@ Reuse remains isolated by exact Torch, TorchNPU, Triton, CANN installation
 identity and topology. The cache policy and compiler installation identity are
 recorded in every topology manifest.
 
-For the CP8 FlexAttention backward investigation, select TorchNPU's two
-lowering paths explicitly. This does not enable whole-model compilation:
-FlexAttention still invokes its internal compile while `--graph eager` keeps
-the surrounding GLM model eager.
-
-```bash
-# Control: reproduce TorchNPU's default mask-out path.
-python tests/glm5_2_smoke/train_smoke.py \
-  --device npu --topology cp8 --graph eager \
-  --npu-codegen ascend-triton \
-  --npu-flexattention-mask-mode mask-out --steps 2 --force
-
-# Root-cause A/B: bypass the mask-out metadata and persistent dK/dV path.
-python tests/glm5_2_smoke/train_smoke.py \
-  --device npu --topology cp8 --graph eager \
-  --npu-codegen ascend-triton \
-  --npu-flexattention-mask-mode mask-in --steps 2 --force
-```
-
-Both choices have distinct suite identities and manifests. A mask-in pass
-paired with a mask-out failure localizes the defect to TorchNPU's mask-out
-lowering/kernel family. It does not alone distinguish saved LSE, compact
-backward metadata, dQ, and dK/dV corruption.
-
 To diagnose the observed CP8 backward corruption, enable the focused capture
 on the rank and layer that first showed the large finite dQ/dK values:
 
@@ -97,7 +73,6 @@ on the rank and layer that first showed the large finite dQ/dK values:
 python tests/glm5_2_smoke/train_smoke.py \
   --device npu --topology cp8 --graph eager \
   --npu-codegen ascend-triton \
-  --npu-flexattention-mask-mode mask-out \
   --nonfinite-diagnostics \
   --diagnostic-rank 6 \
   --diagnostic-layer layers.6.attention.inner_attention \
@@ -168,7 +143,7 @@ unrecorded shell export:
 # Reproduce the corrupt DELTA path with Inductor buffer reuse enabled.
 python tests/glm5_2_smoke/train_smoke.py \
   --device npu --topology cp8 --graph eager \
-  --npu-codegen ascend-triton --npu-flexattention-mask-mode mask-out \
+  --npu-codegen ascend-triton \
   --nonfinite-diagnostics --diagnostic-rank all \
   --diagnostic-flex-dsdp --diagnostic-inplace-buffers enabled \
   --steps 2 --force
@@ -176,7 +151,7 @@ python tests/glm5_2_smoke/train_smoke.py \
 # Control: the same contract with Inductor buffer reuse disabled.
 python tests/glm5_2_smoke/train_smoke.py \
   --device npu --topology cp8 --graph eager \
-  --npu-codegen ascend-triton --npu-flexattention-mask-mode mask-out \
+  --npu-codegen ascend-triton \
   --nonfinite-diagnostics --diagnostic-rank all \
   --diagnostic-flex-dsdp --diagnostic-inplace-buffers disabled \
   --steps 2 --force
@@ -305,7 +280,6 @@ interrupted, rerun without `--force` to continue from its incomplete member.
 | `--diagnostic-inplace-buffers` | Select `default`, `enabled`, or `disabled` Inductor buffer reuse for the FlexAttention A/B. The explicit choice is included in the suite directory and manifest. Requires `--nonfinite-diagnostics`. | `default` |
 | `--diagnostic-rank` | Global rank whose selected FlexAttention layer is captured, or `all` to compare every rank in one run. An integer rank must exist in every selected topology. | `6` |
 | `--diagnostic-layer` | Module-FQN substring selecting the captured GLM FlexAttention layer. | `layers.6.attention.inner_attention` |
-| `--npu-flexattention-mask-mode` | Select TorchNPU `mask-in` or `mask-out` FlexAttention lowering, including internally compiled FlexAttention under `--graph eager`. | unset |
 | `--force` | Remove and rerun completed topology output. Without it, completed runs are skipped and incomplete runs are archived before retry. | disabled |
 
 Use either `--topology` or `--topologies`, not both. The available names are

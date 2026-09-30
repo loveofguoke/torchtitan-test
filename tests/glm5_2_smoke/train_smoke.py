@@ -247,15 +247,8 @@ def _contract(
             "components": list(graph.components),
             "diagnostics": graph.diagnostics,
         }
-    if graph.npu_codegen or graph.npu_flexattention_mask_mode:
-        contract["npu_compiler"] = {
-            **({"codegen": graph.npu_codegen} if graph.npu_codegen else {}),
-            **(
-                {"flexattention_mask_mode": graph.npu_flexattention_mask_mode}
-                if graph.npu_flexattention_mask_mode
-                else {}
-            ),
-        }
+    if graph.npu_codegen:
+        contract["npu_compiler"] = {"codegen": graph.npu_codegen}
     if npu_compiler_identity is not None:
         contract.setdefault("npu_compiler", {})["installation"] = (
             npu_compiler_identity
@@ -919,12 +912,8 @@ def main() -> int:
         ),
     )
     parser.add_argument("--force", action="store_true")
-    from tests.glm5_2_graph.config import (
-        add_npu_codegen_argument,
-        add_npu_flexattention_argument,
-    )
+    from tests.glm5_2_graph.config import add_npu_codegen_argument
     add_npu_codegen_argument(parser)
-    add_npu_flexattention_argument(parser)
     args = parser.parse_args()
 
     if args.steps < 1:
@@ -956,7 +945,6 @@ def main() -> int:
         components=("model", "loss") if args.compile_loss else ("model",),
         diagnostics=args.compiler_diagnostics,
         npu_codegen=args.npu_codegen,
-        npu_flexattention_mask_mode=args.npu_flexattention_mask_mode,
     )
     graph.feature(device_type="npu" if device == "npu" else "cuda")
     _check_runtime_dependencies()
@@ -999,8 +987,6 @@ def main() -> int:
             suite_name += "-diag"
     if graph.npu_codegen:
         suite_name += f"-{graph.npu_codegen}"
-    if graph.npu_flexattention_mask_mode:
-        suite_name += f"-flex-{graph.npu_flexattention_mask_mode}"
     if device == "npu" and args.compiler_cache == "reuse":
         suite_name += "-cache-reuse"
     if args.gradient_diagnostics:
