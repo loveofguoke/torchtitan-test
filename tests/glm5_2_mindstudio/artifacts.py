@@ -120,3 +120,46 @@ def artifact_is_complete(
         and manifest.get("fixture_generation_id") == fixture_generation_id
         and manifest.get("official_files") == current_index
     )
+
+
+def reusable_artifact_is_complete(
+    artifact_directory: Path,
+    *,
+    fixture_generation_id: str,
+    workflow: str,
+    role: str,
+) -> bool:
+    """Validate a complete capture reused by a different experiment branch.
+
+    A graph branch intentionally points its reference at an eager capture. The
+    eager artifact therefore has its own experiment digest, not the graph
+    branch's reference digest. Preserve the digest boundary by requiring the
+    manifest and completion marker to agree with each other, while also
+    checking the shared fixture generation, workflow, endpoint role, and
+    current official-file index.
+    """
+
+    marker = artifact_directory / "complete.json"
+    manifest_path = artifact_directory / "manifest.json"
+    if not marker.is_file() or not manifest_path.is_file():
+        return False
+    try:
+        complete = json.loads(marker.read_text(encoding="utf-8"))
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        official_root = _official_output_root(
+            artifact_directory, manifest["official_output"]
+        )
+        current_index = output_index(official_root)
+    except (KeyError, OSError, TypeError, ValueError, MindStudioArtifactError):
+        return False
+    digest = manifest.get("experiment_digest")
+    return (
+        complete.get("status") == "completed"
+        and isinstance(digest, str)
+        and bool(digest)
+        and complete.get("experiment_digest") == digest
+        and manifest.get("fixture_generation_id") == fixture_generation_id
+        and manifest.get("workflow") == workflow
+        and manifest.get("role") == role
+        and manifest.get("official_files") == current_index
+    )

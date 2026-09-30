@@ -24,6 +24,7 @@ from tests.glm5_2_mindstudio.artifacts import (
     MindStudioArtifactError,
     artifact_is_complete,
     output_index,
+    reusable_artifact_is_complete,
     validate_output_files,
     write_json,
 )
@@ -860,6 +861,61 @@ class TestMindStudioArtifacts(unittest.TestCase):
                     artifact,
                     experiment_digest="experiment-a",
                     fixture_generation_id="fixture-a",
+                )
+            )
+
+    def test_reusable_capture_binds_its_own_digest_workflow_and_role(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            artifact = Path(temporary_directory) / "capture"
+            official = artifact / "official"
+            official.mkdir(parents=True)
+            (official / "result.json").write_text("{}", encoding="utf-8")
+            manifest = {
+                "workflow": "config-check",
+                "role": "candidate",
+                "experiment_digest": "eager-digest",
+                "fixture_generation_id": "fixture-a",
+                "official_output": "official",
+                "official_files": output_index(official),
+            }
+            write_json(artifact / "manifest.json", manifest)
+            write_json(
+                artifact / "complete.json",
+                {
+                    "status": "completed",
+                    "experiment_digest": "eager-digest",
+                },
+            )
+
+            self.assertTrue(
+                reusable_artifact_is_complete(
+                    artifact,
+                    fixture_generation_id="fixture-a",
+                    workflow="config-check",
+                    role="candidate",
+                )
+            )
+            self.assertFalse(
+                reusable_artifact_is_complete(
+                    artifact,
+                    fixture_generation_id="fixture-a",
+                    workflow="config-check",
+                    role="reference",
+                )
+            )
+            write_json(
+                artifact / "complete.json",
+                {
+                    "status": "completed",
+                    "experiment_digest": "graph-digest",
+                },
+            )
+            self.assertFalse(
+                reusable_artifact_is_complete(
+                    artifact,
+                    fixture_generation_id="fixture-a",
+                    workflow="config-check",
+                    role="candidate",
                 )
             )
 

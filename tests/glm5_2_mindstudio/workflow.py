@@ -55,6 +55,7 @@ from .artifacts import (
     MindStudioArtifactError,
     artifact_is_complete,
     output_index,
+    reusable_artifact_is_complete,
     sha256_file,
     write_json,
 )
@@ -3163,17 +3164,30 @@ def compare_official(
     capture_compatibility: dict[str, dict[str, Any]] = {}
     execution_contracts: dict[str, dict[str, Any]] = {}
     for selected_role, artifact in selected_artifacts.items():
-        compatible_digests = _compatible_experiment_digests(
-            config, topology, selected_role
+        reused_eager_reference = (
+            selected_role == "reference"
+            and config.reuse_eager_role_as_reference is not None
         )
-        if not any(
-            artifact_is_complete(
+        if reused_eager_reference:
+            complete = reusable_artifact_is_complete(
                 artifact,
-                experiment_digest=digest,
                 fixture_generation_id=generation,
+                workflow=config.workflow,
+                role=config.reuse_eager_role_as_reference,
             )
-            for digest in compatible_digests
-        ):
+        else:
+            compatible_digests = _compatible_experiment_digests(
+                config, topology, selected_role
+            )
+            complete = any(
+                artifact_is_complete(
+                    artifact,
+                    experiment_digest=digest,
+                    fixture_generation_id=generation,
+                )
+                for digest in compatible_digests
+            )
+        if not complete:
             raise MindStudioArtifactError(
                 f"official capture is missing, stale, or corrupt: {artifact}"
             )

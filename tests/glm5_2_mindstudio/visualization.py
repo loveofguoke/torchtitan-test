@@ -24,6 +24,7 @@ from .artifacts import (
     MindStudioArtifactError,
     artifact_is_complete,
     output_index,
+    reusable_artifact_is_complete,
     write_json,
 )
 from .config import MindStudioExperimentConfig
@@ -80,15 +81,28 @@ def _load_capture(
     artifact = _capture_artifact(root, config, topology, role, repeat)
     fixture = _fixture_manifest(root, config, topology)
     generation = str(fixture["generation_id"])
-    if not artifact_is_complete(
-        artifact,
-        experiment_digest=_experiment_digest(
-            config,
-            topology,
-            role,  # type: ignore[arg-type]
-        ),
-        fixture_generation_id=generation,
-    ):
+    reused_eager_reference = (
+        role == "reference"
+        and config.reuse_eager_role_as_reference is not None
+    )
+    if reused_eager_reference:
+        complete = reusable_artifact_is_complete(
+            artifact,
+            fixture_generation_id=generation,
+            workflow=config.workflow,
+            role=config.reuse_eager_role_as_reference,
+        )
+    else:
+        complete = artifact_is_complete(
+            artifact,
+            experiment_digest=_experiment_digest(
+                config,
+                topology,
+                role,  # type: ignore[arg-type]
+            ),
+            fixture_generation_id=generation,
+        )
+    if not complete:
         raise MindStudioArtifactError(
             f"complete {role} dump capture is required: {artifact}"
         )
