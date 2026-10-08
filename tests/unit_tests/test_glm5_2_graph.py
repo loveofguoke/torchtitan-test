@@ -50,6 +50,8 @@ def test_graph_feature_generates_only_compile_arguments() -> None:
         "--compile.components=model",
         "--compile.backend=inductor",
     )
+    assert "TORCHTITAN_PIPELINE_META_USE_BATCH" not in eager.environment
+    assert compiled.environment["TORCHTITAN_PIPELINE_META_USE_BATCH"] == "0"
 
 
 def test_graph_diagnostics_are_isolated_per_rank(

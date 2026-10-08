@@ -20,6 +20,12 @@ from tests.glm5_2_common.execution import TrainingFeature
 
 
 GraphMode = Literal["eager", "inductor", "npugraphs"]
+NPU_GRAPH_COMPATIBILITY_ENVIRONMENT = {
+    # ProcessGroupHCCL's batched object P2P can corrupt PipelineStage's
+    # serialized metadata size. Turbo replaces only the one-time metadata
+    # exchange with ordinary object P2P when this value is zero.
+    "TORCHTITAN_PIPELINE_META_USE_BATCH": "0",
+}
 
 
 def npu_codegen_environment(backend: str | None) -> dict[str, str]:
@@ -93,6 +99,11 @@ class GraphFeatureConfig:
             if self.diagnostics
             else {}
         )
+        if device_type == "npu":
+            environment = {
+                **environment,
+                **NPU_GRAPH_COMPATIBILITY_ENVIRONMENT,
+            }
         return TrainingFeature(
             name=f"graph:{self.mode}",
             arguments=(
@@ -120,6 +131,7 @@ def graph_modes() -> dict[str, GraphFeatureConfig]:
 __all__ = [
     "GraphFeatureConfig",
     "GraphMode",
+    "NPU_GRAPH_COMPATIBILITY_ENVIRONMENT",
     "graph_modes",
     "validate_graph_training_args",
 ]

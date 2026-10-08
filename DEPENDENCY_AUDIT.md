@@ -49,6 +49,15 @@ developer may use the environment variable in a standalone reproducer, but it
 is not part of any training, smoke, accuracy, or performance experiment
 contract.
 
+Every compiled NPU `GraphFeatureConfig` also selects
+`TORCHTITAN_PIPELINE_META_USE_BATCH=0`. This activates Turbo's narrowly scoped
+PipelineStage metadata workaround before training imports TorchTitan. HCCL's
+tested batched object P2P path can corrupt the serialized metadata size and
+cause PP ranks to fail in `_recv_meta()` with `EOFError` before step 1. Eager
+endpoints remain unchanged. Keep this environment field in graph experiment
+identity and preserve the PP8 regression assertion when changing graph feature
+composition.
+
 | Changed module | Required consumers to inspect |
 |---|---|
 | `glm5_2_common.topology` | precision, performance, checkpoint, stability, smoke, graph, combination, MindStudio official validation |

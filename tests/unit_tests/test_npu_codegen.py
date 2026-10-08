@@ -18,7 +18,16 @@ class TestNpuCodegen(unittest.TestCase):
         self.assertEqual(dvm.arguments, triton.arguments)
         self.assertIn("--compile.backend=inductor", dvm.arguments)
         self.assertNotEqual(dvm.metadata, triton.metadata)
-        self.assertNotEqual(dvm.environment, triton.environment)
+        self.assertNotEqual(
+            dvm.environment["TORCHINDUCTOR_NPU_BACKEND"],
+            triton.environment["TORCHINDUCTOR_NPU_BACKEND"],
+        )
+        self.assertEqual(
+            dvm.environment["TORCHTITAN_PIPELINE_META_USE_BATCH"], "0"
+        )
+        self.assertEqual(
+            triton.environment["TORCHTITAN_PIPELINE_META_USE_BATCH"], "0"
+        )
 
     def test_eager_regional_compile(self):
         feature = GraphFeatureConfig(npu_codegen="dvm").feature(device_type="npu")
