@@ -1128,6 +1128,20 @@ def capture(
     environment.update(profiler_environment)
     environment["TORCHTITAN_DEVICE"] = "npu" if device == "npu" else "gpu"
     environment["GLM5_PERFORMANCE_METRICS_PATH"] = str(metrics_path)
+    compiler_cache: dict[str, str] | None = None
+    if device == "npu":
+        # A performance run must compile against its recorded TorchNPU/Triton
+        # installation. A fresh run-local cache prevents binaries created by
+        # an older source build from being reused through /tmp.
+        compiler_cache_root = run_directory / "compiler_cache"
+        environment["TORCHTITAN_COMPILER_CACHE_ROOT"] = str(compiler_cache_root)
+        compiler_cache = {
+            "policy": "fresh",
+            "scope": "run-shared",
+            "root": str(compiler_cache_root),
+            "inductor": str(compiler_cache_root / "inductor"),
+            "triton": str(compiler_cache_root / "triton"),
+        }
     if config.profiler_enabled:
         environment["GLM5_PERFORMANCE_PROFILE_RANKS"] = preset.profile_ranks
     if config.mixed_precision_reduce != "float32":
@@ -1159,6 +1173,7 @@ def capture(
             "collector": config.collector,
             "device_selection": device_selection,
             "configuration": config.as_dict(),
+            "compiler_cache": compiler_cache,
             "runtime_log": str(runtime_log.resolve()),
             "trainer_output": str((run_directory / "trainer_output").resolve()),
         },
@@ -1232,6 +1247,7 @@ def capture(
         "command": command,
         "source": _source_metadata(root),
         "collector_toolchain": collector_toolchain,
+        "compiler_cache": compiler_cache,
         "preflight": preflight,
         "run_directory": str(run_directory),
         "attempt_id": attempt.attempt_id,
@@ -1427,24 +1443,152 @@ def run_advisor(
     run_directory: Path,
     *,
     analysis_toolchain: dict[str, Any] | None = None,
+    capture_manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     profiler_directory = _find_profiler_directory(run_directory)
     output_directory = run_directory / "advisor"
-    command = [
-        _msprof_analyze_executable(),
-        "advisor",
-        "all",
-        "-d",
-        str(profiler_directory),
-        "-o",
-        str(output_directory),
-    ]
-    return _run_msprof_analyze(
-        run_directory,
-        name="advisor",
-        command=command,
-        analysis_toolchain=analysis_toolchain,
+    executable = _msprof_analyze_executable()
+    version_arguments, version_metadata = _advisor_version_arguments(
+        executable, capture_manifest or {}
     )
+    command_directory = run_directory / "advisor_commands"
+    command_directory.mkdir(parents=True, exist_ok=True)
+    commands = [
+        (
+            "all",
+            profiler_directory,
+            command_directory / "all.json",
+        )
+    ]
+    rank_profiles = sorted(
+        path
+        for path in profiler_directory.glob("*_ascend_pt")
+        if path.is_dir()
+    )
+    if rank_profiles:
+        commands.append(
+            (
+                "computation",
+                rank_profiles[0],
+                command_directory / "computation_rank_0.json",
+            )
+        )
+    summary: dict[str, Any] = {
+        "analysis_toolchain": analysis_toolchain,
+        "version_selection": version_metadata,
+        "rank_profile_count": len(rank_profiles),
+        "representative_rank_profile": (
+            str(rank_profiles[0]) if rank_profiles else None
+        ),
+        "command": [],
+        "return_code": None,
+        "commands": [],
+        "complete": False,
+    }
+    summary_path = run_directory / "advisor.json"
+    try:
+        for mode, input_directory, status_path in commands:
+            command = [
+                executable,
+                "advisor",
+                mode,
+                "-d",
+                str(input_directory),
+                "-o",
+                str(output_directory),
+                "-pt",
+                "pytorch",
+                *version_arguments,
+            ]
+            result = _run_msprof_analyze(
+                run_directory,
+                name=f"advisor_{mode}",
+                command=command,
+                analysis_toolchain=analysis_toolchain,
+                status_path=status_path,
+                status_metadata={"version_selection": version_metadata},
+            )
+            if not summary["command"]:
+                summary["command"] = command
+            summary["commands"].append(
+                {
+                    "mode": mode,
+                    "input_directory": str(input_directory),
+                    "command": command,
+                    "return_code": result["return_code"],
+                    "status_path": str(status_path),
+                }
+            )
+            _write_json(summary_path, summary)
+        summary["complete"] = True
+        summary["return_code"] = 0
+        _write_json(summary_path, summary)
+        print_runtime_log(summary_path)
+        return summary
+    except BaseException:
+        _write_json(summary_path, summary)
+        raise
+
+
+def _capture_advisor_versions(
+    capture_manifest: dict[str, Any],
+) -> dict[str, str | None]:
+    collector = capture_manifest.get("collector_toolchain", {})
+    doctor = collector.get("doctor", {}) if isinstance(collector, dict) else {}
+    checks = doctor.get("checks", {}) if isinstance(doctor, dict) else {}
+    framework = checks.get("framework", {}) if isinstance(checks, dict) else {}
+    torch = framework.get("torch", {}) if isinstance(framework, dict) else {}
+    cann = checks.get("cann", {}) if isinstance(checks, dict) else {}
+    detected = cann.get("detected_versions", []) if isinstance(cann, dict) else []
+    cann_version = detected[0] if len(detected) == 1 else None
+    torch_version = torch.get("version") if isinstance(torch, dict) else None
+    if isinstance(torch_version, str):
+        match = re.match(r"\d+\.\d+\.\d+", torch_version)
+        torch_version = match.group(0) if match else torch_version
+    return {"cann": cann_version, "torch": torch_version}
+
+
+def _advisor_supported_versions(help_text: str, option: str) -> set[str]:
+    match = re.search(rf"--{re.escape(option)}\s+\[([^\]]+)\]", help_text)
+    return set(match.group(1).split("|")) if match else set()
+
+
+def _advisor_version_arguments(
+    executable: str,
+    capture_manifest: dict[str, Any],
+) -> tuple[list[str], dict[str, Any]]:
+    capture_versions = _capture_advisor_versions(capture_manifest)
+    help_result = subprocess.run(
+        [executable, "advisor", "all", "--help"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    help_text = f"{help_result.stdout}\n{help_result.stderr}"
+    supported = {
+        "cann": _advisor_supported_versions(help_text, "cann_version"),
+        "torch": _advisor_supported_versions(help_text, "torch_version"),
+    }
+    arguments: list[str] = []
+    selected: dict[str, str] = {}
+    omitted: dict[str, dict[str, Any]] = {}
+    for name, flag in (("cann", "-cv"), ("torch", "-tv")):
+        version = capture_versions[name]
+        if version is not None and version in supported[name]:
+            arguments.extend((flag, version))
+            selected[name] = version
+        elif version is not None:
+            omitted[name] = {
+                "capture_version": version,
+                "advisor_supported_versions": sorted(supported[name]),
+                "reason": "capture version is not accepted by this advisor build",
+            }
+    return arguments, {
+        "capture_versions": capture_versions,
+        "selected": selected,
+        "omitted": omitted,
+        "help_return_code": help_result.returncode,
+    }
 
 
 def _run_msprof_analyze(
@@ -1454,16 +1598,25 @@ def _run_msprof_analyze(
     command: list[str],
     analysis_toolchain: dict[str, Any] | None = None,
     status_path: Path | None = None,
+    status_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     print(f"Running msprof-analyze {name}: {' '.join(command)}")
+    started_at = datetime.now().astimezone()
+    started_monotonic = time.monotonic()
     result = subprocess.run(command, text=True, capture_output=True, check=False)
+    finished_at = datetime.now().astimezone()
     status = {
         "command": command,
         "return_code": result.returncode,
+        "started_at": started_at.isoformat(),
+        "finished_at": finished_at.isoformat(),
+        "duration_seconds": round(time.monotonic() - started_monotonic, 3),
         "stdout": result.stdout,
         "stderr": result.stderr,
         "analysis_toolchain": analysis_toolchain,
     }
+    if status_metadata:
+        status.update(status_metadata)
     analysis_log = status_path or (run_directory / f"{name}.json")
     _write_json(analysis_log, status)
     print_runtime_log(analysis_log)
@@ -2765,6 +2918,7 @@ def analyze(
                     run_advisor(
                         run_directory,
                         analysis_toolchain=analysis_toolchain,
+                        capture_manifest=manifest,
                     )
                 except BaseException as error:
                     advisor_attempt.update("failed", error=repr(error))

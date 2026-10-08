@@ -32,6 +32,8 @@ from tests.glm5_2_performance.interactive_report import (
     write_training_metrics_report,
 )
 from tests.glm5_2_performance.workflow import (
+    _advisor_supported_versions,
+    _capture_advisor_versions,
     _config_is_compatible,
     _device_selection,
     _msprof_analyze_executable,
@@ -41,6 +43,7 @@ from tests.glm5_2_performance.workflow import (
     _saved_device_selection_is_compatible,
     _safe_distributed_parse_preset,
     _write_suite_report,
+    run_advisor,
 )
 from tests.glm5_2_performance.visualization import (
     inspect_analysis_outputs,
@@ -52,6 +55,79 @@ from tests.glm5_2_performance.visualization import (
 
 
 class TestPerformanceConfig(unittest.TestCase):
+    def test_advisor_versions_are_read_from_capture_manifest(self):
+        manifest = {
+            "collector_toolchain": {
+                "doctor": {
+                    "checks": {
+                        "cann": {"detected_versions": ["9.1.0"]},
+                        "framework": {
+                            "torch": {"version": "2.14.0.dev20260805+cpu"}
+                        },
+                    }
+                }
+            }
+        }
+
+        self.assertEqual(
+            _capture_advisor_versions(manifest),
+            {"cann": "9.1.0", "torch": "2.14.0"},
+        )
+
+    def test_advisor_supported_versions_follow_cli_help(self):
+        help_text = """
+        -cv, --cann_version [8.0.rc2|8.0.0]
+        -tv, --torch_version [1.11.0|2.1.0]
+        """
+
+        self.assertEqual(
+            _advisor_supported_versions(help_text, "cann_version"),
+            {"8.0.rc2", "8.0.0"},
+        )
+        self.assertEqual(
+            _advisor_supported_versions(help_text, "torch_version"),
+            {"1.11.0", "2.1.0"},
+        )
+
+    def test_advisor_runs_root_and_representative_rank_analysis(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run = Path(temporary_directory) / "run"
+            profiler = run / "trainer_output" / "profiling" / "traces"
+            rank = profiler / "rank_0_123_ascend_pt"
+            rank.mkdir(parents=True)
+            statuses = []
+
+            def fake_run(*args, **kwargs):
+                statuses.append(kwargs)
+                return {"return_code": 0}
+
+            with mock.patch(
+                "tests.glm5_2_performance.workflow._find_profiler_directory",
+                return_value=profiler,
+            ), mock.patch(
+                "tests.glm5_2_performance.workflow._msprof_analyze_executable",
+                return_value="msprof-analyze",
+            ), mock.patch(
+                "tests.glm5_2_performance.workflow._advisor_version_arguments",
+                return_value=([], {"capture_versions": {}}),
+            ), mock.patch(
+                "tests.glm5_2_performance.workflow._run_msprof_analyze",
+                side_effect=fake_run,
+            ):
+                result = run_advisor(run)
+
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["return_code"], 0)
+        self.assertEqual(result["command"][2], "all")
+        self.assertEqual(
+            [entry["mode"] for entry in result["commands"]],
+            ["all", "computation"],
+        )
+        self.assertEqual(statuses[0]["command"][2], "all")
+        self.assertEqual(statuses[0]["command"][4], str(profiler))
+        self.assertEqual(statuses[1]["command"][2], "computation")
+        self.assertEqual(statuses[1]["command"][4], str(rank))
+
     def test_interactive_performance_report_builds_metrics_and_tool_inventory(self):
         analysis = {
             "metrics": {

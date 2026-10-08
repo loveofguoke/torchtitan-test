@@ -527,6 +527,13 @@ python tests/glm5_2_mindstudio/performance_benchmark.py --help
 先关闭采集器重复测速。`--replicate` 是独立运行编号，不是 profiler schedule 的
 repeat；三次运行分别落到独立目录。
 
+NPU 的每个 performance run 默认创建独立的 `compiler_cache/inductor` 和
+`compiler_cache/triton`，并在导入 TorchTitanTurbo、TorchNPU、Triton 之前完成路由。
+同一 run 的 rank 共享该根目录，不同 run 不复用；实际 policy、scope 和路径写入根目录
+overview 与 `manifest.json`。这是实验可复现性合同：源码安装或编译器变化后不得命中
+匿名 `/tmp/torchinductor_root` 中由旧版本生成的设备二进制。它不改变 FlexAttention
+mask 分流，也不通过同步执行掩盖异步正确性问题。
+
 ```bash
 # 单卡 3 次
 export ASCEND_RT_VISIBLE_DEVICES=4
@@ -695,6 +702,28 @@ MindStudio 标准入口默认追加 `--cluster-recipes necessary`，对同一 DB
 PyTorch Profiler；cluster 才支持 msProf db、Ascend PyTorch Profiler text/db、
 MindSpore Profiler text/db 和 msMonitor db。框架会在 `--force` 清理前拒绝不兼容
 组合，不会把 `PROF_*` 伪装成 `*_ascend_pt`。
+
+Ascend PyTorch Profiler 当前会把数据库写在
+`*_ascend_pt/ASCEND_PROFILER_OUTPUT/`，而 26.1 Advisor 的算子数据集仍会到传入根目录
+寻找 `ASCEND_PROFILER_OUTPUT`。直接传统一 traces 根目录时，Timeline 可以被发现，
+但 Operator/ByteAlignment 会被静默跳过；直接传一个 `*_ascend_pt` 则正好相反，算子 DB
+可以解析，但跨 profile 的 Timeline/Schedule 数据集不完整。单纯增加软链接或硬链接不能
+同时改变这两类 dataset 的 `collection_path`。
+
+框架因此明确执行两个互补的官方阶段：先对统一 traces 根运行 `advisor all`，保留整体、
+Timeline、Schedule 和 Memory 分析；再对排序后的最低 rank `*_ascend_pt` 运行
+`advisor computation`，补齐代表 rank 的 Operator 分析。两个命令共享官方输出目录，原始
+rank 目录、DB 和统一 Insight import root 均不移动、不复制、不改写。每条命令有独立 JSON
+状态，记录开始/结束时间、实际耗时、stdout/stderr 和返回码；汇总 `advisor.json` 记录 profile
+数、代表 rank、命令和完成状态。多 rank 的跨 rank
+瓶颈仍由 cluster/compare 判断，不能把代表 rank 的 computation 结果冒充全 rank 结论。
+
+版本参数也不能猜。capture manifest 中记录的 CANN `9.1.0` 和 PyTorch `2.14.0` 会与
+当前 `msprof-analyze advisor all --help` 的可接受枚举逐项比较。26.1 当前只接受 CANN
+到 `8.0.0`、PyTorch 到 `2.1.0`，因此框架不会谎报成旧版本，也不会传入一个会让 CLI
+直接失败的版本；实际采集版本、Advisor 支持列表和省略原因都写入 `advisor.json`。
+这意味着 Operator/Timeline 等基于采集 DB 的分析可以继续使用，但涉及版本特定规则的
+建议必须标记为工具版本能力边界，不能当作 CANN 9.1/PyTorch 2.14 的完整官方背书。
 
 cluster 还支持官方 `communication_time`、`communication_matrix` 和 `--agent`：
 

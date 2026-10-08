@@ -15,6 +15,8 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
+from tests.glm5_2_common.compiler_cache import configure_compiler_cache
+
 
 METRICS_PATH_ENV = "GLM5_PERFORMANCE_METRICS_PATH"
 PROFILE_RANKS_ENV = "GLM5_PERFORMANCE_PROFILE_RANKS"
@@ -121,6 +123,11 @@ def _install_gpu_rank_filter() -> None:
 
 
 def main() -> None:
+    # Performance capture launches this module directly instead of going
+    # through train_npu.py. Apply the same run-local compiler-cache routing
+    # before importing TorchTitanTurbo, TorchNPU, or Triton so stale compiled
+    # kernels from another toolchain/run cannot be reused.
+    configure_compiler_cache()
     if os.environ.get("TORCHTITAN_DEVICE") == "npu":
         import torchtitanturbo  # noqa: F401
     else:
