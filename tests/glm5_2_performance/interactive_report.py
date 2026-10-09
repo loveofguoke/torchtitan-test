@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+import html
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +12,7 @@ from tests.glm5_2_common.reporting import (
     save_panel_report,
     section_heading,
     summary_table,
+    _stack,
 )
 
 
@@ -30,6 +31,86 @@ def _metric(
 
 def _number(value: Any, suffix: str = "") -> str:
     return "N/A" if value is None else f"{float(value):.6g}{suffix}"
+
+
+def _integer(value: Any) -> str:
+    return "N/A" if value is None else f"{int(value):,}"
+
+
+def _evidence_label(row: dict[str, Any]) -> tuple[str, str]:
+    metric = str(row.get("metric", "evidence")).replace("_", " ")
+    if row.get("metric") == "fallback_operator":
+        operator = str(row.get("operator") or "unknown operator")
+        category = str(row.get("category") or "fallback").replace("_", " ")
+        count = int(row.get("count", 1))
+        message = str(row.get("message") or "")
+        return (
+            f"{operator} ({category})",
+            f"{count} occurrence(s)" + (f" -- {message}" if message else ""),
+        )
+    values = [
+        f"{key.replace('_', ' ')}: {value}"
+        for key, value in row.items()
+        if key != "metric" and value not in (None, "", [], {})
+    ]
+    return metric, "; ".join(values) or "recorded"
+
+
+def _diagnosis_card_grid(diagnosis: dict[str, Any]) -> Any:
+    """Render diagnosis branches as compact cards instead of a JSON table."""
+
+    pn, _, _ = _stack()
+    colors = {
+        "observed": ("#166534", "#dcfce7"),
+        "suspect": ("#9a3412", "#ffedd5"),
+        "not_available": ("#475569", "#f1f5f9"),
+    }
+    cards = []
+    for key, branch in diagnosis.get("branches", {}).items():
+        status = str(branch.get("status", "not_available"))
+        foreground, background = colors.get(status, colors["not_available"])
+        evidence = "".join(
+            "<li><strong>"
+            + html.escape(label)
+            + ":</strong> "
+            + html.escape(value)
+            + "</li>"
+            for label, value in (
+                _evidence_label(row) for row in branch.get("evidence", [])
+            )
+        ) or "<li>No evidence captured in this run.</li>"
+        actions = "".join(
+            "<li>" + html.escape(str(action)) + "</li>"
+            for action in branch.get("next_actions", [])
+        ) or "<li>No additional action required by this branch.</li>"
+        cards.append(
+            pn.pane.HTML(
+                '<article style="height:100%;box-sizing:border-box;border:1px solid #dbe3ef;'
+                'border-radius:14px;padding:26px 30px;background:#fff;box-shadow:0 2px 8px #0f172a0d">'
+                '<div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start">'
+                '<div><div style="font-size:16px;color:#64748b;text-transform:uppercase;letter-spacing:.06em">'
+                + html.escape(key.replace("_", " "))
+                + '</div><h3 style="margin:7px 0 14px;font-size:25px;line-height:1.35;color:#172033">'
+                + html.escape(str(branch.get("name", key)))
+                + "</h3></div>"
+                + f'<span style="white-space:nowrap;color:{foreground};background:{background};'
+                'font-size:16px;font-weight:700;border-radius:999px;padding:7px 13px">'
+                + html.escape(status)
+                + "</span></div>"
+                '<p style="font-size:20px;line-height:1.7;color:#334155;margin:8px 0 20px">'
+                + html.escape(str(branch.get("summary", "")))
+                + '</p><h4 style="font-size:18px;margin:0 0 9px;color:#172033">Evidence</h4>'
+                '<ul style="font-size:17px;padding-left:24px;line-height:1.75;color:#475569;margin:0 0 20px">'
+                + evidence
+                + '</ul><h4 style="font-size:18px;margin:0 0 9px;color:#172033">Next action</h4>'
+                '<ul style="font-size:17px;padding-left:24px;line-height:1.75;color:#475569;margin:0">'
+                + actions
+                + "</ul></article>",
+                min_width=480,
+                sizing_mode="stretch_width",
+            )
+        )
+    return pn.FlexBox(*cards, flex_wrap="wrap", gap="18px")
 
 
 def write_training_metrics_report(
@@ -127,16 +208,7 @@ def write_training_metrics_report(
             )
         )
     diagnosis = analysis.get("self_diagnosis", {})
-    diagnosis_rows = [
-        {
-            "Branch": key,
-            "Status": branch.get("status"),
-            "Summary": branch.get("summary"),
-            "Evidence": json.dumps(branch.get("evidence", []), ensure_ascii=False),
-            "Next actions": "; ".join(branch.get("next_actions", [])),
-        }
-        for key, branch in diagnosis.get("branches", {}).items()
-    ]
+    model = manifest.get("model") or {}
     tool_rows = [
         {
             "Type": item.get("type", "output"),
@@ -147,6 +219,38 @@ def write_training_metrics_report(
         for item in analysis.get("tool_outputs", [])
     ]
     sections: list[Any] = [
+        section_heading(
+            "模型规模 / Model Footprint",
+            "参数显存是按参数张量 dtype 计算的理论下界，不等于训练峰值显存。",
+        ),
+        summary_table(
+            columns=("Field", "Value", "Meaning"),
+            rows=(
+                (
+                    "Parameters",
+                    _integer(model.get("parameter_count")),
+                    "TorchTitan 构建模型时统计的参数量",
+                ),
+                (
+                    "Parameter dtype",
+                    model.get("parameter_dtype", config.get("mixed_precision_param", "N/A")),
+                    "参数张量的实验 dtype",
+                ),
+                (
+                    "Theoretical parameter memory",
+                    _number(model.get("parameter_gib"), " GiB"),
+                    "仅参数；不含梯度、优化器状态、激活、临时张量、allocator reserve 和分片影响",
+                ),
+                (
+                    "Observed peak active memory",
+                    _number(
+                        (_metric(summary, "max_active") or (None, {}))[1].get("max"),
+                        " GiB",
+                    ),
+                    "运行时观测值；与参数理论下界的差额来自完整训练状态和运行时开销",
+                ),
+            ),
+        ),
         section_heading(
             "执行合同 / Execution Contract",
             "执行模式和代码生成后端属于实验身份；不同合同不会复用同一目录。",
@@ -197,20 +301,14 @@ def write_training_metrics_report(
             *charts,
         )
     )
-    if diagnosis_rows:
+    if diagnosis.get("branches"):
         sections.extend(
             (
                 section_heading(
                     "单拓扑诊断 / Self Diagnosis",
                     "诊断状态用于选择下一步工具，不是自动 PASS/FAIL。",
                 ),
-                interactive_table(
-                    title="诊断分支",
-                    description="按状态、分支或证据筛选；详细证据保留原始 JSON。",
-                    rows=diagnosis_rows,
-                    columns=("Branch", "Status", "Summary", "Evidence", "Next actions"),
-                    pagination=False,
-                ),
+                _diagnosis_card_grid(diagnosis),
             )
         )
     if tool_rows:

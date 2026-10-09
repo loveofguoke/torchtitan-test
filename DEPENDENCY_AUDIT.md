@@ -290,3 +290,23 @@ change:
   machine-readable `experiment.json`. Directory names aid scanning and their
   hash prevents data mixing; neither replaces an explicit experiment overview.
   Tool-specific metrics and hook settings are part of capture identity.
+- Profiler-off optimization claims use
+  `tests/glm5_2_mindstudio/performance_ablation.py`. Each side must contain
+  internally identical repeats, use the same device and physical-device
+  selection, cover the same measured step window, and differ in exactly the
+  declared `--ablation-factor`. Generated `--compile.*` arguments are removed
+  only when normalizing the contract because the performance CLI derives them
+  from graph mode and compile components and rejects them as user-supplied raw
+  arguments. The report records effect sizes and repeat-range overlap, but it
+  must not synthesize an automatic performance PASS/FAIL verdict.
+- Performance system experiments own synchronized fixtures below
+  `performance_fixtures/` (MindStudio uses
+  `mindstudio_fixtures/performance/system/`). Every capture loads the fixture
+  seed checkpoint and topology-independent fixed token plan, validates each
+  rank's consumed global slots and token hashes, and records fixture generation
+  plus checkpoint/token-plan digests. Named workloads and their
+  `--workload-arg` values are part of experiment identity. Rebuilding a fixture
+  invalidates capture reuse; GPU/NPU or topology comparisons must use matching
+  fixture hashes. Multiple workload names permit representative and intentionally
+  stressed data distributions, but names do not prove router balance--the
+  measured per-expert token distribution remains the evidence.

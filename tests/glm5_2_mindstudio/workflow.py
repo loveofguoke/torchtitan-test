@@ -1329,6 +1329,7 @@ def _torchrun_command(
         f"--rdzv_id={rendezvous_id}",
         "--local-ranks-filter="
         f"{_metrics_rank(endpoint.topology) % endpoint.num_processes_per_node}",
+        f"--log-dir={run_directory / 'torchrun_logs'}",
         "--role=rank",
         "--tee=3",
         "-m",

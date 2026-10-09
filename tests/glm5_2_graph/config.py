@@ -21,10 +21,28 @@ from tests.glm5_2_common.execution import TrainingFeature
 
 GraphMode = Literal["eager", "inductor", "npugraphs"]
 NPU_GRAPH_COMPATIBILITY_ENVIRONMENT = {
+    # The validated graph profile uses synchronous task submission. Leaving
+    # this unset lets Turbo select its ordinary asynchronous default, which
+    # can strand PP peers during first-step metadata inference.
+    "TASK_QUEUE_ENABLE": "0",
+    "TORCHTITAN_TASK_QUEUE_ENABLE": "0",
     # ProcessGroupHCCL's batched object P2P can corrupt PipelineStage's
     # serialized metadata size. Turbo replaces only the one-time metadata
     # exchange with ordinary object P2P when this value is zero.
     "TORCHTITAN_PIPELINE_META_USE_BATCH": "0",
+    # Preserve PyTorch's real dynamic metadata exchange, but execute the
+    # metadata-only probe under the public compiler force-eager stance so cold
+    # compilation is not serialized inside startup P2P.
+    "TORCHTITAN_PIPELINE_METADATA_FORCE_EAGER": "1",
+    # Reuse the actual inputs observed by PyTorch's dynamic metadata probe to
+    # build each local stage's forward/backward cache before schedule P2P.
+    "TORCHTITAN_PIPELINE_REAL_INPUT_PRECOMPILE": "1",
+    # Align DDP ranks after rank-local cold compilation and immediately before
+    # their first real gradient all-reduce. Tensor reduction remains HCCL.
+    "TORCHTITAN_FIRST_ALL_REDUCE_HOST_BARRIER": "1",
+    # Eight graph-compiling ranks must not each create a pool of device-aware
+    # compiler workers; the validated launcher uses one worker per rank.
+    "TORCHINDUCTOR_COMPILE_THREADS": "1",
 }
 
 

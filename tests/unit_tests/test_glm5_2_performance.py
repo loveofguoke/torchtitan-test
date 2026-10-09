@@ -8,6 +8,7 @@ from unittest import mock
 
 from tests.glm5_2_performance.analysis import (
     build_analysis,
+    extract_top_csv_entries,
     inspect_profiler_deliverables,
     render_html_report,
     summarize_profile_phases,
@@ -38,6 +39,8 @@ from tests.glm5_2_performance.workflow import (
     _device_selection,
     _msprof_analyze_executable,
     _msprof_analyze_workers,
+    _model_parameter_summary,
+    _performance_fixture_config,
     _profiled_rank_count,
     _run_name,
     _saved_device_selection_is_compatible,
@@ -55,6 +58,79 @@ from tests.glm5_2_performance.visualization import (
 
 
 class TestPerformanceConfig(unittest.TestCase):
+    def test_operator_hotspots_exclude_memory_lifetime_tables(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            profiler = Path(temporary_directory)
+            (profiler / "operator_details.csv").write_text(
+                "Name,Duration(us)\nmatmul,25\n",
+                encoding="utf-8",
+            )
+            (profiler / "operator_memory.csv").write_text(
+                "Name,Duration(us)\naten::empty_strided,999999\n",
+                encoding="utf-8",
+            )
+
+            tables = extract_top_csv_entries(profiler)
+
+        self.assertEqual(len(tables), 1)
+        self.assertTrue(tables[0]["source"].endswith("operator_details.csv"))
+        self.assertEqual(tables[0]["rows"][0]["name"], "matmul")
+
+    def test_model_parameter_summary_uses_runtime_count_and_parameter_dtype(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime_log = Path(temporary) / "runtime.log"
+            runtime_log.write_text(
+                "Model glm5 debug size: \x1b[31m1,073,741,824 total parameters\x1b[0m\n",
+                encoding="utf-8",
+            )
+
+            summary = _model_parameter_summary(
+                runtime_log,
+                parameter_dtype="bfloat16",
+            )
+
+        self.assertIsNotNone(summary)
+        assert summary is not None
+        self.assertEqual(summary["parameter_count"], 1_073_741_824)
+        self.assertEqual(summary["parameter_bytes"], 2_147_483_648)
+        self.assertEqual(summary["parameter_gib"], 2.0)
+
+    def test_performance_fixture_uses_named_workload_contract(self):
+        config = PerformanceConfig(
+            name="glm5-probe",
+            steps=30,
+            local_batch_size=8,
+            global_batch_size=64,
+            sequence_length=128,
+            workload="router-skew",
+            workload_args=("--dataloader.dataset=router_skew",),
+            fixture_root="mindstudio_fixtures/performance/system",
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {"ASCEND_RT_VISIBLE_DEVICES": "4,5,6,7"},
+            clear=False,
+        ):
+            fixture = _performance_fixture_config(config, device="npu")
+
+        self.assertEqual(fixture.fixture_root, config.fixture_root)
+        self.assertIn("workload-router-skew", fixture.storage_base_name)
+        self.assertEqual(fixture.training.steps, 30)
+        self.assertEqual(fixture.training.global_batch_size, 64)
+        self.assertEqual(fixture.training.sequence_length, 128)
+        self.assertEqual(fixture.training.extra_args, config.workload_args)
+        self.assertEqual(fixture.reference.visible_devices, "4,5,6,7")
+
+    def test_workload_changes_performance_run_identity(self):
+        representative = PerformanceConfig(name="glm5-probe")
+        skewed = replace(representative, workload="router-skew")
+
+        self.assertNotEqual(
+            _run_name(representative, "npu"),
+            _run_name(skewed, "npu"),
+        )
+
     def test_advisor_versions_are_read_from_capture_manifest(self):
         manifest = {
             "collector_toolchain": {
@@ -114,7 +190,7 @@ class TestPerformanceConfig(unittest.TestCase):
                 "tests.glm5_2_performance.workflow._run_msprof_analyze",
                 side_effect=fake_run,
             ):
-                result = run_advisor(run)
+                result = run_advisor(run, include_computation=True)
 
         self.assertTrue(result["complete"])
         self.assertEqual(result["return_code"], 0)
@@ -127,6 +203,36 @@ class TestPerformanceConfig(unittest.TestCase):
         self.assertEqual(statuses[0]["command"][4], str(profiler))
         self.assertEqual(statuses[1]["command"][2], "computation")
         self.assertEqual(statuses[1]["command"][4], str(rank))
+
+    def test_advisor_skips_expensive_computation_by_default(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run = Path(temporary_directory) / "run"
+            profiler = run / "trainer_output" / "profiling" / "traces"
+            (profiler / "rank_0_123_ascend_pt").mkdir(parents=True)
+            commands = []
+
+            def fake_run(*args, **kwargs):
+                commands.append(kwargs["command"])
+                return {"return_code": 0}
+
+            with mock.patch(
+                "tests.glm5_2_performance.workflow._find_profiler_directory",
+                return_value=profiler,
+            ), mock.patch(
+                "tests.glm5_2_performance.workflow._msprof_analyze_executable",
+                return_value="msprof-analyze",
+            ), mock.patch(
+                "tests.glm5_2_performance.workflow._advisor_version_arguments",
+                return_value=([], {"capture_versions": {}}),
+            ), mock.patch(
+                "tests.glm5_2_performance.workflow._run_msprof_analyze",
+                side_effect=fake_run,
+            ):
+                result = run_advisor(run)
+
+        self.assertEqual([entry["mode"] for entry in result["commands"]], ["all"])
+        self.assertFalse(result["computation_requested"])
+        self.assertEqual(len(commands), 1)
 
     def test_interactive_performance_report_builds_metrics_and_tool_inventory(self):
         analysis = {
@@ -505,6 +611,167 @@ class TestPerformanceConfig(unittest.TestCase):
                     skip_steps=1,
                     output=root / "out",
                 )
+
+    def test_performance_ablation_accepts_exactly_one_declared_difference(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+
+            def make_run(name: str, graph_mode: str, scale: float) -> Path:
+                run = root / name
+                run.mkdir()
+                config = PerformanceConfig(
+                    name=name,
+                    device="npu",
+                    steps=12,
+                    skip_steps=1,
+                    active_steps=1,
+                    graph_mode=graph_mode,
+                    npu_codegen="ascend-triton",
+                    extra_args=(
+                        (
+                            "--compile.enable",
+                            "--compile.components=model",
+                            "--compile.backend=inductor",
+                        )
+                        if graph_mode == "inductor"
+                        else ()
+                    ),
+                    profiler_enabled=False,
+                ).as_dict()
+                (run / "experiment.json").write_text(
+                    json.dumps(
+                        {
+                            "device": "npu",
+                            "device_selection": {
+                                "selected_physical_devices": ["0"]
+                            },
+                            "configuration": config,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                records = [
+                    {
+                        "step": step,
+                        "metrics": {
+                            "time_metrics/end_to_end(s)": scale,
+                            "throughput(tps)": 1000.0 / scale,
+                        },
+                    }
+                    for step in range(2, 13)
+                ]
+                (run / "metrics.jsonl").write_text(
+                    "".join(json.dumps(record) + "\n" for record in records),
+                    encoding="utf-8",
+                )
+                return run
+
+            eager = [make_run(f"eager-{index}", "eager", 2.0) for index in range(3)]
+            compiled = [
+                make_run(f"compiled-{index}", "inductor", 1.0)
+                for index in range(3)
+            ]
+            with mock.patch("tests.glm5_2_performance.comparison._render"):
+                payload = build_comparison(
+                    reference_runs=eager,
+                    reference_label="eager baseline",
+                    candidate_runs=compiled,
+                    candidate_label="inductor variant",
+                    skip_steps=1,
+                    output=root / "comparison",
+                    ablation_factor="graph_mode",
+                )
+
+            comparison = payload["comparison"]
+            self.assertEqual(comparison["comparison_kind"], "ablation")
+            self.assertEqual(
+                comparison["contract_differences"],
+                {
+                    "graph_mode": {
+                        "reference": "eager",
+                        "candidate": "inductor",
+                    }
+                },
+            )
+            self.assertAlmostEqual(
+                comparison["metrics"]["step_time_median_s"][
+                    "optimization_improvement_percent"
+                ],
+                50.0,
+            )
+            self.assertAlmostEqual(
+                comparison["metrics"]["throughput_median_tps"][
+                    "optimization_improvement_percent"
+                ],
+                100.0,
+            )
+
+    def test_performance_ablation_rejects_an_undeclared_second_difference(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+
+            def make_run(name: str, graph_mode: str, sequence_length: int) -> Path:
+                run = root / name
+                run.mkdir()
+                config = PerformanceConfig(
+                    name=name,
+                    device="npu",
+                    steps=12,
+                    skip_steps=1,
+                    active_steps=1,
+                    graph_mode=graph_mode,
+                    sequence_length=sequence_length,
+                    profiler_enabled=False,
+                ).as_dict()
+                (run / "experiment.json").write_text(
+                    json.dumps({"device": "npu", "configuration": config}),
+                    encoding="utf-8",
+                )
+                (run / "metrics.jsonl").write_text(
+                    json.dumps(
+                        {
+                            "step": 2,
+                            "metrics": {
+                                "time_metrics/end_to_end(s)": 1.0,
+                                "throughput(tps)": 1000.0,
+                            },
+                        }
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                return run
+
+            with self.assertRaisesRegex(
+                ValueError, "change exactly its declared factor"
+            ):
+                build_comparison(
+                    reference_runs=[
+                        make_run(f"eager-{index}", "eager", 128)
+                        for index in range(3)
+                    ],
+                    reference_label="eager",
+                    candidate_runs=[
+                        make_run(f"compiled-{index}", "inductor", 256)
+                        for index in range(3)
+                    ],
+                    candidate_label="compiled",
+                    skip_steps=1,
+                    output=root / "comparison",
+                    ablation_factor="graph_mode",
+                )
+
+    def test_performance_ablation_requires_three_repeats_per_side(self):
+        with self.assertRaisesRegex(ValueError, "at least three independent"):
+            build_comparison(
+                reference_runs=[Path("reference")],
+                reference_label="reference",
+                candidate_runs=[Path("candidate")],
+                candidate_label="candidate",
+                skip_steps=10,
+                output=Path("comparison"),
+                ablation_factor="graph_mode",
+            )
 
     def test_isolated_msprof_analyze_executable_can_be_selected(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1129,7 +1396,8 @@ class TestPerformanceAnalysis(unittest.TestCase):
                 "Compiling each TransformerBlock with torch.compile\n"
                 "Graph break from user code\n"
                 "CAUTION: an op will fall back to run on the CPU\n"
-                "kernel is running on AiCpu\n"
+                "kernel [ArgSort] can not support dtype int64 on AiCore; "
+                "Now this kernel is running on AiCpu\n"
                 "CANN profiling data parsed in a total time of 0:01:21.25\n"
                 "All profiling data parsed in a total time of 0:01:47.5\n",
                 encoding="utf-8",
@@ -1155,6 +1423,10 @@ class TestPerformanceAnalysis(unittest.TestCase):
             )
             self.assertEqual(
                 analysis["compiler_diagnostics"]["aicpu_fallbacks"], 1
+            )
+            self.assertEqual(
+                analysis["compiler_diagnostics"]["fallback_details"][0]["operator"],
+                "ArgSort",
             )
             self.assertEqual(
                 analysis["compiler_diagnostics"]["all_parse_seconds"], 107.5

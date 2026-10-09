@@ -41,6 +41,11 @@ from tests.glm5_2_mindstudio.graph_accuracy_benchmark import (
     _select_stage as select_graph_stage,
 )
 from tests.glm5_2_mindstudio.migration_benchmark import CONFIG as MIGRATION_CONFIG
+from tests.glm5_2_mindstudio.scaled_accuracy_benchmark import (
+    BASE_CONFIG as SCALED_ACCURACY_CONFIG,
+    STAGE_CONFIGS as SCALED_STAGE_CONFIGS,
+    TRAINING as SCALED_TRAINING,
+)
 from tests.glm5_2_mindstudio.training_observation_benchmark import (
     CONFIG as OBSERVATION_CONFIG,
 )
@@ -358,6 +363,34 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                 graph_backend="inductor",
                 codegen_backend="dvm",
             )
+
+    def test_scaled_accuracy_has_an_independent_long_run_identity(self) -> None:
+        self.assertNotEqual(
+            MIGRATION_CONFIG.storage_name,
+            SCALED_ACCURACY_CONFIG.storage_name,
+        )
+        self.assertEqual("glm5_2_scaled_debugmodel", SCALED_TRAINING.config)
+        self.assertEqual(1000, SCALED_TRAINING.steps)
+        self.assertEqual(512, SCALED_TRAINING.sequence_length)
+        for config in SCALED_STAGE_CONFIGS.values():
+            self.assertEqual(
+                SCALED_ACCURACY_CONFIG.storage_name,
+                config.storage_name,
+            )
+
+        graph, stages = graph_stage_configs(
+            "npu",
+            graph_backend="inductor",
+            codegen_backend="ascend-triton",
+            training=SCALED_TRAINING,
+            experiment_storage_name=SCALED_ACCURACY_CONFIG.storage_name,
+        )
+        self.assertEqual(SCALED_ACCURACY_CONFIG.storage_name, graph.storage_name)
+        self.assertEqual(1000, stages["observation"].training.steps)
+        self.assertEqual(
+            "glm5_2_scaled_debugmodel",
+            stages["observation"].training.config,
+        )
 
     def test_named_experiment_contains_variable_operation_scopes(self) -> None:
         experiment = "fsdp8-accuracy-001"

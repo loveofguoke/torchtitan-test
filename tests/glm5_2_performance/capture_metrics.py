@@ -133,6 +133,16 @@ def main() -> None:
     else:
         _install_gpu_rank_filter()
 
+    # Performance and precision use the same topology-independent token-plan
+    # format. Installing it only when the launcher supplies a fixture keeps
+    # this worker usable for reading historical performance runs.
+    if os.environ.get("GLM5_PRECISION_TOKEN_PLAN_PATH"):
+        from tests.glm5_2_precision.fixed_token_dataloader import (
+            install_fixed_token_dataloader,
+        )
+
+        install_fixed_token_dataloader()
+
     _install_reduction_dtype_override()
     _install_metrics_capture()
 

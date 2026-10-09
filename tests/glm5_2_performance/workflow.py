@@ -46,6 +46,19 @@ from tests.glm5_2_common.topology import (
     select_topologies,
     training_command_args,
 )
+from tests.glm5_2_precision.token_data import (
+    load_token_plan,
+    sha256_file,
+    validate_runtime_input_contract,
+)
+from tests.glm5_2_precision.workflow import (
+    FormalExperimentConfig,
+    FormalTrainingConfig,
+    TrainingEndpoint,
+    fixed_input_environment,
+    prepare_fixture,
+    resolve_fixture_inputs,
+)
 
 from .advanced_analysis import (
     MUTATING_RECIPES,
@@ -83,6 +96,76 @@ def _slug(value: str) -> str:
 
 def _repository_root(script_path: str) -> Path:
     return Path(script_path).resolve().parents[2]
+
+
+def _performance_fixture_config(
+    config: PerformanceConfig,
+    *,
+    device: str,
+) -> FormalExperimentConfig:
+    """Map a performance workload onto the shared fixed-input fixture format."""
+
+    topology = performance_topologies()["single"]
+    visible_values = _visible_devices(device)
+    visible = ",".join(visible_values) if visible_values else "0"
+    endpoint = TrainingEndpoint(
+        name=f"performance-{device}",
+        device_type="npu" if device == "npu" else "cuda",
+        visible_devices=visible,
+        topology=topology,
+        repeats=1,
+    )
+    training = FormalTrainingConfig(
+        module=config.module,
+        config=config.model_config,
+        steps=config.steps,
+        local_batch_size=config.local_batch_size,
+        global_batch_size=config.global_batch_size,
+        sequence_length=config.sequence_length,
+        seed=config.seed,
+        deterministic=True,
+        training_dtype=config.training_dtype,
+        mixed_precision_param=config.mixed_precision_param,
+        mixed_precision_reduce="float32",
+        checkpoint_kind="random_seed",
+        extra_args=config.workload_args,
+    )
+    return FormalExperimentConfig(
+        name=f"{config.name}-{config.workload}",
+        kind="self_consistency",
+        reference=endpoint,
+        candidate=endpoint,
+        training=training,
+        fixture_root=config.fixture_root,
+        storage_name_override=(
+            f"{config.module}-{config.model_config}-workload-{config.workload}-"
+            f"s{config.steps}-b{config.global_batch_size}-"
+            f"seq{config.sequence_length}-seed{config.seed}"
+        ),
+    )
+
+
+def _performance_fixture_inputs(
+    root: Path,
+    config: PerformanceConfig,
+    *,
+    device: str,
+) -> tuple[FormalExperimentConfig, Path, Path, dict[str, Any]]:
+    fixture_config = _performance_fixture_config(config, device=device)
+    checkpoint_path, token_plan_path = resolve_fixture_inputs(root, fixture_config)
+    fixture_directory = token_plan_path.parent
+    fixture_manifest_path = fixture_directory / "fixture.json"
+    fixture_manifest = json.loads(fixture_manifest_path.read_text(encoding="utf-8"))
+    identity = {
+        "directory": str(fixture_directory.resolve()),
+        "generation_id": fixture_manifest.get("generation_id"),
+        "manifest_sha256": sha256_file(fixture_manifest_path),
+        "checkpoint_sha256": fixture_manifest.get("checkpoint_sha256"),
+        "token_plan": fixture_manifest.get("token_plan"),
+        "workload": config.workload,
+        "workload_args": list(config.workload_args),
+    }
+    return fixture_config, checkpoint_path, token_plan_path, identity
 
 
 def _git_value(root: Path, *arguments: str) -> str | None:
@@ -512,7 +595,8 @@ def _run_name(
     base = (
         f"{device}-{config.topology}-{precision}-s{config.steps}-"
         f"l{config.local_batch_size}-b{config.global_batch_size}-"
-        f"seq{config.sequence_length}-seed{config.seed}-{preset_label}"
+        f"seq{config.sequence_length}-seed{config.seed}-"
+        f"workload-{_slug(config.workload)}-{preset_label}"
     )
     device_selection = _device_selection(config, device)
     selected_devices = device_selection["selected_physical_devices"]
@@ -544,7 +628,14 @@ def _run_name(
     if config.npu_codegen:
         base += f"-{config.npu_codegen}"
     identity = config.as_dict()
-    for key in ("name", "device", "run_root", "artifact_root", "report_root"):
+    for key in (
+        "name",
+        "device",
+        "fixture_root",
+        "run_root",
+        "artifact_root",
+        "report_root",
+    ):
         identity.pop(key, None)
     if config.collector == PerformanceCollector.TORCH_NPU_PROFILER.value:
         # Preserve names from before collector selection became explicit.
@@ -851,6 +942,7 @@ def _training_command(
     device: str,
     preset: ProfilerPreset,
     run_directory: Path,
+    checkpoint_path: Path,
 ) -> list[str]:
     collector = require_training_collector(config.collector)
     topology = performance_topologies()[config.topology]
@@ -938,7 +1030,11 @@ def _training_command(
         "--metrics.save_tb_folder=tensorboard",
         *profiler_arguments,
         *topology.command_args(),
+        *config.workload_args,
         *config.extra_args,
+        "--checkpoint.enable",
+        "--checkpoint.load_only",
+        f"--checkpoint.initial_load_path={checkpoint_path}",
     ]
     if config.deterministic:
         command.append("--debug.deterministic")
@@ -1073,12 +1169,17 @@ def capture(
         and collector is PerformanceCollector.TORCH_NPU_PROFILER
         else {}
     )
+    topology = performance_topologies()[config.topology]
+    fixture_config, checkpoint_path, token_plan_path, fixture_identity = (
+        _performance_fixture_inputs(root, config, device=device)
+    )
     if complete_manifest.is_file() and run_manifest.is_file() and not force:
         existing = json.loads(complete_manifest.read_text(encoding="utf-8"))
         if (
             not _config_is_compatible(existing.get("config", {}), config)
             or existing.get("profiler_environment") != profiler_environment
             or existing.get("collector_toolchain") != collector_toolchain
+            or existing.get("fixture") != fixture_identity
             or not _saved_device_selection_is_compatible(
                 existing.get("device_selection"), device_selection
             )
@@ -1148,7 +1249,16 @@ def capture(
         environment["GLM5_PERFORMANCE_REDUCE_DTYPE_OVERRIDE"] = (
             config.mixed_precision_reduce
         )
-    topology = performance_topologies()[config.topology]
+    input_contract_directory = run_directory / "input_contract"
+    input_contract_directory.mkdir(parents=True, exist_ok=True)
+    environment.update(
+        fixed_input_environment(
+            token_plan_path=token_plan_path,
+            input_contract_directory=input_contract_directory,
+            training=fixture_config.training,
+            topology=topology,
+        )
+    )
     environment["LOG_RANK"] = str(
         _metrics_rank(topology.world_size, topology.pp, topology.pp_schedule)
     )
@@ -1161,6 +1271,7 @@ def capture(
         device=device,
         preset=preset,
         run_directory=run_directory,
+        checkpoint_path=checkpoint_path,
     )
     write_experiment_overview(
         run_directory,
@@ -1174,6 +1285,7 @@ def capture(
             "device_selection": device_selection,
             "configuration": config.as_dict(),
             "compiler_cache": compiler_cache,
+            "fixture": fixture_identity,
             "runtime_log": str(runtime_log.resolve()),
             "trainer_output": str((run_directory / "trainer_output").resolve()),
         },
@@ -1213,6 +1325,28 @@ def capture(
         _refresh_exploration_documents(root)
         raise
 
+    try:
+        input_contract = validate_runtime_input_contract(
+            contract_directory=input_contract_directory,
+            plan=load_token_plan(token_plan_path),
+            steps=config.steps,
+            global_batch_size=config.global_batch_size,
+            training_local_batch_size=config.local_batch_size,
+            dp_world_size=topology.data_parallel_degree,
+            context_parallel_degree=topology.context_parallel_degree,
+            tensor_parallel_degree=topology.tensor_parallel_degree,
+            pipeline_parallel_degree=topology.pipeline_parallel_degree,
+            node_rank=0,
+            num_processes_per_node=topology.world_size,
+        )
+    except Exception as error:
+        attempt.update("failed", error=repr(error))
+        _write_json(
+            run_directory / "failure.json",
+            {"error": repr(error), "stage": "input_contract_validation"},
+        )
+        raise
+
     storage_after = shutil.disk_usage(run_directory.parent)
     output_bytes = sum(
         path.stat().st_size
@@ -1233,6 +1367,10 @@ def capture(
         preflight["warnings"].append(warning)
         print(f"Profiler preflight warning: {warning}")
 
+    model_parameter_summary = _model_parameter_summary(
+        runtime_log,
+        parameter_dtype=config.mixed_precision_param,
+    )
     manifest = {
         "format_version": 1,
         "run_name": run_name,
@@ -1248,6 +1386,9 @@ def capture(
         "source": _source_metadata(root),
         "collector_toolchain": collector_toolchain,
         "compiler_cache": compiler_cache,
+        "fixture": fixture_identity,
+        "input_contract": input_contract,
+        "model": model_parameter_summary,
         "preflight": preflight,
         "run_directory": str(run_directory),
         "attempt_id": attempt.attempt_id,
@@ -1276,6 +1417,59 @@ def _find_profiler_directory(run_directory: Path) -> Path:
         run_directory / "trainer_output" / "profiling",
     )
     return next((path for path in candidates if path.is_dir()), candidates[0])
+
+
+def _model_parameter_summary(
+    runtime_log: Path,
+    *,
+    parameter_dtype: str,
+) -> dict[str, object] | None:
+    """Extract TorchTitan's authoritative model parameter count from its log."""
+
+    if not runtime_log.is_file():
+        return None
+    text = re.sub(
+        r"\x1b\[[0-?]*[ -/]*[@-~]",
+        "",
+        runtime_log.read_text(encoding="utf-8", errors="replace"),
+    )
+    match = re.search(
+        r"size:\s*([0-9][0-9,]*)\s+total parameters",
+        text,
+    )
+    if match is None:
+        return None
+    parameter_count = int(match.group(1).replace(",", ""))
+    bytes_per_element = {
+        "float64": 8,
+        "float32": 4,
+        "float16": 2,
+        "bfloat16": 2,
+        "int64": 8,
+        "int32": 4,
+        "int16": 2,
+        "int8": 1,
+        "uint8": 1,
+        "bool": 1,
+    }.get(parameter_dtype)
+    parameter_bytes = (
+        parameter_count * bytes_per_element
+        if bytes_per_element is not None
+        else None
+    )
+    return {
+        "parameter_count": parameter_count,
+        "parameter_dtype": parameter_dtype,
+        "bytes_per_parameter": bytes_per_element,
+        "parameter_bytes": parameter_bytes,
+        "parameter_gib": (
+            parameter_bytes / (1024**3)
+            if parameter_bytes is not None
+            else None
+        ),
+        "scope": "parameter tensors only; excludes gradients, optimizer state, activations, temporary buffers, allocator reserve, and sharding",
+        "source": "TorchTitan runtime model-size log",
+    }
 
 
 def _merge_legacy_analysis_tree(
@@ -1444,6 +1638,7 @@ def run_advisor(
     *,
     analysis_toolchain: dict[str, Any] | None = None,
     capture_manifest: dict[str, Any] | None = None,
+    include_computation: bool = False,
 ) -> dict[str, Any]:
     profiler_directory = _find_profiler_directory(run_directory)
     output_directory = run_directory / "advisor"
@@ -1465,7 +1660,7 @@ def run_advisor(
         for path in profiler_directory.glob("*_ascend_pt")
         if path.is_dir()
     )
-    if rank_profiles:
+    if include_computation and rank_profiles:
         commands.append(
             (
                 "computation",
@@ -1477,6 +1672,7 @@ def run_advisor(
         "analysis_toolchain": analysis_toolchain,
         "version_selection": version_metadata,
         "rank_profile_count": len(rank_profiles),
+        "computation_requested": include_computation,
         "representative_rank_profile": (
             str(rank_profiles[0]) if rank_profiles else None
         ),
@@ -2139,7 +2335,33 @@ def _rank_comparison_input(run_directory: Path, rank_id: int) -> Path:
             f"expected exactly one Ascend profile root for rank {rank_id}, "
             f"found {len(matches)} under {profiler_directory}"
         )
-    return next(iter(matches))
+    profile_root = next(iter(matches))
+    databases = sorted(
+        (profile_root / "ASCEND_PROFILER_OUTPUT").glob(
+            f"ascend_pytorch_profiler_{rank_id}.db"
+        )
+    )
+    if len(databases) == 1:
+        # msprof-analyze 26.1 can misclassify a rank root that contains both
+        # parsed ASCEND_PROFILER_OUTPUT and the original PROF_* tree.  Its
+        # documented parser accepts the parsed database directly, which is
+        # also the unambiguous input for a same-capture rank comparison.
+        return databases[0]
+    return profile_root
+
+
+def _prefer_npu_comparison_database(path: Path) -> Path:
+    """Select an unambiguous parsed NPU database from one rank root."""
+
+    resolved = path.resolve()
+    if not resolved.is_dir():
+        return resolved
+    databases = sorted(
+        (resolved / "ASCEND_PROFILER_OUTPUT").glob(
+            "ascend_pytorch_profiler_*.db"
+        )
+    )
+    return databases[0] if len(databases) == 1 else resolved
 
 
 def run_performance_compare(
@@ -2149,6 +2371,7 @@ def run_performance_compare(
     candidate: Path | None = None,
     comparison_name: str = "profile_compare",
     standard_cli: bool = False,
+    overall_only: bool = False,
     analysis_toolchain: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compare one profile against an NPU or GPU baseline profile."""
@@ -2165,27 +2388,45 @@ def run_performance_compare(
     output_directory = (
         profiler_directory / "compare_analysis_output" / comparison_name
     )
-    comparison_input = (
-        candidate.resolve()
+    comparison_input = _prefer_npu_comparison_database(
+        candidate
         if candidate is not None
         else _comparison_input(run_directory)
     )
+    baseline_input = _prefer_npu_comparison_database(baseline)
     command = [
         _msprof_analyze_executable(),
         "compare",
         "-d",
         str(comparison_input),
         "-bp",
-        str(baseline.resolve()),
-        "--output_path" if standard_cli else "-o",
-        str(output_directory),
+        str(baseline_input),
     ]
-    return _run_msprof_analyze(
+    if overall_only:
+        command.append("--enable_profiling_compare")
+    command.extend(
+        ("--output_path" if standard_cli else "-o", str(output_directory))
+    )
+    result = _run_msprof_analyze(
         run_directory,
         name="compare",
         command=command,
         analysis_toolchain=analysis_toolchain,
     )
+    deliveries = sorted(
+        path.relative_to(output_directory).as_posix()
+        for path in output_directory.rglob("*")
+        if path.is_file()
+    )
+    result["deliveries"] = deliveries
+    _write_json(run_directory / "compare.json", result)
+    if not deliveries:
+        raise RuntimeError(
+            "msprof-analyze compare returned success without producing any "
+            f"deliverable under {output_directory}; inspect "
+            f"{run_directory / 'compare.json'}"
+        )
+    return result
 
 
 def _json_identity(value: Any) -> str:
@@ -2293,6 +2534,7 @@ def _analysis_request(
     parse_workers: int | None,
     advisor: bool,
     cluster: bool,
+    advisor_computation: bool = False,
     cluster_mode: str = "all",
     cluster_agent_output: bool = False,
     cluster_bypass_input_safety_checks: bool = False,
@@ -2316,6 +2558,7 @@ def _analysis_request(
             "offline_parse": parse_offline,
             "parse_workers": parse_workers if parse_offline else None,
             "advisor": advisor,
+            "advisor_computation": advisor_computation if advisor else False,
             "cluster": cluster,
             "cluster_mode": cluster_mode if cluster else None,
             "cluster_agent_output": (
@@ -2773,6 +3016,7 @@ def analyze(
     advisor: bool,
     cluster: bool,
     compare_baseline: Path | None,
+    advisor_computation: bool = False,
     compare_ranks: tuple[int, int] | None = None,
     cluster_mode: str = "all",
     cluster_agent_output: bool = False,
@@ -2833,6 +3077,20 @@ def analyze(
         manifest_path = artifact_directory / "manifest.json"
         print_output_path("Using compatible capture manifest", manifest_path)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not manifest.get("model"):
+        # Historical captures predate the structured model-footprint field,
+        # but TorchTitan already logged the authoritative parameter count.
+        # Enrich the derived report without mutating the immutable capture.
+        model_parameter_summary = _model_parameter_summary(
+            run_directory / "runtime.log",
+            parameter_dtype=str(
+                manifest.get("config", {}).get(
+                    "mixed_precision_param", "unknown"
+                )
+            ),
+        )
+        if model_parameter_summary is not None:
+            manifest = {**manifest, "model": model_parameter_summary}
     report_path = (
         _scoped_parent(root, config.report_root, config.topology)
         / f"{run_name}.html"
@@ -2867,6 +3125,7 @@ def analyze(
         parse_offline=parse_offline,
         parse_workers=parse_workers,
         advisor=advisor,
+        advisor_computation=advisor_computation,
         cluster=cluster,
         cluster_mode=cluster_mode,
         cluster_agent_output=cluster_agent_output,
@@ -2919,6 +3178,7 @@ def analyze(
                         run_directory,
                         analysis_toolchain=analysis_toolchain,
                         capture_manifest=manifest,
+                        include_computation=advisor_computation,
                     )
                 except BaseException as error:
                     advisor_attempt.update("failed", error=repr(error))
@@ -2982,6 +3242,7 @@ def analyze(
                                 f"rank_{baseline_rank}_vs_rank_{candidate_rank}"
                             ),
                             standard_cli=True,
+                            overall_only=True,
                             analysis_toolchain=analysis_toolchain,
                         )
                     else:
@@ -3165,6 +3426,11 @@ def run_profiler_cli(
     )
     actions = parser.add_mutually_exclusive_group(required=True)
     actions.add_argument(
+        "--data",
+        action="store_true",
+        help="prepare the shared checkpoint and fixed token-plan workload",
+    )
+    actions.add_argument(
         "--probe",
         action="store_true",
         help="capture and immediately generate the HTML report",
@@ -3230,6 +3496,22 @@ def run_profiler_cli(
     parser.add_argument("--global-batch-size", type=int)
     parser.add_argument("--sequence-length", type=int)
     parser.add_argument(
+        "--workload",
+        help=(
+            "named performance input workload; each name owns an independent "
+            "checkpoint and fixed token plan"
+        ),
+    )
+    parser.add_argument(
+        "--workload-arg",
+        action="append",
+        default=[],
+        help=(
+            "TorchTitan data/model argument used while preparing and consuming "
+            "the workload; repeat for multiple arguments"
+        ),
+    )
+    parser.add_argument(
         "--replicate",
         type=int,
         help="repeat index included in run identity without changing training",
@@ -3270,6 +3552,14 @@ def run_profiler_cli(
     parser.add_argument("--offline-parse", action="store_true")
     parser.add_argument("--parse-workers", type=int)
     parser.add_argument("--advisor", action="store_true")
+    parser.add_argument(
+        "--advisor-computation",
+        action="store_true",
+        help=(
+            "run the expensive representative-rank Advisor computation "
+            "pass after the normal Advisor analysis"
+        ),
+    )
     parser.add_argument("--cluster", action="store_true")
     parser.add_argument(
         "--cluster-mode",
@@ -3439,6 +3729,10 @@ def run_profiler_cli(
         "local_batch_size": args.local_batch_size,
         "global_batch_size": args.global_batch_size,
         "sequence_length": args.sequence_length,
+        "workload": args.workload,
+        "workload_args": (
+            tuple(args.workload_arg) if args.workload_arg else None
+        ),
         "replicate": args.replicate,
         "training_dtype": args.training_dtype,
         "mixed_precision_param": args.mixed_precision_param,
@@ -3493,6 +3787,33 @@ def run_profiler_cli(
             else "CUDA_VISIBLE_DEVICES"
         )
         os.environ[variable] = args.visible_devices
+    if args.data:
+        fixture_config = _performance_fixture_config(effective, device=device)
+        fixture_path = prepare_fixture(
+            root,
+            fixture_config,
+            endpoint=fixture_config.reference,
+            force=args.force,
+        )
+        fixture_manifest_path = fixture_path / "fixture.json"
+        fixture_manifest = json.loads(
+            fixture_manifest_path.read_text(encoding="utf-8")
+        )
+        write_experiment_overview(
+            fixture_path,
+            title="GLM5.2 performance workload",
+            summary={
+                "workload": effective.workload,
+                "workload_args": list(effective.workload_args),
+                "generation_id": fixture_manifest.get("generation_id"),
+                "checkpoint_sha256": fixture_manifest.get("checkpoint_sha256"),
+                "token_plan": fixture_manifest.get("token_plan"),
+                "configuration": effective.as_dict(),
+            },
+            entry_command=[sys.executable, *sys.argv],
+        )
+        print_output_path("Prepared performance workload", fixture_path)
+        return
     if requested_preset == "all" and args.profiler_off:
         parser.error("--preset all cannot be combined with --profiler-off")
     if (
@@ -3596,6 +3917,11 @@ def run_profiler_cli(
         analysis_tools.add("offline")
     if args.advisor:
         analysis_tools.add("advisor")
+    if args.advisor_computation and "advisor" not in analysis_tools:
+        parser.error(
+            "--advisor-computation requires --advisor or an "
+            "--analysis-tools policy that includes advisor"
+        )
     if args.cluster:
         analysis_tools.add("cluster")
     if (
@@ -3813,6 +4139,7 @@ def run_profiler_cli(
                     ),
                     parse_workers=args.parse_workers,
                     advisor="advisor" in analysis_tools,
+                    advisor_computation=args.advisor_computation,
                     cluster=cluster_enabled,
                     compare_baseline=args.compare_baseline,
                     compare_ranks=compare_ranks,

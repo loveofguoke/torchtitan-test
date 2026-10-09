@@ -53,6 +53,8 @@ def _stage_configs(
     *,
     graph_backend: str = "inductor",
     codegen_backend: str | None = None,
+    training: FormalTrainingConfig = TRAINING,
+    experiment_storage_name: str | None = None,
 ) -> tuple[
     MindStudioExperimentConfig,
     dict[str, MindStudioExperimentConfig],
@@ -130,7 +132,7 @@ def _stage_configs(
         workflow="migration",
         reference=eager_endpoint,
         candidate=graph_endpoint,
-        training=TRAINING,
+        training=training,
         dump=MsProbeDumpConfig(
             task="statistics",
             level="L0",
@@ -147,7 +149,9 @@ def _stage_configs(
     )
     base = replace(
         unscoped,
-        experiment_storage_name=EAGER_ACCURACY_CONFIG.storage_name,
+        experiment_storage_name=(
+            experiment_storage_name or EAGER_ACCURACY_CONFIG.storage_name
+        ),
     )
     checker_endpoint = replace(
         eager_endpoint,
@@ -157,8 +161,8 @@ def _stage_configs(
         "config-check": replace(
             base,
             workflow="config-check",
-            training=replace(TRAINING, steps=1),
-            fixture_training=TRAINING,
+            training=replace(training, steps=1),
+            fixture_training=training,
             owns_fixture=False,
         ),
         "observation": replace(
@@ -168,8 +172,8 @@ def _stage_configs(
         "monitor": replace(
             base,
             workflow="monitor",
-            training=replace(TRAINING, steps=100),
-            fixture_training=TRAINING,
+            training=replace(training, steps=min(100, training.steps)),
+            fixture_training=training,
             monitor=MsProbeMonitorConfig(
                 ranks=(0,),
                 start_step=0,
@@ -185,8 +189,8 @@ def _stage_configs(
             workflow="compile",
             reference=checker_endpoint,
             candidate=checker_endpoint,
-            training=replace(TRAINING, steps=1),
-            fixture_training=TRAINING,
+            training=replace(training, steps=1),
+            fixture_training=training,
             dump=replace(base.dump, steps=(0,)),
             compile=MsProbeCompileConfig(
                 backend=graph_backend,

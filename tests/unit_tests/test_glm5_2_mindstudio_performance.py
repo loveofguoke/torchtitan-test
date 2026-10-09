@@ -367,6 +367,7 @@ class MindStudioPerformanceTest(unittest.TestCase):
                 device="npu",
                 preset=profiler_presets()["overview"],
                 run_directory=Path(directory) / "run",
+                checkpoint_path=Path(directory) / "checkpoint",
             )
         self.assertEqual(command[0], "/opt/ascend/bin/msprof")
         self.assertIn("--type=text", command)
@@ -394,6 +395,7 @@ class MindStudioPerformanceTest(unittest.TestCase):
                 device="npu",
                 preset=profiler_presets()["overview"],
                 run_directory=Path(directory) / "run",
+                checkpoint_path=Path(directory) / "checkpoint",
             )
         self.assertIn("--type=db", command)
         self.assertNotIn("--type=text", command)
@@ -817,7 +819,13 @@ class MindStudioPerformanceTest(unittest.TestCase):
                 return_value="msprof-analyze",
             ), patch(
                 "tests.glm5_2_performance.workflow._run_msprof_analyze",
-                return_value={"return_code": 0},
+                side_effect=lambda *args, **kwargs: (
+                    Path(kwargs["command"][-1]).mkdir(parents=True),
+                    (Path(kwargs["command"][-1]) / "comparison.xlsx").write_bytes(
+                        b"xlsx"
+                    ),
+                    {"return_code": 0},
+                )[-1],
             ) as execute:
                 run_performance_compare(run, baseline, standard_cli=True)
         command = execute.call_args.kwargs["command"]
@@ -834,6 +842,26 @@ class MindStudioPerformanceTest(unittest.TestCase):
             / "profile_compare",
         )
 
+    def test_compare_rejects_zero_exit_without_deliverables(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory) / "run"
+            baseline = Path(directory) / "baseline"
+            (run / "trainer_output" / "profiling" / "msprof").mkdir(
+                parents=True
+            )
+            baseline.mkdir()
+            with patch(
+                "tests.glm5_2_performance.workflow._msprof_analyze_executable",
+                return_value="msprof-analyze",
+            ), patch(
+                "tests.glm5_2_performance.workflow._run_msprof_analyze",
+                return_value={"return_code": 0},
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "success without producing any deliverable"
+                ):
+                    run_performance_compare(run, baseline, standard_cli=True)
+
     def test_rank_compare_uses_two_rank_profile_roots(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             run = Path(directory) / "run"
@@ -841,19 +869,34 @@ class MindStudioPerformanceTest(unittest.TestCase):
             rank_roots = []
             for rank in (0, 1):
                 rank_root = profile / f"rank_{rank}_capture_ascend_pt"
-                rank_root.mkdir(parents=True)
+                output = rank_root / "ASCEND_PROFILER_OUTPUT"
+                output.mkdir(parents=True)
                 (rank_root / f"profiler_info_{rank}.json").write_text(
                     "{}", encoding="utf-8"
                 )
+                (output / f"ascend_pytorch_profiler_{rank}.db").write_bytes(
+                    b"sqlite"
+                )
                 rank_roots.append(rank_root)
             self.assertEqual(_parse_compare_ranks("0,1"), (0, 1))
-            self.assertEqual(_rank_comparison_input(run, 1), rank_roots[1])
+            self.assertEqual(
+                _rank_comparison_input(run, 1),
+                rank_roots[1]
+                / "ASCEND_PROFILER_OUTPUT"
+                / "ascend_pytorch_profiler_1.db",
+            )
             with patch(
                 "tests.glm5_2_performance.workflow._msprof_analyze_executable",
                 return_value="msprof-analyze",
             ), patch(
                 "tests.glm5_2_performance.workflow._run_msprof_analyze",
-                return_value={"return_code": 0},
+                side_effect=lambda *args, **kwargs: (
+                    Path(kwargs["command"][-1]).mkdir(parents=True),
+                    (Path(kwargs["command"][-1]) / "comparison.xlsx").write_bytes(
+                        b"xlsx"
+                    ),
+                    {"return_code": 0},
+                )[-1],
             ) as execute:
                 run_performance_compare(
                     run,
@@ -861,13 +904,21 @@ class MindStudioPerformanceTest(unittest.TestCase):
                     candidate=rank_roots[1],
                     comparison_name="rank_0_vs_rank_1",
                     standard_cli=True,
+                    overall_only=True,
                 )
         command = execute.call_args.kwargs["command"]
-        self.assertEqual(Path(command[command.index("-d") + 1]), rank_roots[1])
-        self.assertEqual(Path(command[command.index("-bp") + 1]), rank_roots[0])
+        self.assertEqual(
+            Path(command[command.index("-d") + 1]).name,
+            "ascend_pytorch_profiler_1.db",
+        )
+        self.assertEqual(
+            Path(command[command.index("-bp") + 1]).name,
+            "ascend_pytorch_profiler_0.db",
+        )
         output = Path(command[command.index("--output_path") + 1])
         self.assertEqual(output.name, "rank_0_vs_rank_1")
         self.assertEqual(output.parent.name, "compare_analysis_output")
+        self.assertIn("--enable_profiling_compare", command)
 
     def test_msprof_capability_gate_rejects_pytorch_only_analysis(self) -> None:
         config = PerformanceConfig(name="official", collector="msprof")
@@ -967,6 +1018,7 @@ class MindStudioPerformanceTest(unittest.TestCase):
                 run_directory: Path,
                 *,
                 analysis_toolchain: dict[str, object] | None = None,
+                **_: object,
             ) -> dict[str, object]:
                 self.assertFalse(old_advisor.exists())
                 self.assertEqual(analysis_toolchain, toolchain_v1)
@@ -1040,6 +1092,7 @@ class MindStudioPerformanceTest(unittest.TestCase):
                 run_directory: Path,
                 *,
                 analysis_toolchain: dict[str, object] | None = None,
+                **_: object,
             ) -> dict[str, object]:
                 self.assertFalse((run_directory / "advisor").exists())
                 self.assertEqual(analysis_toolchain, toolchain_v2)
@@ -1132,6 +1185,56 @@ class MindStudioPerformanceTest(unittest.TestCase):
         self.assertEqual(kwargs["cluster_mode"], "communication_time")
         self.assertTrue(kwargs["cluster_agent_output"])
         self.assertTrue(kwargs["cluster_bypass_input_safety_checks"])
+
+    def test_data_action_prepares_named_performance_workload(self) -> None:
+        config = PerformanceConfig(name="official")
+        def prepare_side_effect(*_: object, **__: object) -> Path:
+            fixture = Path(directory) / "fixture"
+            fixture.mkdir()
+            (fixture / "fixture.json").write_text(
+                json.dumps(
+                    {
+                        "generation_id": "generation-1",
+                        "checkpoint_sha256": "checkpoint",
+                        "token_plan": {"step_series_sha256": "tokens"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return fixture
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            sys,
+            "argv",
+            [
+                "performance.py",
+                "--data",
+                "--device",
+                "npu",
+                "--workload",
+                "router-skew",
+                "--workload-arg=--dataloader.dataset=router_skew",
+            ],
+        ), patch(
+            "tests.glm5_2_performance.workflow._repository_root",
+            return_value=Path(directory),
+        ), patch(
+            "tests.glm5_2_performance.workflow._resolve_device",
+            return_value="npu",
+        ), patch(
+            "tests.glm5_2_performance.workflow.prepare_fixture",
+            side_effect=prepare_side_effect,
+        ) as prepare, patch(
+            "tests.glm5_2_performance.workflow.capture"
+        ) as capture_mock:
+            run_profiler_cli(config, "performance.py")
+
+        fixture_config = prepare.call_args.args[1]
+        self.assertEqual(fixture_config.training.extra_args, (
+            "--dataloader.dataset=router_skew",
+        ))
+        self.assertIn("workload-router-skew", fixture_config.storage_base_name)
+        capture_mock.assert_not_called()
 
     def test_invalid_msprof_analysis_fails_before_force_reset(self) -> None:
         config = PerformanceConfig(

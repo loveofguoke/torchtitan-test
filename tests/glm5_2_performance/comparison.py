@@ -26,6 +26,20 @@ from tests.glm5_2_performance.analysis import read_metrics
 
 STEP_TIME = "time_metrics/end_to_end(s)"
 THROUGHPUT = "throughput(tps)"
+ABLATION_FACTORS = (
+    "graph_mode",
+    "compile_components",
+    "training_dtype",
+    "mixed_precision_param",
+    "mixed_precision_reduce",
+    "extra_args",
+)
+LOWER_IS_BETTER = {
+    "step_time_median_s",
+    "step_time_p90_s",
+    "step_time_p95_s",
+    "peak_active_memory_gib",
+}
 
 
 def _percentile(values: list[float], fraction: float) -> float | None:
@@ -98,6 +112,11 @@ def _normalized_contract(overview: dict[str, Any]) -> dict[str, Any]:
             }
         except KeyError:
             topology_degrees = {}
+    extra_args = [
+        argument
+        for argument in raw.get("extra_args", [])
+        if not str(argument).startswith("--compile.")
+    ]
     return {
         "module": raw.get("module"),
         "model_config": raw.get("model_config", raw.get("config")),
@@ -111,7 +130,24 @@ def _normalized_contract(overview: dict[str, Any]) -> dict[str, Any]:
         "training_dtype": raw.get("training_dtype", "float32"),
         "mixed_precision_param": raw.get("mixed_precision_param", "bfloat16"),
         "mixed_precision_reduce": raw.get("mixed_precision_reduce", "float32"),
+        "graph_mode": raw.get("graph_mode", "eager"),
+        "compile_components": raw.get("compile_components", ["model"]),
+        "npu_codegen": raw.get("npu_codegen"),
+        "deterministic": raw.get("deterministic", False),
+        # GraphFeatureConfig generates --compile.* arguments from graph_mode
+        # and compile_components. Raw compile arguments are rejected by the
+        # performance CLI, so removing generated duplicates cannot hide a
+        # user-controlled contract difference.
+        "extra_args": extra_args,
         "profiler_enabled": raw.get("profiler_enabled", True),
+    }
+
+
+def _execution_context(overview: dict[str, Any]) -> dict[str, Any]:
+    raw = overview.get("configuration") or overview.get("contract") or {}
+    return {
+        "device": overview.get("device", raw.get("device")),
+        "device_selection": overview.get("device_selection"),
     }
 
 
@@ -156,6 +192,7 @@ def _run_summary(run_dir: Path, *, skip_steps: int) -> dict[str, Any]:
     return {
         "run": str(run_dir.resolve()),
         "contract": contract,
+        "execution_context": _execution_context(overview),
         "measurement": {
             "skip_steps": skip_steps,
             "measured_steps": len(records),
@@ -189,11 +226,18 @@ def _contract_without_steps(contract: dict[str, Any]) -> dict[str, Any]:
 
 def _validate_group(runs: list[dict[str, Any]], label: str) -> dict[str, Any]:
     expected = _contract_without_steps(runs[0]["contract"])
+    expected_context = runs[0]["execution_context"]
     for run in runs[1:]:
         actual = _contract_without_steps(run["contract"])
         if actual != expected:
             raise ValueError(
                 f"{label} repeat contract mismatch:\nexpected={expected}\nactual={actual}"
+            )
+        if run["execution_context"] != expected_context:
+            raise ValueError(
+                f"{label} repeat execution context mismatch:\n"
+                f"expected={expected_context}\n"
+                f"actual={run['execution_context']}"
             )
     return expected
 
@@ -234,6 +278,7 @@ def _aggregate_group(
     return {
         "label": label,
         "contract": contract,
+        "execution_context": runs[0]["execution_context"],
         "repeat_count": len(runs),
         "measurement_policy": {
             "profiler_enabled": False,
@@ -247,12 +292,45 @@ def _aggregate_group(
     }
 
 
-def _compare(reference: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
-    if reference["contract"] != candidate["contract"]:
+def _contract_differences(
+    reference: dict[str, Any], candidate: dict[str, Any]
+) -> dict[str, dict[str, Any]]:
+    keys = sorted(set(reference) | set(candidate))
+    return {
+        key: {"reference": reference.get(key), "candidate": candidate.get(key)}
+        for key in keys
+        if reference.get(key) != candidate.get(key)
+    }
+
+
+def _compare(
+    reference: dict[str, Any],
+    candidate: dict[str, Any],
+    *,
+    ablation_factor: str | None = None,
+) -> dict[str, Any]:
+    differences = _contract_differences(
+        reference["contract"], candidate["contract"]
+    )
+    if ablation_factor is None and differences:
         raise ValueError(
             "reference and candidate contracts differ; refusing performance comparison:\n"
             f"reference={reference['contract']}\ncandidate={candidate['contract']}"
         )
+    if ablation_factor is not None:
+        if ablation_factor not in ABLATION_FACTORS:
+            raise ValueError(f"unsupported ablation factor: {ablation_factor}")
+        if set(differences) != {ablation_factor}:
+            raise ValueError(
+                "ablation must change exactly its declared factor; "
+                f"factor={ablation_factor!r}, differences={differences}"
+            )
+        if reference["execution_context"] != candidate["execution_context"]:
+            raise ValueError(
+                "ablation requires the same device and physical-device selection; "
+                f"reference={reference['execution_context']}, "
+                f"candidate={candidate['execution_context']}"
+            )
     if (
         reference["runs"][0]["series"]["step"]
         != candidate["runs"][0]["series"]["step"]
@@ -274,9 +352,26 @@ def _compare(reference: dict[str, Any], candidate: dict[str, Any]) -> dict[str, 
             "candidate_vs_reference_percent": (
                 (current / baseline - 1) * 100 if baseline else None
             ),
+            "optimization_improvement_percent": (
+                ((baseline - current) / baseline * 100)
+                if baseline and name in LOWER_IS_BETTER
+                else ((current - baseline) / baseline * 100)
+                if baseline
+                else None
+            ),
+            "better_direction": (
+                "lower" if name in LOWER_IS_BETTER else "higher"
+            ),
+            "repeat_ranges_overlap": not (
+                reference_value["max"] < candidate_value["min"]
+                or candidate_value["max"] < reference_value["min"]
+            ),
         }
     return {
         "contract_match": True,
+        "comparison_kind": "ablation" if ablation_factor else "peer",
+        "ablation_factor": ablation_factor,
+        "contract_differences": differences,
         "metrics": metrics,
         "interpretation": (
             "Lower is better for step time and memory; higher is better for "
@@ -323,6 +418,8 @@ def _render(output: Path, payload: dict[str, Any]) -> None:
         )
     if payload.get("comparison"):
         aggregate_columns.append("Candidate vs reference")
+        if payload["comparison"].get("comparison_kind") == "ablation":
+            aggregate_columns.append("Optimization improvement")
     aggregate_rows = []
     for name in metric_names:
         row = [name]
@@ -341,6 +438,11 @@ def _render(output: Path, payload: dict[str, Any]) -> None:
             row.append(
                 f"{_format(relative_change)}%"
             )
+            if payload["comparison"].get("comparison_kind") == "ablation":
+                improvement = payload["comparison"]["metrics"].get(
+                    name, {}
+                ).get("optimization_improvement_percent")
+                row.append(f"{_format(improvement)}%")
         aggregate_rows.append(tuple(row))
     aggregate_table = summary_table(
         columns=tuple(aggregate_columns), rows=tuple(aggregate_rows)
@@ -365,6 +467,34 @@ def _render(output: Path, payload: dict[str, Any]) -> None:
         for index, run in enumerate(group["runs"], start=1)
     ]
     sections: list[Any] = [
+        section_heading(
+            "证据来源与职责 / Evidence Provenance",
+            (
+                "训练与性能原始证据由 TorchTitan 指标、Ascend PyTorch "
+                "Profiler、msProf 和 msprof-analyze 等官方工具产生；本报告只负责"
+                "实验合同校验、重复聚合、派生统计与索引，不重新实现 profiler。"
+            ),
+        ),
+        summary_table(
+            columns=("Layer", "Owner", "Responsibility"),
+            rows=(
+                (
+                    "Capture and diagnosis",
+                    "Official Ascend ms tools",
+                    "Timeline, operator, communication, memory, advisor evidence",
+                ),
+                (
+                    "Experiment harness",
+                    "torchtitan-test",
+                    "Orchestration, identity, lifecycle, contract validation",
+                ),
+                (
+                    "This report",
+                    "torchtitan-test",
+                    "Profiler-off repeat aggregation and derived effect sizes",
+                ),
+            ),
+        ),
         section_heading(
             "实验合同与重复数 / Contract and Repeats",
             "仅聚合 profiler-off 正常训练。少于三次时明确显示证据不足。",
@@ -424,6 +554,33 @@ def _render(output: Path, payload: dict[str, Any]) -> None:
     )
     if payload.get("comparison"):
         changes = payload["comparison"]["metrics"]
+        if payload["comparison"].get("comparison_kind") == "ablation":
+            difference = payload["comparison"]["contract_differences"]
+            factor = payload["comparison"]["ablation_factor"]
+            sections.extend(
+                (
+                    section_heading(
+                        "消融合同 / Ablation Contract",
+                        "框架已验证两组实验只改变声明的一个配置字段。",
+                    ),
+                    summary_table(
+                        columns=("Factor", "Baseline", "Variant"),
+                        rows=(
+                            (
+                                str(factor),
+                                json.dumps(
+                                    difference[factor]["reference"],
+                                    ensure_ascii=False,
+                                ),
+                                json.dumps(
+                                    difference[factor]["candidate"],
+                                    ensure_ascii=False,
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+            )
         sections.extend(
             (
                 section_heading(
@@ -491,8 +648,17 @@ def build_comparison(
     candidate_label: str,
     skip_steps: int,
     output: Path,
+    ablation_factor: str | None = None,
     force: bool = False,
 ) -> dict[str, Any]:
+    if ablation_factor is not None:
+        if not candidate_runs:
+            raise ValueError("performance ablation requires candidate runs")
+        if len(reference_runs) < 3 or len(candidate_runs) < 3:
+            raise ValueError(
+                "performance ablation requires at least three independent "
+                "repeats on each side"
+            )
     reference = _aggregate_group(reference_label, reference_runs, skip_steps=skip_steps)
     candidate = (
         _aggregate_group(candidate_label, candidate_runs, skip_steps=skip_steps)
@@ -501,9 +667,22 @@ def build_comparison(
     )
     payload: dict[str, Any] = {
         "schema": "torchtitan.glm5_2.performance.comparison.v1",
+        "evidence_provenance": {
+            "capture_and_diagnosis": "official Ascend ms tools",
+            "harness": "torchtitan-test orchestration and contract validation",
+            "report": "derived profiler-off aggregation; not a profiler",
+        },
         "reference": reference,
         "candidate": candidate,
-        "comparison": _compare(reference, candidate) if candidate else None,
+        "comparison": (
+            _compare(
+                reference,
+                candidate,
+                ablation_factor=ablation_factor,
+            )
+            if candidate
+            else None
+        ),
     }
     existing_path = output / "comparison.json"
     if existing_path.is_file():
@@ -533,6 +712,11 @@ def build_comparison(
         if candidate
         else "- candidate: not configured",
         f"- skipped warmup steps: `{skip_steps}`",
+        (
+            f"- ablation factor: `{ablation_factor}`"
+            if ablation_factor
+            else "- comparison kind: strict peer comparison"
+        ),
         "",
         "Open `comparison.html` for the complete self-contained report and "
         "`comparison.json` for machine-readable evidence.",
@@ -548,6 +732,14 @@ def run_cli() -> int:
     parser.add_argument("--reference-label", default="reference")
     parser.add_argument("--candidate-run", action="append", type=Path)
     parser.add_argument("--candidate-label", default="candidate")
+    parser.add_argument(
+        "--ablation-factor",
+        choices=ABLATION_FACTORS,
+        help=(
+            "declare the one configuration field intentionally changed "
+            "between reference and candidate"
+        ),
+    )
     parser.add_argument("--skip-steps", type=int, default=10)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--force", action="store_true")
@@ -561,6 +753,7 @@ def run_cli() -> int:
         candidate_label=args.candidate_label,
         skip_steps=args.skip_steps,
         output=args.output.resolve(),
+        ablation_factor=args.ablation_factor,
         force=args.force,
     )
     for name in ("comparison.html", "comparison.json", "README.md"):

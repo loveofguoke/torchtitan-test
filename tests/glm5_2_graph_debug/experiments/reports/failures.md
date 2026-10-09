@@ -96,12 +96,35 @@ HCCL 提单或制作 patch 时，请使用
 
 ## G010：PP 冷编译超过 HCCL 建链/进程组等待
 
-- 现象：相邻 stage 到达 send/recv 的时间差过大，CANN plog 出现 socket recv 120 秒
-  timeout；其他尝试可表现为 SIGSEGV 或 peer EOF。
-- 处理：`HCCL_CONNECT_TIMEOUT=600`；`comm.init_timeout_seconds=2400`；
-  `TASK_QUEUE_ENABLE=0` 让错误在真实位置报告。
+- 现象：PP8 图模式首步中，下游 rank 在 `PipelineStage` metadata receive 等待约
+  300 秒后超时；延长 timeout 只能推迟失败，不能消除首步串行等待。
+- 根因：PyTorch 动态 metadata inference 会执行真实 stage forward。包含
+  `torch.compile` 子模块时，rank 0 编译完成后才发送 metadata，rank 1 才开始编译，
+  依次传播到 rank 7，八级冷编译被错误地串行放进 P2P 链路。2026-10-08 的全 rank
+  日志中，rank 0-3 依次约在 15:38:01、15:38:09、15:38:18、15:38:26 产出编译
+  结果，rank 4 到 15:42:18 才完成，直接解释了下游 300 秒 watchdog。
+- 排除项：真实 `_StageForwardMeta` 的 8-rank 最小复现对
+  `TASK_QUEUE_ENABLE={0,2}` × `use_batch={false,true}` 四种组合均通过，因此当前
+  失败不是 metadata 对象本身无法传输；G009 的历史 1EB/EOF 与本问题分开记录。
+- 官方语义边界：PyTorch `PipelineStage` 只允许两类 metadata 合同。静态模式由
+  调用方通过 `input_args`、`output_args`（DTensor/反向场景还包括 grad metadata）
+  提供完整合同；动态模式由真实上游 stage 运行 forward 并逐级传输 metadata。
+  本实验继续使用动态模式，不能自行制造本地 metadata，也不能用 host store 替换
+  原通信协议。
+- 当前修复候选：仅在 PyTorch 原始
+  `_forward_metadata_inference`/`_backward_metadata_inference` 执行期间进入官方
+  `torch.compiler.set_stance("force_eager")` 上下文。真实 stage、真实输入、metadata
+  内容、发送接收顺序和校验全部不变；只避免把冷编译串行塞进启动期 metadata P2P。
+  当前安装的 PyTorch 尚无公开 `PipelineStage.register_forward_context`，所以 Turbo
+  只提供一个可移除的兼容桥；升级到包含公开 hook 的版本后应迁移到公开 API。
+- 已否决实验：本地 metadata 推断绕过了真实同步语义；host store 只改变等待位置；
+  dummy-input 并行预编译需要复制输入/反向/状态恢复合同。这些都不能作为正式修复，
+  也不能因短跑通过而标记完成。
 - 中间失败：`...inductor-20260824-184945-3585505`、`...185701-3664334`。
 - 通过：`...inductor-20260824-190123-3690709`。
+- 2026-10-08 待复验：使用动态 metadata + `force_eager` 跑 PP8 正式 500-step；
+  完成前不得标记修复通过。即使 metadata 超时消失，首步 Grad Norm 非有限也必须
+  作为独立正确性问题继续定位。
 
 ## G011：编译 collective 数值不稳定
 
@@ -192,3 +215,42 @@ HCCL 提单或制作 patch 时，请使用
 所有失败 invocation 仍在 `graph_debug_runs/`；smoke runner 将不完整 topology 改名为
 `.failed-<timestamp>` 后再复测。没有为了得到“干净”结论而删除失败现场。最终判断
 只读取无后缀 topology 目录中的 passed manifest。
+# 2026-10-08 PP8 local metadata inference follow-up
+
+- Dynamic PipelineStage metadata serialized cold compilation and timed out at
+  rank 7. Moving metadata to the rendezvous store reproduced the same
+  300-second timeout, so transport substitution was rejected.
+- A one-stage-per-rank local metadata prototype removed startup metadata P2P
+  and reached the first real training step without extending timeouts. It was
+  subsequently rejected and removed because it bypassed PyTorch's dynamic
+  protocol without using the public static `PipelineStage` constructor API.
+- A separate correctness failure is now visible: step-1 loss is finite, but
+  Grad Norm is NaN. Before clipping, rank 0 has 13 non-finite parameter grads
+  beginning at the embedding and layer-0 MLA weights; ranks 1-7 have none.
+- `TASK_QUEUE_ENABLE=0` and `2`, and zero versus uninitialized dummy hidden
+  states, reproduce the same rank-0 gradient failure. Do not classify this as
+  a task-queue or metadata-transport fix, and do not bypass the finite check.
+
+# 2026-10-08 PP8 official dynamic-metadata follow-up
+
+- The production profile keeps PyTorch dynamic metadata and its original P2P
+  protocol. It only runs the original metadata probes inside the public
+  `torch.compiler.set_stance("force_eager")` context.
+- Server tests passed: 24 Turbo graph-compat tests and 29 experiment graph tests.
+- All eight ranks completed metadata initialization and entered step 1 together;
+  concurrent Ascend-Triton compilation replaced the old rank-by-rank 300-second
+  metadata chain.
+- The run still failed before completing step 1. Rank 7 segfaulted in
+  `torch_npu.distributed._batch_isend_irecv` while exiting PyTorch's
+  `_coalescing_manager` from `PipelineSchedule._batch_p2p`; elastic sent SIGTERM
+  to ranks 0-6. Treat this as a separate torch_npu batched-P2P compatibility
+  issue, not as evidence that the metadata fix failed or that PP8 passed.
+- Timeline refinement: rank 7 owns only `norm/lm_head`, entered schedule P2P
+  while transformer stages were still compiling, and failed after the wait
+  window. The payload was not shown corrupt; cold-compile skew remained coupled
+  to the communication critical section.
+- The corrected profile captures each stage's actual inputs during the unchanged
+  dynamic metadata probe, builds forward/backward caches locally before schedule
+  P2P, restores RNG/buffers/grads, and synchronizes completion through the host
+  rendezvous store. The 17:49 rerun completed steps 1-3 with finite Grad Norm;
+  the 500-step validation remains in progress in `tmux yyb:graph`.

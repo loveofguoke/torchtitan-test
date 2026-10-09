@@ -52,6 +52,14 @@ def test_graph_feature_generates_only_compile_arguments() -> None:
     )
     assert "TORCHTITAN_PIPELINE_META_USE_BATCH" not in eager.environment
     assert compiled.environment["TORCHTITAN_PIPELINE_META_USE_BATCH"] == "0"
+    assert compiled.environment["TORCHTITAN_PIPELINE_METADATA_FORCE_EAGER"] == "1"
+    assert compiled.environment["TORCHTITAN_PIPELINE_REAL_INPUT_PRECOMPILE"] == "1"
+    assert compiled.environment["TORCHTITAN_FIRST_ALL_REDUCE_HOST_BARRIER"] == "1"
+    assert "TORCHTITAN_PIPELINE_STAGE_PRECOMPILE_SHAPE" not in compiled.environment
+    assert "TORCHTITAN_PIPELINE_META_TRANSPORT" not in compiled.environment
+    assert compiled.environment["TASK_QUEUE_ENABLE"] == "0"
+    assert compiled.environment["TORCHTITAN_TASK_QUEUE_ENABLE"] == "0"
+    assert compiled.environment["TORCHINDUCTOR_COMPILE_THREADS"] == "1"
 
 
 def test_graph_diagnostics_are_isolated_per_rank(

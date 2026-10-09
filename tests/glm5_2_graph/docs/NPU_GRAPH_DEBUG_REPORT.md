@@ -146,6 +146,7 @@ tests/glm5_2_graph_debug/run_graph_mode.sh inductor precision \
 | Turbo 覆盖 task queue | Turbo 尊重 `TORCHTITAN_TASK_QUEUE_ENABLE` | Turbo；已实现，待三仓版本复验 |
 | TP `aten.complex` 无 strategy | 注册现有 broadcast pointwise strategy | Turbo；已实现，待三仓版本复验 |
 | PP metadata batched P2P 损坏 | metadata 使用 `use_batch=False` | Turbo；已实现，待三仓版本复验 |
+| PP dynamic metadata 串行冷编译 | metadata 前按真实 microbatch shape 并行预编译各 rank 本地 stage，再由原协议校验 | Turbo + test launcher；2026-10-08 PP8 500-step 复验进行中，不得仅凭单元测试宣称通过 |
 | EP 空 expert grouped-mm | 空组补零行、全空 bypass、显式 backward | Turbo；已实现，待三仓版本复验 |
 | 动态 pointwise grid=0 | 两类 NPU Triton autotuner launch 前 no-op | Turbo；已实现，待三仓版本复验 |
 | grouped-mm padding offsets 变为 INT64 | `cumsum` 显式保持 INT32 | Turbo；已实现，待三仓版本复验 |

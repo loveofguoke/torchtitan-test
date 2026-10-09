@@ -153,6 +153,16 @@ def build_self_diagnosis(
     host_evidence: list[dict[str, Any]] = [
         {"metric": "runtime_fallback_warning_count", "value": fallbacks}
     ]
+    host_evidence.extend(
+        {
+            "metric": "fallback_operator",
+            "category": detail.get("category"),
+            "operator": detail.get("operator", "unknown"),
+            "count": detail.get("count", 1),
+            "message": detail.get("message", ""),
+        }
+        for detail in compiler.get("fallback_details", [])
+    )
     if free_values:
         host_evidence.append(
             {"metric": "max_device_free_percent", "value": max(free_values)}

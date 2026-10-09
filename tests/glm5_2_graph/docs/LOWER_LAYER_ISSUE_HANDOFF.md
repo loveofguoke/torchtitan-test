@@ -475,7 +475,7 @@ ProcessGroupHCCL；也可能是 PyTorch batched object 协议与该 backend capa
 | G004 | `graph_env_common.sh` 的 `HCCL_NPU_SOCKET_PORT_RANGE` | NPU NIC 端口是宿主共享资源。launcher 保持可配置/auto；若 HCCL `auto` 仍冲突，再携带占用端口和 communicator 日志提 HCCL 端口分配问题。 |
 | G005 | `graph_env_common.sh` 的 `HCCL_IF_BASE_PORT` | host socket 与 NPU NIC 是两个端口面。实验每次生成 base port 是隔离策略，不是模型 patch。可推动 HCCL 提供命名空间感知的动态端口或冲突时明确报告两类端口。 |
 | G006 | `torchtitanturbo/patch.py::set_environ_variable`（30-39 行） | 旧实现无条件覆盖 queue；当前实现读取并校验 `TORCHTITAN_TASK_QUEUE_ENABLE`，属于 Turbo 已修复问题。三仓源码安装复验后方可标“已验证”。 |
-| G010 | `train_npu.py`（10-31 行）的 `--comm.init_timeout_seconds` 注入与 `HCCL_CONNECT_TIMEOUT` | 冷编译使 PP rank 到达通信点的时间差变大。timeout 是实验 policy；若已经进入同一 collective 仍超时，才按通信问题提单。 |
+| G010 | PyTorch `PipelineStage._forward_metadata_inference` 与 Turbo `_install_pipeline_stage_precompile` | dynamic metadata inference 执行真实 forward，导致 PP stage 冷编译沿 rank 串行。timeout 不是修复；当前 launcher 提供 `[T,D]` 代表输入，由 Turbo 在通信前并行预编译各本地 stage，再交回原协议校验真实 metadata。上游目标是 backend-neutral 的 concurrent precompile/static metadata 接口。 |
 | G012 | PyTorch `torch/_inductor/config.py` 约 1452-1464 行、`async_compile.py` 与 `compile_worker/subproc_pool.py` | 多 rank × 多 compiler worker 同时 `SetDevice` 造成 E39007。当前每 rank 1 worker 是资源控制；底层可改进 NPU compile worker 的 device 初始化、并发上限和错误诊断。 |
 | G017 | `graph_env_common.sh` 的 `TASK_QUEUE_ENABLE` profile | replay 已 skip 时 queue 1 的组合通信不稳定，queue 0 是降级 profile。只有 native capture 开启时才单独验证 queue 1；不能据此声称 queue runtime 根因已确定。 |
 | G018 | checkpoint failure-mode 任务的进程生命周期 | 残余 rank 占用 streams/HBM，是共享测试资源污染，不是图编译 root cause。应由 checkpoint runner 保存 PID/token 并只清理自己创建的进程；不能在图 launcher 中模糊 kill。 |

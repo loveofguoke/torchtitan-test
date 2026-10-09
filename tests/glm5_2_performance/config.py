@@ -296,6 +296,9 @@ class PerformanceConfig:
     global_batch_size: int = 2
     sequence_length: int = 128
     seed: int = 61
+    workload: str = "representative"
+    workload_args: tuple[str, ...] = ()
+    fixture_root: str = "performance_fixtures"
     replicate: int = 0
     training_dtype: str = "float32"
     mixed_precision_param: str = "bfloat16"
@@ -341,6 +344,8 @@ class PerformanceConfig:
             raise ValueError("profiler skip and warmup steps must be non-negative")
         if self.replicate < 0:
             raise ValueError("replicate must be non-negative")
+        if not self.workload.strip():
+            raise ValueError("workload must not be empty")
         if self.graph_mode not in {"eager", "inductor", "npugraphs"}:
             raise ValueError(
                 "graph_mode must be eager, inductor, or npugraphs"

@@ -712,6 +712,35 @@ Grad Norm、绝对差、倍数、相对误差、同 step Loss 误差和相邻 st
 双击/按钮复位；图内保留指导线、异常点和诊断区间。静态 SVG 继续作为无 JavaScript
 的兜底证据。`500` 只是本次观察窗口，不是官方固定标准；命令必须覆盖实际问题。
 
+### 代表性缩放模型的长程精度入口
+
+`scaled_accuracy_benchmark.py` 使用独立注册的
+`glm5_2_scaled_debugmodel`，不会复用或覆盖上述小型 debug model 的 fixture、
+artifact 或报告。默认合同是 1000 steps、sequence length 512、global batch 64；
+先完成 eager GPU/NPU 观察，再用 `scaled_graph_accuracy_benchmark.py` 分别验证
+Inductor + Ascend Triton 和 Inductor + DVM：
+
+```bash
+python tests/glm5_2_mindstudio/scaled_accuracy_benchmark.py \
+  --stage observation --data --data-device npu --topology single
+python tests/glm5_2_mindstudio/scaled_accuracy_benchmark.py \
+  --stage observation --capture candidate --topology single
+
+python tests/glm5_2_mindstudio/scaled_graph_accuracy_benchmark.py \
+  --device npu --graph-backend inductor --codegen-backend ascend-triton \
+  --stage observation --capture candidate --topology single
+python tests/glm5_2_mindstudio/scaled_graph_accuracy_benchmark.py \
+  --device npu --graph-backend inductor --codegen-backend dvm \
+  --stage observation --capture candidate --topology single
+```
+
+该模型约 420M 总参数，16 层，保留 GLM-5.2 的三层 dense -> MoE 转换、
+四层 IndexShare 周期、MLA/DSA 头维、Top-8 路由与 EP8 整除合同。缩小 hidden、
+vocab、LoRA rank 和总专家数，是为了同时满足 64GB NPU 单卡训练、图编译余量和
+小于 2 GiB 的 FP32 初始 checkpoint 传输约束。官方结构来源为
+[zai-org/GLM-5.2 config.json](https://huggingface.co/zai-org/GLM-5.2/blob/main/config.json)；
+具体缩放参数及其边界记录在 TorchTitan 的 `torchtitan/models/glm5/README.md`。
+
 实验报告根目录生成轻量 `<experiment-id>.html` 总索引；所有可下载自包含报告集中在
 `html_reports/`，并按 `<training-profile>/<report-kind>/<profile>/<topology>.html`
 组织。该镜像层级与真实实验一致，不使用扁平 `topologies/`；下载 `html_reports/`
@@ -881,31 +910,99 @@ for r in 1 2 3; do
 done
 ```
 
+优化组件必须以相同合同做 profiler-off 单变量消融。下面以 eager 对
+Inductor 为例；两侧分别传入至少三次 capture 的 run 目录：
+
+```bash
+python tests/glm5_2_mindstudio/performance_ablation.py \
+  --reference-label eager \
+  --reference-run /abs/path/to/eager-r1 \
+  --reference-run /abs/path/to/eager-r2 \
+  --reference-run /abs/path/to/eager-r3 \
+  --candidate-label inductor \
+  --candidate-run /abs/path/to/inductor-r1 \
+  --candidate-run /abs/path/to/inductor-r2 \
+  --candidate-run /abs/path/to/inductor-r3 \
+  --ablation-factor graph_mode \
+  --skip-steps 10 \
+  --output mindstudio_reports/performance/ablations/fsdp8-eager-vs-inductor
+```
+
+该入口会拒绝 profiler-active 数据、重复间合同不一致、设备映射不同、测量
+step 窗口不同，以及除声明字段外还改变了其他配置的实验。输出包含自包含
+`comparison.html`、机器可读 `comparison.json` 和 `README.md`；报告给出
+median/p90/p95、吞吐、TFLOPS、MFU、峰值显存、改进百分比和重复区间是否重叠，
+但不把统计启发式冒充成自动 PASS/FAIL。
+
+这里必须区分工具所有权：Ascend PyTorch Profiler、msProf、msprof-analyze、
+Advisor 和 Insight 负责产生系统、算子、通信、内存及规则诊断等原始官方证据；
+`torchtitan-test` 只负责组织命令、固定实验身份、管理续跑/强制重跑、校验合同、
+聚合 profiler-off 结果和生成索引报告，并没有重新实现这些 ms 工具。
+
 标准流程用一条 `--probe --analysis-tools all` 命令依次完成采集、离线解析、
 Advisor、适用时的 Cluster，以及 Insight 交接文件。单卡、一个分布式拓扑和全部
 拓扑分别运行：
 
 ```bash
+python tests/glm5_2_mindstudio/performance_benchmark.py \
+  --data --device npu --workload representative \
+  --steps 30 --local-batch-size 8 --global-batch-size 64 \
+  --sequence-length 128
+
 export ASCEND_RT_VISIBLE_DEVICES=4
 python tests/glm5_2_mindstudio/performance_benchmark.py \
   --probe --device npu --collector torch_npu_profiler \
-  --topology single --preset standard --analysis-tools all
+  --topology single --preset standard --analysis-tools all \
+  --workload representative
 
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 python tests/glm5_2_mindstudio/performance_benchmark.py \
   --probe --device npu --collector torch_npu_profiler \
-  --topology fsdp8 --preset distributed --analysis-tools all
+  --topology fsdp8 --preset distributed --record-shapes \
+  --analysis-tools all --cluster-recipes necessary \
+  --workload representative
 
 python tests/glm5_2_mindstudio/performance_benchmark.py \
   --probe --device npu --collector torch_npu_profiler \
-  --topology all --preset overview --analysis-tools all
+  --topology all --preset overview --analysis-tools all \
+  --workload representative
 ```
+
+性能 fixture 是性能类别自己的共享输入合同。`--data` 运行一次 TorchTitan 数据管线，
+保存全局 token plan，并生成固定初始化 checkpoint；所有 topology、Profiler 开关以及
+未来 GPU/NPU 两端按同一 workload 读取它们。capture 结束后会校验各 rank 实际消费的
+global slot 和 token hash。fixture 经 `--force` 重建后，旧 capture 不会被静默续用。
+
+`--workload NAME` 可以准备多套输入；影响数据或模型输入合同的参数通过可重复的
+`--workload-arg=...` 同时进入生成和训练。workload 名称本身不证明专家负载均衡或
+倾斜，仍须检查逐专家 token 数、capacity/drop 和 rank 分布。
+
+这里的 Advisor 是日常快速阶段；它不会默认追加可能耗时一小时以上的代表 rank
+`advisor computation`。只有 Timeline/Operator 或快速 Advisor 已经把问题指向计算/算子
+时，才对已有 capture 显式补跑：
+
+```bash
+python tests/glm5_2_mindstudio/performance_benchmark.py \
+  --analyze --device npu --collector torch_npu_profiler \
+  --topology single --preset standard --analysis-tools advisor \
+  --advisor-computation --force
+```
+
+完整的“环境预检 -> profiler-off 三次基线 -> 有界采集 -> Advisor/Insight 快速定界 ->
+TopN 分支下钻 -> profiler-off A/B 闭环”及每一步命令见性能标准流程文档第 2.0 节。
 
 `standard` 使用 Level1、PipeUtilization 和 `profile_memory=True`，单卡一次
 capture 即可填充 Insight 的 Timeline、Memory、Operator。`distributed` 同样默认
 开启内存采集，并对所有 rank 采集通信数据，因此一个多卡 capture 可同时填充
 Timeline、Memory、Operator、Summary、Communication。轻量 `overview` 不承诺
 Memory 页面完整；它用于先做低成本全拓扑扫描。
+
+上面的 `fsdp8 + distributed + record-shapes + analysis-tools all +
+cluster-recipes necessary` 是五页面标准命令。若要复现历史上的全拓扑完整采集，仅将
+`--topology fsdp8` 改为 `--topology all`，不要把 preset 降为 `overview`；但该命令会
+为每个拓扑分别采集，容量和耗时都很高。无论后续补跑哪一种分析，Insight 始终只导入
+该 run 的 `trainer_output/profiling/traces/`：rank profile 保持不变，新的集群与 recipe
+交付件只增量写入同一 `cluster_analysis_output/`。
 
 Cluster 分析直接以 profiler 根目录作为官方 `-o`，因此唯一的
 `cluster_analysis_output/` 与所有 `*_ascend_pt` rank 目录天然位于同一棵树中，
@@ -1003,10 +1100,14 @@ Profiler 产物可进入 offline、advisor、cluster、compare 和 Insight 中�
 | `--trend-mapping FILE` | 趋势解析时重写/统一模块名称 | JSON mapping |
 | `--trend-processes N` | Monitor CSV 趋势解析进程数 | 默认 1；dump 暂不支持多进程加速 |
 | `--no-trend-micro-step` | 关闭趋势数据库的 micro-step 拆分 | 默认开启 |
+| `--data` | 生成性能共享 checkpoint 与固定 token plan | capture/probe 前必须完成；`--force` 会创建新 generation |
+| `--workload NAME` | 选择具名性能输入合同 | 默认 `representative`；进入 fixture、run 和报告身份 |
+| `--workload-arg=ARG` | 同时用于 workload 生成和训练的数据/模型输入参数 | 可重复；名称不自动证明专家负载均衡 |
 | `--collector NAME` | 性能采集入口 | 默认 `torch_npu_profiler`；底层或黑盒整进程采集可显式选择 `msprof` |
 | `--collector-arg=ARG` | 追加当前 CANN 版本确认过的 msProf 参数 | 可重复；不能覆盖 lifecycle 管理的 output/application/dynamic |
 | `--preset NAME` | Ascend PyTorch Profiler 策略 | msProf 保持 `overview` 占位，不接受 `all` |
 | `--analysis-tools none|offline|advisor|cluster|all` | 性能离线分析阶段 | msProf 的 `all` 只选 cluster；torch_npu 的 `all` 选 offline+advisor+cluster |
+| `--advisor-computation` | 追加代表 rank 的重型算子规则分析 | 必须同时选择 advisor；普通 Advisor/`all` 默认不运行 |
 | `--cluster-mode all|communication_time|communication_matrix` | 官方 cluster 解析范围 | 默认 `all`；只定位耗时或矩阵时可缩小 |
 | `--cluster-agent-output` | 请求官方 cluster JSON stdout | stdout 连同命令、stderr、return code 保存到 `cluster.json` |
 | `--cluster-bypass-input-safety-checks` | 传递官方 cluster `--force` | 绕过属主、权限和超大文件检查；与实验生命周期 `--force` 无关 |

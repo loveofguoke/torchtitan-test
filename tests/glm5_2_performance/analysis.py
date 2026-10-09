@@ -339,8 +339,21 @@ def extract_top_csv_entries(
 ) -> list[dict[str, Any]]:
     """Aggregate recognized kernel/operator/API duration CSVs defensively."""
 
+    execution_duration_tables = {
+        "api_statistic.csv",
+        "kernel_details.csv",
+        "op_statistic.csv",
+        "operator_details.csv",
+        "task_time.csv",
+    }
     tables = []
     for path in profiler_directory.rglob("*.csv"):
+        # Memory exports also contain a Duration column, but it describes an
+        # allocation lifetime rather than device execution time.  Restrict the
+        # hotspot table to the official execution-duration deliveries so the
+        # two quantities can never be ranked together.
+        if path.name.lower() not in execution_duration_tables:
+            continue
         try:
             with path.open(encoding="utf-8-sig", errors="replace", newline="") as stream:
                 reader = csv.DictReader(stream)
@@ -907,9 +920,11 @@ def _compiler_diagnostics(runtime_log: Path) -> dict[str, Any]:
         "all_parse_seconds": None,
         **{name: 0 for name in categories},
         "examples": [],
+        "fallback_details": [],
     }
     if not runtime_log.is_file():
         return result
+    fallback_details: dict[tuple[str, str, str], dict[str, Any]] = {}
     for line in runtime_log.read_text(encoding="utf-8", errors="replace").splitlines():
         normalized = line.lower()
         duration_match = re.search(
@@ -930,7 +945,34 @@ def _compiler_diagnostics(runtime_log: Path) -> dict[str, Any]:
             result[name] += 1
             if len(result["examples"]) < 12:
                 result["examples"].append(line[:1000])
+            if name in {"npu_cpu_fallbacks", "aicpu_fallbacks"}:
+                operator_match = re.search(
+                    r"kernel\s*\[([^\]]+)\]",
+                    line,
+                    flags=re.IGNORECASE,
+                ) or re.search(
+                    r"operator\s*(?:\[|:|=|is)?\s*['\"]?([A-Za-z0-9_:.-]+)",
+                    line,
+                    flags=re.IGNORECASE,
+                )
+                operator = operator_match.group(1) if operator_match else "unknown"
+                message = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", line).strip()
+                key = (name, operator, message)
+                detail = fallback_details.setdefault(
+                    key,
+                    {
+                        "category": name,
+                        "operator": operator,
+                        "count": 0,
+                        "message": message[:1000],
+                    },
+                )
+                detail["count"] += 1
             break
+    result["fallback_details"] = sorted(
+        fallback_details.values(),
+        key=lambda row: (-int(row["count"]), str(row["operator"])),
+    )
     return result
 
 

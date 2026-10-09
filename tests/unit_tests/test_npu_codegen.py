@@ -28,6 +28,29 @@ class TestNpuCodegen(unittest.TestCase):
         self.assertEqual(
             triton.environment["TORCHTITAN_PIPELINE_META_USE_BATCH"], "0"
         )
+        self.assertEqual(
+            triton.environment["TORCHTITAN_PIPELINE_METADATA_FORCE_EAGER"],
+            "1",
+        )
+        self.assertEqual(
+            triton.environment["TORCHTITAN_PIPELINE_REAL_INPUT_PRECOMPILE"],
+            "1",
+        )
+        self.assertEqual(
+            triton.environment["TORCHTITAN_FIRST_ALL_REDUCE_HOST_BARRIER"],
+            "1",
+        )
+        self.assertNotIn(
+            "TORCHTITAN_PIPELINE_STAGE_PRECOMPILE_SHAPE", triton.environment
+        )
+        self.assertNotIn("TORCHTITAN_PIPELINE_META_TRANSPORT", triton.environment)
+        self.assertEqual(triton.environment["TASK_QUEUE_ENABLE"], "0")
+        self.assertEqual(
+            triton.environment["TORCHTITAN_TASK_QUEUE_ENABLE"], "0"
+        )
+        self.assertEqual(
+            triton.environment["TORCHINDUCTOR_COMPILE_THREADS"], "1"
+        )
 
     def test_eager_regional_compile(self):
         feature = GraphFeatureConfig(npu_codegen="dvm").feature(device_type="npu")

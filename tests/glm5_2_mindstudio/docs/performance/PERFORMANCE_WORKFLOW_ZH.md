@@ -6,6 +6,7 @@ GPU/NPU 对比。它不重新实现 Profiler，而是把官方工具按职责串
 ```text
 同一训练契约
   +-- 每个拓扑 profiler-off 重复运行 ------------> 自身性能数值基线
+  +-- Baseline/单组件 Variant 成对重复 ----------> 消融：组件是否有效、提升多少
   +-- 每个拓扑系统级采集 ------------------------> 自身瓶颈分析
   |     +-- NPU: Ascend PyTorch Profiler/msProf
   |     +-- GPU: Nsight Systems
@@ -13,10 +14,16 @@ GPU/NPU 对比。它不重新实现 Profiler，而是把官方工具按职责串
   +-- 单拓扑完成后可选 A/B ----------------------> 版本/拓扑/GPU-NPU 对比
         +-- Advisor/Cluster/Compare/calibrate_npu_gpu
         +-- TopN 分支验证与 profiler-off 回归
+  +-- 卡数/节点数/模型规模阶梯 -------------------> 强/弱扩展与生产代表性
 ```
 
 采集、分析、可视化是三个阶段。采集或分析命令成功不等于性能通过；真实速度始终
 以 profiler-off 重复 A/B 的 step time、throughput 和资源指标为准。
+
+实现边界同样必须明确：实际执行与下钻主要依赖 Ascend PyTorch Profiler、msProf、
+msprof-analyze、Advisor 和 Insight 等官方 ms 工具。本仓库实现的是实验编排、身份与
+生命周期管理、合同验证、派生统计、自包含报告和证据索引；它不复制官方采集器、
+解析器或 GUI，也不把项目派生摘要写成官方工具结论。
 
 ## 1. 官方依据
 
@@ -124,6 +131,40 @@ Advisor HTML 适合先看优先级；完整明细在 XLSX。`inf` 可能只是�
 而不是网络传输慢。必须从 Communication 页的 wait/transmit 和 collective 上游 Timeline
 继续定位，不能见到 HCCL 时间长就直接更换网络配置。
 
+### 1.5 其他 Infra 栈的公开标准流程
+
+公开资料里没有一份跨厂商、跨硬件完全统一的 SOP，但成熟训练 Infra 的证据链高度
+一致。下面只引用各项目或厂商的官方仓库与文档；企业内部 CI 门禁、调度平台和硬件
+巡检系统通常没有完整公开，因此不能把公开工具列表误写成某家公司的全部内部流程。
+
+| 生态 | 公开工作流 | 主要工具 | 对本项目的启示 |
+|---|---|---|---|
+| PyTorch / TorchTitan | 固定 recipe 和并行配置，记录 loss、显存、tokens/s、TFLOPS、MFU；用短窗口 profiler、memory profiler、Flight Recorder 和结构化日志定位；跨配置或提交用 loss compare 与公开 benchmark 验证 | PyTorch Profiler、TensorBoard/W&B、Memory Snapshot、Flight Recorder、结构化日志 | 正确性、无侵入性能数值与 profiler 诊断必须分开；模型、硬件、并行度和软件版本必须随结果发布。参考 [TorchTitan README](https://github.com/pytorch/torchtitan) 与 [H100 benchmark](https://github.com/pytorch/torchtitan/blob/main/benchmarks/llama3_h100_202412_torchtitan.md) |
+| NVIDIA / Megatron Bridge / NeMo | 先用可复现 recipe 报告模型、精度、硬件、TP/PP/CP/EP/VP、batch、tokens/s 和 step time；随后对指定 step/rank 做 NSys 或 PyTorch Profiler；按通信 overlap、内存和 kernel 继续下钻 | Nsight Systems、PyTorch Profiler、CUDA/NVTX、Memory Snapshot、Nsight Compute；NeMo Run 管理 recipe/job | `profile_step_start/end` 和 `profile_ranks` 是配置合同；NSys 与 PyTorch Profiler 互斥，profile 有开销，正式速度回到非 profile 运行。参考 [Megatron Bridge Profiling](https://docs.nvidia.com/nemo/megatron-bridge/nightly/training/profiling.html)、[Performance Tuning Guide](https://docs.nvidia.com/nemo/megatron-bridge/latest/performance-guide.html) 与 [NeMo RL benchmark](https://docs.nvidia.com/nemo/rl/latest/about/performance-summary.html) |
+| Google / MaxText / JAX TPU | 用版本化 model recipe 或参数 sweep 在指定 TPU 拓扑运行；统一报告 step time、tokens/s 和 MFU；JAX trace 做高级定位，必要时看编译器 dump；定点 kernel 用 microbenchmark 扫 block/tiling | MaxText benchmark runner、XPK、JAX Profiler、TensorBoard/Perfetto、XLA compiler dump、Pallas microbenchmark | recipe 复现与规模 sweep 是一等公民；计时前必须同步设备；kernel 调优以 trace 加系统化参数 sweep 为准。参考 [MaxText Benchmark Runner](https://github.com/AI-Hypercomputer/maxtext/blob/main/benchmarks/Getting_Started_Benchmarking.md)、[Performance Metrics](https://github.com/AI-Hypercomputer/maxtext/blob/main/docs/reference/performance_metrics.md) 与 [Pallas Optimization Workflow](https://github.com/AI-Hypercomputer/maxtext/blob/main/docs/guides/optimization/pallas_kernels_performance.md) |
+| Microsoft / DeepSpeed | 固定模型和非调优参数，对 ZeRO stage、micro batch 等做显式搜索；用 forward/backward/step 内部计时选 throughput/latency/FLOPS；再用模块级 FLOPs profiler 或 PyTorch trace 找热点 | DeepSpeed Autotuner、Flops Profiler、PyTorch Profiler、Perfetto/TensorBoard | “自动搜索参数空间”和“解释单次运行为什么慢”是两套工具；自动调优也必须声明搜索范围、目标指标、warmup 和 trial 数。参考 [Autotuning](https://www.deepspeed.ai/tutorials/autotuning/)、[Flops Profiler](https://www.deepspeed.ai/tutorials/flops-profiler/) 与 [PyTorch Profiler](https://www.deepspeed.ai/tutorials/pytorch-profiler/) |
+| AWS / Neuron | 先采低开销 system profile 看所有 worker 的端到端时间、runtime API、调度空隙与同步；必要时才开 device profile 看 NeuronCore engine、DMA、利用率和内存；用 Neuron UI、Perfetto 或 JSON 阅读 | Neuron Profiler 2.0、Neuron Profiler/Explorer、Perfetto、`nccom-test` | 与我们 `overview -> distributed/detail` 的分级采集一致；system/device profile 语义必须分开，特殊 profiling 模式不能用于正确性结论。参考 [Neuron Profiler 2.0](https://awsdocs-neuron.readthedocs-hosted.com/en/v2.26.1/tools/neuron-sys-tools/neuron-profiler-2-0-beta-user-guide.html) 与 [Neuron Profiler](https://awsdocs-neuron.readthedocs-hosted.com/en/v2.29.1/tools/profiler/neuron-profile-user-guide.html) |
+| AMD / ROCm | 先用框架级指标或 PyTorch trace 观察 workload，再做系统/API/kernel trace；长任务可选择性 start/stop；最终对热点 kernel 采硬件 counter | PyTorch Profiler、ROCprofiler-SDK/`rocprofv3`、`rocsys`、Perfetto/TensorBoard | 系统 trace 与深度 counter 采集分层；旧 `rocprof`/`rocprofv2` 已废弃，流程必须记录工具代际。参考 [ROCProfiler 文档](https://rocm.docs.amd.com/projects/rocprofiler/en/latest/) 与 [`rocsys` 使用指南](https://rocm.docs.amd.com/projects/rocprofiler/en/docs-7.2.2/how-to/using-rocsys.html) |
+
+这些公开流程的共同最小闭环是：
+
+```text
+固定实验合同、环境与输入
+  -> profiler-off warmup + 多次稳态基线
+  -> 正确性/收敛与性能数值分别验收
+  -> 选择代表性 step 和 rank 做低开销系统 trace
+  -> 按计算、通信、Host、内存、编译图分类
+  -> 只对热点进入 kernel/counter/compiler/microbenchmark 深挖
+  -> 单变量修复或显式参数 sweep
+  -> 回到 profiler-off 多次 A/B，并检查精度和资源副作用
+  -> 保存 recipe、版本、拓扑、原始证据和派生报告
+```
+
+因此我们当前流程不是 Ascend 独有的方法论：`profiler-off -> system profile ->
+专项下钻 -> 单变量 A/B -> 正确性与性能闭环` 是行业共同骨架；Ascend 的差别只是把
+相应阶段映射到 Ascend PyTorch Profiler、msProf、msprof-analyze、Insight、msOpProf
+和 msMemScope。
+
 ## 2. 标准性能诊断流程
 
 性能实验不是“一上来开 Profiler”，也不是只看一次 `tokens/s`。精度不劣化是性能调优
@@ -134,18 +175,221 @@ Advisor HTML 适合先看优先级；完整明细在 XLSX。`inf` 可能只是�
   -> 精度与训练语义前置检查
   -> 同一训练合同与环境检查
   -> profiler-off 重复正常训练，建立无侵入基线
+  -> 对候选优化执行单变量消融，量化收益、显存代价与精度副作用
   -> 判断问题属于绝对性能低、NPU/GPU 差异、回归、长稳波动还是 Rank 不均衡
   -> 对稳定区间做低开销系统级采集
   -> Overview/Cluster 将时间定界为计算、暴露通信、空闲/调度、内存搬运或流水空泡
   -> 只对异常分支做 Timeline/Operator/Communication/Memory 深入分析
   -> 必要时进入算子、Host、内存、编译融合或硬件专项工具
   -> 单变量修复，回到 profiler-off 同合同重复 A/B，确认收益和副作用
+  -> 在目标模型规模和卡数上复验，形成扩展性与最终交付结论
 ```
 
 这与[大模型训练性能瓶颈定位官方案例](https://www.hiascend.com/document/detail/zh/mindstudio/latest/practicalcases/Largemodeltraining/MindStudio/26.1.0/zh/cases/case_of_troubleshooting_performance_bottleneck_in_llm_training.md)
 和[性能问题通用定位指南](https://www.hiascend.com/document/detail/zh/mindstudio/latest/practicalcases/GeneralPerformanceIssue/MindStudio/26.1.0/zh/cases/general_performance_issue_troubleshooting_guide/guide.md)
 的“由面及点”原则一致。官方 TopN 案例覆盖通信、算子、Host Bound、集群长稳波动、
 版本升级回归等高频问题；它们是定界后的分支手册，不替代前面的正常训练基线和总览。
+
+### 2.0 可直接执行的标准 SOP
+
+下面是日常性能工作的默认顺序。命令中的 `single` 可以替换为目标拓扑；只有已经由
+快速分析命中的分支才执行后面的重型命令。
+
+#### 阶段 A：环境与训练语义预检
+
+目的：确认后续差异来自被测配置，而不是错误环境、非有限梯度或不同训练合同。
+
+```bash
+python -m tests.glm5_2_mindstudio.toolchain doctor \
+  --scope performance > mstools_performance_doctor.log 2>&1
+
+python tests/glm5_2_smoke/train_smoke.py \
+  --device npu --topology single --graph eager \
+  --npu-codegen ascend-triton \
+  --module glm5 --config glm5_debugmodel --steps 2
+```
+
+验收：doctor 明确记录 CANN、Torch/TorchNPU、ms 工具和设备状态；smoke 的 loss 与
+grad norm 有限。失败时先修环境或正确性，不进入性能归因。
+
+#### 阶段 B：profiler-off 无侵入基线
+
+先准备共享 workload。它包含固定初始化 checkpoint 与拓扑无关 token plan，后续
+Eager/Graph、不同 topology 以及 GPU/NPU 对比必须引用相同 generation 和 hash：
+
+```bash
+python tests/glm5_2_mindstudio/performance_benchmark.py \
+  --data --device npu --workload representative \
+  --steps 30 --local-batch-size 8 --global-batch-size 64 \
+  --sequence-length 128
+```
+
+目的：回答“真实训练是否慢、慢多少、是否稳定”。Profiler 关闭，独立运行至少三次：
+
+```bash
+for r in 1 2 3; do
+  python tests/glm5_2_mindstudio/performance_benchmark.py \
+    --capture --device npu --topology single \
+    --preset standard --profiler-off \
+    --graph eager --npu-codegen ascend-triton \
+    --steps 30 --replicate "$r" --workload representative
+done
+```
+
+看每次 run 根目录的 `metrics.jsonl`、`experiment.json`、overview 和 runtime log，统计
+warmup 后 step time median/p90/p95、tokens/s、显存、loss/grad norm 与重复间波动。
+这一阶段不调用 Ascend PyTorch Profiler、msProf 或 msprof-analyze，是最终性能数字的
+权威来源。
+
+#### 阶段 C：一次有界系统采集与快速诊断
+
+目的：只采稳定窗口，用于判断时间损失属于计算、通信、Host/调度、内存还是流水空泡。
+正常情况下使用 Ascend PyTorch Profiler；`--probe` 连续完成采集、快速 Advisor 和报告：
+
+```bash
+python tests/glm5_2_mindstudio/performance_benchmark.py \
+  --probe --device npu --topology single \
+  --preset standard --analysis-tools advisor \
+  --graph eager --npu-codegen ascend-triton \
+  --steps 30 --replicate 1 --workload representative
+```
+
+`--analysis-tools advisor` 默认只运行快速阶段，不再隐式触发耗时的代表 rank 算子扫描。
+如果已经有 capture，使用下面的命令只补分析，不重新训练：
+
+```bash
+python tests/glm5_2_mindstudio/performance_benchmark.py \
+  --analyze --device npu --topology single \
+  --preset standard --analysis-tools advisor \
+  --graph eager --npu-codegen ascend-triton \
+  --steps 30 --replicate 1
+```
+
+框架内部对应的官方命令是：
+
+```bash
+msprof-analyze advisor all \
+  -d <run>/trainer_output/profiling/traces \
+  -o <run>/advisor -pt pytorch
+```
+
+先读项目 HTML 报告与 Advisor HTML 的 overall/high-priority，再将
+`<run>/trainer_output/profiling/traces` 导入 MindStudio Insight：
+
+```text
+首次导入：Timeline
+单卡慢：Timeline -> Operator -> Memory
+多卡慢：Summary -> Communication -> 异常 Rank Timeline -> Operator/Memory
+```
+
+Ascend PyTorch Profiler 负责训练框架语义、Host/API、Device kernel、通信和内存采集；
+msprof-analyze 读取已采集数据做自动统计和规则建议；MindStudio Insight 负责交互式查看
+Timeline、Operator、Memory、Summary 与 Communication。三者是“采集—自动筛查—人工
+验证”的关系，不能互相替代。
+
+#### 阶段 D：只沿命中分支做重型下钻
+
+快速分析指向计算/算子后，才显式运行代表 rank 的完整 computation：
+
+```bash
+python tests/glm5_2_mindstudio/performance_benchmark.py \
+  --analyze --device npu --topology single \
+  --preset standard --analysis-tools advisor --advisor-computation \
+  --graph eager --npu-codegen ascend-triton \
+  --steps 30 --replicate 1 --force
+```
+
+其关键官方命令为：
+
+```bash
+msprof-analyze advisor computation \
+  -d <run>/trainer_output/profiling/traces/<rank_0_*_ascend_pt> \
+  -o <run>/advisor -pt pytorch
+```
+
+本项目样例约 25 万条算子记录，该阶段实测约 68 分钟，因此不是日常默认项。输出 HTML
+只展示重点项，完整算子明细看 XLSX；热点已经明确后再进入 Insight Operator、msOpProf
+或单算子 microbenchmark。
+
+多卡出现 Rank skew、通信等待或链路问题时，运行 Cluster 而不是单卡 computation：
+
+```bash
+python tests/glm5_2_mindstudio/performance_benchmark.py \
+  --analyze --device npu --topology ddp8 \
+  --preset distributed --analysis-tools cluster \
+  --cluster-mode all --cluster-recipes necessary \
+  --graph eager --npu-codegen ascend-triton --steps 30
+```
+
+同一次 capture 内比较快慢 Rank：
+
+```bash
+python tests/glm5_2_mindstudio/performance_benchmark.py \
+  --analyze --device npu --topology ddp8 \
+  --preset distributed --analysis-tools none \
+  --compare-ranks 0,1 \
+  --graph eager --npu-codegen ascend-triton --steps 30
+```
+
+需要无框架语义的 CANN/NPU 系统采集时才切换独立的 msProf collector：
+
+```bash
+python tests/glm5_2_mindstudio/performance_benchmark.py \
+  --capture --device npu --topology ddp8 \
+  --preset system --collector msprof \
+  --graph eager --npu-codegen ascend-triton --steps 30
+```
+
+msProf 更适合 CANN Runtime、Device、链路与系统层采集；训练中的 Module、PyTorch op、
+step 和调用栈语义优先使用 Ascend PyTorch Profiler。不要对同一次性能数字同时开启多个
+重型 collector。
+
+TopN 分支与工具选择如下：
+
+| 快速证据 | 问题分支 | 下一步工具/页面 | 解决后复测 |
+|---|---|---|---|
+| Communication wait 高、Rank skew | 慢 Rank/慢链路/上游负载不均 | Cluster、Communication matrix、异常 Rank Timeline、Compare | profiler-off 多次复测 rank min/median/max 与暴露通信 |
+| computation 高、低 MFU、AICPU | 算子 shape/亲和性/bound/fallback | Advisor computation、Insight Operator、msOpProf | 整网 profiler-off；不能只报单算子加速比 |
+| Free 高、HostToDevice 稀疏 | Host Bound、同步、GIL、DataLoader、绑核 | Timeline、free_analysis、cann_api_sum、CPU/线程证据 | step time、Free、CPU 与显存副作用 |
+| 峰值或反复申请异常 | 生命周期、碎片、workspace | Insight Memory、Advisor memory、msMemScope | 峰值、吞吐、OOM 与精度 |
+| graph break/recompile 或融合退化 | 图切分、lowering、生成 kernel | TORCH_TRACE/tlparse、FX/IR/code、融合比较、Timeline | eager/graph 精度及 profiler-off A/B |
+| 长稳 p95/max 波动 | 系统任务、硬件、链路、周期性同步 | 长程指标、异常窗口 Profile、硬件与系统日志 | 相同负载长时间复跑 |
+
+#### 阶段 E：修复后回到 profiler-off 闭环
+
+任何优化都必须回到阶段 B，以相同训练合同独立重复至少三次；必要时再采一次短 Profile
+验证根因消失。Advisor 或 Insight 的建议命中只是线索，不是优化已经有效的证明。
+
+#### 支路：优化/配置消融，而不是瓶颈排障
+
+如果问题是“compile、低精度、重计算、overlap 或某个融合算子是否有效”，直接构造
+Baseline/Variant 的 profiler-off 成对实验。两组除声明的唯一变量外必须完全一致：
+
+```bash
+for r in 1 2 3; do
+  python tests/glm5_2_mindstudio/performance_benchmark.py \
+    --capture --device npu --topology fsdp8 --profiler-off \
+    --graph eager --npu-codegen ascend-triton --replicate "$r"
+
+  python tests/glm5_2_mindstudio/performance_benchmark.py \
+    --capture --device npu --topology fsdp8 --profiler-off \
+    --graph inductor --npu-codegen ascend-triton --replicate "$r"
+done
+```
+
+随后用 `performance_ablation.py` 校验合同并生成 comparison HTML/JSON；第 2.2.1 节给出
+完整命令。先用 profiler-off 证明收益，再对有意义的差异做 Profile 归因，不能反过来用
+某个 kernel 变快推导整网一定变快。
+
+本 SOP 的官方依据：
+
+- [性能问题通用定位指南](https://www.hiascend.com/document/detail/zh/mindstudio/latest/practicalcases/GeneralPerformanceIssue/MindStudio/26.1.0/zh/cases/general_performance_issue_troubleshooting_guide/guide.md)
+- [性能工具使用](https://www.hiascend.com/document/detail/zh/mindstudio/latest/practicalcases/GeneralPerformanceIssue/MindStudio/26.1.0/zh/cases/general_performance_issue_troubleshooting_guide/performance_tool_usage.md)
+- [TopN 性能问题解决方法](https://www.hiascend.com/document/detail/zh/mindstudio/latest/practicalcases/GeneralPerformanceIssue/MindStudio/26.1.0/zh/cases/general_performance_issue_troubleshooting_guide/solution_to_topn_overview.md)
+- [大模型训练性能瓶颈定位案例](https://www.hiascend.com/document/detail/zh/mindstudio/latest/practicalcases/Largemodeltraining/MindStudio/26.1.0/zh/cases/case_of_troubleshooting_performance_bottleneck_in_llm_training.md)
+- [Ascend PyTorch Profiler](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/ascend_pytorch_profiler/docs/zh/ascend_pytorch_profiler/ascend_pytorch_profiler_user_guide.md)
+- [msprof-analyze Advisor](https://www.hiascend.com/document/detail/zh/mindstudio/latest/msTT_msIT/msprof_analyze/docs/zh/user_guide/advisor_instruct.md)
+- [MindStudio Insight 系统调优](https://www.hiascend.com/document/detail/zh/mindstudio/latest/GUI_baseddevelopmenttool/MindStudioInsight/docs/zh/user_guide/system_tuning.md)
 
 ### 2.1 第零步：固定可比较的训练合同
 
@@ -174,6 +418,83 @@ sequence length、dtype、拓扑及各并行度、重计算、优化器、图/ea
 
 这一层回答“是否真的慢、慢多少、是否稳定、从什么时候开始慢”。Profiler-active
 时间只能用于归因，不能替代 profiler-off 性能结论。
+
+### 2.2.1 组件消融：证明优化真的有效
+
+性能诊断和组件验收是两条不同的证据链。诊断回答“时间损失在哪里、根因是什么”；
+消融回答“打开这个组件是否真的带来收益、收益多少、代价是什么”。任何准备写进 README、
+PR 或交付报告的性能优化，都必须有成对的 profiler-off 实验，不能只给优化后的单点数值，
+也不能只给 profiler-active 中某个 kernel 变快的结果。
+
+一组有效消融包含一个 Baseline 和一个只改变单一因素的 Variant：
+
+```text
+同一模型/checkpoint/token plan/数据顺序
++ 同一 global batch、sequence length、dtype、优化器和训练步
++ 同一硬件、卡集合、拓扑、软件栈和环境
++ 相同 warmup、稳态窗口和独立重复次数
++ 唯一变量：被验证的组件或参数
+-> 比较绝对值、相对变化、重复波动和副作用
+```
+
+标准组件矩阵至少覆盖：
+
+| 类别 | Baseline -> Variant | 必须同时观察 |
+|---|---|---|
+| 编译 | eager -> `torch.compile`；未融合 -> 融合实现 | step time、tokens/s、kernel 数、graph break/recompile、峰值显存、精度 |
+| 低精度 | BF16 -> FP8/MXFP8/NVFP4 | 吞吐、显存、实际低精度 kernel 覆盖率、loss/grad norm/收敛；不得只引用理论峰值 |
+| 重计算 | none -> full/selective AC | 峰值显存、额外计算、吞吐，以及释放显存是否转化为更大 batch/sequence |
+| 通信重叠 | 同步 -> overlap/AsyncTP/prefetch | 暴露通信、计算重叠区间、step time、峰值 buffer、数值一致性 |
+| 并行与流水 | 1F1B -> Interleaved；不同 TP/PP/CP/EP/FSDP 组合 | bubble、局部 GEMM shape、collective 数量/payload、负载均衡、吞吐 |
+| 算子实现 | 通用算子 -> 融合/亲和/定制 kernel | 整网关键路径收益、调用次数、shape、MFU；单算子 microbenchmark 不能替代整网复测 |
+| Host/数据 | 原 DataLoader/下发 -> 调优方案 | Device Free、CPU/GIL/I/O、step 长尾、数据语义与顺序 |
+| Checkpoint/日志 | 同步 -> 异步或不同频率 | 正常 step 与保存 step、恢复时间、额外内存和故障恢复正确性 |
+
+每一对实验至少独立重复三次。报告同时给出 baseline 和 variant 的稳态 median、p90/p95、
+tokens/s、估算 TFLOPS/MFU、峰值显存、各次重复范围，以及
+`(variant - baseline) / baseline`。吞吐提升用正值表示；step time、显存和暴露通信下降需在
+字段名中明确方向，不能混用一个“提升百分比”。如果重复区间高度重叠或收益小于环境噪声，
+结论应写“尚未证明”，不能写 PASS。
+
+多个组件叠加时先分别做单因素消融，再按固定顺序做累积实验：
+
+```text
+B0
+-> B0 + compile
+-> B0 + compile + low precision
+-> B0 + compile + low precision + overlap
+```
+
+累积结果回答最终 recipe 的总收益；单因素结果负责归因。若组件存在明确交互，再补充
+二维组合实验，不能用一次同时开启多个开关的结果声称每个开关分别贡献了多少。
+
+### 2.2.2 模型规模与性能结论的适用范围
+
+debug model、代表性缩放模型和正式模型承担不同任务：
+
+| 层级 | 允许证明 | 不允许证明 |
+|---|---|---|
+| 小型 debug model | 前反向、并行代码路径、功能开关、精度和 CI 回归 | 正式模型 MFU、通信比例、kernel 构成或生产吞吐 |
+| 代表性缩放模型 | 目标 hidden/expert/sequence 与消息大小下的趋势、组件筛选 | 未覆盖规模和集群上的最终吞吐承诺 |
+| 正式 shape/生产配置 | 目标硬件、拓扑和软件版本下的交付性能 | 换硬件、换规模或换训练合同后的普遍结论 |
+
+小模型的矩阵乘 shape、通信 payload 和 active expert 数更小，容易出现计算单元未吃满、
+launch/Host 固定开销占比过高、通信比例失真。因此功能测试可以用 debug model，性能结论
+必须在代表性配置复验。参数放不下完整模型时，应固定并公开缩放原则，优先保留 hidden、
+head/expert 整除关系、激活专家数、sequence length 和目标并行通信消息大小，而不是任意把
+所有维度同比缩小。
+
+TorchTitan 官方论文采用同样的“组件累积 + 规模阶梯”证据方式：在 Llama 3.1 8B/70B/
+405B、8--512 张 H100 上分别验证 compile、Float8、AsyncTP 和流水调度收益。公开数字主要是
+TorchTitan 内部 baseline/variant，而不是与 Megatron-Core 在完全相同合同下的直接性能
+对打。因此本项目可以把 Megatron 作为能力和 recipe 参考，但若要声称性能接近或超过它，
+必须自行构造同模型、同 token、同硬件、同精度和同并行语义的严格 A/B。
+
+参考：
+
+- [TorchTitan ICLR 2025 论文](https://arxiv.org/abs/2410.06511)
+- [TorchTitan 官方仓库与性能入口](https://github.com/pytorch/torchtitan)
+- [TorchTitan MXFP8 性能与收敛证据](https://github.com/pytorch/torchtitan/blob/main/torchtitan/components/quantization/mxfp8.md)
 
 ### 2.3 第二步：先完成单拓扑自身分析，再做性能对比
 
@@ -370,6 +691,7 @@ AllToAll 与 token/专家负载。报告应据拓扑选择解释和下一步，�
 | 单拓扑证据化诊断与 TopN 路由 | 已实现第一阶段 | 每次 `--analyze`/`--probe` 生成 `diagnosis/self/diagnosis.json` 和 README；只输出 observed/suspect/not_available，并另记 capture semantics，不输出 PASS/FAIL |
 | GPU Nsight Systems 与本地 stats 诊断 | 已实现，独立入口 | `tests/glm5_2_nvidia`，与 NPU 共享拓扑定义但输出树独立 |
 | GPU Nsight Compute 定点 kernel 下钻 | 已实现，独立入口 | 只对已筛选 kernel replay，不能代替自然训练时间线 |
+| 单组件消融协议 | 成对合同检查与统计报告已实现 | `performance_ablation.py` 校验 profiler-off、重复合同、设备映射、step 窗口和唯一变化字段；采集矩阵与累积 recipe 仍由调用方显式编排 |
 | NPU/GPU 同合同自动编排与 profiler-off 汇总比较 | 尚未统一 | 目前需分别运行并人工核对 manifest |
 | 官方 `calibrate_npu_gpu` 一键编排 | 尚未接通 | recipe 已登记但会明确跳过，直到 Nsys SQLite、NPU DB、Module 标记和跨机输入生命周期完整接入 |
 | 理论显存/通信量与实测组成的统一报告 | 部分具备原始数据，尚未统一 | 不能先写固定比例阈值；应按模型和 topology 生成期望量级 |
@@ -565,6 +887,73 @@ done
 以三次 profiler-off 的 median/p90 step time、tokens/s、peak HBM 和 rank
 min/median/max 作为性能数值。下面 profiler-active 的结果只做归因。
 
+### 5.1.1 多 workload 与 MoE/DSA 负载
+
+固定 seed 只能约束随机数起点，不能证明两台机器实际读取了同一批 token。性能 fixture
+因此同时固定 checkpoint 和 token plan，并在每次 capture 后验证各 rank 的输入合同。
+同一 workload 可以跨 Eager/Graph、topology 和设备复用；manifest 保存 generation、
+checkpoint SHA256、token-plan SHA256 与 step-series SHA256。
+
+不同数据分布使用不同名称和数据参数分别准备，例如：
+
+```bash
+python tests/glm5_2_mindstudio/performance_benchmark.py \
+  --data --device npu --workload router-skew \
+  --workload-arg=--dataloader.dataset=<registered-skew-dataset> \
+  --steps 30 --local-batch-size 8 --global-batch-size 64 \
+  --sequence-length 128
+```
+
+尖括号代表调用方已经注册的 TorchTitan dataset 配置，不是本项目虚构的内置数据集。
+同理可准备代表语料、重复 token 压力或其他真实数据源。`workload` 名称只描述实验意图；
+是否真正产生均衡/倾斜路由，必须由逐层/逐专家 token 数、capacity/drop、rank
+min/median/max 和通信证据确认。跨 workload 比较回答“数据分布如何影响性能”，不得与
+只改变编译器或并行配置的单变量优化消融混为一谈。
+
+例如验证 `torch.compile` 时，先分别采集 eager baseline 和 Inductor variant；两侧除
+`--graph` 外保持完全一致：
+
+```bash
+export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+
+for r in 1 2 3; do
+  python tests/glm5_2_mindstudio/performance_benchmark.py \
+    --capture --device npu --profiler-off \
+    --topology fsdp8 --graph eager --npu-codegen ascend-triton \
+    --replicate "$r"
+
+  python tests/glm5_2_mindstudio/performance_benchmark.py \
+    --capture --device npu --profiler-off \
+    --topology fsdp8 --graph inductor --npu-codegen ascend-triton \
+    --replicate "$r"
+done
+```
+
+`--graph`、dtype、batch、sequence、拓扑和每个 `--extra-train-arg` 都进入 run identity，
+因此不会覆盖彼此。采集完成后把三次 eager 和三次 Inductor 的 run 目录传给消融入口：
+
+```bash
+python tests/glm5_2_mindstudio/performance_ablation.py \
+  --reference-label eager \
+  --reference-run /abs/path/to/eager-r1 \
+  --reference-run /abs/path/to/eager-r2 \
+  --reference-run /abs/path/to/eager-r3 \
+  --candidate-label inductor \
+  --candidate-run /abs/path/to/inductor-r1 \
+  --candidate-run /abs/path/to/inductor-r2 \
+  --candidate-run /abs/path/to/inductor-r3 \
+  --ablation-factor graph_mode \
+  --skip-steps 10 \
+  --output mindstudio_reports/performance/ablations/fsdp8-eager-vs-inductor
+```
+
+入口读取每个 run 的 `experiment.json` 和 `metrics.jsonl`，拒绝 profiler-active 输入，
+验证组内重复合同一致、两组使用相同设备映射、两侧 step 窗口一致，并强制合同只改变
+`--ablation-factor` 声明的字段。输出自包含 `comparison.html`、机器可读
+`comparison.json` 和 README。报告给出每次运行、组内 median/min/max/CV、p90/p95、
+吞吐、TFLOPS、MFU、峰值显存、原始相对变化、按“越低/越高越好”统一方向后的优化收益，
+以及两组重复范围是否重叠；范围重叠只作为不确定性提示，不自动伪造 PASS/FAIL。
+
 ### 5.2 profiler-active 标准采集与分析
 
 日常标准入口是 `--probe`：同一条命令先完成 bounded capture，所有 rank 退出后再
@@ -587,9 +976,41 @@ python tests/glm5_2_mindstudio/performance_benchmark.py \
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 python tests/glm5_2_mindstudio/performance_benchmark.py \
   --probe --device npu --collector torch_npu_profiler \
-  --topology fsdp8 --preset distributed --analysis-tools all \
+  --topology fsdp8 --preset distributed --record-shapes \
+  --analysis-tools all --cluster-recipes necessary \
   --graph eager --npu-codegen ascend-triton
 ```
+
+这就是已经跑通过的 **Insight 五页面完整命令**。若确实要对所有注册拓扑逐个生成
+独立的完整采集，可以把 `fsdp8` 改成 `all`，其余参数保持不变：
+
+```bash
+python tests/glm5_2_mindstudio/performance_benchmark.py \
+  --probe --device npu --collector torch_npu_profiler \
+  --topology all --preset distributed --record-shapes \
+  --analysis-tools all --cluster-recipes necessary \
+  --graph eager --npu-codegen ascend-triton
+```
+
+`--topology all` 会创建多份彼此独立的 topology run；它不是把所有拓扑混进一个
+Insight 工程。若目标只是得到一份同时含五个页面的数据，应选择 `fsdp8`、`ddp8`
+等一个多卡代表拓扑。五个页面的数据合同如下：
+
+| Insight 页面 | 本命令提供的必要数据 |
+|---|---|
+| Timeline | 每个 rank 的 Host/CANN/Runtime/Device 时间线 |
+| Memory | `profile_memory=True` 生成的 `memory_record.csv` 和 `operator_memory.csv` |
+| Operator | Level1 算子明细；`--record-shapes` 额外保留 shape 证据 |
+| Summary | 多 rank 的集群概览与 `cluster_analysis_output/` |
+| Communication | `distributed` preset 的全 rank 通信/互联采集与集群分析 |
+
+输出必须始终按“采集不可变、分析增量追加”组织：每个
+`rank_*_ascend_pt/` 是原始 rank profile，后续 offline、Advisor、Cluster 和进阶 recipe
+不得移动、复制或改写它们；Cluster 与 recipe 只在同一棵
+`traces/cluster_analysis_output/` 中增加官方 DB/CSV/JSON。Insight 永远导入
+`trainer_output/profiling/traces/`，不要单独导入某个 rank，也不要单独导入
+`cluster_analysis_output/`。`mindstudio_insight_handoff.json` 记录的首选路径也必须是
+这个统一根目录。这样后续增加分析工具只会逐步丰富页面和证据，不会制造第二份导入树。
 
 所有不超过八卡的拓扑：
 
@@ -725,6 +1146,12 @@ rank 目录、DB 和统一 Insight import root 均不移动、不复制、不改
 这意味着 Operator/Timeline 等基于采集 DB 的分析可以继续使用，但涉及版本特定规则的
 建议必须标记为工具版本能力边界，不能当作 CANN 9.1/PyTorch 2.14 的完整官方背书。
 
+本项目的 30 步单卡样例包含约 25 万条算子记录。真实 rank 输入的
+`advisor computation` 用时约 68 分钟，其中 `OperatorBoundAnalyzer` 约 62 分钟；最终
+成功生成 HTML/XLSX，并识别 FlexAttention、RepeatInterleaveV2、TopKV2、MatMulV2 以及
+Sort/IndexPut/Cumsum 等问题项。该耗时是 Advisor 26.1 的离线分析成本，不是训练挂死；
+具体起止时间和 `duration_seconds` 以 `advisor_commands/*.json` 为准。
+
 cluster 还支持官方 `communication_time`、`communication_matrix` 和 `--agent`：
 
 ```bash
@@ -801,6 +1228,27 @@ profiler-active 报告保留同一训练视图，同时索引 Insight/Timeline�
 重复实验报告叠加每次运行曲线，展示 median/p90/p95、CV 与候选相对基准变化。
 外部工具的原生 Timeline、数据库和工作簿不被重新包装成“官方结论”，只作为可追溯入口。
 
+报告顶部还展示 TorchTitan 构建模型时统计的参数量，以及
+`参数量 * 参数 dtype 字节数` 得到的参数张量理论显存下界。该值不包含梯度、优化器
+状态、激活、临时张量、allocator reserve 和并行分片，必须与运行时 peak active memory
+并列阅读，不能把两者当作同一口径。
+
+`Self Diagnosis` 是证据路由器，不是自动验收器。`observed` 表示当前证据已观测到且可
+用于该分支，`suspect` 表示日志或统计触发了需要下钻的线索，`not_available` 表示当前
+capture 没有采集该类证据。profiler-off 正常情况下没有算子表、通信详情或 Memory
+Timeline，因此对应分支显示 `not_available` 并不代表失败；它是在提示下一步选择
+standard/distributed/memory 等 profiler-active preset，而不是凭缺失证据给 PASS/FAIL。
+HTML 将每个分支显示为独立状态卡片，不再把 evidence 压成一行 JSON。若 runtime log
+报告 NPU->CPU 或 AiCPU fallback，分析会保留去重后的算子名、fallback 类别、出现次数
+和原始 warning 摘要；无法从 warning 提取算子名时明确显示 `unknown`，不会只给一个
+脱离上下文的总数。
+
+Top operator 只读取官方执行耗时表：`operator_details.csv`、
+`kernel_details.csv`、`op_statistic.csv`、`api_statistic.csv` 和
+`task_time.csv`。`operator_memory.csv` 中的 `Duration` 表示内存分配的生存期，属于
+Memory 页面证据，不能与 kernel/operator 执行耗时混排。报告生成器采用文件语义白名单，
+而不是仅凭存在 `Name` 和 `Duration` 两列猜测表的含义。
+
 ```text
 mindstudio_runs/performance/system/<card-scope>/<topology>/<run>/
   runtime.log / run_state.json
@@ -874,3 +1322,94 @@ CPU 单测只验证命令、边界、命名与索引。正式运行前必须验�
 7. 深度采集前估算磁盘并限制 rank/window。
 
 未完成这些验证，只能称官方工作流和命令契约已实现，不能称 NPU 性能实验已通过。
+
+## 10. 2026-10-08 标准流程实测记录
+
+本次按“固定输入 -> profiler-off 基线 -> 单卡 standard -> 多卡 distributed ->
+离线分析 -> Insight 交付”的顺序完成了 eager + Ascend Triton 性能实验。原始 capture
+保持不可变；后续报告修正只重新读取现有 CSV/JSON/DB，不重新训练，也不重新运行官方
+Analyzer。
+
+### 10.1 profiler-off 基线
+
+单卡完成三个独立 repeat。跨 repeat 的 step time 中位数约 `1.64147 s`，CV 约
+`1.08%`；吞吐中位数约 `4990.64 token/s`，CV 约 `1.09%`；peak active memory
+约 `0.7611 GiB`。该组数据是当前配置的稳态基线，后续 profiler-active 数值只用于
+定位，不能直接取代它。
+
+聚合报告：
+
+```text
+torchtitan-test/mindstudio_reports/performance/baselines/
+  single-eager-representative/comparison.html
+```
+
+### 10.2 单卡 standard
+
+`standard` capture 已完成 Timeline、Memory 和 Operator 数据采集。训练窗口结束后出现
+约 2 分 39 秒无 step 输出，是同步解析阶段，不是训练死锁。该实验约占 `2.1 GiB`：
+
+```text
+torchtitan-test/mindstudio_reports/performance/system/1-card/single/
+  npu-single-bf16-s30-l8-b64-seq128-seed61-workload-representative-
+  standard-shapes-r1-sync-eager-ascend-t-a25c2d74.html
+```
+
+### 10.3 八卡 fsdp8 distributed
+
+`distributed + record-shapes + analysis-tools all + cluster-recipes necessary`
+已完成 8 个 rank 的 offline parse、Advisor、Cluster、slow-rank、slow-link、通信矩阵、
+HCCL/CANN API、free analysis、summary、EP load balance 和逐 rank communication
+bottleneck 分析。capture 总量约 `3.4 GiB`；其中 JSON 约 `1.9 GiB`、CSV 约
+`342 MiB`、DB 约 `448 MiB`。Insight 应导入完整的 `trainer_output/profiling/traces/`
+根目录，以同时获得 Timeline、Memory、Operator、Summary 和 Communication 五个页面。
+
+报告的一级结论是：
+
+- stage max/median 为 `1.000496`，compute max/median 为 `1.00686`，主计算路径没有明显
+  slow rank；
+- exposed communication max/median 为 `1.102258`，最大 rank 为 7；
+- free time max/median 为 `2.26407`，最大 rank 为 5；
+- 最大 exposed communication 占比约 `56.92%`，最大 collective wait 占比约
+  `96.07%`，最大 device free 占比约 `88.56%`；
+- 因而 `rank_balance`、`communication` 和 `host` 是下一步下钻分支，但这些启发式状态
+  不是自动性能 PASS/FAIL；
+- 日志中的两类 fallback 是 `aten::_assert_async.msg` 的 NPU->CPU fallback，以及
+  `ArgSort` 的 int32/int64 AiCore 不支持、转 AiCPU；未发现 graph break、recompile 或
+  backend failure；
+- 每个 rank 的 Memory 表各有 52 条 profiler 窗口开始前已经分配、因而缺少完整生命
+  周期的记录。这界定了当前 Memory 证据边界，不表示采集失败。
+
+官方 `communication_bottleneck.csv` 进一步把高耗时 `reduceScatter` 判为
+`Host-bound`。多条记录的慢 rank 是 5，快 rank 是 1/4/0；约 25--35ms 的到达时间差
+出现在 `GroupedMmBackward0`、FSDP `pre_backward`/`post_backward_reshard`、
+`Event::wait`、`aten::copy_` 等上游 PyTorch/Host 路径。该证据说明 collective 本身的
+持续时间不是第一归因点，应先沿 Timeline 检查 rank 5 到达 collective 之前的 backward
+调度和 Host 下发。
+
+随后执行官方 rank 1（快）对 rank 5（慢）compare。26.1 的 compare 若直接接收同时
+包含 `ASCEND_PROFILER_OUTPUT` 和原始 `PROF_*` 的 rank 根目录，会在
+`comparison_generator.py` 中报 `NoneType`，却仍返回 0 且不生成文件。改为传入每个
+rank 唯一的 `ascend_pytorch_profiler_<rank>.db` 后成功生成官方 XLSX。整体对比为：
+
+- rank 5 / rank 1 Computing Time 约为 `0.227s / 0.224s`；
+- Uncovered Communication Time 约为 `1.331s / 0.050s`；
+- E2E 均约为 `2.432s`，差值被不同的 Free Time 分解吸收。
+
+因此本次不能得出“rank 5 设备 kernel 更慢”；确定证据是 rank 5 的通信暴露显著更高，
+并与 Cluster 的 Host-bound 到达偏斜相互印证。框架现在让 same-capture rank compare
+优先使用唯一官方 DB，并要求输出目录至少包含一个交付件；`return_code=0` 但 stderr
+报错、目录为空的情况会明确失败，不能再进入完成态。
+
+最终报告：
+
+```text
+torchtitan-test/mindstudio_reports/performance/system/8-card/fsdp8/
+  npu-fsdp8-bf16-s30-l8-b64-seq128-seed61-workload-representative-
+  distributed-shapes-r1-eager-ascend-trit-86d2f3ce.html
+```
+
+本次也验证了 `necessary` 进阶 recipe 并不轻量：逐 rank communication bottleneck 会
+串行执行数分钟。日常一级定界不应默认重复它；只有证据指向通信问题或需要正式交付时
+才运行。报告修正时使用同一 capture 执行 `--analyze --analysis-tools none`，使框架仅
+重建派生 JSON/HTML 与 Insight handoff，避免重复 Analyzer 成本。
