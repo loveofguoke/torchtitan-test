@@ -49,6 +49,7 @@ def _args() -> Namespace:
         graph="eager",
         compile_components=("model",),
         compiler_diagnostics=False,
+        telemetry_interval_seconds=None,
     )
 
 

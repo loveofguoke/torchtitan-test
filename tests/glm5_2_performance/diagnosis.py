@@ -81,6 +81,8 @@ def build_self_diagnosis(
     cross_rank = distributed.get("cross_rank", {})
     communication_rows = analysis.get("communication_summary", {}).get("rows", [])
     compiler = analysis.get("compiler_diagnostics", {})
+    benchmark = analysis.get("profile_phases", {}).get("benchmark", {})
+    telemetry = manifest.get("telemetry") or {}
 
     step_median = _metric(summary, "end_to_end", "median")
     throughput_mean = _metric(summary, "throughput", "mean")
@@ -113,6 +115,23 @@ def build_self_diagnosis(
                     "metric": name,
                     "max_over_median": float(ratio),
                     "max_rank": values.get("max_rank"),
+                }
+            )
+    profiler_off_rank_steps = {}
+    for rank, rank_metrics in analysis.get("rank_metrics", {}).items():
+        value = _metric(rank_metrics.get("summary", {}), "end_to_end", "median")
+        if value is not None:
+            profiler_off_rank_steps[str(rank)] = value
+    if profiler_off_rank_steps:
+        ordered_values = sorted(profiler_off_rank_steps.values())
+        median_rank_step = ordered_values[len(ordered_values) // 2]
+        for rank, value in sorted(profiler_off_rank_steps.items()):
+            rank_evidence.append(
+                {
+                    "metric": "profiler_off_median_step_seconds",
+                    "rank": int(rank),
+                    "value": value,
+                    "max_over_median": value / median_rank_step if median_rank_step else None,
                 }
             )
     skewed = [row for row in rank_evidence if row["max_over_median"] >= 1.10]
@@ -202,6 +221,51 @@ def build_self_diagnosis(
     ]
     graph_suspect = any(int(row["value"]) > 0 for row in graph_evidence)
 
+    step_statistics = benchmark.get("primary", {}).get("step_seconds") or {}
+    variability_evidence = [
+        {"metric": "step_time_cv_percent", "value": step_statistics.get("cv_percent")},
+        {"metric": "step_time_p99_seconds", "value": step_statistics.get("p99")},
+        {"metric": "step_time_median_seconds", "value": step_statistics.get("median")},
+        {
+            "metric": "step_time_drift_percent_per_100_steps",
+            "value": step_statistics.get("drift_percent_per_100_steps"),
+        },
+        {
+            "metric": "steady_state_status",
+            "value": benchmark.get("steady_state_detection", {}).get("status"),
+        },
+    ]
+    variability_suspect = (
+        step_statistics.get("cv_percent") is not None
+        and float(step_statistics["cv_percent"]) >= 5.0
+    ) or benchmark.get("steady_state_detection", {}).get("status") == "not_steady"
+
+    telemetry_evidence: list[dict[str, Any]] = []
+    telemetry_suspect = False
+    for device_id, device in telemetry.get("devices", {}).items():
+        throttle = device.get("active_throttle_reasons", [])
+        clock = device.get("metrics", {}).get("compute_clock_mhz", {})
+        utilization = device.get("metrics", {}).get("utilization_percent", {})
+        telemetry_evidence.append(
+            {
+                "device": device_id,
+                "active_throttle_reasons": throttle,
+                "mean_utilization_percent": utilization.get("mean"),
+                "clock_cv_percent": clock.get("cv_percent"),
+                "clock_drift_percent_per_100_samples": clock.get(
+                    "drift_percent_per_100_steps"
+                ),
+            }
+        )
+        telemetry_suspect = telemetry_suspect or bool(throttle) or (
+            clock.get("cv_percent") is not None
+            and float(clock["cv_percent"]) >= 5.0
+        )
+    if telemetry.get("steady_energy"):
+        telemetry_evidence.append(
+            {"metric": "steady_energy", **telemetry["steady_energy"]}
+        )
+
     branches = {
         "baseline": _branch(
             "Profiler-off baseline",
@@ -285,6 +349,32 @@ def build_self_diagnosis(
             next_actions=[
                 "Inspect TORCH_TRACE/tlparse and backend IR, then compare fused and unfused operator evidence."
             ] if graph_suspect else [],
+        ),
+        "stability": _branch(
+            "Steady-state stability",
+            "suspect" if variability_suspect else "observed" if step_statistics else "not_available",
+            "Step-time variability or drift requires more warmup or environmental control."
+            if variability_suspect
+            else "Measured optimizer steps are stable under the project guidance."
+            if step_statistics
+            else "No profiler-off steady-state distribution is available.",
+            evidence=variability_evidence,
+            next_actions=[
+                "Increase warmup, repeat the run, and inspect host, clocks, throttling, and competing workloads."
+            ] if variability_suspect else [],
+        ),
+        "hardware": _branch(
+            "Hardware environment",
+            "suspect" if telemetry_suspect else "observed" if telemetry_evidence else "not_available",
+            "Throttle reasons or clock instability were observed."
+            if telemetry_suspect
+            else "Optional management telemetry contains no derived throttle or clock-stability warning."
+            if telemetry_evidence
+            else "Hardware telemetry was not enabled for this run.",
+            evidence=telemetry_evidence,
+            next_actions=[
+                "Check power caps, cooling, device health, and clock policy before attributing the change to software."
+            ] if telemetry_suspect else [],
         ),
     }
     suspects = [

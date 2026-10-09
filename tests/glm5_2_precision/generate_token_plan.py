@@ -104,6 +104,7 @@ def _write_plan() -> None:
     position_path = temporary / "positions.i32"
     sample_hashes: list[str] = []
     step_hashes: list[str] = []
+    effective_tokens_per_step: list[int] = []
     try:
         iterator = iter(dataloader)
         with input_path.open("wb") as input_stream, label_path.open(
@@ -120,6 +121,9 @@ def _write_plan() -> None:
                 inputs_BL = inputs_BL.to(dtype=torch.int32).contiguous()
                 labels_BL = labels_BL.to(dtype=torch.int32).contiguous()
                 positions_BL = positions_BL.to(dtype=torch.int32).contiguous()
+                effective_tokens_per_step.append(
+                    int(labels_BL.ne(-100).sum().item())
+                )
                 input_stream.write(inputs_BL.numpy().tobytes())
                 label_stream.write(labels_BL.numpy().tobytes())
                 position_stream.write(positions_BL.numpy().tobytes())
@@ -142,6 +146,11 @@ def _write_plan() -> None:
             "sequence_length": sequence_length,
             "sample_sha256": sample_hashes,
             "step_sha256": step_hashes,
+            "token_accounting": {
+                "ignore_index": -100,
+                "effective_tokens_per_step": effective_tokens_per_step,
+                "definition": "count(labels != ignore_index)",
+            },
             "files": {
                 "inputs": {
                     "name": input_path.name,

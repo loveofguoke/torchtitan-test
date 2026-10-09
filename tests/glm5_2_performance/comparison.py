@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 from pathlib import Path
 import statistics
 from typing import Any, Iterable
@@ -22,6 +21,12 @@ from tests.glm5_2_common.reporting import (
     summary_table,
 )
 from tests.glm5_2_performance.analysis import read_metrics
+from tests.glm5_2_performance.benchmark_metrics import (
+    bootstrap_median_ci,
+    metric_statistics,
+    numerical_validity,
+    percentile,
+)
 
 
 STEP_TIME = "time_metrics/end_to_end(s)"
@@ -38,21 +43,35 @@ LOWER_IS_BETTER = {
     "step_time_median_s",
     "step_time_p90_s",
     "step_time_p95_s",
+    "step_time_p99_s",
+    "step_time_cv_percent",
+    "step_time_mad_s",
+    "step_time_iqr_s",
     "peak_active_memory_gib",
+}
+DIAGNOSTIC_ONLY = {"step_time_drift_percent_per_100_steps"}
+MEASUREMENT_LEVEL_MIN_REPEATS = {
+    "exploratory": 1,
+    "development": 3,
+    "formal": 5,
+    "release": 5,
+}
+MEASUREMENT_LEVEL_MIN_STEPS = {
+    "exploratory": 1,
+    "development": 20,
+    "formal": 100,
+    "release": 100,
+}
+MEASUREMENT_METADATA = {
+    "skip_steps",
+    "measured_steps",
+    "first_step",
+    "last_step",
 }
 
 
 def _percentile(values: list[float], fraction: float) -> float | None:
-    if not values:
-        return None
-    ordered = sorted(values)
-    position = (len(ordered) - 1) * fraction
-    lower = math.floor(position)
-    upper = math.ceil(position)
-    if lower == upper:
-        return ordered[lower]
-    weight = position - lower
-    return ordered[lower] * (1 - weight) + ordered[upper] * weight
+    return percentile(values, fraction)
 
 
 def _metric_name(metrics: dict[str, Any], markers: tuple[str, ...]) -> str | None:
@@ -141,6 +160,7 @@ def _normalized_contract(overview: dict[str, Any]) -> dict[str, Any]:
         "graph_mode": raw.get("graph_mode", "eager"),
         "compile_components": raw.get("compile_components", ["model"]),
         "deterministic": raw.get("deterministic", False),
+        "telemetry_interval_seconds": raw.get("telemetry_interval_seconds"),
         # GraphFeatureConfig generates --compile.* arguments from graph_mode
         # and compile_components. Raw compile arguments are rejected by the
         # performance CLI, so removing generated duplicates cannot hide a
@@ -189,6 +209,9 @@ def _run_summary(run_dir: Path, *, skip_steps: int) -> dict[str, Any]:
         raise ValueError(f"step time or throughput metric is missing: {run_dir}")
     step_times = series[step_time_name]
     throughputs = series[throughput_name]
+    step_statistics = metric_statistics(step_times)
+    throughput_statistics = metric_statistics(throughputs)
+    validity = numerical_validity(records)
 
     def aggregate(markers: tuple[str, ...], operation: str) -> float | None:
         name = _metric_name(series, markers)
@@ -209,11 +232,20 @@ def _run_summary(run_dir: Path, *, skip_steps: int) -> dict[str, Any]:
             "step_time_median_s": statistics.median(step_times),
             "step_time_p90_s": _percentile(step_times, 0.90),
             "step_time_p95_s": _percentile(step_times, 0.95),
+            "step_time_p99_s": _percentile(step_times, 0.99),
+            "step_time_cv_percent": step_statistics["cv_percent"],
+            "step_time_mad_s": step_statistics["mad"],
+            "step_time_iqr_s": step_statistics["iqr"],
+            "step_time_drift_percent_per_100_steps": step_statistics[
+                "drift_percent_per_100_steps"
+            ],
             "throughput_median_tps": statistics.median(throughputs),
             "throughput_mean_tps": statistics.fmean(throughputs),
+            "throughput_p95_tps": throughput_statistics["p95"],
             "tflops_mean": aggregate(("tflops",), "mean"),
             "mfu_mean_percent": aggregate(("mfu",), "mean"),
             "peak_active_memory_gib": aggregate(("max_active",), "max"),
+            "validity": validity,
         },
         "series": {
             "step": [int(record["step"]) for record in records],
@@ -264,35 +296,61 @@ def _aggregate_group(
                 "repeat comparison requires identical per-step evidence"
             )
     contract = _validate_group(runs, label)
-    metric_names = tuple(runs[0]["measurement"])
+    metric_names = tuple(
+        name
+        for name in runs[0]["measurement"]
+        if name != "validity" and name not in MEASUREMENT_METADATA
+    )
     aggregate: dict[str, Any] = {}
     for name in metric_names:
         values = [run["measurement"].get(name) for run in runs]
         numeric = [float(value) for value in values if isinstance(value, (int, float))]
         if not numeric:
             continue
-        mean = statistics.fmean(numeric)
         aggregate[name] = {
-            "median": statistics.median(numeric),
-            "mean": mean,
-            "min": min(numeric),
-            "max": max(numeric),
-            "cv_percent": (
-                statistics.pstdev(numeric) / abs(mean) * 100
-                if len(numeric) > 1 and mean
-                else 0.0
-            ),
+            **metric_statistics(numeric),
+            "bootstrap_median_95ci": bootstrap_median_ci(numeric),
         }
+    invalid_runs = [
+        run["run"]
+        for run in runs
+        if run["measurement"]["validity"]["status"] == "invalid"
+    ]
+    unavailable_runs = [
+        run["run"]
+        for run in runs
+        if run["measurement"]["validity"]["status"] == "not_available"
+    ]
+    if invalid_runs:
+        validity = "invalid"
+    elif unavailable_runs:
+        validity = "not_available"
+    else:
+        validity = "valid"
+    repeat_count = len(runs)
+    tier = (
+        "formal"
+        if repeat_count >= 5
+        else "development"
+        if repeat_count >= 3
+        else "insufficient"
+    )
     return {
         "label": label,
         "contract": contract,
         "execution_context": runs[0]["execution_context"],
-        "repeat_count": len(runs),
+        "repeat_count": repeat_count,
         "measurement_policy": {
             "profiler_enabled": False,
             "skip_steps": skip_steps,
             "recommended_min_repeats": 3,
-            "repeat_count_sufficient": len(runs) >= 3,
+            "formal_min_repeats": 5,
+            "repeat_count_sufficient": repeat_count >= 3,
+            "formal_repeat_count_sufficient": repeat_count >= 5,
+            "tier": tier,
+            "validity": validity,
+            "invalid_runs": invalid_runs,
+            "validity_not_available_runs": unavailable_runs,
             "note": "MLPerf-style measurement discipline only; this is not an MLPerf result.",
         },
         "runs": runs,
@@ -354,6 +412,23 @@ def _compare(
             continue
         baseline = reference_value["median"]
         current = candidate_value["median"]
+        reference_ci = reference_value.get("bootstrap_median_95ci")
+        candidate_ci = candidate_value.get("bootstrap_median_95ci")
+        ci_relation = "not_available"
+        verdict = "inconclusive"
+        if reference_ci is not None and candidate_ci is not None:
+            if candidate_ci[1] < reference_ci[0]:
+                ci_relation = "candidate_lower"
+                verdict = (
+                    "improvement" if name in LOWER_IS_BETTER else "regression"
+                )
+            elif candidate_ci[0] > reference_ci[1]:
+                ci_relation = "candidate_higher"
+                verdict = "regression" if name in LOWER_IS_BETTER else "improvement"
+            else:
+                ci_relation = "overlap"
+        if name in DIAGNOSTIC_ONLY:
+            verdict = "diagnostic_only"
         metrics[name] = {
             "reference_median": baseline,
             "candidate_median": current,
@@ -361,26 +436,50 @@ def _compare(
                 (current / baseline - 1) * 100 if baseline else None
             ),
             "optimization_improvement_percent": (
-                ((baseline - current) / baseline * 100)
+                None
+                if name in DIAGNOSTIC_ONLY
+                else ((baseline - current) / baseline * 100)
                 if baseline and name in LOWER_IS_BETTER
                 else ((current - baseline) / baseline * 100)
                 if baseline
                 else None
             ),
             "better_direction": (
-                "lower" if name in LOWER_IS_BETTER else "higher"
+                "diagnostic"
+                if name in DIAGNOSTIC_ONLY
+                else "lower"
+                if name in LOWER_IS_BETTER
+                else "higher"
             ),
             "repeat_ranges_overlap": not (
                 reference_value["max"] < candidate_value["min"]
                 or candidate_value["max"] < reference_value["min"]
             ),
+            "bootstrap_95ci_relation": ci_relation,
+            "verdict": verdict,
         }
+    headline_verdicts = {
+        metrics[name]["verdict"]
+        for name in ("step_time_median_s", "throughput_median_tps")
+        if name in metrics
+    }
+    if headline_verdicts == {"improvement"}:
+        overall_verdict = "improvement"
+    elif headline_verdicts == {"regression"}:
+        overall_verdict = "regression"
+    else:
+        overall_verdict = "inconclusive"
     return {
         "contract_match": True,
         "comparison_kind": "ablation" if ablation_factor else "peer",
         "ablation_factor": ablation_factor,
         "contract_differences": differences,
         "metrics": metrics,
+        "overall_verdict": overall_verdict,
+        "verdict_policy": (
+            "Headline step-time and throughput bootstrap 95% intervals must "
+            "both be separated and agree; overlap or disagreement is inconclusive."
+        ),
         "interpretation": (
             "Lower is better for step time and memory; higher is better for "
             "throughput, TFLOPS, and MFU. Percent changes are evidence, not "
@@ -422,10 +521,15 @@ def _render(output: Path, payload: dict[str, Any]) -> None:
     aggregate_columns = ["Metric"]
     for group in groups:
         aggregate_columns.extend(
-            (f"{group['label']} median", f"{group['label']} CV")
+            (
+                f"{group['label']} median",
+                f"{group['label']} CV",
+                f"{group['label']} bootstrap 95% CI",
+            )
         )
     if payload.get("comparison"):
         aggregate_columns.append("Candidate vs reference")
+        aggregate_columns.append("Bootstrap verdict")
         if payload["comparison"].get("comparison_kind") == "ablation":
             aggregate_columns.append("Optimization improvement")
     aggregate_rows = []
@@ -437,6 +541,7 @@ def _render(output: Path, payload: dict[str, Any]) -> None:
                 (
                     _format(values.get("median")),
                     f"{_format(values.get('cv_percent'))}%",
+                    _format(values.get("bootstrap_median_95ci")),
                 )
             )
         if payload.get("comparison"):
@@ -445,6 +550,11 @@ def _render(output: Path, payload: dict[str, Any]) -> None:
             ).get("candidate_vs_reference_percent")
             row.append(
                 f"{_format(relative_change)}%"
+            )
+            row.append(
+                payload["comparison"]["metrics"].get(name, {}).get(
+                    "verdict", "-"
+                )
             )
             if payload["comparison"].get("comparison_kind") == "ablation":
                 improvement = payload["comparison"]["metrics"].get(
@@ -466,9 +576,17 @@ def _render(output: Path, payload: dict[str, Any]) -> None:
             "Median step time (s)": run["measurement"]["step_time_median_s"],
             "P90 step time (s)": run["measurement"]["step_time_p90_s"],
             "P95 step time (s)": run["measurement"]["step_time_p95_s"],
+            "P99 step time (s)": run["measurement"]["step_time_p99_s"],
+            "Step CV (%)": run["measurement"]["step_time_cv_percent"],
+            "Step MAD (s)": run["measurement"]["step_time_mad_s"],
+            "Step IQR (s)": run["measurement"]["step_time_iqr_s"],
+            "Drift (%/100 steps)": run["measurement"][
+                "step_time_drift_percent_per_100_steps"
+            ],
             "Median throughput (tps)": run["measurement"][
                 "throughput_median_tps"
             ],
+            "Validity": run["measurement"]["validity"]["status"],
             "Path": display_repository_path(Path(run["run"])),
         }
         for group in groups
@@ -505,7 +623,10 @@ def _render(output: Path, payload: dict[str, Any]) -> None:
         ),
         section_heading(
             "实验合同与重复数 / Contract and Repeats",
-            "仅聚合 profiler-off 正常训练。少于三次时明确显示证据不足。",
+            (
+                "仅聚合 profiler-off 正常训练。当前测量等级："
+                f"{payload['measurement_level']}；少于该等级要求的重复数时拒绝生成。"
+            ),
         ),
         group_table,
         section_heading(
@@ -514,6 +635,24 @@ def _render(output: Path, payload: dict[str, Any]) -> None:
         ),
         aggregate_table,
     ]
+    if payload.get("comparison"):
+        sections.extend(
+            (
+                section_heading(
+                    "置信区间结论 / Confidence-interval Verdict",
+                    payload["comparison"]["verdict_policy"],
+                ),
+                summary_table(
+                    columns=("Overall verdict", "Measurement level"),
+                    rows=(
+                        (
+                            payload["comparison"]["overall_verdict"],
+                            payload["measurement_level"],
+                        ),
+                    ),
+                ),
+            )
+        )
     chart_specs = (
         ("step_time_s", "逐 Step 耗时 / Step Time", "秒 / Seconds"),
         ("throughput_tps", "逐 Step 吞吐 / Throughput", "Tokens/s"),
@@ -657,8 +796,20 @@ def build_comparison(
     skip_steps: int,
     output: Path,
     ablation_factor: str | None = None,
+    measurement_level: str = "exploratory",
     force: bool = False,
 ) -> dict[str, Any]:
+    if measurement_level not in MEASUREMENT_LEVEL_MIN_REPEATS:
+        raise ValueError(f"unsupported measurement level: {measurement_level}")
+    minimum_repeats = MEASUREMENT_LEVEL_MIN_REPEATS[measurement_level]
+    minimum_steps = MEASUREMENT_LEVEL_MIN_STEPS[measurement_level]
+    if len(reference_runs) < minimum_repeats or (
+        candidate_runs is not None and len(candidate_runs) < minimum_repeats
+    ):
+        raise ValueError(
+            f"{measurement_level} measurement requires at least "
+            f"{minimum_repeats} independent repeats per configured group"
+        )
     if ablation_factor is not None:
         if not candidate_runs:
             raise ValueError("performance ablation requires candidate runs")
@@ -673,8 +824,41 @@ def build_comparison(
         if candidate_runs
         else None
     )
+    groups = [reference, *([candidate] if candidate is not None else [])]
+    short_runs = [
+        run["run"]
+        for group in groups
+        for run in group["runs"]
+        if run["measurement"]["measured_steps"] < minimum_steps
+    ]
+    if short_runs:
+        raise ValueError(
+            f"{measurement_level} measurement requires at least {minimum_steps} "
+            f"measured steady steps per run; short runs: {short_runs}"
+        )
+    if measurement_level in {"formal", "release"}:
+        invalid_groups = [
+            group["label"]
+            for group in groups
+            if group["measurement_policy"]["validity"] != "valid"
+        ]
+        if invalid_groups:
+            raise ValueError(
+                f"{measurement_level} measurement requires explicit finite "
+                f"loss/gradient evidence; unavailable or invalid groups: {invalid_groups}"
+            )
+    if measurement_level == "release" and candidate is None:
+        raise ValueError("release measurement requires reference and candidate groups")
     payload: dict[str, Any] = {
         "schema": "torchtitan.glm5_2.performance.comparison.v1",
+        "measurement_level": measurement_level,
+        "measurement_level_contract": {
+            "minimum_repeats_per_group": minimum_repeats,
+            "minimum_measured_steps_per_run": minimum_steps,
+            "requires_numerical_validity": measurement_level
+            in {"formal", "release"},
+            "requires_candidate": measurement_level == "release",
+        },
         "evidence_provenance": {
             "capture_and_diagnosis": "official Ascend ms tools",
             "harness": "torchtitan-test orchestration and contract validation",
@@ -692,6 +876,14 @@ def build_comparison(
             else None
         ),
     }
+    if (
+        measurement_level == "release"
+        and payload["comparison"]["overall_verdict"] == "inconclusive"
+    ):
+        raise ValueError(
+            "release measurement is inconclusive: headline bootstrap 95% "
+            "intervals overlap or step-time and throughput disagree"
+        )
     existing_path = output / "comparison.json"
     if existing_path.is_file():
         existing = json.loads(existing_path.read_text(encoding="utf-8"))
@@ -720,6 +912,7 @@ def build_comparison(
         if candidate
         else "- candidate: not configured",
         f"- skipped warmup steps: `{skip_steps}`",
+        f"- measurement level: `{measurement_level}`",
         (
             f"- ablation factor: `{ablation_factor}`"
             if ablation_factor
@@ -749,6 +942,17 @@ def run_cli() -> int:
         ),
     )
     parser.add_argument("--skip-steps", type=int, default=10)
+    parser.add_argument(
+        "--measurement-level",
+        choices=tuple(MEASUREMENT_LEVEL_MIN_REPEATS),
+        default="exploratory",
+        help=(
+            "enforce repeat and validity gates: exploratory=1, development=3, "
+            "formal=5 finite runs, release=formal plus a conclusive candidate "
+            "comparison; "
+            "development requires 20 and formal/release 100 measured steady steps"
+        ),
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
@@ -762,6 +966,7 @@ def run_cli() -> int:
         skip_steps=args.skip_steps,
         output=args.output.resolve(),
         ablation_factor=args.ablation_factor,
+        measurement_level=args.measurement_level,
         force=args.force,
     )
     for name in ("comparison.html", "comparison.json", "README.md"):

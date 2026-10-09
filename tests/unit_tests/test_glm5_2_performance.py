@@ -25,6 +25,21 @@ from tests.glm5_2_performance.dynamic_profile import (
     write_dynamic_profile_config,
 )
 from tests.glm5_2_performance.comparison import build_comparison
+from tests.glm5_2_performance.capture_metrics import _partition_numeric_metrics
+from tests.glm5_2_performance.benchmark_metrics import (
+    bootstrap_median_ci,
+    detect_steady_state,
+    metric_statistics,
+    numerical_validity,
+)
+from tests.glm5_2_performance.telemetry import (
+    align_steady_energy,
+    parse_npu_common,
+    parse_nvidia_csv,
+    summarize_telemetry,
+)
+from tests.glm5_2_performance.scaling import analyze_scaling
+from tests.glm5_2_performance.interleaved import balanced_order
 from tests.glm5_2_performance.diagnosis import (
     build_self_diagnosis,
     write_self_diagnosis,
@@ -58,6 +73,163 @@ from tests.glm5_2_performance.visualization import (
 
 
 class TestPerformanceConfig(unittest.TestCase):
+    def test_energy_alignment_and_scaling_analysis(self):
+        self.assertEqual(
+            balanced_order(3),
+            [
+                "reference",
+                "candidate",
+                "candidate",
+                "reference",
+                "reference",
+                "candidate",
+            ],
+        )
+        metric_records = [
+            {
+                "step": 2,
+                "step_start_monotonic_ns": 1_000_000_000,
+                "step_end_monotonic_ns": 3_000_000_000,
+            }
+        ]
+        telemetry = [
+            {
+                "status": "ok",
+                "device_id": "0",
+                "monotonic_ns": 1_000_000_000,
+                "metrics": {"power_w": 100.0},
+            },
+            {
+                "status": "ok",
+                "device_id": "0",
+                "monotonic_ns": 3_000_000_000,
+                "metrics": {"power_w": 100.0},
+            },
+        ]
+        energy = align_steady_energy(
+            telemetry,
+            metric_records,
+            [2],
+            scheduled_tokens_per_step=1_000,
+            effective_tokens_per_step=900,
+        )
+        self.assertEqual(energy["total_device_energy_joules"], 200.0)
+        self.assertEqual(energy["effective_tokens_per_joule"], 4.5)
+
+        strong = analyze_scaling(
+            [
+                {
+                    "world_size": 1,
+                    "global_batch_size": 64,
+                    "sequence_length": 128,
+                    "median_step_seconds": 2.0,
+                    "job_throughput_tps": 4_000.0,
+                },
+                {
+                    "world_size": 2,
+                    "global_batch_size": 64,
+                    "sequence_length": 128,
+                    "median_step_seconds": 1.1,
+                    "job_throughput_tps": 7_200.0,
+                },
+            ]
+        )
+        self.assertEqual(strong["mode"], "strong")
+        self.assertEqual(strong["rows"][1]["strong_scaling_efficiency_percent"], 90.0)
+
+    def test_telemetry_parsers_and_summary_preserve_vendor_evidence(self):
+        gpu = parse_nvidia_csv(
+            "2026/10/09 12:00:00, 0, 312.5, 67, 1410, 98, 0x0\n"
+        )
+        npu = parse_npu_common(
+            "NPU Real-timePower(W) : 295.0\n"
+            "Temperature(C) : 62\n"
+            "Aicore curFreq(MHZ) : 1800\n"
+            "AI Core Usage(%) : 97\n",
+            device_id="1",
+        )
+
+        self.assertEqual(gpu[0]["metrics"]["power_w"], 312.5)
+        self.assertEqual(npu["metrics"]["compute_clock_mhz"], 1800.0)
+        summary = summarize_telemetry(
+            [
+                {"status": "ok", **gpu[0]},
+                {"status": "ok", **gpu[0]},
+                {"status": "unavailable", "error": "missing tool"},
+            ]
+        )
+        self.assertEqual(summary["status"], "observed")
+        self.assertEqual(summary["devices"]["0"]["sample_count"], 2)
+        self.assertEqual(summary["failed_sample_count"], 1)
+
+    def test_telemetry_interval_must_be_positive(self):
+        with self.assertRaisesRegex(ValueError, "telemetry_interval_seconds"):
+            PerformanceConfig(name="bad", telemetry_interval_seconds=0)
+
+    def test_benchmark_statistics_include_tail_robustness_and_drift(self):
+        summary = metric_statistics([1.0, 1.0, 2.0, 4.0])
+
+        self.assertEqual(summary["count"], 4)
+        self.assertEqual(summary["median"], 1.5)
+        self.assertEqual(summary["p95"], 3.6999999999999993)
+        self.assertEqual(summary["mad"], 0.5)
+        self.assertEqual(summary["iqr"], 1.5)
+        self.assertGreater(summary["drift_percent_per_100_steps"], 0)
+
+    def test_bootstrap_ci_uses_independent_run_summaries(self):
+        interval = bootstrap_median_ci([1.0, 2.0, 3.0], resamples=1000)
+
+        self.assertIsNotNone(interval)
+        assert interval is not None
+        self.assertLessEqual(interval[0], 2.0)
+        self.assertGreaterEqual(interval[1], 2.0)
+        self.assertIsNone(bootstrap_median_ci([1.0]))
+
+    def test_numerical_validity_preserves_nonfinite_evidence(self):
+        validity = numerical_validity(
+            [
+                {
+                    "step": 11,
+                    "metrics": {"loss": 1.0},
+                    "nonfinite_metrics": ["grad_norm"],
+                }
+            ]
+        )
+
+        self.assertEqual(validity["status"], "invalid")
+        self.assertEqual(
+            validity["nonfinite_events"],
+            [{"step": 11, "metrics": ["grad_norm"]}],
+        )
+
+    def test_metric_capture_does_not_silently_drop_nan_or_infinity(self):
+        numeric, nonfinite = _partition_numeric_metrics(
+            {
+                "loss": 1.5,
+                "grad_norm": float("inf"),
+                "aux": float("nan"),
+                "enabled": True,
+            }
+        )
+
+        self.assertEqual(numeric, {"loss": 1.5})
+        self.assertEqual(nonfinite, ["aux", "grad_norm"])
+
+    def test_steady_state_detection_finds_stable_suffix(self):
+        detection = detect_steady_state(
+            range(1, 16),
+            [3.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+            minimum_window=10,
+        )
+
+        self.assertEqual(detection["status"], "reached")
+        self.assertEqual(detection["selected_steps"], list(range(3, 16)))
+
+    def test_steady_state_detection_reports_insufficient_samples(self):
+        detection = detect_steady_state([1, 2], [1.0, 1.0])
+
+        self.assertEqual(detection["status"], "not_available")
+
     def test_operator_hotspots_exclude_memory_lifetime_tables(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             profiler = Path(temporary_directory)
@@ -610,6 +782,88 @@ class TestPerformanceConfig(unittest.TestCase):
                     candidate_label="candidate",
                     skip_steps=1,
                     output=root / "out",
+                )
+
+    def test_performance_measurement_levels_enforce_repeat_validity_and_verdict(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+
+            def make_run(name: str, step_time: float) -> Path:
+                run = root / name
+                run.mkdir()
+                config = PerformanceConfig(
+                    name=name,
+                    steps=101,
+                    skip_steps=1,
+                    active_steps=1,
+                    profiler_enabled=False,
+                ).as_dict()
+                (run / "experiment.json").write_text(
+                    json.dumps({"configuration": config}), encoding="utf-8"
+                )
+                records = [
+                    {
+                        "step": step,
+                        "metrics": {
+                            "time_metrics/end_to_end(s)": step_time,
+                            "throughput(tps)": 1000.0 / step_time,
+                            "loss": 1.0,
+                            "grad_norm": 0.5,
+                        },
+                    }
+                    for step in range(2, 102)
+                ]
+                (run / "metrics.jsonl").write_text(
+                    "".join(json.dumps(record) + "\n" for record in records),
+                    encoding="utf-8",
+                )
+                return run
+
+            reference = [make_run(f"reference-{index}", 2.0) for index in range(5)]
+            candidate = [make_run(f"candidate-{index}", 1.0) for index in range(5)]
+            with mock.patch("tests.glm5_2_performance.comparison._render"):
+                formal = build_comparison(
+                    reference_runs=reference,
+                    reference_label="reference",
+                    candidate_runs=None,
+                    candidate_label="candidate",
+                    skip_steps=1,
+                    output=root / "formal",
+                    measurement_level="formal",
+                )
+                release = build_comparison(
+                    reference_runs=reference,
+                    reference_label="reference",
+                    candidate_runs=candidate,
+                    candidate_label="candidate",
+                    skip_steps=1,
+                    output=root / "release",
+                    measurement_level="release",
+                )
+
+            self.assertEqual(formal["measurement_level"], "formal")
+            self.assertEqual(
+                release["comparison"]["overall_verdict"], "improvement"
+            )
+            with self.assertRaisesRegex(ValueError, "at least 3"):
+                build_comparison(
+                    reference_runs=reference[:2],
+                    reference_label="reference",
+                    candidate_runs=None,
+                    candidate_label="candidate",
+                    skip_steps=1,
+                    output=root / "development",
+                    measurement_level="development",
+                )
+            with self.assertRaisesRegex(ValueError, "inconclusive"):
+                build_comparison(
+                    reference_runs=reference,
+                    reference_label="reference",
+                    candidate_runs=reference,
+                    candidate_label="same",
+                    skip_steps=1,
+                    output=root / "inconclusive",
+                    measurement_level="release",
                 )
 
     def test_performance_comparison_rejects_fixture_digest_mismatch(self):
@@ -1414,6 +1668,21 @@ class TestPerformanceAnalysis(unittest.TestCase):
         self.assertEqual(phases["comparison"]["parse_mode"], "disabled")
         self.assertEqual(
             phases["comparison"]["baseline_job_throughput_tps"], 1500.0
+        )
+        benchmark = phases["benchmark"]
+        self.assertEqual(
+            benchmark["work"]["scheduled_tokens_per_step"],
+            config["global_batch_size"] * config["sequence_length"],
+        )
+        self.assertEqual(benchmark["primary"]["step_seconds"]["p95"], 1.95)
+        self.assertEqual(benchmark["primary"]["step_seconds"]["mad"], 0.5)
+        self.assertEqual(
+            benchmark["primary"]["throughput_tokens_per_second_job_median"],
+            1500.0,
+        )
+        self.assertEqual(
+            benchmark["validity"]["numerical"]["status"],
+            "not_available",
         )
 
     def test_metrics_and_csv_are_rendered_into_report(self):

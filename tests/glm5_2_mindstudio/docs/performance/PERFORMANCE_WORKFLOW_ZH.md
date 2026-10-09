@@ -1196,7 +1196,11 @@ Timeline 是时间顺序证据；火焰图是按调用栈聚合的耗时证据�
 拓扑、batch、sequence、seed 和 dtype 跑至少三次 profiler-off；每次用不同
 `--replicate` 保留独立 generation。共享聚合器读取每个 run 根目录的
 `experiment.json` 和 `metrics.jsonl`，跳过暖机 steps 后计算 step time 的
-median/p90/p95、吞吐 median/mean、TFLOPS、MFU、峰值显存，以及重复运行间 CV。
+median/p90/p95/p99、吞吐 median/mean、TFLOPS、MFU、峰值显存，以及单 run 的
+CV/MAD/IQR/每百 step 漂移。采集层会把 NaN/Inf 指标名作为显式证据写入 JSONL，不能
+再因数值过滤而静默消失。报告另外按项目策略查找最早的稳定后缀：至少 10 个 step、
+step-time CV 不超过 2%、每百 step 绝对漂移不超过 1%；它输出 `reached`、
+`not_reached` 或 `not_available` 及所选 steps，不会悄悄挑一个最快窗口。
 
 聚合器会先校验实验契约。任何模型、拓扑、batch、sequence、seed 或精度配置不一致，
 都会拒绝生成平台差值；它不会把不同实验包装成可比结果。只有 reference 时生成单平台
@@ -1213,19 +1217,53 @@ python -m tests.glm5_2_performance.comparison \
   --candidate-run /path/to/npu-r2 \
   --candidate-run /path/to/npu-r3 \
   --skip-steps 10 \
+  --measurement-level development \
   --output performance_reports/comparisons/gpu-npu-fsdp8
 ```
 
 输出包含自包含 `comparison.html`、机器可读 `comparison.json` 和入口
-`README.md`。报告明确显示每组 repeat 数和 CV；不足三次只标记证据不足，不伪造
-PASS/FAIL。这里借鉴 MLPerf 的申报与重复测量纪律，但 GLM 本地实验不是 MLPerf
+`README.md`。报告明确显示每组 repeat 数、CV 和基于独立 run median 的 bootstrap 95%
+置信区间。`--measurement-level` 会执行门禁，而不只是贴标签：`exploratory` 允许一次，
+`development` 每组至少三次且每次至少 20 个测量 step，`formal` 每组至少五次、每次至少
+100 个测量 step，并要求显式有限的 loss/gradient-norm 证据；`release` 还要求同时提供
+reference/candidate，且 step time 与 throughput 的
+bootstrap 95% 区间必须分离并给出一致方向；区间重叠或两个 headline 指标方向不一致时
+明确返回 `inconclusive`，拒绝形成 release claim。它不把同一次运行中的多个 step 伪装成
+独立重复，也不会把区间重叠解释成 PASS。
+
+需要降低随时间变化的温度、频率和共享机器噪声对 A/B 的偏置时，使用
+`python -m tests.glm5_2_performance.interleaved`。它按 AB/BA/AB 的平衡顺序执行两条已有
+benchmark 命令，为每次运行追加 `--replicate`，并持续写出 `schedule.json` 与独立日志；
+具体 capture 仍由原 GPU/NPU 入口负责，因而不会绕开 fixture、manifest 和生命周期检查。
+这里借鉴 MLPerf 的申报与重复测量纪律，但 GLM 本地实验不是 MLPerf
 benchmark，也不得称为 MLPerf 结果。相同输入会安全复用已有报告；输入变化默认拒绝
 覆盖，只有显式 `--force` 才替换所选 comparison 目录，不会删除任何原始 capture。
+
+需要判断热漂移、功耗封顶或能效时，可在 NPU/GPU profiler-off capture 上增加：
+
+```bash
+--telemetry-interval-seconds 1
+```
+
+NPU 通过只读 `npu-smi`，GPU 通过只读 `nvidia-smi --query-gpu` 采集 power、temperature、
+compute clock、utilization 及可用的 throttle reason。原始 `telemetry.jsonl` 和汇总
+`telemetry_summary.json` 同时进入 run/artifact，HTML 展示每卡 min/mean/max。管理工具缺失、
+字段不受当前芯片支持或单次查询失败时状态为 `not_available`，不会让训练失败。默认关闭，
+避免管理命令轮询干扰短跑；一秒间隔用于长稳/formal 环境证据已经足够。
+
+原始遥测覆盖整个训练进程，包含启动、编译、暖机和测量 step；报告同时用单调时钟将采样点
+裁到稳态 optimizer-step 时间窗。每卡窗口内至少两个 power 样本时才用梯形积分计算总设备
+能耗及 scheduled tokens/J。新版 token plan 还记录 `labels != -100` 的有效 token 数，证据
+存在时同时给出 effective tokens/J；旧 fixture 或采样不足时明确为 `not_available`。
 
 项目自有性能 HTML 使用与精度实验相同的 Panel + pyecharts/ECharts 离线栈：单端
 profiler-off 报告展示暖机/稳态、逐 Step 耗时、吞吐、TFLOPS、MFU、显存和诊断分支；
 profiler-active 报告保留同一训练视图，同时索引 Insight/Timeline、数据库和官方统计；
-重复实验报告叠加每次运行曲线，展示 median/p90/p95、CV 与候选相对基准变化。
+重复实验报告叠加每次运行曲线，展示 median/p90/p95/p99、CV、MAD、IQR、漂移、95% CI
+与候选相对基准变化。稳态卡片明确写出完整 optimizer-step 边界、配置 token 工作量、
+每设备与全任务吞吐、数值有效性和证据缺口。报告还自动解释稳态波动/漂移、跨 rank 偏斜、
+节流原因和时钟不稳，并给出复测或下钻动作；这些规则只产生 `observed/suspect/not_available`，
+不冒充跨芯片通用 PASS/FAIL。
 外部工具的原生 Timeline、数据库和工作簿不被重新包装成“官方结论”，只作为可追溯入口。
 
 报告顶部还展示 TorchTitan 构建模型时统计的参数量，以及

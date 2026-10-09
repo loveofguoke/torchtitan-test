@@ -162,6 +162,7 @@ def write_training_metrics_report(
             )
     phase_rows = []
     phases = analysis.get("profile_phases", {})
+    benchmark = phases.get("benchmark", {})
     for name in phases.get("phase_order", []):
         phase = phases["phases"][name]
         phase_steps = phase.get("steps", [])
@@ -273,6 +274,186 @@ def write_training_metrics_report(
             rows=tuple(summary_rows),
         ),
     ]
+    if benchmark:
+        primary = benchmark.get("primary", {})
+        step_statistics = primary.get("step_seconds") or {}
+        throughput_statistics = (
+            primary.get("throughput_tokens_per_second_per_device") or {}
+        )
+        validity = benchmark.get("validity", {})
+        work = benchmark.get("work", {})
+        compute = benchmark.get("compute", {})
+        memory = benchmark.get("memory", {})
+        steady_detection = benchmark.get("steady_state_detection", {})
+        sections.extend(
+            (
+                section_heading(
+                    "正式稳态合同 / Steady-state Contract",
+                    "主指标只使用暖机后的完整 optimizer steps；尾延迟、稳健离散度和数值门禁同时保留。",
+                ),
+                summary_table(
+                    columns=("Field", "Value", "Meaning"),
+                    rows=(
+                        (
+                            "Validity",
+                            validity.get("status", "not_available"),
+                            "; ".join(validity.get("reasons", ()))
+                            or "No invalidating evidence observed",
+                        ),
+                        (
+                            "Measurement boundary",
+                            benchmark.get("measurement_boundary", "-"),
+                            "Forward, backward, synchronization and optimizer update",
+                        ),
+                        (
+                            "Automatic steady-state check",
+                            steady_detection.get("status", "not_available"),
+                            (
+                                f"policy={steady_detection.get('policy', {})}; "
+                                f"selected_steps={steady_detection.get('selected_steps', [])}"
+                            ),
+                        ),
+                        (
+                            "Scheduled tokens / step",
+                            _integer(work.get("scheduled_tokens_per_step")),
+                            "Configured work; not substituted for effective non-padding tokens",
+                        ),
+                        (
+                            "Effective-token evidence",
+                            work.get("effective_token_status", "not_available"),
+                            work.get("note", ""),
+                        ),
+                        (
+                            "Median step",
+                            _number(step_statistics.get("median"), " s"),
+                            "Primary optimizer-step latency",
+                        ),
+                        (
+                            "P95 / P99 step",
+                            f"{_number(step_statistics.get('p95'), ' s')} / "
+                            f"{_number(step_statistics.get('p99'), ' s')}",
+                            "Tail latency",
+                        ),
+                        (
+                            "Per-device throughput median",
+                            _number(throughput_statistics.get("median"), " tok/s"),
+                            "Framework-observed throughput",
+                        ),
+                        (
+                            "Job throughput median",
+                            _number(
+                                primary.get(
+                                    "throughput_tokens_per_second_job_median"
+                                ),
+                                " tok/s",
+                            ),
+                            "Per-device median multiplied by world size",
+                        ),
+                        (
+                            "Model TFLOPS / device",
+                            _number(
+                                (compute.get("model_tflops_per_device") or {}).get(
+                                    "median"
+                                )
+                            ),
+                            compute.get("flops_formula", "not_available"),
+                        ),
+                        (
+                            "MFU",
+                            _number(
+                                (compute.get("mfu_percent") or {}).get("median"),
+                                "%",
+                            ),
+                            "Only comparable when FLOPs and hardware peak definitions match",
+                        ),
+                        (
+                            "Peak active / reserved memory",
+                            _number(
+                                (memory.get("peak_active_gib") or {}).get("max"),
+                                " GiB",
+                            )
+                            + " / "
+                            + _number(
+                                (memory.get("peak_reserved_gib") or {}).get(
+                                    "max"
+                                ),
+                                " GiB",
+                            ),
+                            "Maximum observed over the recorded metrics rank",
+                        ),
+                    ),
+                ),
+                summary_table(
+                    columns=("Stability metric", "Value", "Use"),
+                    rows=(
+                        (
+                            "Step CV",
+                            _number(step_statistics.get("cv_percent"), "%"),
+                            "Compatibility statistic; interpret with robust spread",
+                        ),
+                        (
+                            "Step MAD",
+                            _number(step_statistics.get("mad"), " s"),
+                            "Robust center spread",
+                        ),
+                        (
+                            "Step IQR",
+                            _number(step_statistics.get("iqr"), " s"),
+                            "Middle 50% spread",
+                        ),
+                        (
+                            "Step drift",
+                            _number(
+                                step_statistics.get(
+                                    "drift_percent_per_100_steps"
+                                ),
+                                "% / 100 steps",
+                            ),
+                            "OLS trend indicator; not an automatic acceptance verdict",
+                        ),
+                    ),
+                ),
+            )
+        )
+    telemetry = manifest.get("telemetry")
+    if telemetry is not None:
+        telemetry_rows = []
+        for device_id, device in telemetry.get("devices", {}).items():
+            device_metrics = device.get("metrics", {})
+            for metric_name, values in device_metrics.items():
+                telemetry_rows.append(
+                    (
+                        device_id,
+                        metric_name,
+                        _number(values.get("min")),
+                        _number(values.get("mean")),
+                        _number(values.get("max")),
+                    )
+                )
+            reasons = device.get("active_throttle_reasons", [])
+            if reasons:
+                telemetry_rows.append(
+                    (
+                        device_id,
+                        "active_throttle_reasons",
+                        "-",
+                        ", ".join(reasons),
+                        "-",
+                    )
+                )
+        sections.extend(
+            (
+                section_heading(
+                    "设备遥测 / Device Telemetry",
+                    telemetry.get("scope", "Optional vendor management telemetry"),
+                ),
+                summary_table(
+                    columns=("Device", "Metric", "Min", "Mean", "Max"),
+                    rows=tuple(telemetry_rows)
+                    or (("-", "not_available", "-", "-", "-"),),
+                ),
+            )
+        )
     if phase_rows:
         sections.extend(
             (

@@ -65,7 +65,7 @@ from .advanced_analysis import (
     recipe_arguments,
     resolve_recipe_plan,
 )
-from .analysis import build_analysis, render_html_report
+from .analysis import build_analysis, read_metrics, render_html_report
 from .collectors import (
     PerformanceCollector,
     require_training_collector,
@@ -81,6 +81,7 @@ from .config import (
 from .documentation import card_scope, write_run_readme
 from .diagnosis import build_self_diagnosis, write_self_diagnosis
 from .interactive_report import write_training_metrics_report
+from .telemetry import DeviceTelemetrySampler, align_steady_energy
 from .visualization import (
     find_flamegraph_script,
     find_mindstudio_flamegraph_script,
@@ -156,12 +157,16 @@ def performance_fixture_inputs(
     fixture_directory = token_plan_path.parent
     fixture_manifest_path = fixture_directory / "fixture.json"
     fixture_manifest = json.loads(fixture_manifest_path.read_text(encoding="utf-8"))
+    token_plan_manifest = json.loads(
+        (token_plan_path / "manifest.json").read_text(encoding="utf-8")
+    )
     identity = {
         "directory": str(fixture_directory.resolve()),
         "generation_id": fixture_manifest.get("generation_id"),
         "manifest_sha256": sha256_file(fixture_manifest_path),
         "checkpoint_sha256": fixture_manifest.get("checkpoint_sha256"),
         "token_plan": fixture_manifest.get("token_plan"),
+        "token_accounting": token_plan_manifest.get("token_accounting"),
         "workload": config.workload,
         "workload_args": list(config.workload_args),
     }
@@ -1035,6 +1040,7 @@ def _training_command(
         "--debug.no-enable-structured-logging",
         "--metrics.log_freq=1",
         "--metrics.enable_tensorboard",
+        "--metrics.save_for_all_ranks",
         "--metrics.disable_color_printing",
         "--metrics.save_tb_folder=tensorboard",
         *profiler_arguments,
@@ -1308,17 +1314,66 @@ def capture(
     )
     print_runtime_log(runtime_log)
     capture_started = time.monotonic()
-    try:
-        _run_process(
-            command,
-            root=root,
-            environment=environment,
-            log_path=runtime_log,
-            log_context=attempt.log_context,
+    telemetry_sampler = None
+    telemetry_summary = None
+    if config.telemetry_interval_seconds is not None:
+        telemetry_sampler = DeviceTelemetrySampler(
+            device_type=device,
+            device_ids=device_selection["selected_physical_devices"],
+            interval_seconds=config.telemetry_interval_seconds,
+            output_path=run_directory / "telemetry.jsonl",
         )
+        telemetry_sampler.start()
+    try:
+        try:
+            _run_process(
+                command,
+                root=root,
+                environment=environment,
+                log_path=runtime_log,
+                log_context=attempt.log_context,
+            )
+        finally:
+            if telemetry_sampler is not None:
+                telemetry_summary = telemetry_sampler.stop()
+                metric_records = read_metrics(metrics_path)
+                steady_steps = [
+                    int(row["step"])
+                    for row in metric_records
+                    if int(row["step"]) > config.skip_steps
+                ]
+                plan_manifest = json.loads(
+                    (token_plan_path / "manifest.json").read_text(encoding="utf-8")
+                )
+                effective_counts = plan_manifest.get("token_accounting", {}).get(
+                    "effective_tokens_per_step", []
+                )
+                effective_per_step = (
+                    effective_counts[0]
+                    if effective_counts
+                    and len(set(int(value) for value in effective_counts)) == 1
+                    else None
+                )
+                telemetry_summary["steady_energy"] = align_steady_energy(
+                    telemetry_sampler.records,
+                    metric_records,
+                    steady_steps,
+                    scheduled_tokens_per_step=(
+                        config.global_batch_size * config.sequence_length
+                    ),
+                    effective_tokens_per_step=effective_per_step,
+                )
+                (run_directory / "telemetry_summary.json").write_text(
+                    json.dumps(telemetry_summary, indent=2, ensure_ascii=False) + "\n",
+                    encoding="utf-8",
+                )
     except Exception as error:
         attempt.update("failed", error=repr(error))
-        failure = {"error": repr(error), "command": command}
+        failure = {
+            "error": repr(error),
+            "command": command,
+            "telemetry": telemetry_summary,
+        }
         failure_path = run_directory / "failure.json"
         _write_json(failure_path, failure)
         exploration_directory = _exploration_directory(
@@ -1329,6 +1384,12 @@ def capture(
         if runtime_log.is_file():
             shutil.copy2(
                 runtime_log, exploration_directory / "failed_runtime.log"
+            )
+        telemetry_summary_path = run_directory / "telemetry_summary.json"
+        if telemetry_summary_path.is_file():
+            shutil.copy2(
+                telemetry_summary_path,
+                exploration_directory / "telemetry_summary.json",
             )
         write_run_readme(exploration_directory)
         _refresh_exploration_documents(root)
@@ -1399,6 +1460,7 @@ def capture(
         "input_contract": input_contract,
         "model": model_parameter_summary,
         "preflight": preflight,
+        "telemetry": telemetry_summary,
         "run_directory": str(run_directory),
         "attempt_id": attempt.attempt_id,
     }
@@ -1407,6 +1469,12 @@ def capture(
     _write_json(artifact_directory / "manifest.json", manifest)
     if metrics_path.is_file():
         shutil.copy2(metrics_path, artifact_directory / "metrics.jsonl")
+    for rank_metrics in run_directory.glob("metrics.rank-*.jsonl"):
+        shutil.copy2(rank_metrics, artifact_directory / rank_metrics.name)
+    for telemetry_name in ("telemetry.jsonl", "telemetry_summary.json"):
+        telemetry_path = run_directory / telemetry_name
+        if telemetry_path.is_file():
+            shutil.copy2(telemetry_path, artifact_directory / telemetry_name)
     attempt.update("completed", artifact=str(artifact_directory))
     _sync_exploration_bundle(
         root,
@@ -3528,6 +3596,15 @@ def run_profiler_cli(
         type=int,
         help="repeat index included in run identity without changing training",
     )
+    parser.add_argument(
+        "--telemetry-interval-seconds",
+        type=float,
+        help=(
+            "optional low-rate npu-smi/nvidia-smi polling interval; records "
+            "power, temperature, clock, utilization, and throttle evidence "
+            "without making telemetry availability a training dependency"
+        ),
+    )
     parser.add_argument("--training-dtype")
     parser.add_argument("--mixed-precision-param")
     parser.add_argument("--mixed-precision-reduce")
@@ -3746,6 +3823,7 @@ def run_profiler_cli(
             tuple(args.workload_arg) if args.workload_arg else None
         ),
         "replicate": args.replicate,
+        "telemetry_interval_seconds": args.telemetry_interval_seconds,
         "training_dtype": args.training_dtype,
         "mixed_precision_param": args.mixed_precision_param,
         "mixed_precision_reduce": args.mixed_precision_reduce,

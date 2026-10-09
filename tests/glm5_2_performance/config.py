@@ -304,6 +304,7 @@ class PerformanceConfig:
     mixed_precision_param: str = "bfloat16"
     mixed_precision_reduce: str = "float32"
     deterministic: bool = False
+    telemetry_interval_seconds: float | None = None
     extra_args: tuple[str, ...] = ()
     run_root: str = "performance_runs"
     artifact_root: str = "performance_artifacts"
@@ -344,6 +345,11 @@ class PerformanceConfig:
             raise ValueError("profiler skip and warmup steps must be non-negative")
         if self.replicate < 0:
             raise ValueError("replicate must be non-negative")
+        if (
+            self.telemetry_interval_seconds is not None
+            and self.telemetry_interval_seconds <= 0
+        ):
+            raise ValueError("telemetry_interval_seconds must be positive")
         if not self.workload.strip():
             raise ValueError("workload must not be empty")
         if self.graph_mode not in {"eager", "inductor", "npugraphs"}:

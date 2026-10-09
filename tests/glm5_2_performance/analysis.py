@@ -21,6 +21,13 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
+from .benchmark_metrics import (
+    detect_steady_state,
+    metric_statistics,
+    numerical_validity,
+    percentile as benchmark_percentile,
+)
+
 from .visualization import (
     inspect_analysis_outputs,
     inspect_memory_visualizations,
@@ -41,16 +48,7 @@ def read_metrics(path: Path) -> list[dict[str, Any]]:
 
 
 def _percentile(values: list[float], percentile: float) -> float | None:
-    if not values:
-        return None
-    ordered = sorted(values)
-    position = (len(ordered) - 1) * percentile
-    lower = math.floor(position)
-    upper = math.ceil(position)
-    if lower == upper:
-        return ordered[lower]
-    fraction = position - lower
-    return ordered[lower] * (1 - fraction) + ordered[upper] * fraction
+    return benchmark_percentile(values, percentile)
 
 
 def summarize_metrics(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -63,16 +61,7 @@ def summarize_metrics(records: list[dict[str, Any]]) -> dict[str, Any]:
     summaries: dict[str, dict[str, float | int | None]] = {}
     for name, points in series.items():
         values = [value for _, value in points]
-        summaries[name] = {
-            "count": len(values),
-            "mean": statistics.fmean(values),
-            "median": statistics.median(values),
-            "p90": _percentile(values, 0.90),
-            "p99": _percentile(values, 0.99),
-            "min": min(values),
-            "max": max(values),
-            "last": values[-1],
-        }
+        summaries[name] = metric_statistics(values)
     return {
         "steps": sorted({int(record["step"]) for record in records}),
         "series": {name: points for name, points in series.items()},
@@ -129,6 +118,29 @@ def summarize_profile_phases(
         steady = phases.get("steady", {}).get("summary", {})
         steady_step = steady.get(step_metric, {}).get("median")
         steady_throughput = steady.get(throughput_metric, {}).get("median")
+        steady_tflops = steady.get("tflops", {}).get("median")
+        inferred_flops_per_token = (
+            steady_tflops * 1e12 / steady_throughput
+            if steady_tflops is not None and steady_throughput
+            else None
+        )
+        steady_records = [records_by_step[step] for step in phase_steps["steady"]]
+        validity = numerical_validity(steady_records)
+        steady_step_points = [
+            (step, float(records_by_step[step]["metrics"][step_metric]))
+            for step in phase_steps["steady"]
+            if step_metric in records_by_step[step].get("metrics", {})
+        ]
+        steady_detection = detect_steady_state(
+            [step for step, _ in steady_step_points],
+            [value for _, value in steady_step_points],
+        )
+        scheduled_tokens = (
+            int(config["global_batch_size"]) * int(config["sequence_length"])
+            if config.get("global_batch_size") is not None
+            and config.get("sequence_length") is not None
+            else None
+        )
         return {
             "schedule": {"skip_steps": skip_steps, "profiler_enabled": False},
             "phase_order": list(phases),
@@ -143,6 +155,61 @@ def summarize_profile_phases(
                     if steady_throughput is not None
                     else None
                 ),
+            },
+            "benchmark": {
+                "schema": "torchtitan.glm5_2.steady_benchmark.v1",
+                "measurement_boundary": "complete optimizer step",
+                "steady_state_detection": steady_detection,
+                "work": {
+                    "scheduled_tokens_per_step": scheduled_tokens,
+                    "effective_tokens_per_step": None,
+                    "effective_token_status": "not_available",
+                    "note": (
+                        "TorchTitan throughput is retained as observed per-device "
+                        "throughput; effective non-padding token accounting requires "
+                        "explicit dataloader evidence."
+                    ),
+                },
+                "primary": {
+                    "step_seconds": steady.get(step_metric),
+                    "throughput_tokens_per_second_per_device": steady.get(
+                        throughput_metric
+                    ),
+                    "throughput_tokens_per_second_job_median": (
+                        steady_throughput * world_size
+                        if steady_throughput is not None
+                        else None
+                    ),
+                },
+                "compute": {
+                    "model_tflops_per_device": steady.get("tflops"),
+                    "mfu_percent": steady.get("mfu"),
+                    "flops_per_token": inferred_flops_per_token,
+                    "flops_formula": {
+                        "status": "framework_reported",
+                        "definition": "tflops * 1e12 / throughput_tokens_per_second",
+                        "producer": "torchtitan.components.metrics.MetricsProcessor",
+                        "note": (
+                            "The model-owned TorchTitan formula includes its configured "
+                            "dense, MoE, and attention terms; source revision is recorded "
+                            "in the run manifest."
+                        ),
+                    },
+                },
+                "memory": {
+                    "peak_active_gib": steady.get("memory/max_active(GiB)"),
+                    "peak_reserved_gib": steady.get("memory/max_reserved(GiB)"),
+                },
+                "validity": {
+                    "status": validity["status"],
+                    "numerical": validity,
+                    "reasons": validity["reasons"],
+                },
+                "evidence": {
+                    "measured_steps": phase_steps["steady"],
+                    "rank_metrics": "not_available",
+                    "telemetry": "not_available",
+                },
             },
         }
 
@@ -985,6 +1052,11 @@ def build_analysis(
 ) -> dict[str, Any]:
     records = read_metrics(metrics_path or run_directory / "metrics.jsonl")
     metrics = summarize_metrics(records)
+    rank_metric_summaries = {}
+    for rank_path in sorted(run_directory.glob("metrics.rank-*.jsonl")):
+        rank_records = read_metrics(rank_path)
+        rank = rank_path.stem.rsplit("-", 1)[-1]
+        rank_metric_summaries[rank] = summarize_metrics(rank_records)
     profiler_directory = run_directory / "trainer_output" / "profiling" / "traces"
     if not profiler_directory.is_dir():
         profiler_directory = run_directory / "trainer_output" / "profiling"
@@ -999,6 +1071,7 @@ def build_analysis(
     return {
         "run_directory": str(run_directory),
         "metrics": metrics,
+        "rank_metrics": rank_metric_summaries,
         "profile_phases": summarize_profile_phases(
             records,
             config=config,

@@ -13,6 +13,7 @@ import json
 import math
 import os
 from pathlib import Path
+import time
 from typing import Any, Literal
 
 from tests.glm5_2_common.compiler_cache import configure_compiler_cache
@@ -59,11 +60,34 @@ def _to_float(value: Any) -> float | None:
     return result if math.isfinite(result) else None
 
 
+def _partition_numeric_metrics(
+    metrics: dict[str, Any],
+) -> tuple[dict[str, float], list[str]]:
+    numeric = {}
+    nonfinite_metrics = []
+    for key, value in metrics.items():
+        converted = _to_float(value)
+        if converted is not None:
+            numeric[key] = converted
+        elif not isinstance(value, bool) and (
+            isinstance(value, (int, float)) or hasattr(value, "item")
+        ):
+            try:
+                raw_value = value.item() if hasattr(value, "item") else value
+                if not math.isfinite(float(raw_value)):
+                    nonfinite_metrics.append(key)
+            except (TypeError, ValueError, RuntimeError):
+                pass
+    return numeric, sorted(nonfinite_metrics)
+
+
 def _install_metrics_capture() -> None:
     path_value = os.environ.get(METRICS_PATH_ENV)
     if not path_value:
         raise RuntimeError(f"{METRICS_PATH_ENV} must name the metrics JSONL file")
     path = Path(path_value)
+    rank = int(os.environ.get("RANK", "0"))
+    rank_path = path.with_name(f"{path.stem}.rank-{rank}{path.suffix}")
 
     from torchtitan.components.metrics import TensorBoardLogger
 
@@ -75,22 +99,30 @@ def _install_metrics_capture() -> None:
         step: int,
     ) -> None:
         original_log(self, metrics, step)
-        numeric = {
-            key: converted
-            for key, value in metrics.items()
-            if (converted := _to_float(value)) is not None
-        }
-        if not numeric:
+        numeric, nonfinite_metrics = _partition_numeric_metrics(metrics)
+        if not numeric and not nonfinite_metrics:
             return
         record = {
             "step": int(step),
-            "rank": int(os.environ.get("RANK", "0")),
+            "rank": rank,
+            "timestamp_unix_ns": time.time_ns(),
+            "step_end_monotonic_ns": time.monotonic_ns(),
             "metrics": numeric,
+            "nonfinite_metrics": nonfinite_metrics,
         }
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(record, sort_keys=True, separators=(",", ":")))
-            stream.write("\n")
+        step_seconds = numeric.get("time_metrics/end_to_end(s)")
+        if step_seconds is not None:
+            record["step_start_monotonic_ns"] = (
+                record["step_end_monotonic_ns"]
+                - int(step_seconds * 1_000_000_000)
+            )
+        encoded = json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+        rank_path.parent.mkdir(parents=True, exist_ok=True)
+        with rank_path.open("a", encoding="utf-8") as stream:
+            stream.write(encoded)
+        if rank == 0:
+            with path.open("a", encoding="utf-8") as stream:
+                stream.write(encoded)
 
     TensorBoardLogger.log = log_with_jsonl
 

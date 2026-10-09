@@ -30,8 +30,15 @@ ECharts 运行时代码以及实验数据写进一个 HTML。产物可直接下�
 - NaN/Inf 计数和首次异常证据。
 
 性能报告另外提供逐 Step 耗时、吞吐、TFLOPS、MFU 和活跃显存，明确标出暖机区间；
-重复实验报告叠加每个 repeat 的曲线，展示 median、p90、p95、CV 和候选相对基准
-变化。报告中的自动诊断只负责选择下一步分析分支，不产生统一 PASS/FAIL。
+稳态合同卡片报告 median、p90/p95/p99、CV、MAD、IQR、每百 step 漂移和 NaN/Inf
+有效性。重复实验以每个独立 run 的 median 为样本，展示 bootstrap 95% CI，不能把同一
+run 的 step 当成独立重复。报告中的自动诊断只负责选择下一步分析分支，不产生统一
+PASS/FAIL；尚未采集的有效 token、rank 或 telemetry 证据明确显示 `not_available`。
+
+聚合报告还记录 `exploratory`、`development`、`formal` 或 `release` 测量等级。formal
+要求每组至少五个数值有效的独立 run；release 进一步要求 reference/candidate 的 step
+time 与 throughput bootstrap 95% 区间均分离且方向一致，否则结论固定为
+`inconclusive`，不会生成发布级性能声明。
 
 静态 SVG 暂时保留为兼容产物，供文本审阅、旧报告和无 JavaScript 环境使用；
 交互 HTML 是面向人的主要入口。聚合报告把交互 HTML 内嵌为 `srcdoc`，因此

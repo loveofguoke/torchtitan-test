@@ -31,6 +31,10 @@ from tests.glm5_2_performance.analysis import (
 from tests.glm5_2_performance.interactive_report import (
     write_training_metrics_report,
 )
+from tests.glm5_2_performance.telemetry import (
+    DeviceTelemetrySampler,
+    align_steady_energy,
+)
 from tests.glm5_2_performance.diagnosis import (
     build_self_diagnosis,
     write_self_diagnosis,
@@ -178,6 +182,7 @@ def _contract(
         "delay": args.delay,
         "duration": args.duration,
         "stats_reports": list(args.stats_reports),
+        "telemetry_interval_seconds": args.telemetry_interval_seconds,
     }
     if args.profiler_off:
         contract = {
@@ -270,6 +275,7 @@ def _training_command(
         "--debug.no-enable-structured-logging",
         "--metrics.log_freq=1",
         "--metrics.enable_tensorboard",
+        "--metrics.save_for_all_ranks",
         "--metrics.disable_color_printing",
         "--metrics.save_tb_folder=tensorboard",
         "--training.disable_cuda_graphs",
@@ -550,10 +556,58 @@ def _capture(
         "run_directory": str(run_dir.resolve()),
     }
     _write_capture_manifest(manifest, run_dir=run_dir, artifact_dir=artifact_dir)
+    telemetry_sampler = None
+    telemetry_summary = None
+    if args.telemetry_interval_seconds is not None:
+        telemetry_sampler = DeviceTelemetrySampler(
+            device_type="cuda",
+            device_ids=tuple(
+                device.strip()
+                for device in args.visible_devices.split(",")[: topology.world_size]
+            ),
+            interval_seconds=args.telemetry_interval_seconds,
+            output_path=run_dir / "telemetry.jsonl",
+        )
+        telemetry_sampler.start()
     try:
-        _run_logged(command, cwd=_root(), log=runtime_log, env=env)
+        try:
+            _run_logged(command, cwd=_root(), log=runtime_log, env=env)
+        finally:
+            if telemetry_sampler is not None:
+                telemetry_summary = telemetry_sampler.stop()
+                metric_records = read_metrics(metrics_path)
+                token_manifest = json.loads(
+                    (token_plan_path / "manifest.json").read_text(encoding="utf-8")
+                )
+                effective_counts = token_manifest.get("token_accounting", {}).get(
+                    "effective_tokens_per_step", []
+                )
+                effective_per_step = (
+                    effective_counts[0]
+                    if effective_counts
+                    and len(set(int(value) for value in effective_counts)) == 1
+                    else None
+                )
+                telemetry_summary["steady_energy"] = align_steady_energy(
+                    telemetry_sampler.records,
+                    metric_records,
+                    [
+                        int(row["step"])
+                        for row in metric_records
+                        if int(row["step"]) > args.skip_steps
+                    ],
+                    scheduled_tokens_per_step=(
+                        args.global_batch_size * args.sequence_length
+                    ),
+                    effective_tokens_per_step=effective_per_step,
+                )
+                (run_dir / "telemetry_summary.json").write_text(
+                    json.dumps(telemetry_summary, indent=2) + "\n",
+                    encoding="utf-8",
+                )
     except BaseException:
         manifest["capture_status"] = "failed"
+        manifest["telemetry"] = telemetry_summary
         _write_capture_manifest(
             manifest, run_dir=run_dir, artifact_dir=artifact_dir
         )
@@ -593,9 +647,16 @@ def _capture(
         runtime_log,
         parameter_dtype="bfloat16",
     )
+    manifest["telemetry"] = telemetry_summary
     _write_capture_manifest(manifest, run_dir=run_dir, artifact_dir=artifact_dir)
     if metrics_path.is_file():
         shutil.copy2(metrics_path, artifact_dir / "metrics.jsonl")
+    for rank_metrics in run_dir.glob("metrics.rank-*.jsonl"):
+        shutil.copy2(rank_metrics, artifact_dir / rank_metrics.name)
+    for telemetry_name in ("telemetry.jsonl", "telemetry_summary.json"):
+        telemetry_path = run_dir / telemetry_name
+        if telemetry_path.is_file():
+            shutil.copy2(telemetry_path, artifact_dir / telemetry_name)
     attempt.update("completed")
     print_output_path(
         "NVIDIA performance baseline" if args.profiler_off else "Nsight Systems capture",
@@ -1034,6 +1095,14 @@ def run_cli() -> int:
         default=0,
         help="optional independent run index included in experiment identity",
     )
+    parser.add_argument(
+        "--telemetry-interval-seconds",
+        type=float,
+        help=(
+            "optional low-rate nvidia-smi polling interval for power, "
+            "temperature, clocks, utilization, and throttle evidence"
+        ),
+    )
     parser.add_argument("--trace")
     parser.add_argument("--pytorch", default=DEFAULT_PYTORCH)
     parser.add_argument(
@@ -1133,6 +1202,11 @@ def run_cli() -> int:
         parser.error("export CUDA_VISIBLE_DEVICES or pass --visible-devices")
     if args.replicate < 0:
         parser.error("--replicate must be non-negative")
+    if (
+        args.telemetry_interval_seconds is not None
+        and args.telemetry_interval_seconds <= 0
+    ):
+        parser.error("--telemetry-interval-seconds must be positive")
     if args.profiler_off and not 0 <= args.skip_steps < args.steps:
         parser.error("--skip-steps must be non-negative and smaller than --steps")
     if args.profiler_off and args.profile != "standard":
