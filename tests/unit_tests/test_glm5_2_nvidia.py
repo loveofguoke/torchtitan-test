@@ -44,6 +44,11 @@ def _args() -> Namespace:
         profiler_off=False,
         replicate=0,
         skip_steps=10,
+        workload="representative",
+        workload_arg=[],
+        graph="eager",
+        compile_components=("model",),
+        compiler_diagnostics=False,
     )
 
 
@@ -53,7 +58,10 @@ def test_nvidia_nsys_identity_includes_capture_contract() -> None:
     contract = _contract(args, topology, "NVIDIA Nsight Systems 2026.4.1")
     name = _identity_name(args, topology, contract)
 
-    assert name.startswith("cuda-fsdp8-bf16-s30-l8-b64-seq128-seed61-standard-")
+    assert name.startswith(
+        "cuda-fsdp8-bf16-s30-l8-b64-seq128-seed61-"
+        "workload-representative-standard-"
+    )
     assert contract["topology"]["data_parallel_shard_degree"] == 8
     assert contract["cuda_memory_usage"] is True
 

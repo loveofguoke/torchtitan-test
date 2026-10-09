@@ -591,21 +591,30 @@ def test_npu_gradient_diagnostics_are_recorded_without_flex_replay(
     }
 
 
-def test_gpu_smoke_reserves_compiled_graph_interface(tmp_path) -> None:
-    with pytest.raises(NotImplementedError, match="only NPU endpoints"):
-        _run_topology(
-            root=tmp_path,
-            suite_root=tmp_path / "smoke_runs",
-            device="gpu",
-            visible_devices="0",
-            topology=ParallelTopology("single", 1),
-            steps=1,
-            local_batch_size=1,
-            global_batch_size=1,
-            sequence_length=8,
-            seed=61,
-            module="glm5",
-            config="glm5_debugmodel",
-            graph=GraphFeatureConfig(mode="inductor"),
-            force=False,
-        )
+def test_gpu_smoke_supports_cuda_inductor(tmp_path, monkeypatch) -> None:
+    commands: list[list[str]] = []
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("tests.glm5_2_smoke.train_smoke.subprocess.run", run)
+    _run_topology(
+        root=tmp_path,
+        suite_root=tmp_path / "smoke_runs",
+        device="gpu",
+        visible_devices="0",
+        topology=ParallelTopology("single", 1),
+        steps=1,
+        local_batch_size=1,
+        global_batch_size=1,
+        sequence_length=8,
+        seed=61,
+        module="glm5",
+        config="glm5_debugmodel",
+        graph=GraphFeatureConfig(mode="inductor"),
+        force=False,
+    )
+
+    assert "--compile.enable" in commands[0]
+    assert "--compile.backend=inductor" in commands[0]

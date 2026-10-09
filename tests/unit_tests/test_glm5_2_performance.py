@@ -612,6 +612,62 @@ class TestPerformanceConfig(unittest.TestCase):
                     output=root / "out",
                 )
 
+    def test_performance_comparison_rejects_fixture_digest_mismatch(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+
+            def make_run(name: str, token_sha: str) -> Path:
+                run = root / name
+                run.mkdir()
+                config = PerformanceConfig(
+                    name=name,
+                    steps=12,
+                    skip_steps=1,
+                    active_steps=1,
+                    profiler_enabled=False,
+                ).as_dict()
+                (run / "experiment.json").write_text(
+                    json.dumps(
+                        {
+                            "configuration": config,
+                            "fixture": {
+                                "checkpoint_sha256": "same-checkpoint",
+                                "token_plan": {"sha256": token_sha},
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                (run / "metrics.jsonl").write_text(
+                    "".join(
+                        json.dumps(
+                            {
+                                "step": step,
+                                "metrics": {
+                                    "time_metrics/end_to_end(s)": 1.0,
+                                    "throughput(tps)": 100.0,
+                                },
+                            }
+                        )
+                        + "\n"
+                        for step in range(1, 13)
+                    ),
+                    encoding="utf-8",
+                )
+                return run
+
+            reference = make_run("reference", "token-a")
+            candidate = make_run("candidate", "token-b")
+            with self.assertRaisesRegex(ValueError, "contracts differ"):
+                build_comparison(
+                    reference_runs=[reference],
+                    reference_label="GPU",
+                    candidate_runs=[candidate],
+                    candidate_label="NPU",
+                    skip_steps=1,
+                    output=root / "comparison",
+                )
+
     def test_performance_ablation_accepts_exactly_one_declared_difference(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

@@ -5,9 +5,8 @@
 
 Graph mode is modeled as an orthogonal training feature. ``eager`` contributes
 no compile arguments; ``inductor`` and ``npugraphs`` contribute explicit
-backend/component policy plus optional diagnostics. The CUDA interface is kept
-at the type/CLI boundary but raises until a validated GPU policy is defined,
-preventing accidental claims from an unimplemented backend.
+backend/component policy plus optional diagnostics. CUDA supports the upstream
+Inductor backend; ``npugraphs`` and NPU codegen selection remain NPU-only.
 """
 
 from __future__ import annotations
@@ -73,11 +72,9 @@ def validate_graph_training_args(
     compile_requested = any(
         argument.startswith("--compile.") for argument in arguments
     )
-    if compile_requested and device_type != "npu":
+    if compile_requested and device_type not in {"npu", "cuda"}:
         raise NotImplementedError(
-            "graph-mode experiments currently support only NPU endpoints; "
-            "the CUDA interface is reserved until the torch.compile policy "
-            "is defined"
+            "graph-mode experiments support only NPU and CUDA endpoints"
         )
 
 
@@ -107,6 +104,8 @@ class GraphFeatureConfig:
             device_type=device_type,
             arguments=("--compile.enable",),
         )
+        if self.mode == "npugraphs" and device_type != "npu":
+            raise ValueError("npugraphs requires an NPU endpoint")
         if self.mode == "npugraphs" and self.components != ("model",):
             raise ValueError("npugraphs supports model compilation only")
         environment = (

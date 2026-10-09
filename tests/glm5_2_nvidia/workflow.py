@@ -42,6 +42,22 @@ from tests.glm5_2_common.topology import (
     standard_topologies,
     training_command_args,
 )
+from tests.glm5_2_graph.config import GraphFeatureConfig
+from tests.glm5_2_performance.config import PerformanceConfig
+from tests.glm5_2_performance.workflow import (
+    model_parameter_summary,
+    performance_fixture_config,
+    performance_fixture_inputs,
+    source_metadata,
+)
+from tests.glm5_2_precision.token_data import (
+    load_token_plan,
+    validate_runtime_input_contract,
+)
+from tests.glm5_2_precision.workflow import (
+    fixed_input_environment,
+    prepare_fixture,
+)
 
 
 DEFAULT_TRACE = "cuda,nvtx,osrt,cublas,cudnn"
@@ -148,6 +164,11 @@ def _contract(
         "global_batch_size": args.global_batch_size,
         "sequence_length": args.sequence_length,
         "seed": args.seed,
+        "workload": args.workload,
+        "workload_args": list(args.workload_arg),
+        "graph_mode": args.graph,
+        "compile_components": list(args.compile_components),
+        "compiler_diagnostics": args.compiler_diagnostics,
         "nsys_version": version,
         "trace": args.trace,
         "pytorch": args.pytorch,
@@ -190,9 +211,12 @@ def _identity_name(
 ) -> str:
     mode = args.profile if not args.profiler_off else "profiler-off"
     repeat = f"-r{args.replicate}" if args.replicate else ""
+    graph = "" if args.graph == "eager" else f"-{args.graph}"
+    workload = f"-workload-{args.workload}"
     base = (
         f"cuda-{topology.slug}-bf16-s{args.steps}-l{args.local_batch_size}-"
-        f"b{args.global_batch_size}-seq{args.sequence_length}-seed{args.seed}-{mode}"
+        f"b{args.global_batch_size}-seq{args.sequence_length}-seed{args.seed}"
+        f"{workload}-{mode}{graph}"
         f"{repeat}"
     )
     return config_name(base, contract)
@@ -208,6 +232,8 @@ def _training_command(
     args: argparse.Namespace,
     topology: ParallelTopology,
     run_dir: Path,
+    checkpoint_path: Path,
+    graph_arguments: tuple[str, ...],
 ) -> list[str]:
     torchrun = shutil.which("torchrun") or str(
         Path(sys.executable).with_name("torchrun")
@@ -247,6 +273,11 @@ def _training_command(
         "--metrics.disable_color_printing",
         "--metrics.save_tb_folder=tensorboard",
         "--training.disable_cuda_graphs",
+        *args.workload_arg,
+        *graph_arguments,
+        "--checkpoint.enable",
+        "--checkpoint.load_only",
+        f"--checkpoint.initial_load_path={checkpoint_path}",
         *topology.command_args(),
     ]
 
@@ -259,6 +290,14 @@ def _read_manifest(path: Path) -> dict[str, Any]:
         return json.loads(manifest.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+def _write_capture_manifest(
+    manifest: dict[str, Any], *, run_dir: Path, artifact_dir: Path
+) -> None:
+    payload = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    (run_dir / "manifest.json").write_text(payload, encoding="utf-8")
+    (artifact_dir / "manifest.json").write_text(payload, encoding="utf-8")
 
 
 def _official_output_dir(run_dir: Path) -> Path:
@@ -382,6 +421,12 @@ def _capture(
     contract: dict[str, Any],
     run_dir: Path,
     artifact_dir: Path,
+    fixture_config: Any,
+    checkpoint_path: Path,
+    token_plan_path: Path,
+    fixture_identity: dict[str, Any],
+    graph_arguments: tuple[str, ...],
+    graph_environment: dict[str, str],
 ) -> None:
     output_dir = _adopt_legacy_outputs(run_dir, artifact_dir)
     record = _read_manifest(artifact_dir)
@@ -391,6 +436,7 @@ def _capture(
     if (
         record.get("capture_status") == "completed"
         and record.get("contract") == contract
+        and record.get("fixture") == fixture_identity
         and expected_output.is_file()
     ):
         print_output_path("Skip completed NVIDIA performance capture", artifact_dir)
@@ -419,6 +465,7 @@ def _capture(
             "profile": "profiler-off" if args.profiler_off else args.profile,
             "topology": topology.slug,
             "contract": contract,
+            "fixture": fixture_identity,
         },
         entry_command=sys.argv,
     )
@@ -430,7 +477,13 @@ def _capture(
         context={"topology": topology.slug, "steps": args.steps},
     )
     train_log = run_dir / "training.log"
-    train_command = _training_command(args, topology, run_dir)
+    train_command = _training_command(
+        args,
+        topology,
+        run_dir,
+        checkpoint_path,
+        graph_arguments,
+    )
     profile_command = [
         args.nsys,
         "profile",
@@ -463,10 +516,26 @@ def _capture(
             "GLM5_PERFORMANCE_METRICS_PATH": str(metrics_path),
         }
     )
+    env.update(graph_environment)
+    input_contract_directory = run_dir / "input_contract"
+    input_contract_directory.mkdir(parents=True, exist_ok=True)
+    env.update(
+        fixed_input_environment(
+            token_plan_path=token_plan_path,
+            input_contract_directory=input_contract_directory,
+            training=fixture_config.training,
+            topology=topology,
+        )
+    )
     runtime_log = run_dir / (
         "runtime.log" if args.profiler_off else "nsys_profile.log"
     )
     manifest = {
+        "format_version": 1,
+        "run_name": run_dir.name,
+        "device": "cuda",
+        "topology": topology.slug,
+        "preset": "profiler-off" if args.profiler_off else args.profile,
         "capture_status": "running",
         "analysis_status": "pending",
         "contract": contract,
@@ -476,16 +545,17 @@ def _capture(
         "training_log": str(train_log),
         "attempt_id": attempt.attempt_id,
         "official_output": str(output_dir) if not args.profiler_off else None,
+        "fixture": fixture_identity,
+        "source": source_metadata(_root()),
+        "run_directory": str(run_dir.resolve()),
     }
-    (artifact_dir / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    _write_capture_manifest(manifest, run_dir=run_dir, artifact_dir=artifact_dir)
     try:
         _run_logged(command, cwd=_root(), log=runtime_log, env=env)
     except BaseException:
         manifest["capture_status"] = "failed"
-        (artifact_dir / "manifest.json").write_text(
-            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        _write_capture_manifest(
+            manifest, run_dir=run_dir, artifact_dir=artifact_dir
         )
         attempt.update("failed")
         raise
@@ -495,10 +565,37 @@ def _capture(
             "NVIDIA performance capture completed without producing "
             f"{expected_output}"
         )
+    try:
+        input_contract = validate_runtime_input_contract(
+            contract_directory=input_contract_directory,
+            plan=load_token_plan(token_plan_path),
+            steps=args.steps,
+            global_batch_size=args.global_batch_size,
+            training_local_batch_size=args.local_batch_size,
+            dp_world_size=topology.data_parallel_degree,
+            context_parallel_degree=topology.context_parallel_degree,
+            tensor_parallel_degree=topology.tensor_parallel_degree,
+            pipeline_parallel_degree=topology.pipeline_parallel_degree,
+            node_rank=0,
+            num_processes_per_node=topology.world_size,
+        )
+    except Exception as error:
+        manifest["capture_status"] = "failed"
+        manifest["input_contract_error"] = repr(error)
+        _write_capture_manifest(
+            manifest, run_dir=run_dir, artifact_dir=artifact_dir
+        )
+        attempt.update("failed", error=repr(error))
+        raise
     manifest["capture_status"] = "completed"
-    (artifact_dir / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    manifest["input_contract"] = input_contract
+    manifest["model"] = model_parameter_summary(
+        runtime_log,
+        parameter_dtype="bfloat16",
     )
+    _write_capture_manifest(manifest, run_dir=run_dir, artifact_dir=artifact_dir)
+    if metrics_path.is_file():
+        shutil.copy2(metrics_path, artifact_dir / "metrics.jsonl")
     attempt.update("completed")
     print_output_path(
         "NVIDIA performance baseline" if args.profiler_off else "Nsight Systems capture",
@@ -891,6 +988,32 @@ def run_cli() -> int:
     parser.add_argument("--module", default="glm5")
     parser.add_argument("--config", default="glm5_debugmodel")
     parser.add_argument(
+        "--data",
+        action="store_true",
+        help="prepare the shared checkpoint and fixed token-plan workload",
+    )
+    parser.add_argument("--workload", default="representative")
+    parser.add_argument(
+        "--workload-arg",
+        action="append",
+        default=[],
+        help="extra training argument defining the named workload; repeatable",
+    )
+    parser.add_argument(
+        "--fixture-root",
+        default="performance_fixtures",
+        help="shared GPU/NPU performance fixture root",
+    )
+    parser.add_argument(
+        "--graph", choices=("eager", "inductor"), default="eager"
+    )
+    parser.add_argument(
+        "--compile-loss",
+        action="store_true",
+        help="compile both the model and loss instead of the model only",
+    )
+    parser.add_argument("--compiler-diagnostics", action="store_true")
+    parser.add_argument(
         "--visible-devices", default=os.environ.get("CUDA_VISIBLE_DEVICES", "")
     )
     parser.add_argument("--nsys", default=os.environ.get("NSYS", "nsys"))
@@ -934,6 +1057,60 @@ def run_cli() -> int:
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+    if any(value.startswith("--compile.") for value in args.workload_arg):
+        parser.error(
+            "--workload-arg must not override --compile.*; use --graph, "
+            "--compile-loss, and --compiler-diagnostics"
+        )
+    args.compile_components = (
+        ("model", "loss") if args.compile_loss else ("model",)
+    )
+    graph_feature = GraphFeatureConfig(
+        mode=args.graph,
+        components=args.compile_components,
+        diagnostics=args.compiler_diagnostics,
+    ).feature(device_type="cuda")
+    fixture_performance_config = PerformanceConfig(
+        name="nvidia-performance",
+        module=args.module,
+        model_config=args.config,
+        device="cuda",
+        steps=args.steps,
+        skip_steps=args.skip_steps,
+        profiler_enabled=not args.profiler_off,
+        graph_mode=args.graph,
+        compile_components=args.compile_components,
+        compiler_diagnostics=args.compiler_diagnostics,
+        local_batch_size=args.local_batch_size,
+        global_batch_size=args.global_batch_size,
+        sequence_length=args.sequence_length,
+        seed=args.seed,
+        workload=args.workload,
+        workload_args=tuple(args.workload_arg),
+        fixture_root=args.fixture_root,
+    )
+    if args.data:
+        fixture_config = performance_fixture_config(
+            fixture_performance_config, device="cuda"
+        )
+        fixture_path = prepare_fixture(
+            _root(),
+            fixture_config,
+            endpoint=fixture_config.reference,
+            force=args.force,
+        )
+        write_experiment_overview(
+            fixture_path,
+            title="GLM5.2 NVIDIA performance workload",
+            summary={
+                "workload": args.workload,
+                "workload_args": args.workload_arg,
+                "configuration": fixture_performance_config.as_dict(),
+            },
+            entry_command=[sys.executable, *sys.argv],
+        )
+        print_output_path("Prepared NVIDIA performance workload", fixture_path)
+        return 0
     preset = PROFILE_PRESETS[args.profile]
     args.trace = args.trace or preset["trace"]
     args.sample = args.sample or preset["sample"]
@@ -967,6 +1144,11 @@ def run_cli() -> int:
         if args.dry_run
         else _nsys_version(args.nsys)
     )
+    fixture_config, checkpoint_path, token_plan_path, fixture_identity = (
+        performance_fixture_inputs(
+            _root(), fixture_performance_config, device="cuda"
+        )
+    )
     topologies = standard_topologies()
     available = tuple(
         name for name, value in topologies.items() if value.world_size <= 8
@@ -989,7 +1171,10 @@ def run_cli() -> int:
     members: list[tuple[ParallelTopology, dict[str, Any], Path, Path, Path]] = []
     for name in selected:
         topology = topologies[name]
-        contract = _contract(args, topology, version)
+        contract = {
+            **_contract(args, topology, version),
+            "fixture": fixture_identity,
+        }
         identity = _identity_name(args, topology, contract)
         card_group = f"{topology.world_size}-card"
         run_dir = (
@@ -1089,6 +1274,12 @@ def run_cli() -> int:
                 contract=contract,
                 run_dir=run_dir,
                 artifact_dir=artifact_dir,
+                fixture_config=fixture_config,
+                checkpoint_path=checkpoint_path,
+                token_plan_path=token_plan_path,
+                fixture_identity=fixture_identity,
+                graph_arguments=graph_feature.arguments,
+                graph_environment=graph_feature.environment,
             )
         if do_analyze:
             _analyze(

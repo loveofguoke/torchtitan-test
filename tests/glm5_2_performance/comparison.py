@@ -117,6 +117,10 @@ def _normalized_contract(overview: dict[str, Any]) -> dict[str, Any]:
         for argument in raw.get("extra_args", [])
         if not str(argument).startswith("--compile.")
     ]
+    fixture = overview.get("fixture", raw.get("fixture"))
+    fixture = fixture if isinstance(fixture, dict) else {}
+    token_plan = fixture.get("token_plan")
+    token_plan = token_plan if isinstance(token_plan, dict) else {}
     return {
         "module": raw.get("module"),
         "model_config": raw.get("model_config", raw.get("config")),
@@ -127,12 +131,15 @@ def _normalized_contract(overview: dict[str, Any]) -> dict[str, Any]:
         "global_batch_size": raw.get("global_batch_size"),
         "sequence_length": raw.get("sequence_length"),
         "seed": raw.get("seed"),
+        "workload": raw.get("workload", "representative"),
+        "workload_args": raw.get("workload_args", []),
+        "fixture_checkpoint_sha256": fixture.get("checkpoint_sha256"),
+        "fixture_token_plan_sha256": token_plan.get("sha256"),
         "training_dtype": raw.get("training_dtype", "float32"),
         "mixed_precision_param": raw.get("mixed_precision_param", "bfloat16"),
         "mixed_precision_reduce": raw.get("mixed_precision_reduce", "float32"),
         "graph_mode": raw.get("graph_mode", "eager"),
         "compile_components": raw.get("compile_components", ["model"]),
-        "npu_codegen": raw.get("npu_codegen"),
         "deterministic": raw.get("deterministic", False),
         # GraphFeatureConfig generates --compile.* arguments from graph_mode
         # and compile_components. Raw compile arguments are rejected by the
@@ -148,6 +155,7 @@ def _execution_context(overview: dict[str, Any]) -> dict[str, Any]:
     return {
         "device": overview.get("device", raw.get("device")),
         "device_selection": overview.get("device_selection"),
+        "codegen_backend": raw.get("npu_codegen"),
     }
 
 

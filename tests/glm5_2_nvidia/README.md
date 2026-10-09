@@ -19,9 +19,12 @@ nvidia_{runs,artifacts,reports}/
   accuracy/             # future NVIDIA-side accuracy endpoints and reports
   performance/
     system/             # Nsight Systems, implemented here
-    operator/           # Nsight Compute, reserved until implemented
-  graph/                # eager/torch.compile capture and compiler evidence
+    operator/           # Nsight Compute targeted replay, implemented here
+  graph/                # reserved for standalone compiler-only evidence
 ```
+
+Eager and `torch.compile` performance runs both live under
+`performance/system/`; graph policy is part of their experiment identity.
 
 For CUDA `torch.compile` experiments, PyTorch Inductor normally uses Triton for
 GPU kernel code generation. A formal graph run must still record the resolved
@@ -205,6 +208,12 @@ members while retaining completed ones.
 ## Outputs
 
 ```text
+performance_fixtures/
+  <model>-<config>-workload-<name>-s<steps>-b<batch>-seq<length>-seed<seed>/
+    fixture.json
+    token_plan/
+    seed_checkpoint/
+
 nvidia_runs/performance/system/<N-card>/<topology>/<experiment>/
   # profiler-off members use runtime.log + metrics.jsonl
   nsys_profile.log
@@ -218,10 +227,17 @@ nvidia_runs/performance/system/<N-card>/<topology>/<experiment>/
   diagnosis/self/
     diagnosis.json
     diagnosis.md
+  input_contract/
+    rank-*.json
+    summary.json
+  README.md
+  experiment.json
+  manifest.json
   run_state.json
 
 nvidia_artifacts/performance/system/<N-card>/<topology>/<experiment>/
   manifest.json
+  metrics.jsonl
 
 nvidia_reports/performance/system/<N-card>/<topology>/<experiment>.html
 
@@ -248,6 +264,37 @@ official CSV statistics, metrics JSONL, and logs. The HTML does not replace the
 native Nsight Systems timeline; it provides the portable reading entry point.
 The shared comparison HTML overlays all repeats and supports hover, zoom,
 filtering, and candidate/reference relative-change inspection.
+
+The NVIDIA and MindStudio performance workflows share the fixed-input
+contract. Prepare a named workload once, then capture every GPU topology from
+that immutable checkpoint and token plan:
+
+```bash
+python tests/glm5_2_nvidia/performance_benchmark.py \
+  --data \
+  --workload representative \
+  --steps 30 \
+  --local-batch-size 8 \
+  --global-batch-size 64 \
+  --sequence-length 128
+
+python tests/glm5_2_nvidia/performance_benchmark.py \
+  --capture \
+  --topology single \
+  --workload representative \
+  --profiler-off \
+  --steps 30 \
+  --local-batch-size 8 \
+  --global-batch-size 64 \
+  --sequence-length 128
+```
+
+Use `--graph inductor` to profile the CUDA Inductor/Triton path and add
+`--compile-loss` when the loss must also be compiled. The selected graph mode,
+compiled components, compiler diagnostics, workload name, workload
+arguments, fixture generation, and input-consumption summary are recorded in
+the experiment identity or manifest. `--workload-arg` is repeatable and defines
+the workload contract; it is not an unrecorded training override.
 
 Aggregate one platform or compare two contract-compatible groups after capture:
 

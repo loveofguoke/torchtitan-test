@@ -147,10 +147,10 @@ def test_graph_compilation_report_summarizes_breaks_and_recompiles(
     assert report["ranks"]["rank_0"]["graph_breaks"][0]["frame_id"] == 2
 
 
-def test_graph_backends_are_npu_only() -> None:
-    with pytest.raises(NotImplementedError, match="only NPU"):
-        GraphFeatureConfig("inductor").feature(device_type="cuda")
-    with pytest.raises(NotImplementedError, match="only NPU"):
+def test_graph_backends_support_cuda_inductor_but_keep_npugraphs_npu_only() -> None:
+    cuda = GraphFeatureConfig("inductor").feature(device_type="cuda")
+    assert "--compile.backend=inductor" in cuda.arguments
+    with pytest.raises(ValueError, match="requires an NPU"):
         GraphFeatureConfig("npugraphs").feature(device_type="cuda")
     assert "--compile.backend=npugraphs" in GraphFeatureConfig(
         "npugraphs"
@@ -159,11 +159,10 @@ def test_graph_backends_are_npu_only() -> None:
 
 def test_raw_compile_arguments_use_the_same_device_gate() -> None:
     validate_graph_training_args(device_type="cuda", arguments=("--debug.seed=61",))
-    with pytest.raises(NotImplementedError, match="only NPU"):
-        validate_graph_training_args(
-            device_type="cuda",
-            arguments=("--compile.enable",),
-        )
+    validate_graph_training_args(
+        device_type="cuda",
+        arguments=("--compile.enable",),
+    )
 
 
 def test_graph_benchmark_compares_npu_eager_and_npu_graph() -> None:

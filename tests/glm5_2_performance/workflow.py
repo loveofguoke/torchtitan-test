@@ -98,7 +98,7 @@ def _repository_root(script_path: str) -> Path:
     return Path(script_path).resolve().parents[2]
 
 
-def _performance_fixture_config(
+def performance_fixture_config(
     config: PerformanceConfig,
     *,
     device: str,
@@ -145,13 +145,13 @@ def _performance_fixture_config(
     )
 
 
-def _performance_fixture_inputs(
+def performance_fixture_inputs(
     root: Path,
     config: PerformanceConfig,
     *,
     device: str,
 ) -> tuple[FormalExperimentConfig, Path, Path, dict[str, Any]]:
-    fixture_config = _performance_fixture_config(config, device=device)
+    fixture_config = performance_fixture_config(config, device=device)
     checkpoint_path, token_plan_path = resolve_fixture_inputs(root, fixture_config)
     fixture_directory = token_plan_path.parent
     fixture_manifest_path = fixture_directory / "fixture.json"
@@ -168,6 +168,12 @@ def _performance_fixture_inputs(
     return fixture_config, checkpoint_path, token_plan_path, identity
 
 
+# Transitional aliases for existing internal consumers. New cross-platform
+# workflows use the public names above.
+_performance_fixture_config = performance_fixture_config
+_performance_fixture_inputs = performance_fixture_inputs
+
+
 def _git_value(root: Path, *arguments: str) -> str | None:
     result = subprocess.run(
         ["git", *arguments],
@@ -180,7 +186,7 @@ def _git_value(root: Path, *arguments: str) -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-def _source_metadata(root: Path) -> dict[str, str | None]:
+def source_metadata(root: Path) -> dict[str, str | None]:
     metadata: dict[str, str | None] = {
         "test_commit": _git_value(root, "rev-parse", "HEAD"),
         "test_branch": _git_value(root, "branch", "--show-current"),
@@ -200,6 +206,9 @@ def _source_metadata(root: Path) -> dict[str, str | None]:
     except (ImportError, OSError):
         metadata["torchtitan_root"] = None
     return metadata
+
+
+_source_metadata = source_metadata
 
 
 def _file_content_identity(path: Path) -> dict[str, Any]:
@@ -1171,7 +1180,7 @@ def capture(
     )
     topology = performance_topologies()[config.topology]
     fixture_config, checkpoint_path, token_plan_path, fixture_identity = (
-        _performance_fixture_inputs(root, config, device=device)
+        performance_fixture_inputs(root, config, device=device)
     )
     if complete_manifest.is_file() and run_manifest.is_file() and not force:
         existing = json.loads(complete_manifest.read_text(encoding="utf-8"))
@@ -1419,7 +1428,7 @@ def _find_profiler_directory(run_directory: Path) -> Path:
     return next((path for path in candidates if path.is_dir()), candidates[0])
 
 
-def _model_parameter_summary(
+def model_parameter_summary(
     runtime_log: Path,
     *,
     parameter_dtype: str,
@@ -1470,6 +1479,9 @@ def _model_parameter_summary(
         "scope": "parameter tensors only; excludes gradients, optimizer state, activations, temporary buffers, allocator reserve, and sharding",
         "source": "TorchTitan runtime model-size log",
     }
+
+
+_model_parameter_summary = model_parameter_summary
 
 
 def _merge_legacy_analysis_tree(
@@ -3788,7 +3800,7 @@ def run_profiler_cli(
         )
         os.environ[variable] = args.visible_devices
     if args.data:
-        fixture_config = _performance_fixture_config(effective, device=device)
+        fixture_config = performance_fixture_config(effective, device=device)
         fixture_path = prepare_fixture(
             root,
             fixture_config,

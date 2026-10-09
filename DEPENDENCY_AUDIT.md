@@ -272,6 +272,11 @@ change:
   run-owned under `trainer_output/profiling/nsys/`; artifacts contain only
   lifecycle/provenance metadata. Historical `nsys_*` roots and artifact-owned
   payloads are byte-checked and moved without recollection.
+- NVIDIA system performance uses the shared `performance_fixtures/` checkpoint
+  and fixed token plan. Its workload name, workload arguments, graph policy,
+  fixture generation and per-rank input-consumption summary are recorded just
+  like the MindStudio performance contract. CUDA Inductor is selectable through
+  the shared graph feature; NPU-only codegen controls never enter NVIDIA runs.
 - NVIDIA performance diagnosis is layered. A low-overhead Nsight Systems
   capture precedes communication, host, memory, or deep recapture. Automatic
   triage must cite official stats rows and may recommend a next stage, but may
