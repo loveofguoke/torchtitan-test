@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -22,6 +23,35 @@ from tests.glm5_2_common.cli import (
     write_experiment_overview,
 )
 from tests.glm5_2_common.topology import standard_topologies
+
+
+def test_summary_table_renders_structured_values_and_escapes_html(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.glm5_2_common import reporting
+
+    class HtmlPane:
+        def __init__(self, object: str, **_: object) -> None:
+            self.object = object
+
+    panel = SimpleNamespace(pane=SimpleNamespace(HTML=HtmlPane))
+    monkeypatch.setattr(reporting, "_stack", lambda: (panel, None, None))
+
+    rendered = reporting.summary_table(
+        columns=("Metric", "Value"),
+        rows=(
+            ("Policy", {"window": [6, 31], "label": "<steady>"}),
+            ("Stages", ["warmup", "<measure>"]),
+            ("Range", (6, 31)),
+        ),
+    ).object
+
+    assert "&lt;steady&gt;" in rendered
+    assert "&lt;measure&gt;" in rendered
+    assert "&quot;window&quot;: [6, 31]" in rendered
+    assert "[6, 31]" in rendered
+    assert "<steady>" not in rendered
+    assert "<measure>" not in rendered
 
 
 def test_context_parallel_diagnostic_topologies_scale_world_size() -> None:
