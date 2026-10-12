@@ -292,7 +292,7 @@ def echarts_heatmap(
 def summary_table(
     *,
     columns: Sequence[str],
-    rows: Sequence[Sequence[str]],
+    rows: Sequence[Sequence[Any]],
 ) -> Any:
     """Render a compact summary table without external table dependencies."""
 
@@ -310,10 +310,16 @@ def summary_table(
         f'<th style="{header_style}">{html.escape(column)}</th>'
         for column in columns
     )
+
+    def display(value: Any) -> str:
+        if isinstance(value, (dict, list, tuple)):
+            return json.dumps(value, ensure_ascii=False, sort_keys=True)
+        return str(value)
+
     body = "".join(
         "<tr>"
         + "".join(
-            f'<td style="{cell_style}">{html.escape(value)}</td>'
+            f'<td style="{cell_style}">{html.escape(display(value))}</td>'
             for value in row
         )
         + "</tr>"
