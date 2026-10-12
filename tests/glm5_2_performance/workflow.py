@@ -612,6 +612,8 @@ def _run_name(
         f"seq{config.sequence_length}-seed{config.seed}-"
         f"workload-{_slug(config.workload)}-{preset_label}"
     )
+    if config.model_config != "glm5_debugmodel":
+        base += f"-model-{_slug(config.model_config)}"
     device_selection = _device_selection(config, device)
     selected_devices = device_selection["selected_physical_devices"]
     if selected_devices is not None and not device_selection["is_default_prefix"]:
@@ -3576,6 +3578,14 @@ def run_profiler_cli(
     parser.add_argument("--global-batch-size", type=int)
     parser.add_argument("--sequence-length", type=int)
     parser.add_argument(
+        "--config",
+        dest="model_config",
+        help=(
+            "TorchTitan config-registry entry; it enters fixture and run "
+            "identity so different model sizes cannot share results"
+        ),
+    )
+    parser.add_argument(
         "--workload",
         help=(
             "named performance input workload; each name owns an independent "
@@ -3818,6 +3828,7 @@ def run_profiler_cli(
         "local_batch_size": args.local_batch_size,
         "global_batch_size": args.global_batch_size,
         "sequence_length": args.sequence_length,
+        "model_config": args.model_config,
         "workload": args.workload,
         "workload_args": (
             tuple(args.workload_arg) if args.workload_arg else None

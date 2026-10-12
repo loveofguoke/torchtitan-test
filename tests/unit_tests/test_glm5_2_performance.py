@@ -469,6 +469,20 @@ class TestPerformanceConfig(unittest.TestCase):
         self.assertNotIn("glm5-probe", run_name)
         self.assertEqual(len(run_name.rsplit("-", 1)[1]), 8)
 
+    def test_nondefault_model_config_enters_readable_run_identity(self):
+        config = PerformanceConfig(
+            name="glm5-probe",
+            model_config="glm5_2_scaled_debugmodel",
+        )
+
+        run_name = _run_name(config, "npu")
+
+        self.assertIn("-model-glm5-2-scaled-debugmodel-", run_name)
+        self.assertNotEqual(
+            run_name,
+            _run_name(PerformanceConfig(name="glm5-probe"), "npu"),
+        )
+
     def test_nondefault_physical_devices_enter_run_identity(self):
         config = PerformanceConfig(name="glm5-probe", topology="ddp2")
         with mock.patch.dict(
