@@ -235,10 +235,11 @@ def build_self_diagnosis(
             "value": benchmark.get("steady_state_detection", {}).get("status"),
         },
     ]
+    steady_state_status = benchmark.get("steady_state_detection", {}).get("status")
     variability_suspect = (
         step_statistics.get("cv_percent") is not None
         and float(step_statistics["cv_percent"]) >= 5.0
-    ) or benchmark.get("steady_state_detection", {}).get("status") == "not_steady"
+    ) or steady_state_status == "not_reached"
 
     telemetry_evidence: list[dict[str, Any]] = []
     telemetry_suspect = False

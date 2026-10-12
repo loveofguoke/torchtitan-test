@@ -1326,6 +1326,42 @@ class TestPerformanceAnalysis(unittest.TestCase):
         self.assertIn("parameter_all_gather", diagnosis["topology_focus"])
         self.assertIn("gradient_reduce_scatter", diagnosis["topology_focus"])
 
+    def test_self_diagnosis_flags_a_steady_window_that_was_not_reached(self):
+        config = PerformanceConfig(
+            name="steady-diagnosis",
+            profiler_enabled=False,
+        )
+        diagnosis = build_self_diagnosis(
+            manifest={
+                "run_name": "steady-diagnosis",
+                "device": "npu",
+                "topology": "single",
+                "preset": "standard",
+                "config": config.as_dict(),
+            },
+            analysis={
+                "metrics": {"summary": {}},
+                "profile_phases": {
+                    "comparison": {},
+                    "benchmark": {
+                        "primary": {
+                            "step_seconds": {
+                                "median": 1.0,
+                                "p99": 1.1,
+                                "cv_percent": 1.0,
+                                "drift_percent_per_100_steps": 2.0,
+                            }
+                        },
+                        "steady_state_detection": {"status": "not_reached"},
+                    },
+                },
+                "compiler_diagnostics": {},
+            },
+        )
+
+        self.assertEqual(diagnosis["branches"]["stability"]["status"], "suspect")
+        self.assertIn("stability", diagnosis["suspect_branches"])
+
     def test_self_diagnosis_bundle_is_run_owned(self):
         diagnosis = {
             "run_name": "run",
