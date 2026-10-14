@@ -51,6 +51,108 @@ _configure_nonfinite_compiler_diagnostics()
 import torchtitanturbo  # noqa: F401
 
 
+_LEGACY_CONFIG_STATE: dict[str, object] = {}
+
+
+def _translate_config_first_cli(argv: list[str]) -> list[str]:
+    """Translate the legacy experiment contract to TorchTitan's config-first CLI.
+
+    The test repository keeps its stable dotted-option contract so historical
+    experiments remain reproducible.  Current TorchTitan accepts those values
+    through repeated ``--override TARGET=JSON`` arguments instead.  This
+    adapter is explicitly gated for the 2026-10 migration environment and does
+    not alter legacy checkouts or their output directories.
+    """
+    if os.environ.get("TORCHTITAN_CONFIG_FIRST_CLI") != "1":
+        return argv
+
+    translated = [argv[0]]
+    module_name = config_name = None
+    overrides: dict[str, object] = {}
+    index = 1
+    while index < len(argv):
+        argument = argv[index]
+        if argument in {"--module", "--config"}:
+            value = argv[index + 1]
+            if argument == "--module":
+                module_name = value
+            else:
+                config_name = value
+            index += 2
+            continue
+        if argument.startswith("--dump_folder="):
+            translated.extend(["--output-dir", argument.split("=", 1)[1]])
+            index += 1
+            continue
+        if not argument.startswith("--") or "." not in argument:
+            translated.append(argument)
+            index += 1
+            continue
+
+        option = argument[2:]
+        if "=" in option:
+            target, raw_value = option.split("=", 1)
+            try:
+                value = json.loads(raw_value)
+            except json.JSONDecodeError:
+                value = raw_value
+        else:
+            target, value = option, True
+        overrides[target] = value
+        index += 1
+
+    if module_name != "glm5":
+        raise ValueError(
+            "The config-first migration adapter currently supports only the "
+            f"GLM experiment contract, got module={module_name!r}."
+        )
+    factories = {
+        "debugmodel": "glm5_debugmodel",
+        "glm5_debugmodel": "glm5_debugmodel",
+        "glm5_2_debugmodel_mtp": "glm5_2_debugmodel_mtp",
+        "glm5_2_scaled_debugmodel": "glm5_2_scaled_debugmodel",
+    }
+    try:
+        factory_name = factories[str(config_name)]
+    except KeyError as error:
+        raise ValueError(
+            f"Unsupported config-first GLM recipe {config_name!r}."
+        ) from error
+    _LEGACY_CONFIG_STATE.update(factory=factory_name, overrides=overrides)
+    sys.modules["torchtitan_test_config_first"] = sys.modules[__name__]
+    translated.extend(
+        ["--module", "torchtitan_test_config_first", "--config", "legacy_config"]
+    )
+    return translated
+
+
+sys.argv = _translate_config_first_cli(sys.argv)
+
+
+def legacy_config():
+    """Build and mutate the official current-tree GLM test recipe."""
+    from torchtitan_recipes.tests.models import glm5 as glm5_recipes
+
+    factory = getattr(glm5_recipes, str(_LEGACY_CONFIG_STATE["factory"]))
+    config = factory()
+    for dotted_name, value in dict(_LEGACY_CONFIG_STATE["overrides"]).items():
+        if dotted_name == "parallelism.spmd_backend":
+            # Config-first TorchTitan uses its native SPMD runtime and no
+            # longer exposes the legacy backend selector.
+            continue
+        owner = config
+        parts = dotted_name.split(".")
+        for part in parts[:-1]:
+            owner = getattr(owner, part)
+        attribute = parts[-1]
+        if not hasattr(owner, attribute):
+            raise AttributeError(
+                f"Current TorchTitan config has no field {dotted_name!r}."
+            )
+        setattr(owner, attribute, value)
+    return config
+
+
 def _install_gradient_diagnostics() -> None:
     """Write compact parameter-gradient evidence without Flex replay."""
     if os.environ.get("TORCHTITAN_DIAGNOSE_GRADIENTS") != "1":
