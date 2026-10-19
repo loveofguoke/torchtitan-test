@@ -134,9 +134,9 @@ class ParallelTopology:
             f"--parallelism.pipeline_parallel_degree={self.pipeline_parallel_degree}",
             f"--parallelism.expert_parallel_degree={self.expert_parallel_degree}",
         ]
-        # Keep pure-TP coverage on the explicit SP-off path.  TP+EP uses the
-        # model's default sequence-parallel layout: routed-expert outputs are
-        # token-sharded on TP and cannot be reinterpreted as Partial tensors.
+        # Keep pure-TP coverage on the explicit SP-off path.  Canonical MoE
+        # topologies that add EP only to satisfy the current EP >= TP
+        # validation preserve this historical flag through ``extra_args``.
         if self.tensor_parallel_degree > 1 and self.expert_parallel_degree == 1:
             args.append("--parallelism.no-enable-sequence-parallel")
         if self.pipeline_parallel_degree > 1:
@@ -221,7 +221,15 @@ def standard_topologies() -> dict[str, ParallelTopology]:
             data_parallel_replicate_degree=4,
             data_parallel_shard_degree=2,
         ),
-        "tp8": ParallelTopology("tp8", 8, tensor_parallel_degree=8),
+        # Current TorchTitan requires EP >= TP for MoE models.  EP shares the
+        # sparse rank region with TP, so these implicit EP degrees do not
+        # consume additional ranks or change the topology names.
+        "tp8": ParallelTopology(
+            "tp8",
+            8,
+            tensor_parallel_degree=8,
+            expert_parallel_degree=8,
+        ),
         "cp2": ParallelTopology("cp2", 2, context_parallel_degree=2),
         "cp4": ParallelTopology("cp4", 4, context_parallel_degree=4),
         "cp8": ParallelTopology("cp8", 8, context_parallel_degree=8),
@@ -237,6 +245,7 @@ def standard_topologies() -> dict[str, ParallelTopology]:
             8,
             data_parallel_shard_degree=2,
             tensor_parallel_degree=4,
+            expert_parallel_degree=4,
         ),
         "fsdp2-cp4": ParallelTopology(
             "fsdp2-cp4",
@@ -249,12 +258,14 @@ def standard_topologies() -> dict[str, ParallelTopology]:
             8,
             context_parallel_degree=4,
             tensor_parallel_degree=2,
+            expert_parallel_degree=2,
         ),
         "fsdp4-tp2": ParallelTopology(
             "fsdp4-tp2",
             8,
             data_parallel_shard_degree=4,
             tensor_parallel_degree=2,
+            expert_parallel_degree=2,
         ),
         "fsdp2-pp4": ParallelTopology(
             "fsdp2-pp4",
@@ -268,6 +279,7 @@ def standard_topologies() -> dict[str, ParallelTopology]:
             data_parallel_shard_degree=2,
             tensor_parallel_degree=2,
             pipeline_parallel_degree=2,
+            expert_parallel_degree=2,
         ),
         "fsdp2-tp4-ep8": ParallelTopology(
             "fsdp2-tp4-ep8",

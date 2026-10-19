@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Apply TorchTitanTurbo's NPU integration before starting TorchTitan."""
 
-import json
 import os
 import sys
 
 from tests.glm5_2_common.compiler_cache import (
     configure_compiler_cache,
 )
+from tests.glm5_2_common.config_first import parse_legacy_dotted_override
 from tests.glm5_2_graph.visualization import configure_graph_diagnostics
 
 
@@ -89,15 +89,7 @@ def _translate_config_first_cli(argv: list[str]) -> list[str]:
             index += 1
             continue
 
-        option = argument[2:]
-        if "=" in option:
-            target, raw_value = option.split("=", 1)
-            try:
-                value = json.loads(raw_value)
-            except json.JSONDecodeError:
-                value = raw_value
-        else:
-            target, value = option, True
+        target, value = parse_legacy_dotted_override(argument)
         overrides[target] = value
         index += 1
 
@@ -131,11 +123,34 @@ sys.argv = _translate_config_first_cli(sys.argv)
 
 def legacy_config():
     """Build and mutate the official current-tree GLM test recipe."""
+    from torchtitan.config.parallelism import ParallelismConfig
     from torchtitan_recipes.tests.models import glm5 as glm5_recipes
 
     factory = getattr(glm5_recipes, str(_LEGACY_CONFIG_STATE["factory"]))
-    config = factory()
-    for dotted_name, value in dict(_LEGACY_CONFIG_STATE["overrides"]).items():
+    overrides = dict(_LEGACY_CONFIG_STATE["overrides"])
+
+    # Model sharding configs are materialized inside the recipe factory.  Apply
+    # parallelism CLI values before calling it; mutating config.parallelism only
+    # afterwards leaves the model built with default TP/EP/SP placements even
+    # though the runtime mesh uses the requested degrees.
+    parallelism = ParallelismConfig()
+    for dotted_name, value in overrides.items():
+        if not dotted_name.startswith("parallelism."):
+            continue
+        attribute = dotted_name.removeprefix("parallelism.")
+        if attribute == "spmd_backend":
+            continue
+        if not hasattr(parallelism, attribute):
+            raise AttributeError(
+                f"Current TorchTitan config has no field {dotted_name!r}."
+            )
+        setattr(parallelism, attribute, value)
+
+    factory_kwargs = {"parallelism": parallelism}
+    if "training.max_context_length" in overrides:
+        factory_kwargs["seq_len"] = int(overrides["training.max_context_length"])
+    config = factory(**factory_kwargs)
+    for dotted_name, value in overrides.items():
         if dotted_name == "parallelism.spmd_backend":
             # Config-first TorchTitan uses its native SPMD runtime and no
             # longer exposes the legacy backend selector.
@@ -626,6 +641,34 @@ def _install_nonfinite_gradient_diagnostics() -> None:
 
 
 _install_nonfinite_gradient_diagnostics()
+
+
+def _install_hccl_pipeline_edge_group_fallback() -> None:
+    """Use PyTorch's supported shared-parent P2P mode on HCCL.
+
+    The current HCCL backend cannot implement the optional per-edge pipeline
+    communicator mode because it does not support ``split_group``.  PyTorch's
+    pipeline runtime already retains a shared-parent path, including ordered
+    peer preconnection, for backends where the opt-in flag is disabled.
+    """
+    from torch.distributed import config as dist_config
+    from torch.distributed.pipelining import stage as pipeline_stage
+
+    dist_config.pipeline_per_edge_p2p = False
+    original_stage_init = pipeline_stage._PipelineStageBase.__init__
+
+    def stage_init_with_shared_parent_p2p(self, *args, **kwargs):
+        original_stage_init(self, *args, **kwargs)
+        # TorchComms auto-detection can force the constructor's initial value
+        # even when the optional config flag is false.  HCCL is selected only
+        # after distributed initialization, so pin the NPU launcher's stage
+        # instances to the supported shared-parent transport explicitly.
+        self.p2p_per_edge = False
+
+    pipeline_stage._PipelineStageBase.__init__ = stage_init_with_shared_parent_p2p
+
+
+_install_hccl_pipeline_edge_group_fallback()
 
 
 # Cold graph compilation can delay a pipeline peer beyond the ordinary

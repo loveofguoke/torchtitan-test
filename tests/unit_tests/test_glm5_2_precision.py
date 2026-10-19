@@ -257,7 +257,10 @@ def test_topology_validates_rank_product() -> None:
 
 
 def test_tp_ep_topology_keeps_sequence_parallel_enabled() -> None:
-    pure_tp = ParallelTopology("tp8", 8, tensor_parallel_degree=8)
+    # MoE topologies must pair TP with at least the same EP degree on current
+    # TorchTitan.  The canonical tp8 name keeps describing its dense mesh;
+    # EP reinterprets the same sparse rank region rather than multiplying it.
+    pure_tp = standard_topologies()["tp8"]
     tp_ep = ParallelTopology(
         "fsdp2-tp4-ep8",
         8,
@@ -266,7 +269,8 @@ def test_tp_ep_topology_keeps_sequence_parallel_enabled() -> None:
         expert_parallel_degree=8,
     )
 
-    assert "--parallelism.no-enable-sequence-parallel" in pure_tp.command_args()
+    assert pure_tp.expert_parallel_degree == pure_tp.tensor_parallel_degree
+    assert "--parallelism.no-enable-sequence-parallel" not in pure_tp.command_args()
     assert "--parallelism.no-enable-sequence-parallel" not in tp_ep.command_args()
 
 
