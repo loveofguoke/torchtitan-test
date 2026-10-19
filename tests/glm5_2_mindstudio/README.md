@@ -1181,17 +1181,32 @@ python release_artifacts.py download <experiment-id> --overwrite
 ## 11. 输出目录与阅读顺序
 
 ```text
-mindstudio_fixtures/<experiment-id>/
-mindstudio_runs/accuracy/<experiment-id>/<topology>/<role>-r1/
-mindstudio_artifacts/accuracy/<experiment-id>/<topology>/<role>-r1/
-└── official/                 # msProbe 原始输出
-mindstudio_artifacts/accuracy/<experiment-id>/<topology>/precision_precheck/<role>-r1/
-└── stepN/rankN/official/     # 单端 acc_check/multi_acc_check
-mindstudio_reports/accuracy/<experiment-id>/<topology>/
-├── official_compare/        # 官方 dump compare 或 compile CSV 汇总
-├── precision_precheck/compare-r1/ # api_precision_compare + HTML/JSON 索引
-└── graph-visualize-r1/      # tracked .vis.db 索引和 TensorBoard 命令
+mindstudio_{fixtures,runs,artifacts,reports}/accuracy/<experiment-id>/
+└── <topology>/
+    └── <training-profile>/
+        ├── inputs/                                # fixture/token plan/checkpoint
+        ├── checklist/configuration-check/
+        ├── observations/
+        │   ├── training/                          # 正常无 hook 训练
+        │   └── monitor/<monitor-profile>/         # 后继状态诊断
+        ├── dump/<dump-profile>/                   # statistics/tensor 与官方 compare
+        └── graph/<graph-backend>/                 # eager/graph 自洽分支
+            ├── checklist/
+            ├── observations/
+            ├── dump/
+            └── compile-checker/
+
+mindstudio_reports/accuracy/<experiment-id>/html_reports/
+└── <training-profile>/<report-kind>/<profile>/<topology>.html
 ```
+
+`<experiment-id>` 的短 hash 表示 canonical 实验合同，`<training-profile>` 的 hash
+表示完整正常训练配置，Monitor/Dump profile 的 hash 表示局部诊断配置。实际 token plan
+和 checkpoint 内容不塞进目录名，而由 `inputs/fixture.json` 的 generation ID、文件 SHA、
+逐 step token SHA 以及 capture manifest 绑定。不同显式训练/数据合同可以形成不同 profile
+并存；同一合同下重新生成的另一份 token plan 是新的 fixture generation，需
+`--data --force` 换代，旧 capture 不得与它混用。完整说明见
+[标准精度流程](docs/accuracy/ACCURACY_WORKFLOW_ZH.md#目录身份hash-与固定输入)。
 
 每个 subprocess 的终端都会打印 `Runtime log:`。建议按以下顺序阅读：
 

@@ -62,12 +62,51 @@ mindstudio_{fixtures,runs,artifacts,reports}/accuracy/<experiment-id>/
         ├── observations/
         │   ├── training/                      # 无工具 hook 的正常训练
         │   └── monitor/<monitor-profile>/     # 正常训练发现异常后的 Monitor 诊断
-        ├── monitor/<monitor-profile>/         # 长程状态监测
         └── dump/<dump-profile>/               # 定点 statistics/tensor
 
 mindstudio_artifacts/accuracy/<experiment-id>/diagnoses/<case-id>/
 └── case.json                                  # 诊断控制面，不另建实验根
 ```
+
+### 目录身份、hash 与固定输入
+
+目录中的 hash 分三层，职责不能混用：
+
+| 层级 | 示例 | hash 输入 | 不直接包含 |
+| --- | --- | --- | --- |
+| 实验根 | `migration-cuda-npu-...-db3e7cfd` | canonical workflow、两端设备与 endpoint 参数、基础训练/精度合同 | 实际生成后的 token/checkpoint 字节、具体 topology、后继 Monitor/Dump profile |
+| 正常训练窗口 | `s500-fb08c375` | 完整 `FormalTrainingConfig`，包括模型配置、steps、batch、sequence、seed、dtype、checkpoint 类型、数据路径和训练参数 | 实际 token-plan/checkpoint SHA |
+| 后继诊断 profile | `s27-ec705007`、`statistics-mix-statistics-f98860f4` | Monitor 或 Dump 的局部执行/采集配置 | 父级正常训练合同 |
+
+实际输入字节不依靠短目录 hash 证明。每个 `<training-profile>/inputs/fixture.json`
+记录独立 `generation_id`、checkpoint 目录 SHA、token-plan manifest SHA、逐 step
+序列 SHA、数据摘要和完整训练合同；capture manifest 与每 rank input contract 再绑定
+这些值。目录名用于稳定组织，fixture/capture digest 才是防止新旧证据混用的依据。
+
+一个 topology 的 fixture 只生成一份全局 token plan 和一份单进程 seed checkpoint，
+不是每 rank 各自随机生成。token plan 的逻辑形状是
+`[steps, global_batch_size, sequence_length]`。运行时 fixed-token dataloader 按 DP rank、
+梯度累积和 PP microbatch 映射 global slots；同一 DP replica 内的 TP/CP/PP 协作 rank
+消费对应的同一批输入。每个 rank 写 `rank-N.jsonl`，结束时校验 slot、样本 SHA、step
+顺序和 replica 一致性。checkpoint 在单卡生成后由分布式 checkpoint/DTensor 按目标
+topology 重分片加载。
+
+MindStudio 层级为每个 topology 保留独立 `inputs/` 目录和 fixture generation，避免某个
+拓扑的重建、同步或续跑影响其他拓扑；在相同训练合同下，它们应产生逻辑等价的输入和
+初始化，并以实际 SHA 复核。基础 `glm5_2_precision` 套件则可以直接复用一个
+topology-independent fixture；两种物理布局都遵守相同的 global-slot 合同。
+
+目录结构支持不同 token plan，但要区分两种情况：
+
+1. 数据路径、数据配置、模型/训练配置、batch、sequence、seed 或 steps 不同：进入不同
+   training profile 或实验根，可以并存。
+2. 配置和路径完全相同，但源文件内容、tokenizer 或生成实现变化：目录身份不变，这属于
+   fixture generation 换代。必须执行 `--data --force`，新 generation 替换活动 fixture，
+   旧 capture 因 generation/digest 不一致而不能复用；框架不会把两代输入静默混合，也不
+   会在同一 `inputs/` 下把它们当成两个可并行比较的 token plan。
+
+因此，若研究目标本身就是比较两种数据/token plan，应把差异提升为显式数据合同或不同
+实验身份，而不是依赖同一路径内容被外部改写。
 
 训练窗口没有固定的“几百步”或“5000 step”标准，必须覆盖已知问题或约定的验收
 区间。正常训练观察始终先运行；只有它表明需要更细的长期状态时才启用 Monitor
