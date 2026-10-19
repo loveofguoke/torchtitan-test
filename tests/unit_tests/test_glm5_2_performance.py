@@ -8,6 +8,7 @@ from unittest import mock
 
 from tests.glm5_2_performance.analysis import (
     build_analysis,
+    extract_fsdp_repeated_all_gathers,
     extract_top_csv_entries,
     inspect_profiler_deliverables,
     render_html_report,
@@ -936,6 +937,177 @@ class TestPerformanceConfig(unittest.TestCase):
                     output=root / "comparison",
                 )
 
+    def test_migration_comparison_accepts_different_platform_and_topology(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+
+            def make_run(
+                name: str,
+                *,
+                device: str,
+                topology: str,
+                step_time: float,
+                reported_throughput: float,
+            ) -> Path:
+                run = root / name
+                run.mkdir()
+                config = PerformanceConfig(
+                    name=name,
+                    device=device,
+                    topology=topology,
+                    steps=12,
+                    skip_steps=1,
+                    active_steps=1,
+                    local_batch_size=1,
+                    global_batch_size=8,
+                    sequence_length=128,
+                    profiler_enabled=False,
+                ).as_dict()
+                (run / "experiment.json").write_text(
+                    json.dumps(
+                        {
+                            "device": device,
+                            "device_selection": {
+                                "selected_physical_devices": (
+                                    ["0"]
+                                    if topology == "single"
+                                    else [str(rank) for rank in range(8)]
+                                )
+                            },
+                            "configuration": config,
+                            "fixture": {
+                                "checkpoint_sha256": "same-checkpoint",
+                                "token_plan": {"sha256": "same-token-plan"},
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                (run / "metrics.jsonl").write_text(
+                    "".join(
+                        json.dumps(
+                            {
+                                "step": step,
+                                "metrics": {
+                                    "time_metrics/end_to_end(s)": step_time,
+                                    "throughput(tps)": reported_throughput,
+                                },
+                            }
+                        )
+                        + "\n"
+                        for step in range(1, 13)
+                    ),
+                    encoding="utf-8",
+                )
+                return run
+
+            gpu = [
+                make_run(
+                    f"gpu-single-{repeat}",
+                    device="cuda",
+                    topology="single",
+                    step_time=2.0,
+                    reported_throughput=512.0,
+                )
+                for repeat in range(3)
+            ]
+            npu = [
+                make_run(
+                    f"npu-fsdp8-{repeat}",
+                    device="npu",
+                    topology="fsdp8",
+                    step_time=1.0,
+                    reported_throughput=64.0,
+                )
+                for repeat in range(3)
+            ]
+
+            with self.assertRaisesRegex(ValueError, "contracts differ"):
+                build_comparison(
+                    reference_runs=gpu,
+                    reference_label="1x A100",
+                    candidate_runs=npu,
+                    candidate_label="8x NPU",
+                    skip_steps=1,
+                    output=root / "peer",
+                )
+
+            with mock.patch("tests.glm5_2_performance.comparison._render"):
+                payload = build_comparison(
+                    reference_runs=gpu,
+                    reference_label="1x A100",
+                    candidate_runs=npu,
+                    candidate_label="8x NPU",
+                    skip_steps=1,
+                    output=root / "migration",
+                    comparison_kind="migration",
+                )
+
+            comparison = payload["comparison"]
+            self.assertEqual(comparison["comparison_kind"], "migration")
+            self.assertEqual(
+                set(comparison["contract_differences"]),
+                {"topology", "topology_degrees"},
+            )
+            self.assertEqual(
+                comparison["headline_metrics"],
+                ["step_time_median_s", "job_throughput_median_tps"],
+            )
+            self.assertAlmostEqual(
+                comparison["metrics"]["job_throughput_median_tps"][
+                    "candidate_vs_reference_percent"
+                ],
+                100.0,
+            )
+            self.assertEqual(comparison["overall_verdict"], "improvement")
+
+    def test_migration_comparison_rejects_workload_difference(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+
+            def make_run(name: str, sequence_length: int) -> Path:
+                run = root / name
+                run.mkdir()
+                config = PerformanceConfig(
+                    name=name,
+                    steps=12,
+                    skip_steps=1,
+                    active_steps=1,
+                    sequence_length=sequence_length,
+                    profiler_enabled=False,
+                ).as_dict()
+                (run / "experiment.json").write_text(
+                    json.dumps({"configuration": config}), encoding="utf-8"
+                )
+                (run / "metrics.jsonl").write_text(
+                    "".join(
+                        json.dumps(
+                            {
+                                "step": step,
+                                "metrics": {
+                                    "time_metrics/end_to_end(s)": 1.0,
+                                    "throughput(tps)": 100.0,
+                                },
+                            }
+                        )
+                        + "\n"
+                        for step in range(1, 13)
+                    ),
+                    encoding="utf-8",
+                )
+                return run
+
+            with self.assertRaisesRegex(ValueError, "same training workload"):
+                build_comparison(
+                    reference_runs=[make_run("reference", 128)],
+                    reference_label="reference",
+                    candidate_runs=[make_run("candidate", 256)],
+                    candidate_label="candidate",
+                    skip_steps=1,
+                    output=root / "migration",
+                    comparison_kind="migration",
+                )
+
     def test_performance_ablation_accepts_exactly_one_declared_difference(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1666,6 +1838,84 @@ class TestPerformanceAnalysis(unittest.TestCase):
             self.assertTrue(
                 deliverables["ascend_profiles"][0]["parsed_database"]
             )
+
+    def test_fsdp_repeated_all_gather_candidates_require_no_intervening_backward(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            profiler = Path(temporary_directory)
+            output = profiler / "rank_3_ascend_pt" / "ASCEND_PROFILER_OUTPUT"
+            output.mkdir(parents=True)
+            events = [
+                {
+                    "ph": "X",
+                    "name": "ProfilerStep#8",
+                    "ts": "1000",
+                    "dur": 1000,
+                },
+                {
+                    "ph": "X",
+                    "name": "FSDP::all_gather (norm, lm_head)",
+                    "ts": "1100",
+                    "dur": 10,
+                },
+                {
+                    "ph": "X",
+                    "name": "FSDP::all_gather (norm, lm_head)",
+                    "ts": "1300",
+                    "dur": 10,
+                },
+                {
+                    "ph": "X",
+                    "name": "FSDP::pre_backward (norm, lm_head)",
+                    "ts": "1500",
+                    "dur": 30,
+                },
+                {
+                    "ph": "X",
+                    "name": "FSDP::all_gather (norm, lm_head)",
+                    "ts": "1510",
+                    "dur": 10,
+                },
+                {
+                    "ph": "X",
+                    "name": "FSDP::backward_prefetch for layers.0",
+                    "ts": "1620",
+                    "dur": 40,
+                },
+                {
+                    "ph": "X",
+                    "name": "FSDP::all_gather (layers.0)",
+                    "ts": "1630",
+                    "dur": 10,
+                },
+                {
+                    "ph": "X",
+                    "name": "FSDP::post_backward_reduce (norm, lm_head)",
+                    "ts": "1600",
+                    "dur": 10,
+                },
+                {
+                    "ph": "X",
+                    "name": "FSDP::all_gather (norm, lm_head)",
+                    "ts": "1700",
+                    "dur": 10,
+                },
+            ]
+            (output / "trace_view.json").write_text(
+                json.dumps(events), encoding="utf-8"
+            )
+
+            result = extract_fsdp_repeated_all_gathers(profiler)
+
+            self.assertEqual(result["candidate_count"], 1)
+            candidate = result["candidates"][0]
+            self.assertEqual(candidate["rank"], 3)
+            self.assertEqual(candidate["step"], "ProfilerStep#8")
+            self.assertEqual(candidate["fqn"], "norm, lm_head")
+            self.assertEqual(candidate["gap_us"], 200.0)
+            self.assertEqual(result["by_fqn"][0]["count"], 1)
+            self.assertEqual(result["by_fqn"][0]["min_gap_us"], 200.0)
+            self.assertEqual(result["by_fqn"][0]["median_gap_us"], 200.0)
+            self.assertEqual(result["by_fqn"][0]["max_gap_us"], 200.0)
 
     def test_msprof_deliverables_are_classified_as_insight_inputs(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

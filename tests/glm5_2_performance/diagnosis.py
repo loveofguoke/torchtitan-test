@@ -80,6 +80,7 @@ def build_self_diagnosis(
     rank_rows = distributed.get("ranks", [])
     cross_rank = distributed.get("cross_rank", {})
     communication_rows = analysis.get("communication_summary", {}).get("rows", [])
+    repeated_all_gathers = analysis.get("fsdp_repeated_all_gathers", {})
     compiler = analysis.get("compiler_diagnostics", {})
     benchmark = analysis.get("profile_phases", {}).get("benchmark", {})
     telemetry = manifest.get("telemetry") or {}
@@ -154,9 +155,21 @@ def build_self_diagnosis(
         communication_evidence.append(
             {"metric": "max_collective_wait_percent", "value": max(wait)}
         )
+    repeated_all_gather_count = int(
+        repeated_all_gathers.get("candidate_count", 0)
+    )
+    if repeated_all_gather_count:
+        communication_evidence.append(
+            {
+                "metric": "fsdp_repeated_all_gather_candidate_count",
+                "value": repeated_all_gather_count,
+                "groups": repeated_all_gathers.get("by_fqn", []),
+                "examples": repeated_all_gathers.get("candidates", [])[:8],
+            }
+        )
     communication_suspect = (exposed and max(exposed) >= 20.0) or (
         wait and max(wait) >= 50.0
-    )
+    ) or repeated_all_gather_count > 0
     communication_status = (
         "suspect"
         if communication_suspect
@@ -293,14 +306,21 @@ def build_self_diagnosis(
         "communication": _branch(
             "Communication exposure",
             communication_status,
-            "Communication is materially exposed or collective wait is high."
+            (
+                f"Detected {repeated_all_gather_count} repeated real forward "
+                "FSDP AllGather candidate(s) before the matching backward "
+                "consumption chain."
+            )
+            if repeated_all_gather_count
+            else "Communication is materially exposed or collective wait is high."
             if communication_suspect
             else "Available communication evidence does not cross the project triage guidance."
             if communication_evidence
             else "Communication evidence is not available for this capture.",
             evidence=communication_evidence,
             next_actions=[
-                "Use cluster_time_summary, communication bottleneck, communication matrix, slow-rank, and slow-link outputs to separate transit from wait and readiness skew."
+                "Use cluster_time_summary, communication bottleneck, communication matrix, slow-rank, and slow-link outputs to separate transit from wait and readiness skew.",
+                "For each FSDP repeated-all-gather candidate, inspect the cited rank/step/FQN in Timeline and verify whether a reshard or a new intentional parameter-consumption pass occurred between the two collectives.",
             ] if communication_suspect else [],
         ),
         "host": _branch(

@@ -201,6 +201,72 @@ job_tokens_per_second = per_device_tokens_per_second * world_size
 必须确认 `tokens_per_step` 的定义一致。DP 增大常同时改变全局 batch；TP/PP/CP/EP
 不一定改变样本数量。比较拓扑时若 token contract 不同，吞吐数字不可直接作自洽结论。
 
+#### 4.3.1 不同平台、卡数与拓扑的迁移端到端比较
+
+标准性能层支持显式的 `migration` 比较，例如 8 卡 NPU 分布式作业与单卡
+GPU 作业。该模式不调用 MindStudio，也不把设备和拓扑强行伪装成相同配置；它允许
+`device`、`world_size` 和 DP/FSDP/TP/PP/CP/EP 不同，同时继续严格要求模型、
+checkpoint、token plan、global batch、sequence length、dtype、optimizer 相关参数、
+graph policy、测量步数和稳态窗口一致。
+
+权威端到端口径由相同全局工作量直接计算：
+
+```text
+scheduled_global_tokens_per_optimizer_step = global_batch_size * sequence_length
+job_tokens_per_second = scheduled_global_tokens_per_optimizer_step / optimizer_step_time
+system_speedup = candidate_job_tokens_per_second / reference_job_tokens_per_second
+```
+
+不要使用每卡吞吐作为 8 卡与 1 卡比较的主结论。报告必须写清楚系统边界，例如
+`8x NPU job / 1x A100 job`；这个比值描述整套训练作业的端到端加速，不代表单颗
+NPU 相对单颗 A100 的性能。
+
+```bash
+python -m tests.glm5_2_performance.comparison \
+  --reference-run /path/to/a100-single-r1 \
+  --candidate-run /path/to/npu-fsdp8-r1 \
+  --comparison-kind migration \
+  --skip-steps 20 \
+  --output performance_reports/migration/a3-node-vs-a100
+```
+
+默认 `peer` 比较行为保持不变：reference 与 candidate 的标准化合同必须完全相同。
+消融实验也继续要求同一设备和物理设备选择，并且只能改变声明的一个因素。
+
+#### 4.3.2 固定输入、Token Plan 与目录身份
+
+性能实验复用精度框架的固定输入实现，但目录组织与 MindStudio 精度实验不同：固定输入
+不放在每个拓扑下面，而是由训练工作量合同唯一标识并供不同平台和拓扑复用。
+
+```text
+performance_fixtures/
+└── <模型>-<配置>-workload-<负载>-s<步数>-b<全局batch>-seq<长度>-seed<种子>/
+    ├── fixture.json             # generation、训练合同和精确摘要
+    ├── token_plan/              # 全局 step × global batch 固定 token
+    └── checkpoint/              # 单进程生成的共同初始参数
+
+performance_runs/<卡数范围>/<拓扑>/<完整运行身份>/
+performance_artifacts/<卡数范围>/<拓扑>/<完整运行身份>/
+performance_reports/<卡数范围>/<拓扑>/<完整运行身份>.html
+```
+
+因此，同一模型、数据负载、步数、全局 batch、序列长度、随机种子、精度和训练参数下，
+单卡 GPU、8 卡 NPU FSDP 以及其他拓扑读取的是同一个全局 Token Plan 和初始
+Checkpoint。DP rank 对全局 batch 做确定性分片；同一 DP replica 内的 TP/PP/CP rank
+读取与其计算职责对应的同一批逻辑样本。拓扑只改变计算与通信分工，不改变输入语义。
+
+目录可以同时容纳多个 Token Plan，但前提是它们具有不同的显式工作量/数据合同；例如
+不同 seed、数据配置、步数、global batch 或 sequence length 会得到不同 fixture。若合同
+完全相同而仅重新生成文件内容，则它属于同一 fixture 的新 generation：使用 `--force`
+替换当前 generation，旧 capture 会因 generation 或摘要不匹配而失效，不会悄悄混用。
+需要把两份 Token Plan 当作独立变量比较时，必须把差异声明为 workload/data contract，
+不能在相同路径背后替换外部数据。
+
+运行目录的身份比 fixture 更细：设备、物理卡选择、拓扑、Profiler preset、collector、
+图模式、codegen、repeat 和采集控制都会产生独立运行目录，但不会重复制造固定输入。
+`migration` 比较正是从这些不同运行目录取结果，再核验 fixture 摘要和全局工作量合同，
+而不是仅凭实验名称相同就计算加速比。
+
 ### 4.4 TFLOPS 和 MFU
 
 报告中的 TFLOPS 是模型 FLOPs 估算除以时间：
@@ -327,6 +393,37 @@ calls 少、单次 payload 很大且暴露
 
 AllToAllV 还要看每个 peer payload 是否均衡。MoE top-k 总 token 数相同，也可能因 router
 偏斜造成某些 rank 收到更多 token，拖慢整个 collective 和 grouped GEMM。
+
+#### FSDP 重复前向 AllGather 的自动分诊
+
+离线解析产生 `trace_view.json` 后，报告会按 FSDP FQN 检查同一次参数消费链中的真实
+`FSDP::all_gather (...)`。这不是比较 `reshard_after_forward` 开关，也不是仅统计
+Python prefetch 调度请求。只有 Profiler 中实际出现的 AllGather marker 才进入检测。
+
+正常 backward 参数重聚合有两种时序，都会被 duration containment 排除：
+
+1. AllGather 位于 `FSDP::pre_backward (...)` 区间内；
+2. AllGather 位于更早的 `FSDP::backward_prefetch for ...` 区间内。
+
+排除 backward 后，如果同一 rank、同一 `ProfilerStep`、同一 FQN 在下一次 backward
+AllGather 前出现第二次 forward AllGather，Communication diagnosis 标记为 `suspect`，
+并给出 FQN、rank、step、两次时间戳、间隔和源 trace。它表示“需要打开 Timeline
+核实的重复 materialization 候选”，不是自动性能 FAIL；模型可能有意分阶段多次消费同一
+参数组。
+
+典型读法：
+
+```text
+forward AllGather(group)
+  -> module A compute / post_forward
+forward AllGather(group)       # 报告候选
+  -> module B compute
+backward prefetch/AllGather    # 正常，不报告
+```
+
+若报告候选，必须在 Timeline 继续确认两次 marker 下都有真实通信 kernel，并核对两次
+payload、通信域和参数组是否相同。若只有重复 `pre_forward`/prefetch marker 而没有第二个
+AllGather，则是被 FSDP pending/unsharded guard 消除的重复调度请求，不属于重复通信。
 
 ### 5.5 Step time 曲线
 

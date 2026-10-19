@@ -195,6 +195,60 @@ For a chapter-by-chapter explanation, including StepTrace, HCCL wait/transit,
 operator/shape/L2 tables, flame graphs, memory categories, TensorBoard, and the
 PP8-specific reading path, use [REPORT_GUIDE_ZH.md](docs/REPORT_GUIDE_ZH.md).
 
+The standalone profiler-off comparator has two explicit policies. The default
+`peer` policy preserves the original strict behavior and requires identical
+normalized contracts. `--comparison-kind migration` compares end-to-end jobs
+across platforms, device counts, and parallel topologies while still requiring
+the same model, fixture, global batch, sequence length, precision, graph policy,
+and measurement window. Its authoritative throughput is scheduled global tokens
+per optimizer step divided by optimizer-step time; per-device throughput remains
+diagnostic and must not be used as the headline for an 8-device versus 1-device
+claim. See the migration section in
+[REPORT_GUIDE_ZH.md](docs/REPORT_GUIDE_ZH.md).
+
+### Fixed input and output identity
+
+Performance capture reuses the precision framework's fixed-input fixture, but
+does not copy that fixture below every topology. One workload contract owns one
+topology-independent fixture:
+
+```text
+performance_fixtures/
+└── <module>-<model-config>-workload-<workload>-s<steps>-b<global-batch>-seq<length>-seed<seed>/
+    ├── fixture.json
+    ├── token_plan/
+    └── checkpoint/
+
+performance_{runs,artifacts,reports}/
+└── <card-scope>/
+    └── <topology>/
+        └── <complete-run-identity>...
+```
+
+The fixture directory identity includes the model/config, workload name and
+arguments, training steps, global batch, sequence length, seed, dtype, and the
+other normalized training fields. `fixture.json` then records the generation
+ID and exact checkpoint/token-plan digests. All topology runs with the same
+workload contract consume the same global token plan; DP ranks partition its
+global batch, while TP/PP/CP ranks that belong to one DP replica consume the
+corresponding logical samples.
+
+Different explicit workload contracts therefore coexist as different fixture
+directories. Regenerating bytes under the exact same contract is a new fixture
+generation, not a second unnamed token plan: `--force` replaces that fixture,
+and old captures cannot be resumed against the new generation/digests. If two
+token plans must be compared as independent experiments, their difference must
+be expressed in the workload/data contract instead of mutating an external
+file behind the same path.
+
+Run identity is deliberately finer than fixture identity. Device type,
+physical-device selection, topology, profiler preset, collector, graph mode,
+codegen backend, repeat index, and profiler controls select distinct run,
+artifact, and report paths without duplicating the fixed input. A
+`migration` comparison may pair different device/topology run directories only
+after validating that their workload and fixture digests describe the same
+scheduled global work.
+
 ## Complete profiler feature suite
 
 One NPU, every non-redundant collection policy, every applicable official

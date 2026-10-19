@@ -824,6 +824,158 @@ def extract_communication_summary(profiler_directory: Path) -> dict[str, Any]:
     return {"rows": rows}
 
 
+_FSDP_ALL_GATHER_RE = re.compile(r"^FSDP::all_gather \((.+)\)$")
+_FSDP_PRE_BACKWARD_RE = re.compile(r"^FSDP::pre_backward \((.+)\)$")
+_FSDP_BACKWARD_PREFETCH_RE = re.compile(
+    r"^FSDP::backward_prefetch for (.+)$"
+)
+_FSDP_POST_BACKWARD_RE = re.compile(r"^FSDP::post_backward[^ ]* \((.+)\)$")
+
+
+def extract_fsdp_repeated_all_gathers(
+    profiler_directory: Path,
+) -> dict[str, Any]:
+    """Find repeated FSDP all-gathers before that group's backward begins.
+
+    An ``FSDP::all_gather`` record is emitted inside ``FSDPParamGroup.unshard``
+    only when the unshard guard did not make the request a no-op. Therefore it
+    represents a real collective request, unlike a repeated prefetch target in
+    the Python scheduling list. For one FSDP FQN, a second all-gather before a
+    matching backward all-gather is a forward-consumption-chain candidate: it
+    may indicate that a grouped unit was prematurely completed and then
+    materialized again. Backward all-gathers are excluded by interval
+    containment because PyTorch may issue them either inside
+    ``FSDP::pre_backward`` or inside an earlier ``FSDP::backward_prefetch``.
+    The result is diagnostic evidence, not a verdict; a model may
+    intentionally invoke and reshard a group more than once.
+    """
+
+    candidates: list[dict[str, Any]] = []
+    trace_files = sorted(
+        path
+        for path in profiler_directory.rglob("trace_view.json")
+        if path.parent.name == "ASCEND_PROFILER_OUTPUT"
+    )
+    for path in trace_files:
+        rank = _profile_rank(path, profiler_directory)
+        if rank is None:
+            continue
+        try:
+            events = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(events, list):
+            continue
+
+        steps: list[tuple[float, float, str]] = []
+        fsdp_events: list[tuple[float, str, str]] = []
+        backward_intervals: dict[str, list[tuple[float, float]]] = {}
+        for event in events:
+            if not isinstance(event, dict) or event.get("ph") != "X":
+                continue
+            name = str(event.get("name", ""))
+            try:
+                timestamp = float(event["ts"])
+                duration = float(event.get("dur", 0.0))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if name.startswith("ProfilerStep#"):
+                steps.append((timestamp, timestamp + duration, name))
+                continue
+            if match := _FSDP_ALL_GATHER_RE.match(name):
+                fsdp_events.append((timestamp, "all_gather", match.group(1)))
+            elif match := _FSDP_PRE_BACKWARD_RE.match(name):
+                fqn = match.group(1)
+                backward_intervals.setdefault(fqn, []).append(
+                    (timestamp, timestamp + duration)
+                )
+            elif match := _FSDP_BACKWARD_PREFETCH_RE.match(name):
+                fqn = match.group(1)
+                backward_intervals.setdefault(fqn, []).append(
+                    (timestamp, timestamp + duration)
+                )
+            elif match := _FSDP_POST_BACKWARD_RE.match(name):
+                fsdp_events.append((timestamp, "post_backward", match.group(1)))
+
+        steps.sort()
+        fsdp_events.sort()
+        last_all_gather: dict[tuple[str, str], float] = {}
+        for timestamp, event_kind, fqn in fsdp_events:
+            step_name = "outside_profile_step"
+            for start, end, candidate_step in steps:
+                if start <= timestamp <= end:
+                    step_name = candidate_step
+                    break
+                if start > timestamp:
+                    break
+            key = (step_name, fqn)
+            if event_kind == "post_backward":
+                last_all_gather.pop(key, None)
+                continue
+            is_backward_all_gather = any(
+                start <= timestamp <= end
+                for start, end in backward_intervals.get(fqn, ())
+            )
+            if is_backward_all_gather:
+                # This collective starts the backward consumption chain. It
+                # terminates the preceding forward chain but is not itself a
+                # repeated-forward candidate.
+                last_all_gather.pop(key, None)
+                continue
+            previous = last_all_gather.get(key)
+            if previous is not None:
+                candidates.append(
+                    {
+                        "rank": rank,
+                        "step": step_name,
+                        "fqn": fqn,
+                        "previous_timestamp_us": previous,
+                        "timestamp_us": timestamp,
+                        "gap_us": timestamp - previous,
+                        "source": path.relative_to(profiler_directory).as_posix(),
+                    }
+                )
+            last_all_gather[key] = timestamp
+
+    by_fqn: dict[str, dict[str, Any]] = {}
+    for row in candidates:
+        summary = by_fqn.setdefault(
+            str(row["fqn"]),
+            {"fqn": row["fqn"], "count": 0, "ranks": set(), "steps": set()},
+        )
+        summary["count"] += 1
+        summary["ranks"].add(int(row["rank"]))
+        summary["steps"].add(str(row["step"]))
+    rows = []
+    for summary in by_fqn.values():
+        gaps = [
+            float(candidate["gap_us"])
+            for candidate in candidates
+            if candidate["fqn"] == summary["fqn"]
+        ]
+        rows.append(
+            {
+                **summary,
+                "ranks": sorted(summary["ranks"]),
+                "steps": sorted(summary["steps"]),
+                "min_gap_us": min(gaps),
+                "median_gap_us": statistics.median(gaps),
+                "max_gap_us": max(gaps),
+            }
+        )
+    rows.sort(key=lambda row: (-int(row["count"]), str(row["fqn"])))
+    return {
+        "candidate_count": len(candidates),
+        "by_fqn": rows,
+        "candidates": candidates,
+        "interpretation": (
+            "Repeated real forward FSDP all-gathers for one FQN before its "
+            "backward all-gather are localization candidates, not an automatic "
+            "verdict."
+        ),
+    }
+
+
 def inspect_profiler_deliverables(profiler_directory: Path) -> dict[str, Any]:
     """Classify official Ascend outputs and portable GPU traces.
 
@@ -1103,6 +1255,11 @@ def build_analysis(
             extract_communication_summary(profiler_directory)
             if profiler_directory.is_dir()
             else {"rows": []}
+        ),
+        "fsdp_repeated_all_gathers": (
+            extract_fsdp_repeated_all_gathers(profiler_directory)
+            if profiler_directory.is_dir()
+            else {"candidate_count": 0, "by_fqn": [], "candidates": []}
         ),
         "deliverables": deliverables,
         "stack_visualizations": inspect_stack_visualizations(
@@ -1788,6 +1945,34 @@ time is extracted from the Ascend profiler completion messages.</p>
         if diagnosis_rows
         else ""
     )
+    repeated_all_gathers = analysis.get("fsdp_repeated_all_gathers", {})
+    repeated_all_gather_rows = ""
+    for row in repeated_all_gathers.get("by_fqn", []):
+        repeated_all_gather_rows += (
+            f'<tr><td><code>{html.escape(str(row["fqn"]))}</code></td>'
+            f'<td>{int(row["count"])}</td>'
+            f'<td>{html.escape(", ".join(str(rank) for rank in row["ranks"]))}</td>'
+            f'<td>{html.escape(", ".join(str(step) for step in row["steps"]))}</td>'
+            f'<td>{_format_number(float(row["min_gap_us"]) / 1000.0)}</td>'
+            f'<td>{_format_number(float(row["median_gap_us"]) / 1000.0)}</td>'
+            f'<td>{_format_number(float(row["max_gap_us"]) / 1000.0)}</td></tr>'
+        )
+    repeated_all_gather_section = (
+        '<section><h2>Repeated forward FSDP AllGather candidates</h2>'
+        '<p class="subtle">These are real <code>FSDP::all_gather</code> events, '
+        'not repeated Python prefetch targets. A row means the same FSDP group '
+        'was materialized again in one profiler step before its backward '
+        'AllGather. Normal collectives inside <code>pre_backward</code> and '
+        '<code>backward_prefetch</code> intervals are excluded. Inspect the '
+        'cited group in Timeline before treating an intentional second forward '
+        'invocation as a bug.</p>'
+        '<table><thead><tr><th>FSDP group</th><th>Candidates</th><th>Ranks</th>'
+        '<th>Profiler steps</th><th>Min gap (ms)</th><th>Median gap (ms)</th>'
+        '<th>Max gap (ms)</th></tr></thead>'
+        f'<tbody>{repeated_all_gather_rows}</tbody></table></section>'
+        if repeated_all_gather_rows
+        else ""
+    )
     if not ascend_rows:
         ascend_rows = '<tr><td colspan="6">No Ascend profile root discovered</td></tr>'
         trace_rows = '<tr><td colspan="3">No interactive trace discovered</td></tr>'
@@ -2016,6 +2201,7 @@ a{{color:#155eef}} h3{{font-size:15px;margin:16px 0 6px}} h4{{font-size:14px;mar
 {phase_section}
 {distributed_section}
 {communication_section}
+{repeated_all_gather_section}
 {''.join(charts)}
 {runtime_section}
 {compiler_section}

@@ -39,6 +39,8 @@ ABLATION_FACTORS = (
     "mixed_precision_reduce",
     "extra_args",
 )
+COMPARISON_KINDS = ("peer", "migration")
+MIGRATION_VARIABLE_FIELDS = {"topology", "topology_degrees"}
 LOWER_IS_BETTER = {
     "step_time_median_s",
     "step_time_p90_s",
@@ -209,6 +211,23 @@ def _run_summary(run_dir: Path, *, skip_steps: int) -> dict[str, Any]:
         raise ValueError(f"step time or throughput metric is missing: {run_dir}")
     step_times = series[step_time_name]
     throughputs = series[throughput_name]
+    if any(value <= 0 for value in step_times):
+        raise ValueError(f"step time must be positive: {run_dir}")
+    global_batch_size = contract.get("global_batch_size")
+    sequence_length = contract.get("sequence_length")
+    scheduled_tokens_per_step = (
+        int(global_batch_size) * int(sequence_length)
+        if isinstance(global_batch_size, int)
+        and isinstance(sequence_length, int)
+        and global_batch_size > 0
+        and sequence_length > 0
+        else None
+    )
+    job_throughputs = (
+        [scheduled_tokens_per_step / value for value in step_times]
+        if scheduled_tokens_per_step is not None
+        else []
+    )
     step_statistics = metric_statistics(step_times)
     throughput_statistics = metric_statistics(throughputs)
     validity = numerical_validity(records)
@@ -242,6 +261,15 @@ def _run_summary(run_dir: Path, *, skip_steps: int) -> dict[str, Any]:
             "throughput_median_tps": statistics.median(throughputs),
             "throughput_mean_tps": statistics.fmean(throughputs),
             "throughput_p95_tps": throughput_statistics["p95"],
+            "job_throughput_median_tps": (
+                statistics.median(job_throughputs) if job_throughputs else None
+            ),
+            "job_throughput_mean_tps": (
+                statistics.fmean(job_throughputs) if job_throughputs else None
+            ),
+            "job_throughput_p95_tps": (
+                _percentile(job_throughputs, 0.95) if job_throughputs else None
+            ),
             "tflops_mean": aggregate(("tflops",), "mean"),
             "mfu_mean_percent": aggregate(("mfu",), "mean"),
             "peak_active_memory_gib": aggregate(("max_active",), "max"),
@@ -251,6 +279,7 @@ def _run_summary(run_dir: Path, *, skip_steps: int) -> dict[str, Any]:
             "step": [int(record["step"]) for record in records],
             "step_time_s": step_times,
             "throughput_tps": throughputs,
+            "job_throughput_tps": job_throughputs,
             "tflops": series.get(_metric_name(series, ("tflops",)) or "", []),
             "mfu_percent": series.get(_metric_name(series, ("mfu",)) or "", []),
             "active_memory_gib": series.get(
@@ -374,15 +403,39 @@ def _compare(
     candidate: dict[str, Any],
     *,
     ablation_factor: str | None = None,
+    comparison_kind: str = "peer",
 ) -> dict[str, Any]:
+    if comparison_kind not in COMPARISON_KINDS:
+        raise ValueError(f"unsupported comparison kind: {comparison_kind}")
+    if ablation_factor is not None and comparison_kind != "peer":
+        raise ValueError("performance ablation cannot be a migration comparison")
     differences = _contract_differences(
         reference["contract"], candidate["contract"]
     )
-    if ablation_factor is None and differences:
+    if comparison_kind == "peer" and ablation_factor is None and differences:
         raise ValueError(
             "reference and candidate contracts differ; refusing performance comparison:\n"
             f"reference={reference['contract']}\ncandidate={candidate['contract']}"
         )
+    if comparison_kind == "migration":
+        unsupported = set(differences) - MIGRATION_VARIABLE_FIELDS
+        if unsupported:
+            raise ValueError(
+                "migration comparison requires the same training workload; only "
+                "platform and topology may differ: "
+                f"unsupported differences={sorted(unsupported)}"
+            )
+        missing_work = [
+            field
+            for field in ("global_batch_size", "sequence_length")
+            if reference["contract"].get(field) is None
+            or candidate["contract"].get(field) is None
+        ]
+        if missing_work:
+            raise ValueError(
+                "migration comparison requires explicit global work fields: "
+                f"{missing_work}"
+            )
     if ablation_factor is not None:
         if ablation_factor not in ABLATION_FACTORS:
             raise ValueError(f"unsupported ablation factor: {ablation_factor}")
@@ -458,9 +511,15 @@ def _compare(
             "bootstrap_95ci_relation": ci_relation,
             "verdict": verdict,
         }
+    throughput_headline = (
+        "job_throughput_median_tps"
+        if comparison_kind == "migration"
+        else "throughput_median_tps"
+    )
+    headline_metrics = ["step_time_median_s", throughput_headline]
     headline_verdicts = {
         metrics[name]["verdict"]
-        for name in ("step_time_median_s", "throughput_median_tps")
+        for name in headline_metrics
         if name in metrics
     }
     if headline_verdicts == {"improvement"}:
@@ -471,9 +530,10 @@ def _compare(
         overall_verdict = "inconclusive"
     return {
         "contract_match": True,
-        "comparison_kind": "ablation" if ablation_factor else "peer",
+        "comparison_kind": "ablation" if ablation_factor else comparison_kind,
         "ablation_factor": ablation_factor,
         "contract_differences": differences,
+        "headline_metrics": headline_metrics,
         "metrics": metrics,
         "overall_verdict": overall_verdict,
         "verdict_policy": (
@@ -484,6 +544,14 @@ def _compare(
             "Lower is better for step time and memory; higher is better for "
             "throughput, TFLOPS, and MFU. Percent changes are evidence, not "
             "automatic acceptance verdicts."
+        ),
+        "migration_policy": (
+            "End-to-end system comparison permits platform and topology changes "
+            "while preserving the normalized training workload. Authoritative "
+            "job throughput is scheduled global tokens per optimizer step divided "
+            "by optimizer-step time."
+            if comparison_kind == "migration"
+            else None
         ),
     }
 
@@ -501,15 +569,25 @@ def _render(output: Path, payload: dict[str, Any]) -> None:
     if payload.get("candidate"):
         groups.append(payload["candidate"])
     group_table = summary_table(
-        columns=("Group", "Repeats", ">=3", "Topology", "Warmup skipped"),
+        columns=(
+            "Group",
+            "Platform",
+            "Repeats",
+            ">=3",
+            "Topology",
+            "World size",
+            "Warmup skipped",
+        ),
         rows=tuple(
             (
                 group["label"],
+                str(group["execution_context"].get("device")),
                 str(group["repeat_count"]),
                 "yes"
                 if group["measurement_policy"]["repeat_count_sufficient"]
                 else "no",
                 str(group["contract"]["topology"]),
+                str(group["contract"]["topology_degrees"].get("world_size")),
                 str(group["measurement_policy"]["skip_steps"]),
             )
             for group in groups
@@ -586,6 +664,9 @@ def _render(output: Path, payload: dict[str, Any]) -> None:
             "Median throughput (tps)": run["measurement"][
                 "throughput_median_tps"
             ],
+            "Median job throughput (global tps)": run["measurement"].get(
+                "job_throughput_median_tps"
+            ),
             "Validity": run["measurement"]["validity"]["status"],
             "Path": display_repository_path(Path(run["run"])),
         }
@@ -595,19 +676,15 @@ def _render(output: Path, payload: dict[str, Any]) -> None:
     sections: list[Any] = [
         section_heading(
             "证据来源与职责 / Evidence Provenance",
-            (
-                "训练与性能原始证据由 TorchTitan 指标、Ascend PyTorch "
-                "Profiler、msProf 和 msprof-analyze 等官方工具产生；本报告只负责"
-                "实验合同校验、重复聚合、派生统计与索引，不重新实现 profiler。"
-            ),
+            payload["evidence_provenance"]["summary"],
         ),
         summary_table(
             columns=("Layer", "Owner", "Responsibility"),
             rows=(
                 (
                     "Capture and diagnosis",
-                    "Official Ascend ms tools",
-                    "Timeline, operator, communication, memory, advisor evidence",
+                    payload["evidence_provenance"]["capture_and_diagnosis"],
+                    payload["evidence_provenance"]["capture_responsibility"],
                 ),
                 (
                     "Experiment harness",
@@ -653,9 +730,73 @@ def _render(output: Path, payload: dict[str, Any]) -> None:
                 ),
             )
         )
+        if payload["comparison"].get("comparison_kind") == "migration":
+            sections.extend(
+                (
+                    section_heading(
+                        "迁移端到端比较 / Migration End-to-end Comparison",
+                        payload["comparison"]["migration_policy"],
+                    ),
+                    summary_table(
+                        columns=("Invariant", "Reference", "Candidate"),
+                        rows=(
+                            (
+                                "Global batch size",
+                                str(
+                                    payload["reference"]["contract"][
+                                        "global_batch_size"
+                                    ]
+                                ),
+                                str(
+                                    payload["candidate"]["contract"][
+                                        "global_batch_size"
+                                    ]
+                                ),
+                            ),
+                            (
+                                "Sequence length",
+                                str(
+                                    payload["reference"]["contract"][
+                                        "sequence_length"
+                                    ]
+                                ),
+                                str(
+                                    payload["candidate"]["contract"][
+                                        "sequence_length"
+                                    ]
+                                ),
+                            ),
+                            (
+                                "Scheduled tokens / optimizer step",
+                                str(
+                                    payload["reference"]["contract"][
+                                        "global_batch_size"
+                                    ]
+                                    * payload["reference"]["contract"][
+                                        "sequence_length"
+                                    ]
+                                ),
+                                str(
+                                    payload["candidate"]["contract"][
+                                        "global_batch_size"
+                                    ]
+                                    * payload["candidate"]["contract"][
+                                        "sequence_length"
+                                    ]
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+            )
     chart_specs = (
         ("step_time_s", "逐 Step 耗时 / Step Time", "秒 / Seconds"),
         ("throughput_tps", "逐 Step 吞吐 / Throughput", "Tokens/s"),
+        (
+            "job_throughput_tps",
+            "逐 Step 作业吞吐 / Job Throughput",
+            "Global Tokens/s",
+        ),
         ("tflops", "逐 Step TFLOPS", "TFLOPS"),
         ("mfu_percent", "逐 Step MFU", "MFU (%)"),
         ("active_memory_gib", "逐 Step 活跃显存 / Active Memory", "GiB"),
@@ -773,6 +914,7 @@ def _render(output: Path, payload: dict[str, Any]) -> None:
                     "P90 step time (s)",
                     "P95 step time (s)",
                     "Median throughput (tps)",
+                    "Median job throughput (global tps)",
                     "Path",
                 ),
                 pagination=False,
@@ -796,11 +938,16 @@ def build_comparison(
     skip_steps: int,
     output: Path,
     ablation_factor: str | None = None,
+    comparison_kind: str = "peer",
     measurement_level: str = "exploratory",
     force: bool = False,
 ) -> dict[str, Any]:
     if measurement_level not in MEASUREMENT_LEVEL_MIN_REPEATS:
         raise ValueError(f"unsupported measurement level: {measurement_level}")
+    if comparison_kind not in COMPARISON_KINDS:
+        raise ValueError(f"unsupported comparison kind: {comparison_kind}")
+    if comparison_kind == "migration" and not candidate_runs:
+        raise ValueError("migration comparison requires candidate runs")
     minimum_repeats = MEASUREMENT_LEVEL_MIN_REPEATS[measurement_level]
     minimum_steps = MEASUREMENT_LEVEL_MIN_STEPS[measurement_level]
     if len(reference_runs) < minimum_repeats or (
@@ -860,7 +1007,23 @@ def build_comparison(
             "requires_candidate": measurement_level == "release",
         },
         "evidence_provenance": {
-            "capture_and_diagnosis": "official Ascend ms tools",
+            "summary": (
+                "迁移端到端比较只读取 TorchTitan profiler-off 正常训练指标；"
+                "MindStudio 不参与加速比计算。报告负责合同校验、重复聚合和派生统计。"
+                if comparison_kind == "migration"
+                else "训练与性能证据由 TorchTitan 指标和官方性能工具产生；"
+                "报告负责合同校验、重复聚合、派生统计与索引。"
+            ),
+            "capture_and_diagnosis": (
+                "TorchTitan profiler-off metrics"
+                if comparison_kind == "migration"
+                else "TorchTitan and official profiler tools"
+            ),
+            "capture_responsibility": (
+                "Optimizer-step time and scheduled global-token throughput"
+                if comparison_kind == "migration"
+                else "Training metrics and profiler attribution evidence"
+            ),
             "harness": "torchtitan-test orchestration and contract validation",
             "report": "derived profiler-off aggregation; not a profiler",
         },
@@ -871,6 +1034,7 @@ def build_comparison(
                 reference,
                 candidate,
                 ablation_factor=ablation_factor,
+                comparison_kind=comparison_kind,
             )
             if candidate
             else None
@@ -916,7 +1080,7 @@ def build_comparison(
         (
             f"- ablation factor: `{ablation_factor}`"
             if ablation_factor
-            else "- comparison kind: strict peer comparison"
+            else f"- comparison kind: `{comparison_kind}`"
         ),
         "",
         "Open `comparison.html` for the complete self-contained report and "
@@ -939,6 +1103,16 @@ def run_cli() -> int:
         help=(
             "declare the one configuration field intentionally changed "
             "between reference and candidate"
+        ),
+    )
+    parser.add_argument(
+        "--comparison-kind",
+        choices=COMPARISON_KINDS,
+        default="peer",
+        help=(
+            "peer requires identical normalized contracts; migration permits "
+            "different platforms and topologies while requiring the same "
+            "training workload"
         ),
     )
     parser.add_argument("--skip-steps", type=int, default=10)
@@ -966,6 +1140,7 @@ def run_cli() -> int:
         skip_steps=args.skip_steps,
         output=args.output.resolve(),
         ablation_factor=args.ablation_factor,
+        comparison_kind=args.comparison_kind,
         measurement_level=args.measurement_level,
         force=args.force,
     )
