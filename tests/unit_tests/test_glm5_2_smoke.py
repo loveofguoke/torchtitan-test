@@ -16,10 +16,59 @@ from tests.glm5_2_smoke.train_smoke import (
     _completed,
     _contract,
     _default_log_rank,
+    _mtp_execution_proof,
     _normalize_log_ranks,
+    _read_recipe_contract,
     _run_device_replays,
     _run_topology,
 )
+
+
+def test_mtp_recipe_contract_is_runtime_evidence(tmp_path) -> None:
+    runtime_log = tmp_path / "runtime.log"
+    contract = {
+        "factory": "glm5_2_debugmodel_mtp",
+        "model_config": "torchtitan.models.glm5.model.Glm5Model.Config",
+        "num_transformer_layers": 8,
+        "num_mtp_layers": 1,
+        "loss_config": "torchtitan.models.deepseek_v3.mtp.MTPLoss.Config",
+        "mtp_scale": 0.3,
+        "dataloader_num_mtp_layers": 1,
+    }
+    runtime_log.write_text(
+        "[rank0]:TORCHTITAN_RECIPE_CONTRACT: " + json.dumps(contract) + "\n",
+        encoding="utf-8",
+    )
+
+    resolved = _read_recipe_contract(runtime_log)
+    proof = _mtp_execution_proof(
+        "glm5_2_debugmodel_mtp",
+        resolved,
+        training_succeeded=True,
+    )
+
+    assert resolved == contract
+    assert proof == {
+        "num_mtp_layers": 1,
+        "dataloader_num_mtp_layers": 1,
+        "loss_config": "torchtitan.models.deepseek_v3.mtp.MTPLoss.Config",
+        "mtp_scale": 0.3,
+        "strict_tuple_loss_completed": True,
+    }
+
+
+def test_mtp_recipe_contract_rejects_missing_auxiliary_depth() -> None:
+    with pytest.raises(ValueError, match="no model MTP layers"):
+        _mtp_execution_proof(
+            "glm5_2_debugmodel_mtp",
+            {
+                "num_mtp_layers": 0,
+                "dataloader_num_mtp_layers": 0,
+                "loss_config": "torchtitan.models.deepseek_v3.mtp.MTPLoss.Config",
+                "mtp_scale": 0.3,
+            },
+            training_succeeded=True,
+        )
 
 
 def test_automatic_replay_selects_largest_qk_gradient_per_rank(tmp_path) -> None:

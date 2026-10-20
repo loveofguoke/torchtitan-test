@@ -6,6 +6,7 @@ import sys
 
 
 _LEGACY_CONFIG_STATE: dict[str, object] = {}
+_RECIPE_CONTRACT_PREFIX = "TORCHTITAN_RECIPE_CONTRACT: "
 
 
 def parse_legacy_dotted_override(argument: str) -> tuple[str, object]:
@@ -88,6 +89,24 @@ def translate_config_first_cli(argv: list[str]) -> list[str]:
     return translated
 
 
+def recipe_contract(config, *, factory_name: str) -> dict[str, object]:
+    """Describe the model, data, and loss branches resolved by a recipe."""
+    model_config = config.model
+    mtp_layers = tuple(model_config.mtp_layers or ())
+    loss_config = config.loss.loss_fn
+    return {
+        "factory": factory_name,
+        "model_config": f"{type(model_config).__module__}.{type(model_config).__qualname__}",
+        "num_transformer_layers": len(model_config.layers),
+        "num_mtp_layers": len(mtp_layers),
+        "loss_config": f"{type(loss_config).__module__}.{type(loss_config).__qualname__}",
+        "mtp_scale": getattr(loss_config, "mtp_scale", None),
+        "dataloader_num_mtp_layers": getattr(
+            config.dataloader, "num_mtp_layers", None
+        ),
+    }
+
+
 def legacy_config():
     """Build and mutate the official current-tree GLM test recipe."""
     from torchtitan.config.parallelism import ParallelismConfig
@@ -126,4 +145,12 @@ def legacy_config():
                 f"Current TorchTitan config has no field {dotted_name!r}."
             )
         setattr(owner, attribute, value)
+    resolved_contract = recipe_contract(
+        config,
+        factory_name=str(_LEGACY_CONFIG_STATE["factory"]),
+    )
+    print(
+        _RECIPE_CONTRACT_PREFIX + json.dumps(resolved_contract, sort_keys=True),
+        flush=True,
+    )
     return config

@@ -1,5 +1,9 @@
+import json
+from types import SimpleNamespace
+
 from tests.glm5_2_common.config_first import (
     parse_legacy_dotted_override,
+    recipe_contract,
     translate_config_first_cli,
 )
 
@@ -56,3 +60,23 @@ def test_translate_config_first_cli_handles_output_and_overrides(
         "--config",
         "legacy_config",
     ]
+
+
+def test_mtp_legacy_config_emits_resolved_recipe_contract(
+) -> None:
+    model_config = SimpleNamespace(layers=[object()] * 8, mtp_layers=[object()])
+    loss_config = SimpleNamespace(mtp_scale=0.3)
+    config = SimpleNamespace(
+        model=model_config,
+        loss=SimpleNamespace(loss_fn=loss_config),
+        dataloader=SimpleNamespace(num_mtp_layers=1),
+    )
+
+    contract = recipe_contract(config, factory_name="glm5_2_debugmodel_mtp")
+    serialized = json.loads(json.dumps(contract))
+
+    assert serialized["factory"] == "glm5_2_debugmodel_mtp"
+    assert serialized["num_transformer_layers"] == 8
+    assert serialized["num_mtp_layers"] == 1
+    assert serialized["dataloader_num_mtp_layers"] == 1
+    assert serialized["mtp_scale"] == 0.3

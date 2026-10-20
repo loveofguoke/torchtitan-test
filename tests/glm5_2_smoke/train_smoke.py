@@ -48,6 +48,9 @@ from tests.glm5_2_graph.visualization import (  # noqa: E402
 )
 
 
+_RECIPE_CONTRACT_PREFIX = "TORCHTITAN_RECIPE_CONTRACT: "
+
+
 def _root() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -237,6 +240,8 @@ def _contract(
         "module": module,
         "config": config,
     }
+    if config == "glm5_2_debugmodel_mtp":
+        contract["mtp_execution_evidence"] = {"schema_version": 1}
     if topology.pipeline_parallel_degree > 1:
         contract["log_rank"] = _normalize_log_ranks(
             os.environ.get("LOG_RANK", _default_log_rank(topology))
@@ -281,6 +286,60 @@ def _completed(path: Path, contract: dict[str, Any]) -> bool:
     except (OSError, json.JSONDecodeError):
         return False
     return record.get("status") == "passed" and record.get("contract") == contract
+
+
+def _read_recipe_contract(runtime_log: Path) -> dict[str, Any] | None:
+    """Read and cross-rank validate the resolved training recipe contract."""
+    if not runtime_log.is_file():
+        return None
+    contracts = []
+    for line in runtime_log.read_text(encoding="utf-8", errors="replace").splitlines():
+        marker_index = line.find(_RECIPE_CONTRACT_PREFIX)
+        if marker_index < 0:
+            continue
+        payload = line[marker_index + len(_RECIPE_CONTRACT_PREFIX) :]
+        contracts.append(json.loads(payload))
+    if not contracts:
+        return None
+    reference = contracts[0]
+    if any(contract != reference for contract in contracts[1:]):
+        raise ValueError("Training ranks resolved different recipe contracts.")
+    return reference
+
+
+def _mtp_execution_proof(
+    config_name: str,
+    recipe_contract: dict[str, Any] | None,
+    *,
+    training_succeeded: bool,
+) -> dict[str, Any] | None:
+    """Validate the MTP recipe contract used by a successful training run."""
+    if config_name != "glm5_2_debugmodel_mtp":
+        return None
+    if recipe_contract is None:
+        raise ValueError("MTP smoke did not emit a resolved recipe contract.")
+    num_mtp_layers = recipe_contract.get("num_mtp_layers")
+    dataloader_num_mtp_layers = recipe_contract.get("dataloader_num_mtp_layers")
+    loss_config = recipe_contract.get("loss_config")
+    mtp_scale = recipe_contract.get("mtp_scale")
+    if not isinstance(num_mtp_layers, int) or num_mtp_layers <= 0:
+        raise ValueError("MTP smoke resolved no model MTP layers.")
+    if dataloader_num_mtp_layers != num_mtp_layers:
+        raise ValueError(
+            "MTP model/dataloader depth mismatch: "
+            f"model={num_mtp_layers}, dataloader={dataloader_num_mtp_layers}."
+        )
+    if not isinstance(loss_config, str) or not loss_config.endswith("MTPLoss.Config"):
+        raise ValueError(f"MTP smoke resolved unexpected loss config {loss_config!r}.")
+    if not isinstance(mtp_scale, (int, float)) or mtp_scale <= 0:
+        raise ValueError(f"MTP smoke resolved invalid loss scale {mtp_scale!r}.")
+    return {
+        "num_mtp_layers": num_mtp_layers,
+        "dataloader_num_mtp_layers": dataloader_num_mtp_layers,
+        "loss_config": loss_config,
+        "mtp_scale": mtp_scale,
+        "strict_tuple_loss_completed": training_succeeded,
+    }
 
 
 def _preserve_failed_run(path: Path) -> None:
@@ -701,10 +760,24 @@ def _run_topology(
         attempt.update("failed")
         print_runtime_log(runtime_log)
         raise
+    recipe_contract = _read_recipe_contract(runtime_log)
+    evidence_error = None
+    mtp_execution_proof = None
+    try:
+        mtp_execution_proof = _mtp_execution_proof(
+            config,
+            recipe_contract,
+            training_succeeded=result.returncode == 0,
+        )
+    except ValueError as error:
+        evidence_error = str(error)
+    succeeded = result.returncode == 0 and evidence_error is None
     record = {
-        "status": "passed" if result.returncode == 0 else "failed",
+        "status": "passed" if succeeded else "failed",
         "return_code": result.returncode,
         "contract": contract,
+        "recipe_contract": recipe_contract,
+        "mtp_execution_proof": mtp_execution_proof,
         "command": command,
         "runtime_log": str(runtime_log),
         "attempt_id": attempt.attempt_id,
@@ -712,7 +785,13 @@ def _run_topology(
         "finished_at": datetime.now(timezone.utc).isoformat(),
         "elapsed_seconds": time.perf_counter() - started_clock,
         "visible_devices": visible_devices,
-        "error": None if result.returncode == 0 else f"Training exited with code {result.returncode}; see runtime.log",
+        "error": (
+            evidence_error
+            if evidence_error is not None
+            else None
+            if result.returncode == 0
+            else f"Training exited with code {result.returncode}; see runtime.log"
+        ),
     }
     if graph.diagnostics:
         graph_report = generate_graph_compilation_report(run_directory)
@@ -730,7 +809,7 @@ def _run_topology(
         encoding="utf-8",
     )
     attempt.update(
-        "completed" if result.returncode == 0 else "failed",
+        "completed" if succeeded else "failed",
         return_code=result.returncode,
     )
     if nonfinite_diagnostics and result.returncode:
@@ -823,6 +902,9 @@ def _run_topology(
         raise LoggedProcessError(
             result.returncode, command, log_path=runtime_log
         )
+    if evidence_error is not None:
+        print_runtime_log(runtime_log)
+        raise RuntimeError(f"{evidence_error} See {runtime_log}.")
     print_output_path(f"Passed smoke topology {topology.name}", run_directory)
     print_runtime_log(runtime_log)
     return run_directory
