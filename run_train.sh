@@ -56,7 +56,7 @@ fi
 
 case "$DEVICE" in
     gpu)
-        TRAIN_ENTRY=(-m torchtitan.train)
+        TRAIN_ENTRY=("$SCRIPT_DIR/train_gpu.py")
         export PYTORCH_ALLOC_CONF=${PYTORCH_ALLOC_CONF:-expandable_segments:True}
         ;;
     npu)
