@@ -89,6 +89,9 @@ if [[ -n "$COMM_MODE" ]]; then
         --comm.mode="$COMM_MODE" --training.steps 1)
     COMMAND_ENV=(NGPU="$NGPU" LOCAL_RANK=0)
 else
+    if [[ "$LOG_RANK" == "all" ]]; then
+        LOG_RANK="$(seq -s, 0 $((NGPU - 1)))"
+    fi
     COMMAND=(torchrun --nproc_per_node="$NGPU" \
         --rdzv_backend c10d --rdzv_endpoint="localhost:0" \
         --local-ranks-filter "$LOG_RANK" --role rank --tee 3 \

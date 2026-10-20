@@ -267,6 +267,7 @@ def test_smoke_disables_trainer_cuda_graphs(
     assert manifest["visible_devices"] == "0,1,2,3,4,5,6,7"
     assert "--training.disable_cuda_graphs" in commands[0]
     assert "--parallelism.num_pp_microbatches=8" in commands[0]
+    assert environments[0]["TORCHTITAN_CONFIG_FIRST_CLI"] == "1"
     assert environments[0]["LOG_RANK"] == "7"
     assert manifest["contract"]["log_rank"] == 7
     assert capsys.readouterr().out.strip().splitlines()[-1] == (

@@ -666,6 +666,7 @@ def _run_topology(
     environment = os.environ.copy()
     environment.update(
         {
+            "TORCHTITAN_CONFIG_FIRST_CLI": "1",
             "TORCHTITAN_DEVICE": device,
             "TORCHTITAN_RUN_LOG": str(runtime_log),
             "NGPU": str(topology.world_size),
