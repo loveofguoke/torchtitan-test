@@ -162,6 +162,46 @@ def build_optimization_registry() -> tuple[OptimizationSpec, ...]:
             reason="Requires GLM GraphTrainer integration and token-exchange markers.",
         ),
         OptimizationSpec(
+            "async_context_parallel", "cp", "Async context parallel", training,
+            "torchtitan-or-pytorch", ("context_parallel_exposure",),
+            ("cp2", "cp8"), COMMUNICATION_METRICS + ("loss_delta", "grad_delta"),
+            gpu=integrate, npu=integrate,
+            reason=(
+                "HyperParallel validates an Ascend-oriented async CP design, but "
+                "TorchTitan GLM needs a PyTorch-native schedule and backend evidence."
+            ),
+        ),
+        OptimizationSpec(
+            "pp_forward_backward_overlap", "pp", "PP forward/backward overlap", training,
+            "torchtitan-or-pytorch", ("pipeline_bubble", "p2p_exposure"),
+            ("pp2", "pp8"), COMMUNICATION_METRICS + ("pipeline_bubble_percent",),
+            gpu=integrate, npu=integrate,
+            reason=(
+                "HyperParallel overlap_b_f and batched P2P are reference designs; "
+                "TorchTitan requires schedule-level integration and timeline proof."
+            ),
+        ),
+        OptimizationSpec(
+            "topology_aware_collectives", "topology", "Topology-aware collective layout", training,
+            "pytorch-and-backend", ("cross_domain_traffic", "collective_bandwidth"),
+            ("hsdp2x4", "hsdp4x2", "tp8", "ep8"), COMMUNICATION_METRICS,
+            gpu=integrate, npu=integrate,
+            reason=(
+                "A measured physical topology and backend cost model must select mesh axes; "
+                "logical rank order alone is not evidence of an optimized path."
+            ),
+        ),
+        OptimizationSpec(
+            "hot_expert_replication", "moe", "Hot expert migration or replication", training,
+            "future-pytorch-runtime", ("expert_imbalance", "all_to_all_exposure"),
+            ("ep8",), COMMUNICATION_METRICS + ("tokens_per_expert_cv", "migration_bytes"),
+            gpu=integrate, npu=integrate,
+            reason=(
+                "HyperParallel lists this as future work; a TorchTitan implementation needs "
+                "stable expert state, optimizer, checkpoint, and routing semantics."
+            ),
+        ),
+        OptimizationSpec(
             "deepep_gpu", "deepep", "DeepEP GPU dispatcher", training,
             "torchtitan", ("all_to_all_exposure",), ("ep2", "ep8"),
             COMMUNICATION_METRICS + ("dispatch_ms", "combine_ms"),
@@ -243,6 +283,17 @@ def build_optimization_registry() -> tuple[OptimizationSpec, ...]:
             reason="GraphTrainer policy exists but the GLM GraphTrainer recipe is missing.",
         ),
         OptimizationSpec(
+            "activation_swap_prefetch", "activation_offload", "Activation swap with prefetch", training,
+            "torchtitan-or-pytorch", ("activation_memory", "transfer_exposure"),
+            ("single", "fsdp2", "pp2"),
+            ("peak_active_memory_gib", "host_memory_gib", "transfer_ms", "step_time", "loss_delta"),
+            gpu=integrate, npu=integrate,
+            reason=(
+                "HyperParallel demonstrates coordinated checkpoint, swap, fusion, and PP swap; "
+                "GLM needs lifetime-aware scheduling instead of a generic CPU-offload switch."
+            ),
+        ),
+        OptimizationSpec(
             "state_cpu_offload", "state_offload", "FSDP state CPU offload", training,
             "torchtitan", ("parameter_optimizer_memory",), ("fsdp2", "fsdp8"),
             ("peak_active_memory_gib", "host_memory_gib", "transfer_ms", "step_time"),
@@ -281,6 +332,27 @@ def build_optimization_registry() -> tuple[OptimizationSpec, ...]:
             ("ep8",), COMMUNICATION_METRICS + ("grouped_gemm_ms", "loss_delta", "grad_delta"),
             gpu=integrate, npu=integrate,
             reason="Research adapter is not implemented; dispatcher, GEMM and combine semantics are coupled.",
+        ),
+        OptimizationSpec(
+            "autoparallel_cost_model", "autoparallel", "Topology-aware auto-parallel search", training,
+            "future-pytorch-runtime", ("parallel_plan_quality", "pipeline_imbalance"),
+            ("fsdp2-tp2-pp2", "fsdp2-tp4-ep8"),
+            ("estimated_memory_gib", "predicted_step_seconds", "measured_step_seconds", "rank_ready_skew_ms"),
+            gpu=integrate, npu=integrate,
+            reason=(
+                "HyperParallel SAPP-ND and PP balancing are references; TorchTitan currently "
+                "needs an explicit cost-model contract and measured-plan validation."
+            ),
+        ),
+        OptimizationSpec(
+            "ascend_multicore_moe", "moe", "Ascend intra-chip multicore MoE", training,
+            "torchtitanturbo", ("vector_cube_imbalance", "all_to_all_exposure", "kernel_launches"),
+            ("ep8",), COMMUNICATION_METRICS + ("cube_utilization", "vector_utilization", "loss_delta", "grad_delta"),
+            gpu=blocked, npu=integrate,
+            reason=(
+                "HyperParallel provides an Ascend multicore reference, but TorchTitan needs a "
+                "separately versioned provider with forward, backward, and fallback-free evidence."
+            ),
         ),
         OptimizationSpec(
             "gtp_rematerialization", "memory", "Generalized TP weight rematerialization", training,

@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 
 from tests.glm5_2_feature_acceptance.matrix import build_feature_matrix, write_outputs
+from tests.glm5_2_feature_acceptance.compile_contracts import write_compile_contracts
 from tests.glm5_2_feature_acceptance.optimizations import (
     write_optimization_plans,
     write_optimization_registry,
@@ -31,12 +32,16 @@ def main() -> int:
     optimization_plan_path = write_optimization_plans(
         args.output_directory / "optimization_plans.json"
     )
+    compile_contract_path = write_compile_contracts(
+        args.output_directory / "compile_contracts.json"
+    )
     print(f"Feature matrix JSON: {json_path}")
     print(f"Feature matrix Markdown: {markdown_path}")
     print(f"Acceptance plans JSON: {plan_json_path}")
     print(f"Acceptance plans Markdown: {plan_markdown_path}")
     print(f"Optimization registry JSON: {optimization_path}")
     print(f"Optimization A/B plans JSON: {optimization_plan_path}")
+    print(f"Compile acceptance contracts JSON: {compile_contract_path}")
     return 0
 
 

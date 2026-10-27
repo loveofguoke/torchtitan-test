@@ -53,3 +53,18 @@ rank readiness skew, repeated FSDP all-gathers, all-to-all share, pipeline
 bubbles, and effective bandwidth.  Its output is a recommendation, never an
 automatic production switch.
 
+`compile_contracts.py` keeps two different compiler claims separate. The
+end-to-end GLM contract uses `--compiler-diagnostics` and requires attributed
+graph-break and recompile evidence. The dynamic-shape contract reuses one
+compiled operator graph across several batch and sequence shapes and compares
+forward and backward numerics with eager execution. Passing the operator probe
+does not imply that the complete Trainer accepts arbitrary dynamic shapes.
+
+The optimization registry also tracks Ascend-oriented ideas demonstrated by
+HyperParallel: async CP, PP forward/backward overlap, topology-aware collective
+layout, activation swap with prefetch, auto-parallel cost models, hot-expert
+replication, and intra-chip multicore MoE. They remain
+`requires-integration` until TorchTitan has an explicit PyTorch-native seam and
+the seven evidence gates pass. HyperParallel is a design and measurement
+reference, not an implicit runtime dependency or fallback.
+

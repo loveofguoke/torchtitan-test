@@ -16,6 +16,11 @@ from tests.glm5_2_feature_acceptance.optimizations import (
     validate_optimization_registry,
     write_optimization_registry,
 )
+from tests.glm5_2_feature_acceptance.compile_contracts import (
+    CompileContractKind,
+    build_compile_contracts,
+    validate_compile_contracts,
+)
 
 
 class OptimizationRegistryTest(unittest.TestCase):
@@ -36,6 +41,41 @@ class OptimizationRegistryTest(unittest.TestCase):
                 items[optimization_id].npu,
                 OptimizationReadiness.REQUIRES_INTEGRATION,
             )
+
+    def test_hyperparallel_inspired_candidates_are_not_falsely_runnable(self) -> None:
+        items = {item.optimization_id: item for item in build_optimization_registry()}
+        for optimization_id in (
+            "async_context_parallel",
+            "pp_forward_backward_overlap",
+            "topology_aware_collectives",
+            "hot_expert_replication",
+            "activation_swap_prefetch",
+            "autoparallel_cost_model",
+            "ascend_multicore_moe",
+        ):
+            self.assertNotEqual(
+                items[optimization_id].npu,
+                OptimizationReadiness.RUNNABLE,
+            )
+
+    def test_compile_contracts_separate_graph_and_dynamic_shape_claims(self) -> None:
+        contracts = validate_compile_contracts(build_compile_contracts())
+        self.assertEqual(len(contracts), 4)
+        kinds = {item.kind for item in contracts}
+        self.assertEqual(
+            kinds,
+            {
+                CompileContractKind.END_TO_END_GRAPH,
+                CompileContractKind.OPERATOR_DYNAMIC_SHAPE,
+            },
+        )
+        graph_contracts = [
+            item for item in contracts
+            if item.kind is CompileContractKind.END_TO_END_GRAPH
+        ]
+        self.assertTrue(
+            all("--compiler-diagnostics" in item.command for item in graph_contracts)
+        )
 
     def test_platform_plans_only_emit_activation_when_runnable(self) -> None:
         plans = {
