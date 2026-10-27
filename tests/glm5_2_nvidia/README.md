@@ -357,3 +357,56 @@ benchmarks or scenarios. Local step-time, throughput, MFU, Nsys, or NCU results
 must therefore be described as project measurements. They must not be labelled
 as MLPerf results unless the exact MLCommons benchmark, rules, checker, required
 run count, target quality, and submission package have all been satisfied.
+
+## DeepEP GPU A/B
+
+TorchTitan's DeepEP integration requires the exact v2 commit pinned by
+`.github/scripts/install_deepep_v2.sh`; the latest upstream API is not an
+implicit compatible replacement. The GLM candidate recipe changes only the
+MoE token dispatcher.
+
+Run three profiler-off repeats per side on `ep8`:
+
+```bash
+for REPEAT in 1 2 3; do
+  python tests/glm5_2_nvidia/performance_benchmark.py \
+    --capture --profiler-off --replicate "${REPEAT}" \
+    --topology ep8 --steps 50 --skip-steps 10 \
+    --module glm5 --config glm5_debugmodel
+
+  python tests/glm5_2_nvidia/performance_benchmark.py \
+    --capture --profiler-off --replicate "${REPEAT}" \
+    --topology ep8 --steps 50 --skip-steps 10 \
+    --module glm5 --config glm5_2_debugmodel_deepep
+done
+```
+
+Before comparison, confirm that the two fixtures have identical checkpoint and
+token-plan hashes. Then pass the six resolved run paths to:
+
+```bash
+python -m tests.glm5_2_performance.comparison \
+  --reference-label AllToAll \
+  --reference-run <alltoall-r1> \
+  --reference-run <alltoall-r2> \
+  --reference-run <alltoall-r3> \
+  --candidate-label DeepEP \
+  --candidate-run <deepep-r1> \
+  --candidate-run <deepep-r2> \
+  --candidate-run <deepep-r3> \
+  --ablation-factor model_config \
+  --measurement-level development \
+  --skip-steps 10 \
+  --output nvidia_reports/performance/comparisons/glm5-deepep-ep8
+```
+
+Capture one `communication` profile per side after the profiler-off result.
+Compare dispatch/combine kernels, exposed communication, overlap, rank-ready
+skew and effective bandwidth. Nsight evidence explains the cause; profiler-off
+step time, throughput and peak HBM remain the performance authority.
+
+DeepGEMM is not currently an official TorchTitan GPU model provider. First run
+its official grouped-GEMM benchmarks and preserve their logs as kernel-level
+evidence. Do not label a standalone DeepGEMM result as a GLM speedup. A GLM
+DeepGEMM A/B additionally requires a reviewed `GroupedLinear` adapter,
+forward/backward numerical tests and checkpoint-compatible fixed fixtures.

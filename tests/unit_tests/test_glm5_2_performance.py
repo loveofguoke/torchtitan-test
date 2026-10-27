@@ -1257,6 +1257,11 @@ class TestPerformanceConfig(unittest.TestCase):
                     ablation_factor="graph_mode",
                 )
 
+    def test_model_config_is_an_explicit_ablation_factor(self):
+        from tests.glm5_2_performance.comparison import ABLATION_FACTORS
+
+        self.assertIn("model_config", ABLATION_FACTORS)
+
     def test_performance_ablation_requires_three_repeats_per_side(self):
         with self.assertRaisesRegex(ValueError, "at least three independent"):
             build_comparison(

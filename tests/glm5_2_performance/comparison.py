@@ -32,6 +32,7 @@ from tests.glm5_2_performance.benchmark_metrics import (
 STEP_TIME = "time_metrics/end_to_end(s)"
 THROUGHPUT = "throughput(tps)"
 ABLATION_FACTORS = (
+    "model_config",
     "graph_mode",
     "compile_components",
     "training_dtype",
