@@ -72,7 +72,22 @@ def test_discovers_all_topology_pairs_for_profile(tmp_path: Path) -> None:
     ignored = tmp_path / "cp8" / "s150" / "observations" / "training"
     _write(ignored / "reference-r1" / "training_metrics.jsonl", [(1, 4.0, 2.0)])
     _write(ignored / "candidate-r1" / "training_metrics.jsonl", [(1, 4.1, 2.1)])
+    historical = (
+        tmp_path
+        / "single"
+        / "s500"
+        / "observations"
+        / "training"
+        / "history"
+    )
+    _write(
+        historical / "reference-r1" / "training_metrics.jsonl", [(1, 9.0, 9.0)]
+    )
+    _write(
+        historical / "candidate-r1" / "training_metrics.jsonl", [(1, 9.1, 9.1)]
+    )
 
     pairs = _discover_pairs(tmp_path, "s500")
 
     assert set(pairs) == {"single", "tp8"}
+    assert "history" not in str(pairs["single"][0])

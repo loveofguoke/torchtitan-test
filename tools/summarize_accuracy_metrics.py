@@ -148,7 +148,7 @@ def _markdown_row(name: str, summary: MetricSummary) -> str:
 
 
 def _discover_pairs(root: Path, profile: str | None) -> dict[str, tuple[Path, Path]]:
-    pairs: dict[str, tuple[Path, Path]] = {}
+    candidates: dict[str, list[tuple[Path, Path]]] = {}
     for gpu_path in sorted(root.rglob("reference-r1/training_metrics.jsonl")):
         relative = gpu_path.relative_to(root)
         if profile is not None and profile not in relative.parts:
@@ -157,15 +157,36 @@ def _discover_pairs(root: Path, profile: str | None) -> dict[str, tuple[Path, Pa
         if not npu_path.is_file():
             continue
         topology = relative.parts[0]
-        if topology in pairs:
-            raise ValueError(
-                f"multiple GPU/NPU metric pairs found for topology {topology!r}; "
-                "use --profile to select one training profile"
-            )
-        pairs[topology] = (gpu_path, npu_path)
-    if not pairs:
+        candidates.setdefault(topology, []).append((gpu_path, npu_path))
+    if not candidates:
         suffix = f" for profile {profile!r}" if profile is not None else ""
         raise ValueError(f"no reference-r1/candidate-r1 metric pairs found under {root}{suffix}")
+
+    pairs: dict[str, tuple[Path, Path]] = {}
+    for topology, topology_candidates in candidates.items():
+        canonical_suffix = (
+            profile,
+            "observations",
+            "training",
+            "reference-r1",
+            "training_metrics.jsonl",
+        )
+        canonical = [
+            pair
+            for pair in topology_candidates
+            if profile is not None
+            and pair[0].relative_to(root).parts[1:] == canonical_suffix
+        ]
+        if len(canonical) == 1:
+            pairs[topology] = canonical[0]
+            continue
+        if len(topology_candidates) > 1:
+            rendered = "\n  ".join(str(pair[0]) for pair in topology_candidates)
+            raise ValueError(
+                f"multiple non-canonical GPU/NPU metric pairs found for topology "
+                f"{topology!r}:\n  {rendered}"
+            )
+        pairs[topology] = topology_candidates[0]
     return pairs
 
 
