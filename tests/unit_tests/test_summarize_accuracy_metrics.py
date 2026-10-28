@@ -13,6 +13,7 @@ from tools.summarize_accuracy_metrics import (
     _read_metrics,
     _series,
     _summarize,
+    _write_loss_curves,
 )
 
 
@@ -91,3 +92,9 @@ def test_discovers_all_topology_pairs_for_profile(tmp_path: Path) -> None:
 
     assert set(pairs) == {"single", "tp8"}
     assert "history" not in str(pairs["single"][0])
+
+    curve_path = tmp_path / "curves.csv"
+    _write_loss_curves(pairs, ["single"], curve_path)
+    rows = curve_path.read_text(encoding="utf-8").splitlines()
+    assert rows[0] == "topology,step,gpu_loss,npu_loss,difference"
+    assert rows[1] == "single,1,4.0,4.1,0.09999999999999964"

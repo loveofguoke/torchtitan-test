@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
 from dataclasses import asdict, dataclass
@@ -229,6 +230,28 @@ def _summarize_pair(
     }
 
 
+def _write_loss_curves(
+    pairs: dict[str, tuple[Path, Path]], topologies: list[str], output: Path
+) -> None:
+    missing = sorted(set(topologies) - set(pairs))
+    if missing:
+        raise ValueError(f"curve topologies not found: {missing}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(("topology", "step", "gpu_loss", "npu_loss", "difference"))
+        for topology in topologies:
+            gpu_path, npu_path = pairs[topology]
+            gpu = _read_metrics(gpu_path)
+            npu = _read_metrics(npu_path)
+            if set(gpu) != set(npu):
+                raise ValueError(f"GPU/NPU steps differ for curve topology {topology!r}")
+            for step in sorted(gpu):
+                gpu_loss = gpu[step]["loss"]
+                npu_loss = npu[step]["loss"]
+                writer.writerow((topology, step, gpu_loss, npu_loss, npu_loss - gpu_loss))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     inputs = parser.add_mutually_exclusive_group(required=True)
@@ -254,6 +277,16 @@ def main() -> None:
         type=Path,
         help="optional path for the same compact summary as JSON",
     )
+    parser.add_argument(
+        "--curve-output",
+        type=Path,
+        help="optional CSV path for selected per-step GPU/NPU loss curves",
+    )
+    parser.add_argument(
+        "--curve-topologies",
+        default="single,fsdp8",
+        help="comma-separated topologies written by --curve-output (default: single,fsdp8)",
+    )
     args = parser.parse_args()
 
     if args.root is not None:
@@ -271,6 +304,13 @@ def main() -> None:
         topology: _summarize_pair(gpu_path, npu_path, args.expected_steps)
         for topology, (gpu_path, npu_path) in pairs.items()
     }
+    if args.curve_output is not None:
+        curve_topologies = [
+            value.strip() for value in args.curve_topologies.split(",") if value.strip()
+        ]
+        if not curve_topologies:
+            parser.error("--curve-topologies must contain at least one topology")
+        _write_loss_curves(pairs, curve_topologies, args.curve_output)
     output = {
         "expected_steps": args.expected_steps,
         "difference_definition": "NPU - GPU",
