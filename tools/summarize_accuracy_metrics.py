@@ -147,10 +147,72 @@ def _markdown_row(name: str, summary: MetricSummary) -> str:
     )
 
 
+def _discover_pairs(root: Path, profile: str | None) -> dict[str, tuple[Path, Path]]:
+    pairs: dict[str, tuple[Path, Path]] = {}
+    for gpu_path in sorted(root.rglob("reference-r1/training_metrics.jsonl")):
+        relative = gpu_path.relative_to(root)
+        if profile is not None and profile not in relative.parts:
+            continue
+        npu_path = gpu_path.parent.parent / "candidate-r1" / "training_metrics.jsonl"
+        if not npu_path.is_file():
+            continue
+        topology = relative.parts[0]
+        if topology in pairs:
+            raise ValueError(
+                f"multiple GPU/NPU metric pairs found for topology {topology!r}; "
+                "use --profile to select one training profile"
+            )
+        pairs[topology] = (gpu_path, npu_path)
+    if not pairs:
+        suffix = f" for profile {profile!r}" if profile is not None else ""
+        raise ValueError(f"no reference-r1/candidate-r1 metric pairs found under {root}{suffix}")
+    return pairs
+
+
+def _summarize_pair(
+    gpu_path: Path, npu_path: Path, expected_steps: int
+) -> dict[str, Any]:
+    gpu = _read_metrics(gpu_path)
+    npu = _read_metrics(npu_path)
+    if set(gpu) != set(npu):
+        raise ValueError(
+            f"GPU/NPU steps differ for {gpu_path.parent.parent}: "
+            f"missing_gpu={sorted(set(npu) - set(gpu))}, "
+            f"missing_npu={sorted(set(gpu) - set(npu))}"
+        )
+    steps = sorted(gpu)
+    if len(steps) != expected_steps:
+        raise ValueError(
+            f"{gpu_path.parent.parent}: expected {expected_steps} aligned steps, "
+            f"found {len(steps)} ({steps[0]}..{steps[-1]})"
+        )
+    return {
+        "step_count": len(steps),
+        "first_step": steps[0],
+        "last_step": steps[-1],
+        "gpu_path": str(gpu_path),
+        "npu_path": str(npu_path),
+        "loss": _summarize(_series(gpu, "loss"), _series(npu, "loss")),
+        "grad_norm": _summarize(
+            _series(gpu, "grad_norm"), _series(npu, "grad_norm")
+        ),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--gpu", type=Path, required=True, help="GPU training_metrics.jsonl")
-    parser.add_argument("--npu", type=Path, required=True, help="NPU training_metrics.jsonl")
+    inputs = parser.add_mutually_exclusive_group(required=True)
+    inputs.add_argument("--gpu", type=Path, help="GPU training_metrics.jsonl")
+    inputs.add_argument(
+        "--root",
+        type=Path,
+        help="experiment root; discover every reference-r1/candidate-r1 topology pair",
+    )
+    parser.add_argument("--npu", type=Path, help="NPU training_metrics.jsonl")
+    parser.add_argument(
+        "--profile",
+        help="training profile to select while scanning --root, for example s500-fb08c375",
+    )
     parser.add_argument(
         "--expected-steps",
         type=int,
@@ -164,44 +226,46 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    gpu = _read_metrics(args.gpu)
-    npu = _read_metrics(args.npu)
-    if set(gpu) != set(npu):
-        raise ValueError(
-            "GPU/NPU steps differ: "
-            f"missing_gpu={sorted(set(npu) - set(gpu))}, "
-            f"missing_npu={sorted(set(gpu) - set(npu))}"
-        )
-    steps = sorted(gpu)
-    if len(steps) != args.expected_steps:
-        raise ValueError(
-            f"expected {args.expected_steps} aligned steps, found {len(steps)} "
-            f"({steps[0]}..{steps[-1]})"
-        )
+    if args.root is not None:
+        if args.npu is not None:
+            parser.error("--npu cannot be used with --root")
+        pairs = _discover_pairs(args.root, args.profile)
+    else:
+        if args.npu is None:
+            parser.error("--npu is required with --gpu")
+        if args.profile is not None:
+            parser.error("--profile can only be used with --root")
+        pairs = {"selected": (args.gpu, args.npu)}
 
-    loss = _summarize(_series(gpu, "loss"), _series(npu, "loss"))
-    grad_norm = _summarize(
-        _series(gpu, "grad_norm"), _series(npu, "grad_norm")
-    )
+    summaries = {
+        topology: _summarize_pair(gpu_path, npu_path, args.expected_steps)
+        for topology, (gpu_path, npu_path) in pairs.items()
+    }
     output = {
-        "step_count": len(steps),
-        "first_step": steps[0],
-        "last_step": steps[-1],
+        "expected_steps": args.expected_steps,
         "difference_definition": "NPU - GPU",
-        "loss": asdict(loss),
-        "grad_norm": asdict(grad_norm),
+        "topologies": {
+            topology: {
+                **{key: value for key, value in summary.items() if key not in {"loss", "grad_norm"}},
+                "loss": asdict(summary["loss"]),
+                "grad_norm": asdict(summary["grad_norm"]),
+            }
+            for topology, summary in summaries.items()
+        },
     }
 
-    print(f"steps: {len(steps)} ({steps[0]}..{steps[-1]})")
+    print(f"topologies: {len(summaries)} ({', '.join(summaries)})")
+    print(f"required aligned steps per topology: {args.expected_steps}")
     print("difference: NPU - GPU")
     print()
     print(
-        "metric | GPU final | NPU final | final diff | mean diff | mean abs diff | "
+        "topology | metric | GPU final | NPU final | final diff | mean diff | mean abs diff | "
         "max abs diff | max abs step | mean rel error | max rel error | max rel step"
     )
-    print("---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:")
-    print(_markdown_row("loss", loss))
-    print(_markdown_row("grad_norm", grad_norm))
+    print("---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:")
+    for topology, summary in summaries.items():
+        print(f"{topology} | {_markdown_row('loss', summary['loss'])}")
+        print(f"{topology} | {_markdown_row('grad_norm', summary['grad_norm'])}")
     print()
     print("JSON:")
     print(json.dumps(output, indent=2, sort_keys=True))

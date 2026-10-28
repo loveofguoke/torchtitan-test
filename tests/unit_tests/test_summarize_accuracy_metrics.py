@@ -8,10 +8,16 @@ from pathlib import Path
 
 import pytest
 
-from tools.summarize_accuracy_metrics import _read_metrics, _series, _summarize
+from tools.summarize_accuracy_metrics import (
+    _discover_pairs,
+    _read_metrics,
+    _series,
+    _summarize,
+)
 
 
 def _write(path: Path, rows: list[tuple[int, float, float]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         "".join(
             json.dumps(
@@ -56,3 +62,17 @@ def test_rejects_duplicate_steps(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="duplicate step 1"):
         _read_metrics(path)
+
+
+def test_discovers_all_topology_pairs_for_profile(tmp_path: Path) -> None:
+    for topology in ("single", "tp8"):
+        base = tmp_path / topology / "s500" / "observations" / "training"
+        _write(base / "reference-r1" / "training_metrics.jsonl", [(1, 4.0, 2.0)])
+        _write(base / "candidate-r1" / "training_metrics.jsonl", [(1, 4.1, 2.1)])
+    ignored = tmp_path / "cp8" / "s150" / "observations" / "training"
+    _write(ignored / "reference-r1" / "training_metrics.jsonl", [(1, 4.0, 2.0)])
+    _write(ignored / "candidate-r1" / "training_metrics.jsonl", [(1, 4.1, 2.1)])
+
+    pairs = _discover_pairs(tmp_path, "s500")
+
+    assert set(pairs) == {"single", "tp8"}
