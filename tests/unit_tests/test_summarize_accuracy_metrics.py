@@ -66,7 +66,7 @@ def test_rejects_duplicate_steps(tmp_path: Path) -> None:
 
 def test_discovers_all_topology_pairs_for_profile(tmp_path: Path) -> None:
     for topology in ("single", "tp8"):
-        base = tmp_path / topology / "s500" / "observations" / "training"
+        base = tmp_path / topology / "observations" / "training" / "s500"
         _write(base / "reference-r1" / "training_metrics.jsonl", [(1, 4.0, 2.0)])
         _write(base / "candidate-r1" / "training_metrics.jsonl", [(1, 4.1, 2.1)])
     ignored = tmp_path / "cp8" / "s150" / "observations" / "training"

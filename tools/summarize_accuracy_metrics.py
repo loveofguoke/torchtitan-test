@@ -164,18 +164,27 @@ def _discover_pairs(root: Path, profile: str | None) -> dict[str, tuple[Path, Pa
 
     pairs: dict[str, tuple[Path, Path]] = {}
     for topology, topology_candidates in candidates.items():
-        canonical_suffix = (
-            profile,
-            "observations",
-            "training",
-            "reference-r1",
-            "training_metrics.jsonl",
-        )
+        canonical_suffixes = {
+            (
+                "observations",
+                "training",
+                profile,
+                "reference-r1",
+                "training_metrics.jsonl",
+            ),
+            (
+                profile,
+                "observations",
+                "training",
+                "reference-r1",
+                "training_metrics.jsonl",
+            ),
+        }
         canonical = [
             pair
             for pair in topology_candidates
             if profile is not None
-            and pair[0].relative_to(root).parts[1:] == canonical_suffix
+            and pair[0].relative_to(root).parts[1:] in canonical_suffixes
         ]
         if len(canonical) == 1:
             pairs[topology] = canonical[0]
