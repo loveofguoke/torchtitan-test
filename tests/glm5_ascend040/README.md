@@ -81,3 +81,17 @@ An empty region list is the ordinary Trainer path; FlexAttention itself remains
 an always-compiled helper. These are local-compile tests, not a claim that
 GraphTrainer whole-step compilation was exercised. Strict deterministic probes
 use `GLM_DETERMINISTIC=1`, never warn-only mode.
+
+The worker also accepts `GLM_STEPS` (default 2), `GLM_SEQ_LEN` (default 32),
+`GLM_MICROBATCH_TOKENS` (default 256), and `GLM_SEED` (default 42). For a
+500-step NPU capture, use a fresh output directory, retain recomputation, set
+`GLM_STEPS=500`, and preserve the shared checkpoint fixture for the later GPU
+reference. Each rank writes full-precision metrics incrementally to
+`rank-N-metrics.jsonl`, the resolved config to `rank-N-config.txt`, and final
+step-count/finite-value evidence to `rank-N.json`. Normal launcher exit is also
+required. This capture alone is not a CUDA/NPU accuracy comparison.
+
+After the upstream gathered-attention migration, `GLM_NPU_FLEX=1` explicitly
+applies Turbo's `NpuGlm5FlexTransform`; it is not a global model patch or an
+implicit fallback. Keep it unset for older TorchTitan revisions that already
+build FlexAttention configs. The actual selection is recorded in rank evidence.

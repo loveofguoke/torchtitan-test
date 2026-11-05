@@ -85,7 +85,13 @@ def main():
         parallelism.pipeline_parallel_schedule = "1F1B"
         parallelism.num_pp_microbatches = topology.pp
     factory = mtp_factory if use_mtp else base_factory
-    config = factory(seq_len=32, parallelism=parallelism)
+    seq_len = int(os.environ.get("GLM_SEQ_LEN", "32"))
+    if seq_len <= 0:
+        raise ValueError("GLM_SEQ_LEN must be positive")
+    config = factory(seq_len=seq_len, parallelism=parallelism)
+    npu_flex = os.environ.get("GLM_NPU_FLEX", "0")
+    if npu_flex not in ("0", "1"):
+        raise ValueError("GLM_NPU_FLEX must be 0 or 1")
     if policy == "full":
         config.activation_remat = FullActivationRematConfig()
     elif policy != "selective":
@@ -94,9 +100,18 @@ def main():
     root = Path(os.environ["GLM_OUTPUT"])
     root.mkdir(parents=True, exist_ok=True)
     config.dump_folder = str(root / "trainer")
-    config.training.steps = 2
-    config.training.num_tokens_per_microbatch_per_dp_rank = 256
-    config.debug.seed = 42
+    steps = int(os.environ.get("GLM_STEPS", "2"))
+    if steps < 2:
+        raise ValueError("GLM_STEPS must be at least 2")
+    config.training.steps = steps
+    config.metrics.log_freq = 1
+    microbatch_tokens = int(os.environ.get("GLM_MICROBATCH_TOKENS", "256"))
+    if microbatch_tokens <= 0 or microbatch_tokens % seq_len:
+        raise ValueError(
+            "GLM_MICROBATCH_TOKENS must be a positive multiple of sequence length"
+        )
+    config.training.num_tokens_per_microbatch_per_dp_rank = microbatch_tokens
+    config.debug.seed = int(os.environ.get("GLM_SEED", "42"))
     precision = os.environ.get("GLM_PRECISION", "bfloat16")
     if precision not in ("bfloat16", "float32"):
         raise ValueError("GLM_PRECISION must be bfloat16 or float32")
@@ -114,6 +129,13 @@ def main():
         config.model.local_compile.regions = [
             name for name in compile_regions.split(",") if name
         ]
+    if npu_flex == "1":
+        if runtime != "turbo":
+            raise ValueError("The explicit GLM Flex transform requires Turbo")
+        from torchtitan.config.transform import apply_transforms
+        from torchtitanturbo.models.glm5.attention import NpuGlm5FlexTransform
+
+        config = apply_transforms(config, [NpuGlm5FlexTransform()])
     rank = int(os.environ["RANK"])
     evidence = {
         "rank": rank,
@@ -122,6 +144,11 @@ def main():
         "remat": policy,
         "mtp": use_mtp,
         "runtime": runtime,
+        "npu_flex_transform": npu_flex == "1",
+        "expected_steps": steps,
+        "sequence_length": seq_len,
+        "microbatch_tokens_per_dp_rank": microbatch_tokens,
+        "seed": config.debug.seed,
         "precision": {
             "dtype": config.precision.dtype,
             "param_dtype": config.precision.param_dtype,
@@ -137,6 +164,8 @@ def main():
         "status": "running",
     }
     import torch_npu
+
+    (root / f"rank-{rank}-config.txt").write_text(repr(config), encoding="utf-8")
 
     npu_kernel = Path(torch_npu.__file__).parent / "_inductor/kernel/flex_attention.py"
     evidence["torch_npu"] = {
@@ -189,6 +218,10 @@ def main():
                     "grad_norm": values[2],
                 }
             )
+            with (root / f"rank-{rank}-metrics.jsonl").open(
+                "a", encoding="utf-8"
+            ) as stream:
+                stream.write(json.dumps(evidence["metrics"][-1]) + "\n")
             return original(
                 step, global_avg_loss, global_max_loss, grad_norm, *args, **kwargs
             )
@@ -197,8 +230,8 @@ def main():
         trainer.train()
         torch.npu.synchronize()
         evidence["completed_steps"] = trainer.engine.num_completed_steps
-        assert evidence["completed_steps"] == 2
-        assert [row["step"] for row in evidence["metrics"]] == [1, 2]
+        assert evidence["completed_steps"] == steps
+        assert [row["step"] for row in evidence["metrics"]] == list(range(1, steps + 1))
         evidence["status"] = "passed"
     except BaseException as exc:
         evidence["status"] = "failed"
