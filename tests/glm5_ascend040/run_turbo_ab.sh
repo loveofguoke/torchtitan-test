@@ -32,6 +32,9 @@ export PYTHONPATH="/workspace/yyb/torchtitan-test/tests/glm5_ascend040:$PYTHONPA
 export OMP_NUM_THREADS=4
 export TORCHTITAN_CONFIG_FIRST_CLI=1
 export GLM_RUNTIME=turbo
+PHASE=${GLM_AB_PHASE:-all}
+case "$PHASE" in all|components|smoke) ;; *) printf 'Unknown phase: %s\n' "$PHASE"; exit 2 ;; esac
+printf 'phase=%s\n' "$PHASE"
 date -u
 for repository in torchtitan TorchTitanTurbo torchtitan-test torchtitan-ascend; do
     git -C "/workspace/yyb/$repository" rev-parse HEAD
@@ -46,6 +49,7 @@ check_idle() {
     fi
 }
 
+if [ "$PHASE" != smoke ]; then
 check_idle unit
 export ASCEND_RT_VISIBLE_DEVICES=0
 export TORCHTITAN_TURBO_PATCHES=none
@@ -66,6 +70,10 @@ for mode in none all; do
         printf 'FAILED native-%s rc=%s\n' "$mode" "$?"
     fi
 done
+fi
+
+if [ "$PHASE" = components ]; then exit 0; fi
+export GLM_AB_FIXTURE="$ROOT/shared-model-fixture.pt"
 
 smoke() {
     local label=$1 patches=$2 count=$3 topology=$4 remat=$5
@@ -86,8 +94,7 @@ smoke() {
     fi
 }
 
-# Do not compare different random initializations as numerical A/B evidence.
-# These first runs establish functionality only; component tests compare gradients.
+# Every endpoint builds normally, then restores the same full model fixture.
 all_ok=0
 none_ok=0
 if smoke all-single all 1 single selective; then all_ok=1; fi
@@ -104,4 +111,24 @@ if [ "$none_ok" -eq 1 ]; then
     smoke none-cp2 none 2 cp2 selective || true
     smoke none-fsdp2 none 2 fsdp2 selective || true
 fi
+python - "$ROOT" <<'PY'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+baseline = root / 'all-single/rank-0.json'
+report = {}
+if baseline.exists():
+    ref = json.loads(baseline.read_text())
+    for file in root.glob('*/rank-0.json'):
+        candidate = json.loads(file.read_text())
+        if ref['status'] != 'passed' or candidate['status'] != 'passed':
+            continue
+        assert candidate['fixture_sha256'] == ref['fixture_sha256']
+        # Only single-rank cases have the same topology and token budget here.
+        if candidate['world_size'] != 1:
+            continue
+        deltas = {name: max(abs(a[name] - b[name]) for a, b in zip(ref['metrics'], candidate['metrics'], strict=True)) for name in ('loss', 'grad_norm')}
+        report[file.parent.name] = {'max_abs_delta': deltas, 'bitwise_metrics_equal': all(value == 0 for value in deltas.values()), 'fixture_sha256': ref['fixture_sha256']}
+(root / 'same-fixture-comparison.json').write_text(json.dumps(report, indent=2))
+PY
 printf 'A/B collection ended; inspect individual cases, not just this exit code.\n'

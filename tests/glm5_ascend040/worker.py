@@ -1,5 +1,6 @@
 """Run the Ascend GLM recipe on a real process group and persist rank evidence."""
 
+import hashlib
 import json
 import math
 import os
@@ -111,6 +112,35 @@ def main():
     trainer = None
     try:
         trainer = config.build()
+        fixture_name = os.environ.get("GLM_AB_FIXTURE")
+        if fixture_name:
+            from torch.distributed.checkpoint.state_dict import (
+                get_model_state_dict,
+                set_model_state_dict,
+                StateDictOptions,
+            )
+
+            assert len(trainer.engine.model_parts) == 1
+            model = trainer.engine.model_parts[0]
+            fixture = Path(fixture_name)
+            if not fixture.exists():
+                if topology.world_size != 1:
+                    raise ValueError("Create the shared fixture on one rank first")
+                state = get_model_state_dict(
+                    model,
+                    options=StateDictOptions(full_state_dict=True, cpu_offload=True),
+                )
+                torch.save(state, fixture)
+            state = torch.load(fixture, map_location="cpu", weights_only=True)
+            incompatible = set_model_state_dict(
+                model, state, options=StateDictOptions(full_state_dict=True)
+            )
+            assert not incompatible.missing_keys and not incompatible.unexpected_keys
+            evidence["fixture"] = str(fixture)
+            evidence["fixture_sha256"] = hashlib.sha256(
+                fixture.read_bytes()
+            ).hexdigest()
+            torch.manual_seed(config.debug.seed)
         original = trainer.metrics_processor.log
 
         def capture(step, global_avg_loss, global_max_loss, grad_norm, *args, **kwargs):

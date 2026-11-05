@@ -25,3 +25,10 @@ For native initializer and TP loss checks, add this directory to `PYTHONPATH`
 and use `-p turbo_plugin --noconftest` to import Turbo before collecting
 the existing native-op tests. It does not silently import the Ascend bootstrap.
 Compare `all`, `none`, and one-group removals in independent subprocesses.
+
+`run_turbo_ab.sh` supports `GLM_AB_PHASE=components|smoke|all`. Smoke endpoints
+restore a single shared full-model fixture through PyTorch's public distributed
+state-dict API and record its SHA256. The comparison reports exact metric
+equality and deltas without inventing a tolerance or comparing different
+topologies as numerical equivalents. Component-only evidence is not promoted
+to an end-to-end patch-removal verdict.
