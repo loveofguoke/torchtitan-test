@@ -149,6 +149,7 @@ def main():
         "sequence_length": seq_len,
         "microbatch_tokens_per_dp_rank": microbatch_tokens,
         "seed": config.debug.seed,
+        "hccl_npu_socket_port_range": os.environ.get("HCCL_NPU_SOCKET_PORT_RANGE"),
         "precision": {
             "dtype": config.precision.dtype,
             "param_dtype": config.precision.param_dtype,

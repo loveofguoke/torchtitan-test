@@ -42,6 +42,10 @@ case "$PHASE" in all|components|smoke|matrix) ;; *) printf 'Unknown phase: %s\n'
 SHARED=${GLM_AB_SHARED_DEVICES:-0}
 case "$SHARED" in 0|1) ;; *) printf 'Invalid shared-device policy\n'; exit 2 ;; esac
 printf 'shared_devices=%s (shared runs are not performance evidence)\n' "$SHARED"
+if [ "$SHARED" = 1 ]; then
+    export HCCL_NPU_SOCKET_PORT_RANGE=${HCCL_NPU_SOCKET_PORT_RANGE:-auto}
+    printf 'hccl_npu_socket_port_range=%s\n' "$HCCL_NPU_SOCKET_PORT_RANGE"
+fi
 printf 'phase=%s\n' "$PHASE"
 date -u
 for repository in torchtitan TorchTitanTurbo torchtitan-test torchtitan-ascend; do

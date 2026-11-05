@@ -16,6 +16,7 @@ done
 npu-smi info > "$ROOT/npu-before.log"
 export PYTHONPATH="${GLM_NPU_OVERLAY:+$GLM_NPU_OVERLAY:}$TEST_ROOT:/workspace/yyb/TorchTitanTurbo:/workspace/yyb/torchtitan"
 export OMP_NUM_THREADS=4 TORCHTITAN_CONFIG_FIRST_CLI=1 GLM_RUNTIME=turbo
+export HCCL_NPU_SOCKET_PORT_RANGE=${HCCL_NPU_SOCKET_PORT_RANGE:-auto}
 export ASCEND_RT_VISIBLE_DEVICES=${GLM_CAPTURE_DEVICE:-7}
 export TORCHTITAN_TURBO_PATCHES=${GLM_CAPTURE_PATCHES:-inductor_scheduler,inductor_reduction,remat}
 export GLM_TOPOLOGY=single GLM_REMAT=selective GLM_PRECISION=bfloat16
