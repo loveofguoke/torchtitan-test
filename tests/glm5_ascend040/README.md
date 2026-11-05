@@ -47,3 +47,9 @@ deterministic algorithms; no warn-only escape is used. Ordinary compatibility
 smoke defaults to `0` and must not be presented as deterministic numerical
 equivalence evidence. Same-fixture deltas without determinism are observations,
 not a pass criterion for a non-computation change.
+
+`GLM_NPU_OVERLAY` explicitly prepends an independently prepared TorchNPU package
+copy. It never modifies the installed package; the suite records its root and
+each rank records the actual import path, version and Flex kernel SHA256. An
+overlay run is distinct from installed-wheel acceptance and must be labeled as
+such when discussing patch removal.

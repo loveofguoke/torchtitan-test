@@ -123,6 +123,14 @@ def main():
         "metrics": [],
         "status": "running",
     }
+    import torch_npu
+
+    npu_kernel = Path(torch_npu.__file__).parent / "_inductor/kernel/flex_attention.py"
+    evidence["torch_npu"] = {
+        "version": torch_npu.__version__,
+        "path": torch_npu.__file__,
+        "flex_kernel_sha256": hashlib.sha256(npu_kernel.read_bytes()).hexdigest(),
+    }
     trainer = None
     try:
         trainer = config.build()

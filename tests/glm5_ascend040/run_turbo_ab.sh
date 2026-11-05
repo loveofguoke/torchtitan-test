@@ -29,6 +29,8 @@ bounded() {
 }
 export PYTHONPATH=/workspace/yyb/torchtitan-test:/workspace/yyb/TorchTitanTurbo:/workspace/yyb/torchtitan
 export PYTHONPATH="/workspace/yyb/torchtitan-test/tests/glm5_ascend040:$PYTHONPATH"
+export PYTHONPATH="${GLM_NPU_OVERLAY:+$GLM_NPU_OVERLAY:}$PYTHONPATH"
+printf 'npu_overlay=%s\n' "${GLM_NPU_OVERLAY:-<installed>}"
 export OMP_NUM_THREADS=4
 export TORCHTITAN_CONFIG_FIRST_CLI=1
 export GLM_RUNTIME=turbo
