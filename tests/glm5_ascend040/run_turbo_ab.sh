@@ -53,7 +53,7 @@ check_idle() {
     ASCEND_RT_VISIBLE_DEVICES=$(IFS=,; echo "${physical_devices[*]:0:$count}")
     export ASCEND_RT_VISIBLE_DEVICES
     npu-smi info > "$ROOT/npu-before-$1.log"
-    python - "$ROOT/npu-before-$1.log" "$ASCEND_RT_VISIBLE_DEVICES" <<'PY'
+    if ! python - "$ROOT/npu-before-$1.log" "$ASCEND_RT_VISIBLE_DEVICES" <<'PY'
 import re, sys
 from pathlib import Path
 table = Path(sys.argv[1]).read_text()
@@ -62,6 +62,10 @@ assert len(devices) == len(set(devices)) and all(x.isdigit() for x in devices)
 for device in devices:
     assert re.search(r'No running processes found in NPU ' + re.escape(device) + r'\b', table), f'NPU {device} is not confirmed idle'
 PY
+    then
+        printf 'STOP: selected devices are not confirmed idle\n'
+        exit 2
+    fi
 }
 
 select_patches() {
