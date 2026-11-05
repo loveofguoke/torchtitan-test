@@ -8,7 +8,25 @@ mkdir -p /workspace/yyb/outputs
 ROOT=$(mktemp -d /workspace/yyb/outputs/glm5-turbo-a5-ab-XXXXXXXX)
 printf '%s\n' "$ROOT" > /workspace/yyb/outputs/glm5-turbo-a5-ab-latest.path
 exec > "$ROOT/suite.log" 2>&1
-trap 'printf "suite_exit_code=%s\n" "$?"' EXIT
+active_pid=
+cleanup() {
+    local rc=$?
+    if [ -n "$active_pid" ]; then
+        kill -TERM "$active_pid" 2>/dev/null || true
+        wait "$active_pid" 2>/dev/null || true
+    fi
+    printf 'suite_exit_code=%s\n' "$rc"
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+bounded() {
+    timeout --kill-after=20s 300s "$@" &
+    active_pid=$!
+    local rc=0
+    wait "$active_pid" || rc=$?
+    active_pid=
+    return "$rc"
+}
 export PYTHONPATH=/workspace/yyb/torchtitan-test:/workspace/yyb/TorchTitanTurbo:/workspace/yyb/torchtitan
 export PYTHONPATH="/workspace/yyb/torchtitan-test/tests/glm5_ascend040:$PYTHONPATH"
 export OMP_NUM_THREADS=4
@@ -42,7 +60,7 @@ for mode in none all; do
     export ASCEND_RT_VISIBLE_DEVICES=0,1
     export TORCHTITAN_TURBO_PATCHES="$mode"
     mkdir -p "$ROOT/native-$mode"
-    if timeout --kill-after=20s 300s python -m torch.distributed.run --standalone --nproc-per-node=2 --log-dir="$ROOT/native-$mode/torchrun" --redirects=3 --tee=3 -m pytest -p turbo_plugin --noconftest /workspace/yyb/torchtitan-ascend/tests/integration_tests/test_glm5_native_ops.py -q --tb=short > "$ROOT/native-$mode/runtime.log" 2>&1; then
+    if bounded python -m torch.distributed.run --standalone --nproc-per-node=2 --log-dir="$ROOT/native-$mode/torchrun" --redirects=3 --tee=3 -m pytest -p turbo_plugin --noconftest /workspace/yyb/torchtitan-ascend/tests/integration_tests/test_glm5_native_ops.py -q --tb=short > "$ROOT/native-$mode/runtime.log" 2>&1; then
         printf 'PASSED native-%s\n' "$mode"
     else
         printf 'FAILED native-%s rc=%s\n' "$mode" "$?"
@@ -58,7 +76,7 @@ smoke() {
     export GLM_OUTPUT="$ROOT/$label"
     mkdir -p "$GLM_OUTPUT"
     printf 'START %s patches=%s\n' "$label" "$patches"
-    if timeout --kill-after=20s 300s python -m torch.distributed.run --standalone --nproc-per-node="$count" --log-dir="$GLM_OUTPUT/torchrun" --redirects=3 --tee=3 /workspace/yyb/torchtitan-test/tests/glm5_ascend040/worker.py > "$GLM_OUTPUT/runtime.log" 2>&1; then
+    if bounded python -m torch.distributed.run --standalone --nproc-per-node="$count" --log-dir="$GLM_OUTPUT/torchrun" --redirects=3 --tee=3 /workspace/yyb/torchtitan-test/tests/glm5_ascend040/worker.py > "$GLM_OUTPUT/runtime.log" 2>&1; then
         printf 'PASSED %s\n' "$label"
         return 0
     else
