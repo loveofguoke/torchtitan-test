@@ -105,6 +105,15 @@ def main():
     if deterministic not in ("0", "1"):
         raise ValueError("GLM_DETERMINISTIC must be 0 or 1")
     config.debug.deterministic = deterministic == "1"
+    compile_regions = os.environ.get("GLM_LOCAL_COMPILE_REGIONS")
+    if compile_regions is not None:
+        if runtime != "turbo":
+            raise ValueError(
+                "Local compile probes require the current TorchTitan runtime"
+            )
+        config.model.local_compile.regions = [
+            name for name in compile_regions.split(",") if name
+        ]
     rank = int(os.environ["RANK"])
     evidence = {
         "rank": rank,
@@ -119,6 +128,10 @@ def main():
             "reduce_dtype": config.precision.reduce_dtype,
         },
         "deterministic": config.debug.deterministic,
+        "local_compile_regions": (
+            list(config.model.local_compile.regions) if runtime == "turbo" else None
+        ),
+        "npu_codegen_loader": os.environ.get("TORCHINDUCTOR_NPU_BACKEND", "default"),
         "turbo_patches": turbo_status,
         "metrics": [],
         "status": "running",

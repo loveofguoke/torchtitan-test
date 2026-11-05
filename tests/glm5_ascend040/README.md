@@ -71,3 +71,13 @@ policy. Use `GLM_AB_DEVICES=0,1,2,3,4,5,6,7` for the eight-card matrix.
 Use the manifest's actual applied groups: if `remat` is held in common after a
 multi-rank null-storage crash, the endpoint is not legacy-patch-free even if its
 short directory label begins with `none`.
+
+For current TorchTitan local Inductor probes, set
+`GLM_LOCAL_COMPILE_REGIONS=rope,fused_binary_activation,moe_aux_loss,fp32_to_bf16_split`.
+The worker uses the public `model.local_compile.regions` API and records the
+actual region list. Select the existing TorchNPU loader contract before process
+startup: `TORCHINDUCTOR_NPU_BACKEND=default` for Ascend Triton or `dvm` for DVM.
+An empty region list is the ordinary Trainer path; FlexAttention itself remains
+an always-compiled helper. These are local-compile tests, not a claim that
+GraphTrainer whole-step compilation was exercised. Strict deterministic probes
+use `GLM_DETERMINISTIC=1`, never warn-only mode.
