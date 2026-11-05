@@ -20,9 +20,13 @@ def batch():
 
 def test_exact_replay_and_refuse_overwrite(tmp_path):
     original = batch()
+    original.input = torch.arange(1024)[:4]
     directory = tmp_path / "inputs"
     assert list(record_batches(iter([original]), directory))[0] is original
     replayed = list(replay_batches(directory))[0]
+    assert (
+        replayed.input.untyped_storage().nbytes() == 4 * original.input.element_size()
+    )
     for field in fields(original):
         before, after = getattr(original, field.name), getattr(replayed, field.name)
         if isinstance(before, torch.Tensor):

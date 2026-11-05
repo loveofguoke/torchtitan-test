@@ -6,6 +6,7 @@ from dataclasses import fields
 from pathlib import Path
 
 import torch
+from torch.utils._pytree import tree_leaves, tree_map
 from torchtitan.components.data.types import TokenizedTrainingMicrobatch
 
 
@@ -21,9 +22,15 @@ def record_batches(iterator, directory):
             values = {field.name: getattr(batch, field.name) for field in fields(batch)}
             if any(
                 isinstance(value, torch.Tensor) and value.device.type != "cpu"
-                for value in values.values()
+                for value in tree_leaves(values)
             ):
                 raise ValueError("Record inputs before moving them to the accelerator")
+            values = tree_map(
+                lambda value: (
+                    value.detach().clone() if isinstance(value, torch.Tensor) else value
+                ),
+                values,
+            )
             filename = f"microbatch-{index:06d}.pt"
             path = directory / filename
             torch.save(values, path)
