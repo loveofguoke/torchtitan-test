@@ -53,3 +53,15 @@ copy. It never modifies the installed package; the suite records its root and
 each rank records the actual import path, version and Flex kernel SHA256. An
 overlay run is distinct from installed-wheel acceptance and must be labeled as
 such when discussing patch removal.
+
+`GLM_AB_PHASE=matrix` runs the remaining canonical two/four/eight-rank topologies,
+including PP, HSDP, combined Full remat, MTP and an FP32 FSDP8 endpoint. It uses
+native seeded initialization rather than claiming same-fixture equivalence; PP
+partitions and MTP parameters are not loaded from a base-model single-rank
+fixture. Each case retains its own runtime and rank evidence, even on failure.
+
+`GLM_AB_SHARED_DEVICES=1` is an explicit user-authorized sharing policy, not the
+default. It preserves the complete process table before each endpoint and does
+not terminate existing processes. Such runs provide functional smoke evidence,
+not isolated throughput/latency comparisons. Omit it for the default idle-only
+policy. Use `GLM_AB_DEVICES=0,1,2,3,4,5,6,7` for the eight-card matrix.

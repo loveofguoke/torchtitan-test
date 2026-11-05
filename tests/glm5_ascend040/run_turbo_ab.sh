@@ -38,7 +38,10 @@ IFS=, read -r -a physical_devices <<< "${GLM_AB_DEVICES:-0,1,2,3,4,5,6,7}"
 COMMON_PATCHES=${GLM_AB_COMMON_PATCHES:-}
 printf 'physical_devices=%s common_patches=%s\n' "${physical_devices[*]}" "$COMMON_PATCHES"
 PHASE=${GLM_AB_PHASE:-all}
-case "$PHASE" in all|components|smoke) ;; *) printf 'Unknown phase: %s\n' "$PHASE"; exit 2 ;; esac
+case "$PHASE" in all|components|smoke|matrix) ;; *) printf 'Unknown phase: %s\n' "$PHASE"; exit 2 ;; esac
+SHARED=${GLM_AB_SHARED_DEVICES:-0}
+case "$SHARED" in 0|1) ;; *) printf 'Invalid shared-device policy\n'; exit 2 ;; esac
+printf 'shared_devices=%s (shared runs are not performance evidence)\n' "$SHARED"
 printf 'phase=%s\n' "$PHASE"
 date -u
 for repository in torchtitan TorchTitanTurbo torchtitan-test torchtitan-ascend; do
@@ -55,14 +58,15 @@ check_idle() {
     ASCEND_RT_VISIBLE_DEVICES=$(IFS=,; echo "${physical_devices[*]:0:$count}")
     export ASCEND_RT_VISIBLE_DEVICES
     npu-smi info > "$ROOT/npu-before-$1.log"
-    if ! python - "$ROOT/npu-before-$1.log" "$ASCEND_RT_VISIBLE_DEVICES" <<'PY'
+    if ! python - "$ROOT/npu-before-$1.log" "$ASCEND_RT_VISIBLE_DEVICES" "$SHARED" <<'PY'
 import re, sys
 from pathlib import Path
 table = Path(sys.argv[1]).read_text()
 devices = sys.argv[2].split(',')
 assert len(devices) == len(set(devices)) and all(x.isdigit() for x in devices)
 for device in devices:
-    assert re.search(r'No running processes found in NPU ' + re.escape(device) + r'\b', table), f'NPU {device} is not confirmed idle'
+    if sys.argv[3] == '0':
+        assert re.search(r'No running processes found in NPU ' + re.escape(device) + r'\b', table), f'NPU {device} is not confirmed idle'
 PY
     then
         printf 'STOP: selected devices are not confirmed idle\n'
@@ -84,7 +88,7 @@ select_patches() {
     export TORCHTITAN_TURBO_PATCHES
 }
 
-if [ "$PHASE" != smoke ]; then
+if [ "$PHASE" = all ] || [ "$PHASE" = components ]; then
 check_idle unit
 export TORCHTITAN_TURBO_PATCHES=none
 if python -m pytest --noconftest /workspace/yyb/TorchTitanTurbo/tests/unit_tests/test_glm5_patch.py /workspace/yyb/TorchTitanTurbo/tests/unit_tests/test_npu_rope.py /workspace/yyb/TorchTitanTurbo/tests/unit_tests/test_remat.py /workspace/yyb/TorchTitanTurbo/tests/unit_tests/test_inductor_scheduler.py -q --tb=short > "$ROOT/unit.log" 2>&1; then
@@ -109,10 +113,10 @@ if [ "$PHASE" = components ]; then exit 0; fi
 export GLM_AB_FIXTURE="$ROOT/shared-model-fixture.pt"
 
 smoke() {
-    local label=$1 patches=$2 count=$3 topology=$4 remat=$5
+    local label=$1 patches=$2 count=$3 topology=$4 remat=$5 mtp=${6:-0}
     check_idle "$label" "$count"
     select_patches "$patches"
-    export GLM_TOPOLOGY="$topology" GLM_REMAT="$remat" GLM_MTP=0
+    export GLM_TOPOLOGY="$topology" GLM_REMAT="$remat" GLM_MTP="$mtp"
     export GLM_OUTPUT="$ROOT/$label"
     mkdir -p "$GLM_OUTPUT"
     printf 'START %s patches=%s devices=%s\n' "$label" "$TORCHTITAN_TURBO_PATCHES" "$ASCEND_RT_VISIBLE_DEVICES"
@@ -125,6 +129,22 @@ smoke() {
         return "$rc"
     fi
 }
+
+if [ "$PHASE" = matrix ]; then
+    # Native initialization, not A/B fixture equivalence. PP owns split model parts.
+    unset GLM_AB_FIXTURE
+    for case in ddp2:2 ddp8:8 fsdp8:8 ep8:8 tp8:8 cp4:4 cp8:8 hsdp2x4:8 hsdp4x2:8 fsdp2-tp4:8 fsdp2-cp4:8 tp2-cp4:8 fsdp4-tp2:8 fsdp2-tp4-ep8:8 fsdp2-tp2-cp2-ep2:8 pp8:8 fsdp2-pp4:8 fsdp2-tp2-pp2:8; do
+        topology=${case%:*}
+        count=${case#*:}
+        smoke "none-$topology" none "$count" "$topology" selective || true
+    done
+    smoke none-combined-full none 8 fsdp2-tp2-cp2-ep2 full || true
+    smoke none-combined-mtp none 8 fsdp2-tp2-cp2-ep2 selective 1 || true
+    export GLM_PRECISION=float32
+    smoke none-fsdp8-fp32 none 8 fsdp8 selective || true
+    printf 'Matrix collection ended; inspect every rank verdict and exit status.\n'
+    exit 0
+fi
 
 # Every endpoint builds normally, then restores the same full model fixture.
 all_ok=0
