@@ -26,6 +26,7 @@ export GLM_AB_FIXTURE="$ROOT/initial-model.pt"
 printf 'device=%s patches=%s deterministic=%s\n' "$ASCEND_RT_VISIBLE_DEVICES" "$TORCHTITAN_TURBO_PATCHES" "$GLM_DETERMINISTIC"
 for steps in 2 500; do
     export GLM_STEPS=$steps GLM_OUTPUT="$ROOT/steps-$steps"
+    export GLM_INPUT_CAPTURE="$GLM_OUTPUT/inputs"
     mkdir -p "$GLM_OUTPUT"
     timeout --kill-after=20s 3600s python -m torch.distributed.run \
         --standalone --nproc-per-node=1 --log-dir="$GLM_OUTPUT/torchrun" \

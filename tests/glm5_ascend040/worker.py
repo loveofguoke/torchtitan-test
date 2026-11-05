@@ -207,6 +207,24 @@ def main():
             ).hexdigest()
             torch.manual_seed(config.debug.seed)
         original = trainer.metrics_processor.log
+        input_capture = os.environ.get("GLM_INPUT_CAPTURE")
+        input_replay = os.environ.get("GLM_INPUT_REPLAY")
+        if input_capture or input_replay:
+            if input_capture and input_replay:
+                raise ValueError("Choose either input capture or replay")
+            if topology.world_size != 1:
+                raise ValueError("This recorded-batch contract is single-rank only")
+            from recorded_batches import record_batches, replay_batches
+
+            original_batches = trainer.microbatch_generator
+            if input_capture:
+                trainer.microbatch_generator = lambda data: record_batches(
+                    original_batches(data), input_capture
+                )
+            else:
+                trainer.microbatch_generator = lambda data: original_batches(
+                    replay_batches(input_replay)
+                )
 
         def capture(step, global_avg_loss, global_max_loss, grad_norm, *args, **kwargs):
             values = [float(global_avg_loss), float(global_max_loss), float(grad_norm)]
@@ -239,6 +257,17 @@ def main():
         evidence["error"] = repr(exc)
         raise
     finally:
+        input_directory = os.environ.get("GLM_INPUT_CAPTURE") or os.environ.get(
+            "GLM_INPUT_REPLAY"
+        )
+        if input_directory:
+            manifest = Path(input_directory) / "manifest.jsonl"
+            if manifest.exists():
+                evidence["input_manifest"] = str(manifest)
+                evidence["input_manifest_sha256"] = hashlib.sha256(
+                    manifest.read_bytes()
+                ).hexdigest()
+                evidence["input_microbatches"] = len(manifest.read_text().splitlines())
         (root / f"rank-{rank}.json").write_text(
             json.dumps(evidence, indent=2), encoding="utf-8"
         )

@@ -91,6 +91,13 @@ reference. Each rank writes full-precision metrics incrementally to
 step-count/finite-value evidence to `rank-N.json`. Normal launcher exit is also
 required. This capture alone is not a CUDA/NPU accuracy comparison.
 
+The capture script also saves the actual CPU microbatches under each run's
+`inputs/`, with an incremental SHA256 manifest. For a same-input reference,
+`GLM_INPUT_REPLAY=/path/to/inputs` verifies and reconstructs those exact
+microbatches instead of retokenizing or trusting equal RNG seeds. Standalone
+`GLM_INPUT_CAPTURE=/fresh/path` and replay are mutually exclusive and support
+single-rank validation only. Existing capture directories are never overwritten.
+
 After the upstream gathered-attention migration, `GLM_NPU_FLEX=1` explicitly
 applies Turbo's `NpuGlm5FlexTransform`; it is not a global model patch or an
 implicit fallback. Keep it unset for older TorchTitan revisions that already
