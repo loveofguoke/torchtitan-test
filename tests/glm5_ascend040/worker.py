@@ -8,6 +8,7 @@ from pathlib import Path
 
 import torch
 import torch.distributed as dist
+from torch.distributed.tensor import DTensor
 
 from tests.glm5_2_common.topology import ParallelTopology, standard_topologies
 
@@ -290,9 +291,17 @@ def main():
             )
             frozen_names = [name for name in state if ".indexer." in name]
             assert frozen_names
-            assert all(
-                torch.equal(state[name], final_state[name]) for name in frozen_names
-            )
+            changed = []
+            for name in frozen_names:
+                before, after = state[name], final_state[name]
+                if isinstance(before, DTensor):
+                    before = before.full_tensor()
+                if isinstance(after, DTensor):
+                    after = after.full_tensor()
+                if not torch.equal(before.detach().cpu(), after.detach().cpu()):
+                    changed.append(name)
+            evidence["frozen_indexer_changed_parameters"] = changed
+            assert not changed, changed
             evidence["frozen_indexer_parameters_unchanged"] = len(frozen_names)
         evidence["status"] = "passed"
     except BaseException as exc:
