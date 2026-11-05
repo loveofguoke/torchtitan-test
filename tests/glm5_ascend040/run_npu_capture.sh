@@ -6,6 +6,8 @@ conda activate titan040_baseline
 cd /workspace/yyb/torchtitan
 TEST_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 ROOT=$(mktemp -d /workspace/yyb/outputs/glm5-a5-capture-XXXXXXXX)
+export TORCHINDUCTOR_CACHE_DIR="$ROOT/inductor-cache"
+export TRITON_CACHE_DIR="$ROOT/triton-cache"
 exec > "$ROOT/capture.log" 2>&1
 trap 'printf "capture_exit_code=%s\n" "$?"' EXIT
 date -u

@@ -6,6 +6,8 @@ conda activate titan040_baseline
 cd /workspace/yyb/torchtitan
 mkdir -p /workspace/yyb/outputs
 ROOT=$(mktemp -d /workspace/yyb/outputs/glm5-turbo-a5-ab-XXXXXXXX)
+export TORCHINDUCTOR_CACHE_DIR="$ROOT/inductor-cache"
+export TRITON_CACHE_DIR="$ROOT/triton-cache"
 printf '%s\n' "$ROOT" > /workspace/yyb/outputs/glm5-turbo-a5-ab-latest.path
 exec > "$ROOT/suite.log" 2>&1
 active_pid=
