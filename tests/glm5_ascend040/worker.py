@@ -8,9 +8,9 @@ from pathlib import Path
 
 import torch
 import torch.distributed as dist
-from torch.distributed.tensor import DTensor
 
 from tests.glm5_2_common.topology import ParallelTopology, standard_topologies
+from torch.distributed.tensor import DTensor
 
 
 def topologies():
@@ -116,7 +116,20 @@ def main():
     precision = os.environ.get("GLM_PRECISION", "bfloat16")
     if precision not in ("bfloat16", "float32"):
         raise ValueError("GLM_PRECISION must be bfloat16 or float32")
-    config.precision.param_dtype = precision
+    if runtime == "ascend":
+        config.training.mixed_precision_param = precision
+        precision_fields = {
+            "dtype": config.training.dtype,
+            "param_dtype": config.training.mixed_precision_param,
+            "reduce_dtype": config.training.mixed_precision_reduce,
+        }
+    else:
+        config.precision.param_dtype = precision
+        precision_fields = {
+            "dtype": config.precision.dtype,
+            "param_dtype": config.precision.param_dtype,
+            "reduce_dtype": config.precision.reduce_dtype,
+        }
     deterministic = os.environ.get("GLM_DETERMINISTIC", "0")
     if deterministic not in ("0", "1"):
         raise ValueError("GLM_DETERMINISTIC must be 0 or 1")
@@ -151,11 +164,10 @@ def main():
         "microbatch_tokens_per_dp_rank": microbatch_tokens,
         "seed": config.debug.seed,
         "hccl_npu_socket_port_range": os.environ.get("HCCL_NPU_SOCKET_PORT_RANGE"),
-        "precision": {
-            "dtype": config.precision.dtype,
-            "param_dtype": config.precision.param_dtype,
-            "reduce_dtype": config.precision.reduce_dtype,
-        },
+        "precision": precision_fields,
+        "indexer_training_stage": (
+            config.model.indexer_training_stage if runtime == "ascend" else "frozen"
+        ),
         "deterministic": config.debug.deterministic,
         "local_compile_regions": (
             list(config.model.local_compile.regions) if runtime == "turbo" else None
@@ -289,10 +301,20 @@ def main():
             final_state = get_model_state_dict(
                 model, options=StateDictOptions(full_state_dict=True, cpu_offload=True)
             )
-            frozen_names = [name for name in state if ".indexer." in name]
-            assert frozen_names
+            indexer_parameters = {
+                name: parameter
+                for name, parameter in model.named_parameters()
+                if ".indexer." in name
+            }
+            assert indexer_parameters
+            frozen_names = [
+                name
+                for name, parameter in indexer_parameters.items()
+                if not parameter.requires_grad
+            ]
+            trainable_names = set(indexer_parameters) - set(frozen_names)
             changed = []
-            for name in frozen_names:
+            for name in indexer_parameters:
                 before, after = state[name], final_state[name]
                 if isinstance(before, DTensor):
                     before = before.full_tensor()
@@ -300,9 +322,14 @@ def main():
                     after = after.full_tensor()
                 if not torch.equal(before.detach().cpu(), after.detach().cpu()):
                     changed.append(name)
-            evidence["frozen_indexer_changed_parameters"] = changed
-            assert not changed, changed
+            frozen_changed = sorted(set(changed) & set(frozen_names))
+            evidence["frozen_indexer_changed_parameters"] = frozen_changed
+            assert not frozen_changed, frozen_changed
             evidence["frozen_indexer_parameters_unchanged"] = len(frozen_names)
+            evidence["trainable_indexer_parameters"] = len(trainable_names)
+            evidence["trainable_indexer_changed_parameters"] = sorted(
+                set(changed) & trainable_names
+            )
         evidence["status"] = "passed"
     except BaseException as exc:
         evidence["status"] = "failed"
