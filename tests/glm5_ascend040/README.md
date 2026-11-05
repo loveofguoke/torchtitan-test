@@ -39,3 +39,11 @@ requiring or taking other users' devices. `GLM_AB_COMMON_PATCHES` holds an
 explicit compiler compatibility group constant across all endpoints. If it is
 set, `none` means no legacy groups, not zero patches; inspect the recorded
 selection/applied list rather than the short directory label.
+
+`GLM_PRECISION=bfloat16|float32` selects the mixed-precision parameter/compute
+dtype, retaining the recipe's master-state and reduction dtype. Each rank
+records all three dtypes. `GLM_DETERMINISTIC=1` explicitly enables strict
+deterministic algorithms; no warn-only escape is used. Ordinary compatibility
+smoke defaults to `0` and must not be presented as deterministic numerical
+equivalence evidence. Same-fixture deltas without determinism are observations,
+not a pass criterion for a non-computation change.

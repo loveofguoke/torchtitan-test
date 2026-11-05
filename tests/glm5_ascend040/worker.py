@@ -97,6 +97,14 @@ def main():
     config.training.steps = 2
     config.training.num_tokens_per_microbatch_per_dp_rank = 256
     config.debug.seed = 42
+    precision = os.environ.get("GLM_PRECISION", "bfloat16")
+    if precision not in ("bfloat16", "float32"):
+        raise ValueError("GLM_PRECISION must be bfloat16 or float32")
+    config.precision.param_dtype = precision
+    deterministic = os.environ.get("GLM_DETERMINISTIC", "0")
+    if deterministic not in ("0", "1"):
+        raise ValueError("GLM_DETERMINISTIC must be 0 or 1")
+    config.debug.deterministic = deterministic == "1"
     rank = int(os.environ["RANK"])
     evidence = {
         "rank": rank,
@@ -105,6 +113,12 @@ def main():
         "remat": policy,
         "mtp": use_mtp,
         "runtime": runtime,
+        "precision": {
+            "dtype": config.precision.dtype,
+            "param_dtype": config.precision.param_dtype,
+            "reduce_dtype": config.precision.reduce_dtype,
+        },
+        "deterministic": config.debug.deterministic,
         "turbo_patches": turbo_status,
         "metrics": [],
         "status": "running",
