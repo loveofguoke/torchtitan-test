@@ -97,6 +97,10 @@ The capture script also saves the actual CPU microbatches under each run's
 microbatches instead of retokenizing or trusting equal RNG seeds. Standalone
 `GLM_INPUT_CAPTURE=/fresh/path` and replay are mutually exclusive and support
 single-rank validation only. Existing capture directories are never overwritten.
+Fixture-backed runs also compare every frozen indexer parameter before/after
+training. MTP cases retain auxiliary scalar metrics and require at least one
+finite nonzero auxiliary projection-gradient shard across the real process
+group; setting the MTP flag alone is not a passing activity check.
 
 After the upstream gathered-attention migration, `GLM_NPU_FLEX=1` explicitly
 applies Turbo's `NpuGlm5FlexTransform`; it is not a global model patch or an

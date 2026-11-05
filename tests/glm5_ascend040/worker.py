@@ -278,9 +278,12 @@ def main():
                 device=trainer.engine.device,
             )
             dist.all_reduce(counts)
-            assert counts[0].item() > 0 and counts[1].item() == 0
             evidence["mtp_projection_local_grad_norms"] = norms
             evidence["mtp_nonzero_projection_gradient_shards"] = int(counts[0].item())
+            assert counts[0].item() > 0 and counts[1].item() == 0, (
+                f"Invalid MTP projection gradients: nonzero={counts[0].item()}, "
+                f"nonfinite={counts[1].item()}"
+            )
         if fixture_name:
             final_state = get_model_state_dict(
                 model, options=StateDictOptions(full_state_dict=True, cpu_offload=True)
