@@ -237,6 +237,12 @@ def main():
                     "grad_norm": values[2],
                 }
             )
+            evidence["metrics"][-1]["extra_metrics"] = {
+                name: float(value)
+                for name, value in (kwargs.get("extra_metrics") or {}).items()
+                if isinstance(value, (int, float))
+                or (isinstance(value, torch.Tensor) and value.numel() == 1)
+            }
             with (root / f"rank-{rank}-metrics.jsonl").open(
                 "a", encoding="utf-8"
             ) as stream:
@@ -251,6 +257,30 @@ def main():
         evidence["completed_steps"] = trainer.engine.num_completed_steps
         assert evidence["completed_steps"] == steps
         assert [row["step"] for row in evidence["metrics"]] == list(range(1, steps + 1))
+        if use_mtp:
+            norms = {}
+            for part in trainer.engine.model_parts:
+                for name, parameter in part.named_parameters():
+                    if (
+                        "mtp_layers" in name
+                        and "eh_proj" in name
+                        and parameter.grad is not None
+                    ):
+                        gradient = parameter.grad
+                        if hasattr(gradient, "to_local"):
+                            gradient = gradient.to_local()
+                        norms[name] = float(gradient.float().norm())
+            counts = torch.tensor(
+                [
+                    sum(value > 0 for value in norms.values()),
+                    sum(not math.isfinite(value) for value in norms.values()),
+                ],
+                device=trainer.engine.device,
+            )
+            dist.all_reduce(counts)
+            assert counts[0].item() > 0 and counts[1].item() == 0
+            evidence["mtp_projection_local_grad_norms"] = norms
+            evidence["mtp_nonzero_projection_gradient_shards"] = int(counts[0].item())
         if fixture_name:
             final_state = get_model_state_dict(
                 model, options=StateDictOptions(full_state_dict=True, cpu_offload=True)
