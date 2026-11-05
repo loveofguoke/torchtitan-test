@@ -65,3 +65,9 @@ default. It preserves the complete process table before each endpoint and does
 not terminate existing processes. Such runs provide functional smoke evidence,
 not isolated throughput/latency comparisons. Omit it for the default idle-only
 policy. Use `GLM_AB_DEVICES=0,1,2,3,4,5,6,7` for the eight-card matrix.
+
+`GLM_AB_MATRIX_CASES='fsdp8:8 cp4:4'` selects explicit diagnostic/resume cases;
+`GLM_AB_MATRIX_EXTRAS=0` omits the default Full/MTP/FP32 tail for that probe.
+Use the manifest's actual applied groups: if `remat` is held in common after a
+multi-rank null-storage crash, the endpoint is not legacy-patch-free even if its
+short directory label begins with `none`.

@@ -133,11 +133,17 @@ smoke() {
 if [ "$PHASE" = matrix ]; then
     # Native initialization, not A/B fixture equivalence. PP owns split model parts.
     unset GLM_AB_FIXTURE
-    for case in ddp2:2 ddp8:8 fsdp8:8 ep8:8 tp8:8 cp4:4 cp8:8 hsdp2x4:8 hsdp4x2:8 fsdp2-tp4:8 fsdp2-cp4:8 tp2-cp4:8 fsdp4-tp2:8 fsdp2-tp4-ep8:8 fsdp2-tp2-cp2-ep2:8 pp8:8 fsdp2-pp4:8 fsdp2-tp2-pp2:8; do
+    matrix_cases=${GLM_AB_MATRIX_CASES:-ddp2:2 ddp8:8 fsdp8:8 ep8:8 tp8:8 cp4:4 cp8:8 hsdp2x4:8 hsdp4x2:8 fsdp2-tp4:8 fsdp2-cp4:8 tp2-cp4:8 fsdp4-tp2:8 fsdp2-tp4-ep8:8 fsdp2-tp2-cp2-ep2:8 pp8:8 fsdp2-pp4:8 fsdp2-tp2-pp2:8}
+    printf 'matrix_cases=%s extras=%s\n' "$matrix_cases" "${GLM_AB_MATRIX_EXTRAS:-1}"
+    for case in $matrix_cases; do
+        if [[ ! "$case" =~ ^[a-z0-9-]+:[1-8]$ ]]; then
+            printf 'Invalid matrix case: %s\n' "$case"; exit 2
+        fi
         topology=${case%:*}
         count=${case#*:}
         smoke "none-$topology" none "$count" "$topology" selective || true
     done
+    if [ "${GLM_AB_MATRIX_EXTRAS:-1}" = 0 ]; then exit 0; fi
     smoke none-combined-full none 8 fsdp2-tp2-cp2-ep2 full || true
     smoke none-combined-mtp none 8 fsdp2-tp2-cp2-ep2 selective 1 || true
     export GLM_PRECISION=float32
