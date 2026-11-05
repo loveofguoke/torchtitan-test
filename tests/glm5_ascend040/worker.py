@@ -51,7 +51,7 @@ def main():
     if runtime == "turbo":
         import torchtitanturbo
         from torchtitan_recipes.tests.models.glm5 import (
-            glm5_3_debugmodel_mtp as mtp_factory,
+            glm5_2_debugmodel_mtp as mtp_factory,
             glm5_debugmodel as base_factory,
         )
         from torchtitanturbo.patch import get_patch_status
