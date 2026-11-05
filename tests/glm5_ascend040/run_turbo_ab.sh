@@ -10,6 +10,7 @@ printf '%s\n' "$ROOT" > /workspace/yyb/outputs/glm5-turbo-a5-ab-latest.path
 exec > "$ROOT/suite.log" 2>&1
 trap 'printf "suite_exit_code=%s\n" "$?"' EXIT
 export PYTHONPATH=/workspace/yyb/torchtitan-test:/workspace/yyb/TorchTitanTurbo:/workspace/yyb/torchtitan
+export PYTHONPATH="/workspace/yyb/torchtitan-test/tests/glm5_ascend040:$PYTHONPATH"
 export OMP_NUM_THREADS=4
 export TORCHTITAN_CONFIG_FIRST_CLI=1
 export GLM_RUNTIME=turbo
@@ -41,7 +42,7 @@ for mode in none all; do
     export ASCEND_RT_VISIBLE_DEVICES=0,1
     export TORCHTITAN_TURBO_PATCHES="$mode"
     mkdir -p "$ROOT/native-$mode"
-    if timeout --kill-after=20s 300s python -m torch.distributed.run --standalone --nproc-per-node=2 --log-dir="$ROOT/native-$mode/torchrun" --redirects=3 --tee=3 -m pytest -p tests.glm5_ascend040.turbo_plugin --noconftest /workspace/yyb/torchtitan-ascend/tests/integration_tests/test_glm5_native_ops.py -q --tb=short > "$ROOT/native-$mode/runtime.log" 2>&1; then
+    if timeout --kill-after=20s 300s python -m torch.distributed.run --standalone --nproc-per-node=2 --log-dir="$ROOT/native-$mode/torchrun" --redirects=3 --tee=3 -m pytest -p turbo_plugin --noconftest /workspace/yyb/torchtitan-ascend/tests/integration_tests/test_glm5_native_ops.py -q --tb=short > "$ROOT/native-$mode/runtime.log" 2>&1; then
         printf 'PASSED native-%s\n' "$mode"
     else
         printf 'FAILED native-%s rc=%s\n' "$mode" "$?"

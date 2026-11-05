@@ -21,7 +21,7 @@ snapshot, for this route. `TORCHTITAN_TURBO_PATCHES` selects fresh-process
 patch A/B; each rank records Turbo's actual selected/applied groups. This is a
 separate experiment from the Ascend fused implementation above.
 
-For native initializer and TP loss checks, `-p
-tests.glm5_ascend040.turbo_plugin --noconftest` imports Turbo before collecting
+For native initializer and TP loss checks, add this directory to `PYTHONPATH`
+and use `-p turbo_plugin --noconftest` to import Turbo before collecting
 the existing native-op tests. It does not silently import the Ascend bootstrap.
 Compare `all`, `none`, and one-group removals in independent subprocesses.
