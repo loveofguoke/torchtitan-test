@@ -251,6 +251,16 @@ def main():
         evidence["completed_steps"] = trainer.engine.num_completed_steps
         assert evidence["completed_steps"] == steps
         assert [row["step"] for row in evidence["metrics"]] == list(range(1, steps + 1))
+        if fixture_name:
+            final_state = get_model_state_dict(
+                model, options=StateDictOptions(full_state_dict=True, cpu_offload=True)
+            )
+            frozen_names = [name for name in state if ".indexer." in name]
+            assert frozen_names
+            assert all(
+                torch.equal(state[name], final_state[name]) for name in frozen_names
+            )
+            evidence["frozen_indexer_parameters_unchanged"] = len(frozen_names)
         evidence["status"] = "passed"
     except BaseException as exc:
         evidence["status"] = "failed"
