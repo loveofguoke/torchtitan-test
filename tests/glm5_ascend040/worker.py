@@ -43,13 +43,28 @@ def topologies():
 def main():
     from torchtitan.config.parallelism import ParallelismConfig
     from torchtitan.distributed.activation_remat import FullActivationRematConfig
-    from torchtitan_ascend import setup
-    from torchtitan_ascend.recipes.glm5 import (
-        glm5_2_debugmodel_npu,
-        glm5_3_debugmodel_mtp_npu,
-    )
 
-    setup()
+    runtime = os.environ.get("GLM_RUNTIME", "ascend")
+    turbo_status = None
+    if runtime == "turbo":
+        import torchtitanturbo
+        from torchtitan_recipes.tests.models.glm5 import (
+            glm5_3_debugmodel_mtp as mtp_factory,
+            glm5_debugmodel as base_factory,
+        )
+        from torchtitanturbo.patch import get_patch_status
+
+        turbo_status = get_patch_status()
+    elif runtime == "ascend":
+        from torchtitan_ascend import setup
+        from torchtitan_ascend.recipes.glm5 import (
+            glm5_2_debugmodel_npu as base_factory,
+            glm5_3_debugmodel_mtp_npu as mtp_factory,
+        )
+
+        setup()
+    else:
+        raise ValueError(f"Unknown GLM runtime: {runtime}")
     torch.npu.set_device(int(os.environ["LOCAL_RANK"]))
     topology = topologies()[os.environ["GLM_TOPOLOGY"]]
     policy = os.environ.get("GLM_REMAT", "selective")
@@ -68,7 +83,7 @@ def main():
     if topology.pp > 1:
         parallelism.pipeline_parallel_schedule = "1F1B"
         parallelism.num_pp_microbatches = topology.pp
-    factory = glm5_3_debugmodel_mtp_npu if use_mtp else glm5_2_debugmodel_npu
+    factory = mtp_factory if use_mtp else base_factory
     config = factory(seq_len=32, parallelism=parallelism)
     if policy == "full":
         config.activation_remat = FullActivationRematConfig()
@@ -88,6 +103,8 @@ def main():
         "topology": vars(topology),
         "remat": policy,
         "mtp": use_mtp,
+        "runtime": runtime,
+        "turbo_patches": turbo_status,
         "metrics": [],
         "status": "running",
     }

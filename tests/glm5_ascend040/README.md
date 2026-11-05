@@ -14,3 +14,14 @@ all expected rank files report two completed steps and finite metrics.
 The worker does not disable remat, install dependencies, select graph backends,
 or modify the production recipe. PP+MTP is rejected. Runs are short functional
 checks, not cross-device accuracy, deterministic equivalence or performance tests.
+
+`GLM_RUNTIME=turbo` instead imports Turbo before constructing the current
+TorchTitan GLM recipe. Use the current TorchTitan checkout, not the 0.4.0
+snapshot, for this route. `TORCHTITAN_TURBO_PATCHES` selects fresh-process
+patch A/B; each rank records Turbo's actual selected/applied groups. This is a
+separate experiment from the Ascend fused implementation above.
+
+For native initializer and TP loss checks, `-p
+tests.glm5_ascend040.turbo_plugin --noconftest` imports Turbo before collecting
+the existing native-op tests. It does not silently import the Ascend bootstrap.
+Compare `all`, `none`, and one-group removals in independent subprocesses.
