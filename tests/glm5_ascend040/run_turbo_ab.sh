@@ -32,6 +32,9 @@ export PYTHONPATH="/workspace/yyb/torchtitan-test/tests/glm5_ascend040:$PYTHONPA
 export OMP_NUM_THREADS=4
 export TORCHTITAN_CONFIG_FIRST_CLI=1
 export GLM_RUNTIME=turbo
+IFS=, read -r -a physical_devices <<< "${GLM_AB_DEVICES:-0,1,2,3,4,5,6,7}"
+COMMON_PATCHES=${GLM_AB_COMMON_PATCHES:-}
+printf 'physical_devices=%s common_patches=%s\n' "${physical_devices[*]}" "$COMMON_PATCHES"
 PHASE=${GLM_AB_PHASE:-all}
 case "$PHASE" in all|components|smoke) ;; *) printf 'Unknown phase: %s\n' "$PHASE"; exit 2 ;; esac
 printf 'phase=%s\n' "$PHASE"
@@ -42,27 +45,51 @@ for repository in torchtitan TorchTitanTurbo torchtitan-test torchtitan-ascend; 
 done
 
 check_idle() {
-    npu-smi info > "$ROOT/npu-before-$1.log"
-    if [ "$(grep -c 'No running processes found in NPU' "$ROOT/npu-before-$1.log")" -ne 8 ]; then
-        printf 'STOP: devices are not all idle\n'
+    local count=${2:-1}
+    if [ "$count" -gt "${#physical_devices[@]}" ]; then
+        printf 'STOP: insufficient explicitly selected devices\n'
         exit 2
     fi
+    ASCEND_RT_VISIBLE_DEVICES=$(IFS=,; echo "${physical_devices[*]:0:$count}")
+    export ASCEND_RT_VISIBLE_DEVICES
+    npu-smi info > "$ROOT/npu-before-$1.log"
+    python - "$ROOT/npu-before-$1.log" "$ASCEND_RT_VISIBLE_DEVICES" <<'PY'
+import re, sys
+from pathlib import Path
+table = Path(sys.argv[1]).read_text()
+devices = sys.argv[2].split(',')
+assert len(devices) == len(set(devices)) and all(x.isdigit() for x in devices)
+for device in devices:
+    assert re.search(r'No running processes found in NPU ' + re.escape(device) + r'\b', table), f'NPU {device} is not confirmed idle'
+PY
+}
+
+select_patches() {
+    local requested=$1
+    if [ -z "$COMMON_PATCHES" ]; then
+        TORCHTITAN_TURBO_PATCHES=$requested
+    else
+        case "$requested" in
+            all) requested=remat,rope,glm_init,glm_loss ;;
+            none) requested= ;;
+        esac
+        TORCHTITAN_TURBO_PATCHES="$COMMON_PATCHES${requested:+,$requested}"
+    fi
+    export TORCHTITAN_TURBO_PATCHES
 }
 
 if [ "$PHASE" != smoke ]; then
 check_idle unit
-export ASCEND_RT_VISIBLE_DEVICES=0
 export TORCHTITAN_TURBO_PATCHES=none
-if python -m pytest --noconftest /workspace/yyb/TorchTitanTurbo/tests/unit_tests/test_glm5_patch.py /workspace/yyb/TorchTitanTurbo/tests/unit_tests/test_npu_rope.py /workspace/yyb/TorchTitanTurbo/tests/unit_tests/test_remat.py -q --tb=short > "$ROOT/unit.log" 2>&1; then
+if python -m pytest --noconftest /workspace/yyb/TorchTitanTurbo/tests/unit_tests/test_glm5_patch.py /workspace/yyb/TorchTitanTurbo/tests/unit_tests/test_npu_rope.py /workspace/yyb/TorchTitanTurbo/tests/unit_tests/test_remat.py /workspace/yyb/TorchTitanTurbo/tests/unit_tests/test_inductor_scheduler.py -q --tb=short > "$ROOT/unit.log" 2>&1; then
     printf 'PASSED unit\n'
 else
     printf 'FAILED unit; see unit.log\n'
 fi
 
 for mode in none all; do
-    check_idle "native-$mode"
-    export ASCEND_RT_VISIBLE_DEVICES=0,1
-    export TORCHTITAN_TURBO_PATCHES="$mode"
+    check_idle "native-$mode" 2
+    select_patches "$mode"
     mkdir -p "$ROOT/native-$mode"
     if bounded python -m torch.distributed.run --standalone --nproc-per-node=2 --log-dir="$ROOT/native-$mode/torchrun" --redirects=3 --tee=3 -m pytest -p turbo_plugin --noconftest /workspace/yyb/torchtitan-ascend/tests/integration_tests/test_glm5_native_ops.py -q --tb=short > "$ROOT/native-$mode/runtime.log" 2>&1; then
         printf 'PASSED native-%s\n' "$mode"
@@ -77,13 +104,12 @@ export GLM_AB_FIXTURE="$ROOT/shared-model-fixture.pt"
 
 smoke() {
     local label=$1 patches=$2 count=$3 topology=$4 remat=$5
-    check_idle "$label"
-    export ASCEND_RT_VISIBLE_DEVICES=$(seq -s, 0 "$((count - 1))")
-    export TORCHTITAN_TURBO_PATCHES="$patches"
+    check_idle "$label" "$count"
+    select_patches "$patches"
     export GLM_TOPOLOGY="$topology" GLM_REMAT="$remat" GLM_MTP=0
     export GLM_OUTPUT="$ROOT/$label"
     mkdir -p "$GLM_OUTPUT"
-    printf 'START %s patches=%s\n' "$label" "$patches"
+    printf 'START %s patches=%s devices=%s\n' "$label" "$TORCHTITAN_TURBO_PATCHES" "$ASCEND_RT_VISIBLE_DEVICES"
     if bounded python -m torch.distributed.run --standalone --nproc-per-node="$count" --log-dir="$GLM_OUTPUT/torchrun" --redirects=3 --tee=3 /workspace/yyb/torchtitan-test/tests/glm5_ascend040/worker.py > "$GLM_OUTPUT/runtime.log" 2>&1; then
         printf 'PASSED %s\n' "$label"
         return 0

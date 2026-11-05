@@ -32,3 +32,10 @@ state-dict API and record its SHA256. The comparison reports exact metric
 equality and deltas without inventing a tolerance or comparing different
 topologies as numerical equivalents. Component-only evidence is not promoted
 to an end-to-end patch-removal verdict.
+
+`GLM_AB_DEVICES` restricts execution to an explicit physical-device list. Each
+endpoint checks those devices against the full npu-smi process table, without
+requiring or taking other users' devices. `GLM_AB_COMMON_PATCHES` holds an
+explicit compiler compatibility group constant across all endpoints. If it is
+set, `none` means no legacy groups, not zero patches; inspect the recorded
+selection/applied list rather than the short directory label.
