@@ -164,6 +164,7 @@ def main():
         "microbatch_tokens_per_dp_rank": microbatch_tokens,
         "seed": config.debug.seed,
         "hccl_npu_socket_port_range": os.environ.get("HCCL_NPU_SOCKET_PORT_RANGE"),
+        "hccl_connect_timeout": os.environ.get("HCCL_CONNECT_TIMEOUT"),
         "precision": precision_fields,
         "indexer_training_stage": (
             config.model.indexer_training_stage if runtime == "ascend" else "frozen"

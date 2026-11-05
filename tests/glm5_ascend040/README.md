@@ -82,6 +82,12 @@ an always-compiled helper. These are local-compile tests, not a claim that
 GraphTrainer whole-step compilation was exercised. Strict deterministic probes
 use `GLM_DETERMINISTIC=1`, never warn-only mode.
 
+Cold PP metadata inference compiles stages sequentially. If later stages time
+out while the preceding stage is still compiling, set `HCCL_CONNECT_TIMEOUT=900`
+on that test command and retain the bounded launcher and all rank logs. This
+changes only connection startup waiting, not recomputation or model execution.
+The worker records the explicit value; an unset value remains unset.
+
 The worker also accepts `GLM_STEPS` (default 2), `GLM_SEQ_LEN` (default 32),
 `GLM_MICROBATCH_TOKENS` (default 256), and `GLM_SEED` (default 42). For a
 500-step NPU capture, use a fresh output directory, retain recomputation, set
