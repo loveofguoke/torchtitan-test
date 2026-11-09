@@ -3679,7 +3679,7 @@ class EndpointTrace:
                         )
 
                     handles.append(layer.mlp.gate.register_forward_hook(capture_hf_router))
-                elif isinstance(layer.feed_forward, MoE):
+                elif endpoint.implementation == "titan" and isinstance(layer.feed_forward, MoE):
                     def capture_moe_input(
                         _module, inputs, *, label=label, layer_index=layer_index
                     ) -> None:
