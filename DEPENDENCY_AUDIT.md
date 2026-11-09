@@ -31,6 +31,16 @@ Paired parity runtime evidence lives at `parity_runs/<scenario-id>/`; offline
 stages live at `parity_runs/<scenario-id>/<stage>/`. Reports remain under
 `parity_reports/`. Release discovery must include both roots.
 
+Parity protocol v4 targets the current GLM public config factory, fused native
+W13/W2 state and gradient layout, `feed_forward` modules, and `DsaMetadata`.
+Model dimensions remain factory-derived. Gate/up gradients must be converted
+together through the native adapter, not one HF key at a time. Independent
+component checks require local indexers; sharing flavors use end-to-end context
+for consumer layers. Audit both paired/offline paths and run
+`test_parity_native_interface`, `test_parity_cli_config`, parity artifact and
+workflow regressions after changing these boundaries. CPU plumbing regressions
+do not establish GPU/NPU numerical acceptance or optimizer convergence.
+
 HSDP presets `hsdp2x4` and `hsdp4x2` are defined only in the common topology
 registry (replicate groups x shards per group). All registry-based eight-card
 suites include them. Keep existing member identities unchanged when extending

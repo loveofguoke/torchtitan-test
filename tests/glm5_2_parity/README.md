@@ -104,7 +104,7 @@ python tests/glm5_2_parity/titan_hf_gpu_fp32_random_paired.py --run
 
 # Select a registered model configuration, without copying its dimensions.
 python tests/glm5_2_parity/titan_hf_gpu_fp32_random_paired.py --run \
-  --model-config dsa_debugmodel
+  --model-config glm5_2_debugmodel --components e2e
 
 # Longer sparse test: sequence length exceeds index top-k (8).
 python tests/glm5_2_parity/titan_hf_gpu_fp32_random_paired.py --run \
