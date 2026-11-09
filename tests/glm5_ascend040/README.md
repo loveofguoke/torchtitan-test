@@ -1,5 +1,49 @@
 # Ascend GLM on TorchTitan 0.4.0
 
+## Current TorchTitan CUDA/NPU 500-step replay
+
+`gpu_replay.py` reuses a completed **Turbo/current-TorchTitan** single-card NPU
+capture. It rejects the separate native Ascend 0.4 model captures. Transfer the
+following files, without reserializing or regenerating tensors, into one
+approved GPU-side reference directory:
+
+```text
+npu-reference/
+  initial-model.pt
+  steps-500/rank-0.json
+  steps-500/rank-0-config.txt
+  steps-500/inputs/manifest.jsonl
+  steps-500/inputs/microbatch-*.pt
+```
+
+Checkpoint and every input hash are verified before launch. The existing
+worker's explicit `GLM_RUNTIME=cuda` branch imports no Turbo or TorchNPU and
+requires replay plus an existing fixture. Both a two-step gate and the 500-step
+run start from that checkpoint. FP32 master/reduction, BF16 parameters,
+determinism, and selective/full rematerialization are retained. The worker
+checks optimizer/scheduler/loss/precision/remat and numerical config knobs
+against the saved resolved NPU config before the 500-step trainer is built.
+Source/API drift fails rather than silently changing the experiment.
+
+From the test checkout, with the existing GPU environment activated:
+
+```bash
+python tests/glm5_ascend040/gpu_replay.py \
+  --reference /approved/path/npu-reference \
+  --titan /workspace/yyb/torchtitan --device 0 \
+  --output "outputs/glm5-bf16-500-$(date +%Y%m%d-%H%M%S)"
+```
+
+The output must be fresh; existing directories are refused, never deleted.
+`comparison.log` always retains preflight, failure details and exit status.
+Each stage retains `runtime.log`, per-step JSONL, resolved config and rank JSON.
+`comparison.json` and `summary.log` contain signed/absolute/relative loss and
+grad-norm errors, first/last values and worst step. GPU consumption must cover
+exactly all recorded microbatches. A single pair is an observation, not the
+two-repeat formal migration acceptance defined in `glm5_2_precision`.
+The existing NPU-side files must reach the GPU through an approved transfer;
+text-only metric export cannot substitute for checkpoint/input replay.
+
 `worker.py` calls the Ascend GLM recipe and unmodified Trainer under torchrun.
 It reuses the canonical topology registry; the additional two/four-card cases
 are minimal diagnostic compositions, not changes to existing experiment presets.

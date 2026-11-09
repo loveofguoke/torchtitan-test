@@ -19,6 +19,13 @@ artifact checksums. Git cleanliness is diagnostic, not a pass/fail condition.
 
 ## Shared-module impact map
 
+`glm5_ascend040/gpu_replay.py` shares the existing worker and recorded-batch
+contract with NPU smoke/capture. CUDA is replay-only; native Ascend 0.4 captures
+must not be paired with current TorchTitan. Run `test_gpu_replay` and
+`test_recorded_batches` after transport, worker or comparison changes. Fresh
+outputs refuse overwrite; evidence includes actual consumed microbatch count,
+fixture/input hashes, 500 ordered finite metrics and resolved config checks.
+
 Parity CLI configuration is shared by paired/offline entry points in
 `glm5_2_parity/workflow.py`. `model_config.py` reads the selected TorchTitan GLM
 factory; `ParityModelConfig` contains optional overrides, not copied debug sizes.

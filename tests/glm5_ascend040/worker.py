@@ -48,15 +48,16 @@ def main():
 
     runtime = os.environ.get("GLM_RUNTIME", "ascend")
     turbo_status = None
-    if runtime == "turbo":
-        import torchtitanturbo
+    if runtime in ("turbo", "cuda"):
+        if runtime == "turbo":
+            import torchtitanturbo
         from torchtitan_recipes.tests.models.glm5 import (
             glm5_2_debugmodel_mtp as mtp_factory,
             glm5_debugmodel as base_factory,
         )
-        from torchtitanturbo.patch import get_patch_status
-
-        turbo_status = get_patch_status()
+        if runtime == "turbo":
+            from torchtitanturbo.patch import get_patch_status
+            turbo_status = get_patch_status()
     elif runtime == "ascend":
         from torchtitan_ascend import setup
         from torchtitan_ascend.recipes.glm5 import (
@@ -67,7 +68,14 @@ def main():
         setup()
     else:
         raise ValueError(f"Unknown GLM runtime: {runtime}")
-    torch.npu.set_device(int(os.environ["LOCAL_RANK"]))
+    device_module = torch.cuda if runtime == "cuda" else torch.npu
+    device_module.set_device(int(os.environ["LOCAL_RANK"]))
+    if runtime == "cuda":
+        if not os.environ.get("GLM_INPUT_REPLAY"):
+            raise ValueError("CUDA comparison requires recorded input replay")
+        fixture = Path(os.environ["GLM_AB_FIXTURE"])
+        if not fixture.is_file():
+            raise ValueError("CUDA comparison requires the existing NPU fixture")
     topology = topologies()[os.environ["GLM_TOPOLOGY"]]
     policy = os.environ.get("GLM_REMAT", "selective")
     use_mtp = os.environ.get("GLM_MTP", "0") == "1"
@@ -136,7 +144,7 @@ def main():
     config.debug.deterministic = deterministic == "1"
     compile_regions = os.environ.get("GLM_LOCAL_COMPILE_REGIONS")
     if compile_regions is not None:
-        if runtime != "turbo":
+        if runtime not in ("turbo", "cuda"):
             raise ValueError(
                 "Local compile probes require the current TorchTitan runtime"
             )
@@ -171,23 +179,31 @@ def main():
         ),
         "deterministic": config.debug.deterministic,
         "local_compile_regions": (
-            list(config.model.local_compile.regions) if runtime == "turbo" else None
+            list(config.model.local_compile.regions) if runtime in ("turbo", "cuda") else None
         ),
         "npu_codegen_loader": os.environ.get("TORCHINDUCTOR_NPU_BACKEND", "default"),
         "turbo_patches": turbo_status,
         "metrics": [],
         "status": "running",
     }
-    import torch_npu
-
     (root / f"rank-{rank}-config.txt").write_text(repr(config), encoding="utf-8")
-
-    npu_kernel = Path(torch_npu.__file__).parent / "_inductor/kernel/flex_attention.py"
-    evidence["torch_npu"] = {
-        "version": torch_npu.__version__,
-        "path": torch_npu.__file__,
-        "flex_kernel_sha256": hashlib.sha256(npu_kernel.read_bytes()).hexdigest(),
-    }
+    if runtime == "cuda":
+        from gpu_replay import validate_resolved_configs
+        # Gate steps differ deliberately; validate the 500-step config before
+        # constructing the trainer or loading any user checkpoint.
+        if steps == 500:
+            validate_resolved_configs(
+                os.environ["GLM_REFERENCE_CONFIG"], root / f"rank-{rank}-config.txt"
+            )
+    evidence["torch_version"] = torch.__version__
+    if runtime != "cuda":
+        import torch_npu
+        npu_kernel = Path(torch_npu.__file__).parent / "_inductor/kernel/flex_attention.py"
+        evidence["torch_npu"] = {
+            "version": torch_npu.__version__,
+            "path": torch_npu.__file__,
+            "flex_kernel_sha256": hashlib.sha256(npu_kernel.read_bytes()).hexdigest(),
+        }
     trainer = None
     try:
         trainer = config.build()
@@ -236,8 +252,13 @@ def main():
                     original_batches(data), input_capture
                 )
             else:
+                evidence["replayed_microbatches"] = 0
+                def counted_replay():
+                    for batch in replay_batches(input_replay):
+                        evidence["replayed_microbatches"] += 1
+                        yield batch
                 trainer.microbatch_generator = lambda data: original_batches(
-                    replay_batches(input_replay)
+                    counted_replay()
                 )
 
         def capture(step, global_avg_loss, global_max_loss, grad_norm, *args, **kwargs):
@@ -267,7 +288,7 @@ def main():
 
         trainer.metrics_processor.log = capture
         trainer.train()
-        torch.npu.synchronize()
+        device_module.synchronize()
         evidence["completed_steps"] = trainer.engine.num_completed_steps
         assert evidence["completed_steps"] == steps
         assert [row["step"] for row in evidence["metrics"]] == list(range(1, steps + 1))
