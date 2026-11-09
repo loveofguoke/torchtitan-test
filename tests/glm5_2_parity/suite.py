@@ -53,12 +53,11 @@ import torch.nn.functional as F
 from tests.glm5_2_common.cli import print_output_path
 
 from torchtitan.models.common.linear import Linear
-from torchtitan.models.common.moe import TokenChoiceTopKRouter
-from torchtitan.models.glm5 import (
-    build_glm5_layers,
-    Glm5StateDictAdapter,
-    glm5_configs,
-)
+from torchtitan.models.common.moe import MoE, TokenChoiceTopKRouter
+from torchtitan.models.glm5.flavors import build_glm5_layers
+from torchtitan.models.glm5.state_dict_adapter import Glm5StateDictAdapter
+from torchtitan.models.glm5.dsa import DsaMetadata
+from tests.glm5_2_parity.model_config import load_model_config
 from torchtitan.ops.scatter_add import deterministic_scatter_add
 from tests.glm5_2_parity.artifacts import (
     EndpointIdentity,
@@ -441,8 +440,9 @@ class ParityModelPair:
         return self.titan.layers[str(layer_index)]
 
     def convert(self, precision: PrecisionPolicy) -> None:
-        self.hf.to(device=self.device, dtype=precision.dtype)
-        self.titan.to(device=self.device, dtype=precision.dtype)
+        for model in (self.hf, self.titan):
+            _cast_floating_dtype_preserving_complex_buffers(model, precision.dtype)
+            model.to(device=self.device)
         for module in self.hf.modules():
             indexer = getattr(module, "indexer", None)
             if indexer is not None:
@@ -453,7 +453,13 @@ class ParityModelPair:
                 for name, parameter in model.named_parameters()
                 if name.endswith("indexer.weights_proj.weight")
             ]
-            expected = len(getattr(model, "model", model).layers)
+            expected = sum(
+                layer.self_attn.indexer is not None
+                if model is self.hf else layer.attention.indexer is not None
+                for layer in (
+                    model.model.layers if model is self.hf else model.layers.values()
+                )
+            )
             if len(indexer_weights) != expected:
                 raise AssertionError(
                     "unexpected number of GLM-5 indexer weights: "
@@ -681,9 +687,7 @@ class ParityModelSize:
 
 def _hf_config(model_size: ParityModelSize) -> Any:
     assert GlmMoeDsaConfig is not None
-    base = glm5_configs[os.environ.get("GLM5_PARITY_MODEL_CONFIG", "debugmodel")]()
-    if base.index_sources:
-        raise ValueError("HF parity does not map cross-layer index sharing; select an independent-indexer configuration.")
+    base = _titan_config(model_size)
     return GlmMoeDsaConfig(
         vocab_size=model_size.vocab_size,
         hidden_size=model_size.dim,
@@ -703,15 +707,17 @@ def _hf_config(model_size: ParityModelSize) -> Any:
         n_group=model_size.router_num_expert_groups,
         topk_group=model_size.router_num_limited_groups,
         num_experts_per_tok=model_size.router_top_k,
-        norm_topk_prob=next(layer.moe.router.route_norm for layer in base.layers if layer.moe is not None),
+        norm_topk_prob=next(layer.feed_forward.router.route_norm for layer in base.layers
+                           if isinstance(layer.feed_forward, MoE.Config)),
         max_position_embeddings=model_size.max_position_embeddings,
         rms_norm_eps=base.norm.eps,
-        attention_dropout=base.layers[0].attention.inner_attention.attention_dropout,
+        attention_dropout=0.0,
         index_topk=model_size.index_top_k,
         index_head_dim=model_size.index_head_dim,
         index_n_heads=model_size.index_num_heads,
         first_k_dense_replace=model_size.num_dense_layers,
-        indexer_types=["full"] * model_size.num_layers,
+        indexer_types=["full" if source == i else "shared"
+                       for i, source in enumerate(base.index_sources)],
         rope_parameters={
             "rope_type": "default" if base.layers[0].attention.rope.scaling == "none" else base.layers[0].attention.rope.scaling,
             "rope_theta": model_size.rope_theta,
@@ -724,7 +730,7 @@ def _hf_config(model_size: ParityModelSize) -> Any:
 def _titan_config(model_size: ParityModelSize) -> Any:
     from tests.glm5_2_parity.model_config import SIZE_ALIASES, model_dimensions
 
-    base = glm5_configs[os.environ.get("GLM5_PARITY_MODEL_CONFIG", "debugmodel")]()
+    base = load_model_config(os.environ.get("GLM5_PARITY_MODEL_CONFIG", "debugmodel"))
     dimensions = model_dimensions(base)
     if all(getattr(model_size, SIZE_ALIASES.get(name, name)) == value
            for name, value in dimensions.items()
@@ -734,15 +740,21 @@ def _titan_config(model_size: ParityModelSize) -> Any:
             layer.attention.rope = replace(layer.attention.rope,
                 max_context_length=model_size.rope_cache_max_seq_len,
                 theta=model_size.rope_theta)
-            layer.attention.indexer.rope = replace(layer.attention.indexer.rope,
-                max_context_length=model_size.rope_cache_max_seq_len,
-                theta=model_size.rope_theta)
+            if layer.attention.indexer is not None:
+                layer.attention.indexer.rope = replace(layer.attention.indexer.rope,
+                    max_context_length=model_size.rope_cache_max_seq_len,
+                    theta=model_size.rope_theta)
+        base.max_context_length = model_size.max_position_embeddings
         return base
     rope = replace(
         base.layers[0].attention.rope,
         dim=model_size.qk_rope_head_dim,
         max_context_length=model_size.rope_cache_max_seq_len,
         theta=model_size.rope_theta,
+    )
+    index_sources = (
+        base.index_sources[:model_size.num_layers]
+        + tuple(range(len(base.index_sources), model_size.num_layers))
     )
     return replace(
         base,
@@ -759,9 +771,12 @@ def _titan_config(model_size: ParityModelSize) -> Any:
             in_features=model_size.dim,
             out_features=model_size.vocab_size,
         ),
+        max_context_length=model_size.max_position_embeddings,
+        index_sources=index_sources,
         layers=build_glm5_layers(
-            n_layers=model_size.num_layers,
-            n_dense_layers=model_size.num_dense_layers,
+            num_layers=model_size.num_layers,
+            index_sources=index_sources,
+            num_dense_layers=model_size.num_dense_layers,
             dim=model_size.dim,
             n_heads=model_size.num_attention_heads,
             q_lora_rank=model_size.q_lora_rank,
@@ -780,7 +795,8 @@ def _titan_config(model_size: ParityModelSize) -> Any:
             index_n_heads=model_size.index_num_heads,
             index_head_dim=model_size.index_head_dim,
             index_topk=model_size.index_top_k,
-            attention_dropout=base.layers[0].attention.inner_attention.attention_dropout,
+            mla_norm_eps=base.layers[0].attention.q_norm.eps,
+            norm_eps=base.norm.eps,
             rope=rope,
         ),
     )
@@ -948,30 +964,39 @@ def _set_titan_routed_expert_compute_dtype(
 
     num_wrapped = 0
     for layer in titan_model.layers.values():
-        if not getattr(layer, "moe_enabled", False):
+        if not isinstance(layer.feed_forward, MoE):
             continue
-        experts = layer.moe.routed_experts.inner_experts
+        experts = layer.feed_forward.routed_experts
 
         def forward_with_fp32(
             self,
             x_RD: torch.Tensor,
-            num_tokens_per_expert_E: torch.Tensor,
+            topk_scores_TK: torch.Tensor,
+            topk_expert_ids_TK: torch.Tensor,
+            routing_map_TE: torch.Tensor,
+            *,
+            padding_mask_T: torch.Tensor | None = None,
             _compute_dtype=compute_dtype,
         ) -> torch.Tensor:
+            del padding_mask_T
             def local_tensor(value: torch.Tensor) -> torch.Tensor:
                 return value.to_local() if hasattr(value, "to_local") else value
 
-            w1 = local_tensor(self.w1_EFD)
-            w2 = local_tensor(self.w2_EDF)
-            w3 = local_tensor(self.w3_EFD)
+            dispatched, num_tokens_per_expert_E, metadata = (
+                self.token_dispatcher.dispatch(
+                    x_RD, topk_scores_TK, topk_expert_ids_TK, routing_map_TE
+                )
+            )
+            w13 = local_tensor(self.w13.weight)
+            w2 = local_tensor(self.w2.weight)
             token_counts = [
                 int(value)
                 for value in num_tokens_per_expert_E.detach().cpu().tolist()
             ]
-            if sum(token_counts) != x_RD.shape[0]:
+            if sum(token_counts) != dispatched.shape[0]:
                 raise ValueError(
                     "expert token counts do not match the dispatched input: "
-                    f"counts={sum(token_counts)}, rows={x_RD.shape[0]}"
+                    f"counts={sum(token_counts)}, rows={dispatched.shape[0]}"
                 )
 
             outputs: list[torch.Tensor] = []
@@ -979,12 +1004,12 @@ def _set_titan_routed_expert_compute_dtype(
             for expert_index, token_count in enumerate(token_counts):
                 end = start + token_count
                 if token_count:
-                    current = x_RD[start:end].to(_compute_dtype)
+                    current = dispatched[start:end].to(_compute_dtype)
                     hidden = F.silu(
-                        F.linear(current, w1[expert_index].to(_compute_dtype))
+                        F.linear(current, w13[expert_index, 0].to(_compute_dtype))
                     )
                     hidden = hidden * F.linear(
-                        current, w3[expert_index].to(_compute_dtype)
+                        current, w13[expert_index, 1].to(_compute_dtype)
                     )
                     outputs.append(
                         F.linear(
@@ -994,9 +1019,11 @@ def _set_titan_routed_expert_compute_dtype(
                     )
                 start = end
 
-            if not outputs:
-                return x_RD.new_empty((0, x_RD.shape[-1]))
-            return torch.cat(outputs, dim=0).to(x_RD.dtype)
+            output = (
+                torch.cat(outputs, dim=0).to(x_RD.dtype)
+                if outputs else x_RD.new_empty((0, x_RD.shape[-1]))
+            )
+            return self.token_dispatcher.combine(output, metadata, x_RD)
 
         experts.forward = MethodType(forward_with_fp32, experts)
         experts._parity_compute_dtype = compute_dtype
@@ -1020,9 +1047,9 @@ def _annotate_known_compute_dtypes(pair: ParityModelPair) -> None:
         hf_attention.indexer._parity_compute_dtype = "mixed(fp32_scores)"
         titan_attention.indexer._parity_compute_dtype = "mixed(fp32_scores)"
         titan_layer = pair.titan_layer(layer_index)
-        if getattr(titan_layer, "moe_enabled", False):
-            titan_layer.moe.router.gate._parity_compute_dtype = torch.float32
-            experts = titan_layer.moe.routed_experts.inner_experts
+        if isinstance(titan_layer.feed_forward, MoE):
+            titan_layer.feed_forward.router.gate._parity_compute_dtype = torch.float32
+            experts = titan_layer.feed_forward.routed_experts
             if not hasattr(experts, "_parity_compute_dtype"):
                 experts._parity_compute_dtype = torch.bfloat16
 
@@ -1043,9 +1070,9 @@ def _annotate_endpoint_compute_dtypes(
     for layer in model.layers.values():
         layer.attention._parity_compute_dtype = "mixed(fp32_softmax)"
         layer.attention.indexer._parity_compute_dtype = "mixed(fp32_scores)"
-        if getattr(layer, "moe_enabled", False):
-            layer.moe.router.gate._parity_compute_dtype = torch.float32
-            experts = layer.moe.routed_experts.inner_experts
+        if isinstance(layer.feed_forward, MoE):
+            layer.feed_forward.router.gate._parity_compute_dtype = torch.float32
+            experts = layer.feed_forward.routed_experts
             if not hasattr(experts, "_parity_compute_dtype"):
                 experts._parity_compute_dtype = torch.bfloat16
 
@@ -1213,7 +1240,17 @@ def _capture_titan_indexer_scores(
         raise ValueError(
             f"TorchTitan indexer expected four inputs, got {len(inputs)}"
         )
-    hidden_states, q_residual, positions, attention_mask = inputs
+    hidden_states, q_residual, positions, metadata = inputs
+    if metadata is None:
+        metadata = DsaMetadata.from_positions(positions)
+    allowed = (
+        (metadata.documents_T[:, None] == metadata.documents_T[None, :])
+        & (metadata.positions_T[:, None] >= metadata.positions_T[None, :])
+        & metadata.valid_T[:, None] & metadata.valid_T[None, :]
+    )
+    attention_mask = torch.zeros_like(allowed, dtype=torch.float32).masked_fill(
+        ~allowed, float("-inf")
+    )
     num_tokens = hidden_states.shape[0]
     q_projection = indexer.wq_b(q_residual).view(
         num_tokens, indexer.n_heads, indexer.head_dim
@@ -1265,22 +1302,10 @@ def _causal_mask(positions_BL: torch.Tensor, dtype: torch.dtype) -> torch.Tensor
 def _titan_token_first_inputs(
     values_BLD: torch.Tensor,
     positions_BL: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, DsaMetadata]:
     values_TD = values_BLD.flatten(0, 1)
     positions_T = positions_BL.flatten()
-    token_indices_T = torch.arange(positions_T.numel(), device=positions_T.device)
-    document_ids_T = (positions_T == 0).cumsum(0)
-    allowed_TT = (token_indices_T[:, None] >= token_indices_T[None, :]) & (
-        document_ids_T[:, None] == document_ids_T[None, :]
-    )
-    mask_1TT = torch.zeros(
-        1,
-        positions_T.numel(),
-        positions_T.numel(),
-        dtype=values_BLD.dtype,
-        device=values_BLD.device,
-    ).masked_fill(~allowed_TT.unsqueeze(0), torch.finfo(values_BLD.dtype).min)
-    return values_TD, positions_T, mask_1TT
+    return values_TD, positions_T, DsaMetadata.from_positions(positions_T)
 
 
 @dataclass
@@ -3492,7 +3517,7 @@ class LayerTrace:
             handles.append(titan_layer.attention.indexer.register_forward_hook(
                 lambda _m, _i, o, layer=layer_index: save(trace.indexer_titan, layer, o)
             ))
-            if getattr(titan_layer, "moe_enabled", False):
+            if isinstance(titan_layer.feed_forward, MoE):
                 def save_hf_router(
                     _module, inputs, output, *, layer=layer_index
                 ) -> None:
@@ -3501,7 +3526,7 @@ class LayerTrace:
                     trace.router_hf[layer] = value.detach().cpu()
 
                 handles.append(hf_layer.mlp.gate.register_forward_hook(save_hf_router))
-                handles.append(titan_layer.moe.router.register_forward_hook(
+                handles.append(titan_layer.feed_forward.router.register_forward_hook(
                     lambda _m, _i, o, layer=layer_index: save(trace.router_titan, layer, o, 1)
                 ))
         try:
@@ -3596,8 +3621,9 @@ class EndpointTrace:
                     if endpoint.implementation == "hf"
                     else layer.attention.indexer
                 )
-                handles.append(indexer.register_forward_hook(capture_indexer))
-                if endpoint.implementation == "titan":
+                if indexer is not None:
+                    handles.append(indexer.register_forward_hook(capture_indexer))
+                if endpoint.implementation == "titan" and indexer is not None:
                     def capture_indexer_scores(
                         module,
                         inputs,
@@ -3649,14 +3675,14 @@ class EndpointTrace:
                         )
 
                     handles.append(layer.mlp.gate.register_forward_hook(capture_hf_router))
-                elif getattr(layer, "moe_enabled", False):
+                elif isinstance(layer.feed_forward, MoE):
                     def capture_moe_input(
                         _module, inputs, *, label=label, layer_index=layer_index
                     ) -> None:
                         trace.moe_inputs[label][layer_index] = inputs[0].detach()
 
                     handles.append(
-                        layer.moe.register_forward_pre_hook(capture_moe_input)
+                        layer.feed_forward.register_forward_pre_hook(capture_moe_input)
                     )
 
                     def capture_titan_router(
@@ -3694,7 +3720,7 @@ class EndpointTrace:
                             .cpu()
                         )
 
-                    handles.append(layer.moe.router.register_forward_hook(capture_titan_router))
+                    handles.append(layer.feed_forward.router.register_forward_hook(capture_titan_router))
         try:
             yield trace
         finally:
@@ -3858,7 +3884,7 @@ def _run_causal_lm_endpoint(
     batch_size, sequence_length = batch.tokens.shape
     tokens = batch.tokens.reshape(-1)
     positions = batch.positions.reshape(-1)
-    attention_masks = model.get_attention_masks(positions)
+    attention_masks = DsaMetadata.from_positions(positions)
     logits = model(tokens, positions=positions, attention_masks=attention_masks).view(
         batch_size, sequence_length, -1
     )
@@ -4023,7 +4049,7 @@ class ComponentParityMixin:
         )
         if target == "mlp":
             is_moe = (
-                hasattr(layer, "moe")
+                isinstance(layer.feed_forward, MoE)
                 if endpoint.implementation == "titan"
                 else hasattr(layer.mlp, "gate")
             )
@@ -4112,9 +4138,9 @@ class ComponentParityMixin:
             "kv_norm": (hf_layer.self_attn.kv_a_layernorm, titan_layer.attention.kv_norm),
         }
         if component == "router":
-            if not hasattr(titan_layer, "moe"):
+            if not isinstance(titan_layer.feed_forward, MoE):
                 raise ValueError(f"layer {layer_index} does not contain an MoE router")
-            return hf_layer.mlp.gate, titan_layer.moe.router
+            return hf_layer.mlp.gate, titan_layer.feed_forward.router
         if component in {"dense_ffn", "feed_forward"}:
             if not hasattr(titan_layer, "feed_forward"):
                 raise ValueError(
@@ -4122,9 +4148,9 @@ class ComponentParityMixin:
                 )
             return hf_layer.mlp, titan_layer.feed_forward
         if component == "moe":
-            if not hasattr(titan_layer, "moe"):
+            if not isinstance(titan_layer.feed_forward, MoE):
                 raise ValueError(f"layer {layer_index} does not contain an MoE module")
-            return hf_layer.mlp, titan_layer.moe
+            return hf_layer.mlp, titan_layer.feed_forward
         if component in paths:
             return paths[component]
         return self.get_component(layer_index, component)
@@ -4351,7 +4377,7 @@ class ComponentParityMixin:
                 titan_hidden,
                 common_q_resid.flatten(0, 1),
                 titan_positions,
-                titan_mask[0],
+                titan_mask,
             )
             recorder.discrete(
                 scope="component", component="indexer", layer=layer_index,
@@ -4367,7 +4393,7 @@ class ComponentParityMixin:
         recorder = self._recorder()
         for layer_index in layer_indices:
             hf_layer = self.pair.hf_layer(layer_index)
-            titan_moe = self.pair.titan_layer(layer_index).moe
+            titan_moe = self.pair.titan_layer(layer_index).feed_forward
             normalized = self._normalized(layer_index)
             titan_normalized, _, _ = _titan_token_first_inputs(
                 normalized, self.batch.positions
@@ -4562,7 +4588,7 @@ class _ParityRouterPrecision:
         titan_model = _titan_config(model_size).build()
         titan_model.init_states()
         titan_model.bfloat16()
-        router = titan_model.layers["1"].moe.router
+        router = titan_model.layers["1"].feed_forward.router
         hidden_states_TD = torch.randn(
             16, model_size.dim, dtype=torch.bfloat16
         )
@@ -4576,7 +4602,7 @@ class _ParityRouterPrecision:
         try:
             _, _, scores = router(
                 hidden_states_TD,
-                titan_model.layers["1"].moe.expert_bias_E,
+                titan_model.layers["1"].feed_forward.expert_bias_E,
             )
         finally:
             hook.remove()
@@ -4658,7 +4684,7 @@ class _ParityComponentTests(ComponentParityMixin):
                 layers = [
                     layer
                     for layer in layers
-                    if self.pair.titan_layer(layer).moe_enabled
+                    if isinstance(self.pair.titan_layer(layer).feed_forward, MoE)
                 ]
             return self.compare_components(component, layers)
         return self.compare_component_trace(
@@ -5785,7 +5811,7 @@ class Glm5ParitySuite(
                             normalized,
                             q_residual,
                             titan_positions,
-                            titan_mask[0],
+                            titan_mask,
                         )
                     )
                     self._capture_add(
@@ -5815,10 +5841,10 @@ class Glm5ParitySuite(
                             continue
                         _, weights, indices = layer.mlp.gate(normalized)
                     else:
-                        if not getattr(layer, "moe_enabled", False):
+                        if not isinstance(layer.feed_forward, MoE):
                             continue
-                        weights, indices, _ = layer.moe.router(
-                            normalized, layer.moe.expert_bias_E
+                        weights, indices, _ = layer.feed_forward.router(
+                            normalized, layer.feed_forward.expert_bias_E
                         )
                     if endpoint.implementation == "hf":
                         indices = indices.view(
@@ -6060,7 +6086,7 @@ class Glm5ParitySuite(
             is_moe = (
                 hasattr(layer.mlp, "gate")
                 if endpoint.implementation == "hf"
-                else getattr(layer, "moe_enabled", False)
+                else isinstance(layer.feed_forward, MoE)
             )
             if not is_moe:
                 continue
@@ -7032,7 +7058,12 @@ class Glm5ParitySuite(
     ) -> str:
         """Map HF/TorchTitan module names to one report hierarchy."""
         if endpoint.implementation == "titan":
-            return endpoint_path
+            match = re.match(r"layers\.(\d+)\.feed_forward", endpoint_path)
+            if match and isinstance(
+                self._model(endpoint).layers[match.group(1)].feed_forward, MoE
+            ):
+                endpoint_path = endpoint_path.replace(".feed_forward", ".moe", 1)
+            return endpoint_path.replace(".attention.inner_attention.wkv_b", ".attention.wkv_b")
         path = (
             endpoint_path.replace("model.layers.", "layers.")
             .replace("model.embed_tokens", "tok_embeddings")
@@ -7488,7 +7519,7 @@ class Glm5ParitySuite(
             weights = weights.reshape(*hidden_states.shape[:2], -1)
             num_experts = mlp.experts.num_experts
         else:
-            moe = model.layers[str(layer_index)].moe
+            moe = model.layers[str(layer_index)].feed_forward
             hidden_states_TD = hidden_states.flatten(0, 1)
             weights, indices, scores = moe.router(
                 hidden_states_TD, moe.expert_bias_E
@@ -7501,7 +7532,7 @@ class Glm5ParitySuite(
                 hidden_states_TD,
                 weights,
                 indices,
-                expert_load,
+                routing_map,
             ).reshape_as(hidden_states)
             indices = indices.reshape(*hidden_states.shape[:2], -1)
             weights = weights.reshape(*hidden_states.shape[:2], -1)
