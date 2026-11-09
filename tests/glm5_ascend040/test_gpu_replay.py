@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from gpu_replay import compare, read_evidence, sha256, validate_reference, validate_resolved_configs
+from tests.glm5_2_mindstudio.recorded_training import compare, read_evidence, sha256, validate_reference, validate_resolved_configs
 
 
 def evidence(runtime="turbo"):

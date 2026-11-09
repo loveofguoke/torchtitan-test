@@ -1,7 +1,5 @@
-"""Replay an existing Turbo NPU training capture on CUDA without new fixtures."""
+"""Internal recorded-training adapter for MindStudio observation."""
 
-import argparse
-from contextlib import redirect_stderr, redirect_stdout
 import hashlib
 import json
 import math
@@ -151,7 +149,7 @@ def run(args):
         environment.update(GLM_STEPS=str(steps), GLM_OUTPUT=str(destination))
         environment["GLM_REFERENCE_CONFIG"] = str(args.reference.resolve() / "steps-500/rank-0-config.txt")
         command = [sys.executable, "-m", "torch.distributed.run", "--standalone",
-                   "--nproc-per-node=1", str(Path(__file__).with_name("worker.py"))]
+                   "--nproc-per-node=1", str(Path(__file__).parents[1] / "glm5_ascend040/worker.py")]
         print("command:", subprocess.list2cmdline(command), "steps:", steps, flush=True)
         with (destination / "runtime.log").open("w", encoding="utf-8") as log:
             completed = run_managed_process(command, cwd=args.titan, env=environment,
@@ -169,32 +167,3 @@ def run(args):
     print(json.dumps(result, indent=2))
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--reference", type=Path, required=True,
-                        help="Transferred NPU capture root with initial-model.pt and steps-500")
-    parser.add_argument("--output", type=Path, required=True, help="Fresh output directory")
-    parser.add_argument("--titan", type=Path, default=Path(__file__).resolve().parents[3] / "torchtitan")
-    parser.add_argument("--device", default="0")
-    args = parser.parse_args()
-    if not args.device.isdecimal():
-        parser.error("--device must select one physical GPU index")
-    args.output = args.output.resolve()
-    args.titan = args.titan.resolve()
-    args.output.mkdir(parents=True, exist_ok=False)
-    print_output_path("Comparison log", args.output / "comparison.log")
-    with (args.output / "comparison.log").open("w", encoding="utf-8", buffering=1) as log:
-        with redirect_stdout(log), redirect_stderr(log):
-            try:
-                run(args)
-            except BaseException:
-                import traceback
-                traceback.print_exc()
-                print("exit_code=1")
-                raise
-            else:
-                print("exit_code=0")
-
-
-if __name__ == "__main__":
-    main()

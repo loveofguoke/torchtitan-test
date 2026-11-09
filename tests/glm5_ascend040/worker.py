@@ -188,7 +188,7 @@ def main():
     }
     (root / f"rank-{rank}-config.txt").write_text(repr(config), encoding="utf-8")
     if runtime == "cuda":
-        from gpu_replay import validate_resolved_configs
+        from tests.glm5_2_mindstudio.recorded_training import validate_resolved_configs
         # Gate steps differ deliberately; validate the 500-step config before
         # constructing the trainer or loading any user checkpoint.
         if steps == 500:

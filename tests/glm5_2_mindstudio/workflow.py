@@ -3792,6 +3792,8 @@ def run_mindstudio_cli(
     parser.add_argument("--precheck-config", type=Path)
     parser.add_argument("--precheck-resume-csv", type=Path)
     parser.add_argument("--training-steps", type=int)
+    parser.add_argument("--recorded-source", type=Path,
+                        help="Import an existing single-card Turbo training source into observation")
     parser.add_argument(
         "--monitor-ranks",
         help="comma-separated ranks monitored by TrainerMonitorV2",
@@ -3822,6 +3824,16 @@ def run_mindstudio_cli(
     from tests.glm5_2_graph.config import add_npu_codegen_argument, npu_codegen_environment
     add_npu_codegen_argument(parser)
     args = parser.parse_args()
+
+    if args.recorded_source is not None:
+        if (base_config.workflow != "observation" or args.training_steps != 500
+                or args.topology != "single" or args.topologies is not None
+                or args.repeat != 1 or args.force or args.dry_run
+                or not (args.data or args.capture or args.compare)):
+            parser.error("--recorded-source requires observation, --training-steps 500, single, repeat 1, and data/capture/compare; force/dry-run are unsupported")
+        from .recorded_observation import dispatch
+        dispatch(Path(script_path).resolve().parents[2], args)
+        return
 
     if (
         base_config.workflow in {"observation", "monitor"}
