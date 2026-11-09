@@ -112,7 +112,10 @@ def test_legacy_graph_override_preserves_policy_across_rename(
         "_LEGACY_CONFIG_STATE",
         {
             "factory": "glm5_debugmodel",
-            "overrides": {"training.disable_cuda_graphs": disabled},
+            "overrides": {
+                "training.disable_cuda_graphs": disabled,
+                "training.max_context_length": 128,
+            },
         },
     )
     monkeypatch.setattr(config_first, "recipe_contract", lambda *a, **kw: {})

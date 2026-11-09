@@ -135,6 +135,12 @@ def legacy_config():
     for dotted_name, value in overrides.items():
         if dotted_name == "parallelism.spmd_backend":
             continue
+        if (
+            dotted_name == "training.max_context_length"
+            and not hasattr(config.training, "max_context_length")
+        ):
+            # The recipe's seq_len builds model attention/RoPE and data context.
+            continue
         owner = config
         parts = dotted_name.split(".")
         for part in parts[:-1]:

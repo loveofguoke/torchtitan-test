@@ -29,6 +29,11 @@ The config-first adapter maps the stable experiment option
 `training.disable_cuda_graphs` to the current TorchTitan field
 `training.disable_accelerator_graphs`. This preserves eager execution without
 changing activation rematerialization or older-checkout CLI behavior.
+The legacy `training.max_context_length` is passed to the official recipe as
+`seq_len`; current TorchTitan obtains data context length from the model config,
+not from a duplicate training field. The real-recipe CPU regression in
+`tests/unit_tests/test_config_first_recipes.py` builds both base and MTP configs
+with all supported eight-card smoke topology arguments before device execution.
 
 GPU single-card, one distributed-topology example, and the complete suite:
 
