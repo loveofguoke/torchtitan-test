@@ -50,7 +50,7 @@ from typing import Any, Callable, Iterator
 import torch
 import torch.nn.functional as F
 
-from tests.glm5_2_common.cli import print_output_path
+from tests.glm5_2_common.cli import display_repository_path, print_output_path
 
 from torchtitan.models.common.linear import Linear
 from torchtitan.models.common.moe import MoE, TokenChoiceTopKRouter
@@ -3329,7 +3329,10 @@ class ParitySuiteReport:
             file.write(document)
         summary_path = os.environ.get("GLM5_PARITY_RESULT_SUMMARY_FILE")
         if summary_path:
-            Path(summary_path).write_text(self.terminal_summary(), encoding="utf-8")
+            Path(summary_path).write_text(
+                self.terminal_summary() + f"report={display_repository_path(path)}\n",
+                encoding="utf-8",
+            )
 
     def failure_message(self) -> str:
         return "\n\n".join(

@@ -47,6 +47,12 @@ JSON text and scenario digest; native sharding configs can exceed Linux's
 per-string process-launch limit. The workflow regression launches a real child
 with a large configuration to guard this boundary for paired/offline stages.
 
+Parity report finalization also writes run-local `result-summary.txt`. The
+launcher repeats it after pytest output, including failures, effective tensor
+tolerances, report path and process exit code. Missing report finalization is
+reported explicitly, never treated as numerical success. Trace-only rows are
+excluded from checkpoint verdict counts.
+
 HSDP presets `hsdp2x4` and `hsdp4x2` are defined only in the common topology
 registry (replicate groups x shards per group). All registry-based eight-card
 suites include them. Keep existing member identities unchanged when extending
