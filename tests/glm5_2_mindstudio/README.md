@@ -681,6 +681,11 @@ python release_artifacts.py upload "$EXPERIMENT" --content full
 
 ## 7. 正常训练现象观察与按需监控
 
+当前迁移实验配置描述为 `glm5-2-official-accuracy-migration-a5-26-20261109`，
+实验 ID 以 `-a5-26` 结尾，区分旧 910B 实验。两端使用同一配置和实验 ID。
+所有输入、运行、制品和报告仍位于原 `torchtitan-test/mindstudio_*` 标准目录；
+不建立另一个 test 副本，也不修改既有目录层级或实验入口。
+
 标准流程不是一开始 dump。完成配置检查后，先运行无 PrecisionDebugger、无 Monitor
 hook 的正常训练观察。它仍使用统一 checkpoint、token plan 和确定性设置，但模型训练走
 正常 TorchTitan 路径，只额外把 Trainer 已经上报的数值指标写入 JSONL：

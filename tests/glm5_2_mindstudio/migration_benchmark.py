@@ -26,7 +26,7 @@ TOPOLOGIES = standard_topologies()
 ALL_DEVICES = "0,1,2,3,4,5,6,7"
 
 _BASE_CONFIG = MindStudioExperimentConfig(
-    name="glm5-2-official-accuracy-migration",
+    name="glm5-2-official-accuracy-migration-a5-26-20261109",
     workflow="migration",
     reference=TrainingEndpoint(
         name="gpu-reference",
@@ -66,7 +66,7 @@ _BASE_CONFIG = MindStudioExperimentConfig(
 # top-level experiments.
 CONFIG = replace(
     _BASE_CONFIG,
-    experiment_storage_name=_BASE_CONFIG.storage_name,
+    experiment_storage_name=f"{_BASE_CONFIG.storage_name}-a5-26",
 )
 
 
