@@ -918,11 +918,12 @@ def test_titan_routed_expert_replay_uses_token_first_inputs() -> None:
             return weights, indices, scores
 
     class RoutedExperts:
-        def __call__(self, x_TD, weights_TK, indices_TK, expert_load_E):
+        def __call__(self, x_TD, weights_TK, indices_TK, routing_map_TE):
             observed_shapes["routed_experts"] = tuple(x_TD.shape)
             assert tuple(weights_TK.shape) == (6, 2)
             assert tuple(indices_TK.shape) == (6, 2)
-            assert torch.equal(expert_load_E, torch.tensor([6, 6]))
+            assert routing_map_TE.dtype == torch.bool
+            assert torch.equal(routing_map_TE.sum(0), torch.tensor([6, 6]))
             return x_TD
 
     moe = SimpleNamespace(
@@ -930,7 +931,7 @@ def test_titan_routed_expert_replay_uses_token_first_inputs() -> None:
         routed_experts=RoutedExperts(),
         expert_bias_E=None,
     )
-    model = SimpleNamespace(layers={"0": SimpleNamespace(moe=moe)})
+    model = SimpleNamespace(layers={"0": SimpleNamespace(feed_forward=moe)})
     endpoint = SimpleNamespace(
         implementation="titan",
         precision=SimpleNamespace(dtype=torch.float32),
