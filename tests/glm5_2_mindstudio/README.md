@@ -684,18 +684,18 @@ python release_artifacts.py upload "$EXPERIMENT" --content full
 ### 已有 Turbo 500 步采集的导入
 
 已通过 Release `--scope` 下载的 `recorded_source` 使用同一个 observation 入口。
-`--recorded-source` 只适配单卡、500 步、单次采集的既有 Turbo 数据，不适用于独立
+已有 `--experiment` 参数识别其规范目录，仅适配单卡、500 步、单次采集的既有 Turbo 数据，不适用于独立
 Ascend 0.4 模型。它与普通自动生成 fixture 的 observation 数据契约隔离，不覆盖旧实验。
 
 ```bash
-SOURCE=mindstudio_runs/accuracy/glm5-a5-turbo-bf16-s500-seed61-20261109/recorded_source
+EXPERIMENT=glm5-a5-turbo-bf16-s500-seed61-20261109
 python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage observation \
-  --recorded-source "$SOURCE" --data --topology single --training-steps 500
+  --experiment "$EXPERIMENT" --data --topology single --training-steps 500
 export CUDA_VISIBLE_DEVICES=0
 python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage observation \
-  --recorded-source "$SOURCE" --capture reference --topology single --training-steps 500
+  --experiment "$EXPERIMENT" --capture reference --topology single --training-steps 500
 python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage observation \
-  --recorded-source "$SOURCE" --compare --topology single --training-steps 500
+  --experiment "$EXPERIMENT" --compare --topology single --training-steps 500
 ```
 
 `--data` 不重新生成权重或输入，而是验证全部 SHA256、500 步完整性及精度契约后，

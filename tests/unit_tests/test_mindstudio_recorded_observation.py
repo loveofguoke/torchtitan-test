@@ -111,7 +111,7 @@ def test_existing_observation_cli_routes_import_and_rejects_force(imported, monk
     root, source = imported
     script = root / "tests/glm5_2_mindstudio/accuracy_benchmark.py"
     import sys
-    arguments = [str(script), "--data", "--recorded-source", str(source),
+    arguments = [str(script), "--data", "--experiment", source.parent.name,
                  "--training-steps", "500", "--topology", "single"]
     monkeypatch.setattr(sys, "argv", arguments)
     run_mindstudio_cli(CONFIG, str(script))

@@ -28,7 +28,8 @@ with current TorchTitan. Run `test_mindstudio_recorded_observation`,
 actual input consumption, complete skip, failed retry and active ownership are
 required boundaries. Imported metrics remain explicitly project-owned
 observation evidence, not a fabricated msProbe result. Standard workflows
-without --recorded-source must remain unchanged.
+without recorded legacy data must remain unchanged. Adoption uses the existing
+--experiment selector; no new public entry point or CLI parameter is needed.
 
 Parity CLI configuration is shared by paired/offline entry points in
 `glm5_2_parity/workflow.py`. `model_config.py` reads the selected TorchTitan GLM
