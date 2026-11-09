@@ -1044,8 +1044,10 @@ def _annotate_known_compute_dtypes(pair: ParityModelPair) -> None:
         titan_attention = pair.titan_layer(layer_index).attention
         hf_attention._parity_compute_dtype = "mixed(fp32_softmax)"
         titan_attention._parity_compute_dtype = "mixed(fp32_softmax)"
-        hf_attention.indexer._parity_compute_dtype = "mixed(fp32_scores)"
-        titan_attention.indexer._parity_compute_dtype = "mixed(fp32_scores)"
+        if hf_attention.indexer is not None:
+            hf_attention.indexer._parity_compute_dtype = "mixed(fp32_scores)"
+        if titan_attention.indexer is not None:
+            titan_attention.indexer._parity_compute_dtype = "mixed(fp32_scores)"
         titan_layer = pair.titan_layer(layer_index)
         if isinstance(titan_layer.feed_forward, MoE):
             titan_layer.feed_forward.router.gate._parity_compute_dtype = torch.float32
@@ -1065,11 +1067,13 @@ def _annotate_endpoint_compute_dtypes(
                 module._parity_compute_dtype = torch.float32
         for layer in model.model.layers:
             layer.self_attn._parity_compute_dtype = "mixed(fp32_softmax)"
-            layer.self_attn.indexer._parity_compute_dtype = "mixed(fp32_scores)"
+            if layer.self_attn.indexer is not None:
+                layer.self_attn.indexer._parity_compute_dtype = "mixed(fp32_scores)"
         return
     for layer in model.layers.values():
         layer.attention._parity_compute_dtype = "mixed(fp32_softmax)"
-        layer.attention.indexer._parity_compute_dtype = "mixed(fp32_scores)"
+        if layer.attention.indexer is not None:
+            layer.attention.indexer._parity_compute_dtype = "mixed(fp32_scores)"
         if isinstance(layer.feed_forward, MoE):
             layer.feed_forward.router.gate._parity_compute_dtype = torch.float32
             experts = layer.feed_forward.routed_experts
@@ -7737,7 +7741,10 @@ class Glm5ParitySuite(
                 f"{self._endpoint_path(spec.actual, layer, 'indexer')} <-> "
                 f"{self._endpoint_path(spec.expected, layer, 'indexer')}"
             )
-            if actual_indexer is None or expected_indexer is None:
+            if actual_indexer is None and expected_indexer is None:
+                # Shared consumers have no physical indexer module to execute.
+                pass
+            elif actual_indexer is None or expected_indexer is None:
                 recorder.missing(
                     scope=spec.scope,
                     component="indexer",
@@ -7902,15 +7909,18 @@ class Glm5ParitySuite(
             }
             return gradients, missing
 
-        gradients: dict[str, torch.Tensor] = {}
-        missing: set[str] = set()
+        hf_gradients: dict[str, torch.Tensor] = {}
+        hf_missing: dict[str, torch.Tensor] = {}
         for name, parameter in model.named_parameters():
             is_missing = parameter.grad is None
-            value = torch.zeros_like(parameter) if is_missing else parameter.grad
-            mapped = self.adapter.from_hf({name: value})
-            gradients.update(mapped)
-            if is_missing:
-                missing.update(mapped)
+            hf_gradients[name] = torch.zeros_like(parameter) if is_missing else parameter.grad
+            hf_missing[name] = torch.full_like(parameter, is_missing, dtype=torch.bool)
+        # Fused native linears require gate/up keys to be converted together.
+        gradients = self.adapter.from_hf(hf_gradients)
+        missing = {
+            name for name, mask in self.adapter.from_hf(hf_missing).items()
+            if bool(mask.any())
+        }
         return gradients, missing
 
     def _record_gradient_tree(
@@ -7963,8 +7973,7 @@ class Glm5ParitySuite(
                 )
                 continue
             routed_projection = {
-                self.adapter._TITAN_GATE: "w1",
-                self.adapter._TITAN_UP: "w3",
+                self.adapter._TITAN_GATE_UP: "w13",
                 self.adapter._TITAN_DOWN: "w2",
             }
             expert_name = next(
@@ -8027,10 +8036,7 @@ class Glm5ParitySuite(
         if match is None:
             return titan_key
         layer, suffix = match.groups()
-        if suffix in {
-            self.adapter._TITAN_GATE,
-            self.adapter._TITAN_UP,
-        }:
+        if suffix == self.adapter._TITAN_GATE_UP:
             return f"model.layers.{layer}.mlp.experts.gate_up_proj"
         if suffix == self.adapter._TITAN_DOWN:
             return f"model.layers.{layer}.mlp.experts.down_proj"
@@ -8044,8 +8050,7 @@ class Glm5ParitySuite(
         actual_state = self._canonical_state(spec.actual)
         expected_state = self._canonical_state(spec.expected)
         routed_paths = {
-            self.adapter._TITAN_GATE: ("w1", "gate"),
-            self.adapter._TITAN_UP: ("w3", "up"),
+            self.adapter._TITAN_GATE_UP: ("w13", "gate_up"),
             self.adapter._TITAN_DOWN: ("w2", "down"),
         }
         for key in sorted(set(actual_state) | set(expected_state)):
@@ -8102,10 +8107,8 @@ class Glm5ParitySuite(
                                 f"layers.{layer}.moe.routed_experts."
                                 f"{expert}.{expert_name}"
                             )
-                        if hf_projection == "gate":
-                            projection = "gate_up_proj[:, :expert_width]"
-                        elif hf_projection == "up":
-                            projection = "gate_up_proj[:, expert_width:]"
+                        if hf_projection == "gate_up":
+                            projection = "gate_up_proj"
                         else:
                             projection = "down_proj"
                         return (

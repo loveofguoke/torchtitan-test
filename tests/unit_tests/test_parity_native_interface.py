@@ -69,3 +69,6 @@ def test_component_paths_emit_records_on_current_models(monkeypatch):
         # This test guards execution/trace interfaces, not numerical acceptance.
         # The real suite retains all original numerical/discrete thresholds.
         assert recorder.results, component
+    end_to_end = probe.compare_end_to_end(probe._configured_spec())
+    assert any(row.scope == "gradient" for row in end_to_end.results)
+    assert any(row.component == "logits" for row in end_to_end.results)
