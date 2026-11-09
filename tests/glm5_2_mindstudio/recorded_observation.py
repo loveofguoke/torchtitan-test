@@ -181,11 +181,15 @@ def dispatch(root, args):
         reference_path=gpu_artifact / "official/training_metrics.jsonl",
         candidate_path=npu_artifact / "official/training_metrics.jsonl",
         output_directory=report, reference_label="GPU", candidate_label="NPU")
-    summary = json.loads(summary_path.read_text())
-    concise = {key: summary[key] for key in ("step_count", "loss", "grad_norm")}
-    (report / "summary.log").write_text(json.dumps(concise, indent=2) + "\n", encoding="utf-8")
+    gpu = read_evidence(gpu_artifact / "source-evidence.json", "cuda")
+    concise = compare(reference, gpu)
+    concise["ms_observation_summary"] = str(summary_path)
+    summary_text = json.dumps(concise, indent=2) + "\n"
+    (report / "summary.log").write_text(summary_text, encoding="utf-8")
+    stable_summary = root / "mindstudio_reports/accuracy" / experiment / "observation-summary.log"
+    stable_summary.write_text(summary_text, encoding="utf-8")
     mirror = root / "mindstudio_reports/accuracy" / experiment / "html_reports" / profile / "training/single.html"
     mirror.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(report / "training_observation.html", mirror)
-    print_output_path("Observation summary", report / "summary.log")
+    print_output_path("Observation summary", stable_summary)
     print_output_path("Observation HTML", mirror)

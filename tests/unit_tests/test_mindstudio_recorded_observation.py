@@ -103,3 +103,28 @@ def test_active_capture_refuses_retry(imported):
             workflow.dispatch(root, args(source, "capture"))
     finally:
         attempt.update("failed")
+
+
+def test_existing_observation_cli_routes_import_and_rejects_force(imported, monkeypatch):
+    from tests.glm5_2_mindstudio.training_observation_benchmark import CONFIG
+    from tests.glm5_2_mindstudio.workflow import run_mindstudio_cli
+    root, source = imported
+    script = root / "tests/glm5_2_mindstudio/accuracy_benchmark.py"
+    import sys
+    arguments = [str(script), "--data", "--recorded-source", str(source),
+                 "--training-steps", "500", "--topology", "single"]
+    monkeypatch.setattr(sys, "argv", arguments)
+    run_mindstudio_cli(CONFIG, str(script))
+    monkeypatch.setattr(sys, "argv", [*arguments, "--force"])
+    with pytest.raises(SystemExit) as error:
+        run_mindstudio_cli(CONFIG, str(script))
+    assert error.value.code == 2
+
+
+def test_unmodified_cli_still_lists_topologies(monkeypatch, capsys):
+    import sys
+    from tests.glm5_2_mindstudio.training_observation_benchmark import CONFIG
+    from tests.glm5_2_mindstudio.workflow import run_mindstudio_cli
+    monkeypatch.setattr(sys, "argv", ["accuracy", "--list-topologies"])
+    run_mindstudio_cli(CONFIG, __file__)
+    assert "single:" in capsys.readouterr().out

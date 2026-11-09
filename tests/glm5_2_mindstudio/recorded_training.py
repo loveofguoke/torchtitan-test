@@ -135,6 +135,7 @@ def run(args):
     environment.pop("ASCEND_RT_VISIBLE_DEVICES", None)
     environment.update({
         "CUDA_VISIBLE_DEVICES": args.device, "GLM_RUNTIME": "cuda",
+        "TORCHTITAN_DEVICE": "cuda",
         "GLM_TOPOLOGY": "single", "GLM_REMAT": evidence["remat"],
         "GLM_PRECISION": "bfloat16", "GLM_DETERMINISTIC": "1",
         "GLM_SEQ_LEN": str(evidence["sequence_length"]),
