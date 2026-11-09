@@ -110,6 +110,9 @@ def validate_resolved_configs(reference_path, gpu_path):
     pattern = r"\b(eps|rope_theta|theta|route_scale|route_norm_epsilon|index_topk|index_sources)=([^,)]+)"
     if sorted(re.findall(pattern, reference)) != sorted(re.findall(pattern, gpu)):
         raise ValueError("Model normalization/routing/position config differs")
+    sources = r"\bindex_sources=(\([^)]*\))"
+    if not re.findall(sources, reference) or re.findall(sources, reference) != re.findall(sources, gpu):
+        raise ValueError("Shared indexer source plan differs or is missing")
 
 
 def run(args):

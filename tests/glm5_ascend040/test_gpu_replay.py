@@ -82,7 +82,7 @@ def test_reference_checks_every_input_and_fixture(tmp_path):
 
 
 def test_config_drift_rejected(tmp_path):
-    original = "optim=A(), training=B(steps=500), garbage_collector=C(), activation_remat=D(), profiler=E(), loss=F(), dist_moe_runtime=None, precision=G(), hf_assets_path='x', model=H(eps=1e-5)"
+    original = "optim=A(), training=B(steps=500), garbage_collector=C(), activation_remat=D(), profiler=E(), loss=F(), dist_moe_runtime=None, precision=G(), hf_assets_path='x', model=H(eps=1e-5, index_sources=(0, 1, 1))"
     first, second = tmp_path / "first", tmp_path / "second"
     first.write_text(original)
     second.write_text(original)
@@ -92,6 +92,9 @@ def test_config_drift_rejected(tmp_path):
         validate_resolved_configs(first, second)
     second.write_text(original.replace("steps=500", "steps=2"))
     with pytest.raises(ValueError, match="training="):
+        validate_resolved_configs(first, second)
+    second.write_text(original.replace("(0, 1, 1)", "(0, 1, 2)"))
+    with pytest.raises(ValueError, match="source plan"):
         validate_resolved_configs(first, second)
 
 
