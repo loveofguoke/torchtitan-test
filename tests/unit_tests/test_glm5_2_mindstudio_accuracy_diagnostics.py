@@ -159,11 +159,8 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
             Path(MIGRATION_CONFIG.storage_name),
             observation.output_relative_root,
         )
-        self.assertTrue(
-            observation.operation_relative_root.as_posix().startswith(
-                "observations/training/s100-"
-            )
-        )
+        self.assertTrue(observation.operation_relative_root.parts[0].startswith("s100-"))
+        self.assertEqual(observation.operation_relative_root.parts[1:], ("observations", "training"))
         monitor = _stage_scoped_config(MONITOR_CONFIG, MIGRATION_CONFIG)
         self.assertEqual(
             Path(MIGRATION_CONFIG.storage_name),
@@ -637,7 +634,7 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
             relative = (
                 Path(MIGRATION_CONFIG.storage_name)
                 / topology.slug
-                / "checklist/configuration-check"
+                / scoped.operation_relative_root
             )
             self.assertEqual(
                 root / scoped.run_root / relative / "candidate-r1",

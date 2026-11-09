@@ -19,6 +19,7 @@ _CASES = [
 def test_ms_precision_recipe_cli_uses_current_fields(monkeypatch, tmp_path, seed_checkpoint):
     from tests.glm5_2_precision.workflow import FormalTrainingConfig, _base_training_args
     from tests.glm5_2_common.topology import ParallelTopology
+    monkeypatch.setenv("TORCHTITAN_CONFIG_FIRST_CLI", "1")
     monkeypatch.setattr(config_first, "_LEGACY_CONFIG_STATE", {})
     arguments = ["capture", "--module", "glm5", "--config", "glm5_debugmodel",
                  *_base_training_args(FormalTrainingConfig(steps=500),
