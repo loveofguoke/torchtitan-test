@@ -4688,6 +4688,16 @@ class _ParityComponentTests(ComponentParityMixin):
     def _configured_component_recorder(self, component: str) -> ParityRecorder:
         """Select the exact or generic compare implementation from config."""
         layers = self._selected_layers()
+        if component == "indexer":
+            layers = [layer for layer in layers
+                      if self.pair.titan_layer(layer).attention.indexer is not None]
+        if component in {"attention", "block"} and any(
+            self.pair.titan_layer(layer).attention.indexer is None for layer in layers
+        ):
+            raise ValueError(
+                "Independent shared-index consumer checks require producer context; "
+                "use --components e2e for a sharing flavor, or select producer layers."
+            )
         exact_components = {"indexer", "router", "attention", "block"}
         if (
             self._uses_exact_transformers_component_path()

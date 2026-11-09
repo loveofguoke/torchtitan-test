@@ -19,6 +19,17 @@ The GLM-5.2 parity suite supports four execution modes:
 
 ## Command-line parameters
 
+Current-model captures use parity protocol v4: fused W13/W2 state and gradients,
+`feed_forward` modules, and compact DSA document metadata. Regenerate fixtures
+and captures explicitly for this generation; do not combine them with v3 runs.
+No numerical or discrete acceptance thresholds are relaxed by this migration.
+
+The independent-indexer `debugmodel` supports the complete component workflow.
+For `glm5_2_debugmodel`, use `--components e2e` for full-model sharing semantics.
+Shared consumers have no local indexer module; independent attention/block
+checks of them are rejected because they require producer-layer context.
+Producer-layer component checks can still select only the relevant layers.
+
 Offline scenario files expose one required stage at a time:
 
 | Parameter | Purpose | Default |

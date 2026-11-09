@@ -72,3 +72,23 @@ def test_component_paths_emit_records_on_current_models(monkeypatch):
     end_to_end = probe.compare_end_to_end(probe._configured_spec())
     assert any(row.scope == "gradient" for row in end_to_end.results)
     assert any(row.component == "logits" for row in end_to_end.results)
+
+
+def test_shared_indexer_model_emits_end_to_end_gradient_records(monkeypatch):
+    monkeypatch.setenv("GLM5_PARITY_MODEL_CONFIG", "glm5_2_debugmodel")
+    monkeypatch.setenv("GLM5_PARITY_MODEL_LAYERS", "4")
+    monkeypatch.setattr(parity, "_parity_device", lambda: (torch.device("cpu"), torch.cpu, "cpu"))
+
+    class Probe(parity.Glm5ParitySuite):
+        SEQUENCE_LENGTH = 16
+        BATCH_SIZE = 2
+        TITAN_ROUTED_EXPERT_COMPUTE = "fp32"
+
+    Probe.setUpClass()
+    probe = Probe("test_configured_precision_suite")
+    assert probe.pair.titan_layer(3).attention.indexer is None
+    with pytest.raises(ValueError, match="producer context"):
+        probe._configured_component_recorder("block")
+    recorder = probe.compare_end_to_end(probe._configured_spec())
+    assert any(row.scope == "gradient" for row in recorder.results)
+    assert not any(row.component == "indexer" and row.layer == 3 for row in recorder.results)
