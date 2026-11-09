@@ -31,6 +31,7 @@ from tests.glm5_2_common.cli import (
     RunAttempt,
     archive_previous_output,
     assert_run_not_active,
+    display_repository_path,
     print_output_path,
     print_runtime_log,
     reset_output_generation,
@@ -374,6 +375,9 @@ def _run_test(
     scenario_path = (log_path.parent / "scenario-config.json").resolve()
     scenario_path.write_text(scenario_json, encoding="utf-8")
     child_environment["GLM5_PARITY_SCENARIO_CONFIG_FILE"] = str(scenario_path)
+    summary_path = (log_path.parent / "result-summary.txt").resolve()
+    child_environment["GLM5_PARITY_RESULT_SUMMARY_FILE"] = str(summary_path)
+    summary_path.write_text("Parity did not reach report finalization.\n", encoding="utf-8")
     configuration = json.loads(scenario_json)
     invocation = [sys.executable, *sys.argv]
     configuration["command"] = invocation
@@ -428,6 +432,14 @@ def _run_test(
             log_file.write(line)
             log_file.flush()
         return_code = process.wait()
+        summary = summary_path.read_text(encoding="utf-8")
+        footer = (
+            f"\n{summary}"
+            f"summary_file={display_repository_path(summary_path)}\n"
+            f"pytest_exit_code={return_code}\n"
+        )
+        print(footer, end="")
+        log_file.write(footer)
     if return_code:
         raise LoggedProcessError(return_code, command, log_path=log_path)
 

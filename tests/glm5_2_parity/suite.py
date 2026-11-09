@@ -1354,6 +1354,8 @@ class ComparisonResult:
     growth_ratio: float | None = None
     trend_from: str = ""
     trend_previous_error: float | None = None
+    rtol: float | None = None
+    atol: float | None = None
 
 
 class ParityRecorder:
@@ -1895,6 +1897,8 @@ class ParityRecorder:
                 execution_order=execution_order,
                 execution_order_source=execution_order_source,
             )
+        result.rtol = rtol
+        result.atol = atol
         self.results.append(result)
         return result
 
@@ -3210,6 +3214,37 @@ class ParitySuiteReport:
     def add(self, section_id: str, recorder: ParityRecorder) -> None:
         self.sections.append(ParityReportSection(section_id, recorder))
 
+    def terminal_summary(self) -> str:
+        rows = []
+        for section in self.sections:
+            section.recorder.finalize_topk_boundary_verdicts()
+            rows.extend((section, result) for result in section.recorder.results)
+        checkpoints = [(s, r) for s, r in rows if r.checkpoint]
+        failures = [(s, r) for s, r in checkpoints if s.recorder._status(r) == "FAIL"]
+        lines = [
+            "===== PARITY RESULT SUMMARY =====",
+            f"checkpoints={len(checkpoints)} passed={len(checkpoints) - len(failures)} failed={len(failures)} trace_rows={len(rows) - len(checkpoints)}",
+            "First failures (report order; not necessarily the causal origin):",
+        ]
+        def describe(section, result):
+            return (
+                f"{section.section_id} | {section.recorder._display_path(result)} "
+                f"| {result.scope}/{result.component} layer={result.layer} "
+                f"| status={section.recorder._status(result)} "
+                f"max_abs={result.max_abs} max_rel={result.max_rel} "
+                f"rel_l2={result.relative_l2} cos={result.cosine_similarity} "
+                f"mismatches={result.mismatch_count}/{result.samples} "
+                f"atol={result.atol} rtol={result.rtol} "
+                f"actual={result.actual_summary} expected={result.expected_summary} "
+                f"detail={result.detail}"
+            ).replace("\n", " ")
+        lines.extend(describe(s, r) for s, r in failures[:20])
+        lines.append("End-to-end outputs and first gradient failures:")
+        selected = [(s, r) for s, r in checkpoints if r.component in {"logits", "loss"}]
+        selected.extend((s, r) for s, r in failures if "gradient" in r.component)
+        lines.extend(describe(s, r) for s, r in selected[:10])
+        return "\n".join(lines) + "\n"
+
     @property
     def failed(self) -> list[ParityReportSection]:
         return [section for section in self.sections if section.recorder.failed]
@@ -3292,6 +3327,9 @@ class ParitySuiteReport:
         )
         with open(path, "w", encoding="utf-8") as file:
             file.write(document)
+        summary_path = os.environ.get("GLM5_PARITY_RESULT_SUMMARY_FILE")
+        if summary_path:
+            Path(summary_path).write_text(self.terminal_summary(), encoding="utf-8")
 
     def failure_message(self) -> str:
         return "\n\n".join(

@@ -7,6 +7,20 @@ import torch
 
 from tests.glm5_2_parity.model_config import load_model_config, model_dimensions
 from tests.glm5_2_parity import suite as parity
+
+
+def test_terminal_summary_includes_failures_and_effective_tolerance():
+    recorder = parity.ParityRecorder(parity.FP32)
+    recorder.tensor(scope="e2e", component="loss", layer="output",
+                    actual=torch.tensor([2.0]), expected=torch.tensor([1.0]),
+                    atol=0.01, rtol=0.02)
+    report = parity.ParitySuiteReport("summary regression")
+    report.add("e2e", recorder)
+    summary = report.terminal_summary()
+    assert "checkpoints=1 passed=0 failed=1" in summary
+    assert "atol=0.01 rtol=0.02" in summary
+    assert "actual=[2] expected=[1]" in summary
+    assert "e2e/loss" in summary
 from tests.glm5_2_parity.suite import (
     FP32, ModelEndpoint, ParityDataFactory, ParityModelSize, _build_pair,
     _hf_config, _run_causal_lm_endpoint, _set_titan_routed_expert_compute_dtype,
