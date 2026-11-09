@@ -1110,10 +1110,14 @@ def test_glm5_offline_q_residual_uses_suite_tolerance(
     assert recorder.results[0].mismatch_count == 0
 
 
-def test_glm5_2_default_parity_model_is_about_ten_fp32_gb() -> None:
+def test_glm5_2_default_parity_model_follows_native_factory() -> None:
+    from tests.glm5_2_parity.model_config import load_model_config, model_dimensions
+
     model_size = glm5_parity.ParityModelSize()
-    assert model_size.num_layers == 11
-    assert 10.0 <= model_size.estimated_fp32_size_gb <= 10.5
+    native = model_dimensions(load_model_config())
+    assert model_size.num_layers == native["layers"]
+    assert model_size.dim == native["dim"]
+    assert model_size.estimated_fp32_size_gb > 0
 
 
 def test_glm5_2_html_contents_is_top_only_and_targets_sections(

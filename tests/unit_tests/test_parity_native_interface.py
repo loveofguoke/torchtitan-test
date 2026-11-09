@@ -6,6 +6,7 @@ import pytest
 import torch
 
 from tests.glm5_2_parity.model_config import load_model_config, model_dimensions
+from tests.glm5_2_parity import suite as parity
 from tests.glm5_2_parity.suite import (
     FP32, ModelEndpoint, ParityDataFactory, ParityModelSize, _build_pair,
     _hf_config, _run_causal_lm_endpoint, _set_titan_routed_expert_compute_dtype,
@@ -49,3 +50,22 @@ def test_strict_pair_and_token_first_forward(monkeypatch):
         for buffer in module.buffers(recurse=False):
             if buffer.is_complex():
                 assert buffer.dtype == torch.complex64
+
+
+def test_component_paths_emit_records_on_current_models(monkeypatch):
+    monkeypatch.setenv("GLM5_PARITY_MODEL_CONFIG", "debugmodel")
+    monkeypatch.setenv("GLM5_PARITY_MODEL_LAYERS", "2")
+    monkeypatch.setattr(parity, "_parity_device", lambda: (torch.device("cpu"), torch.cpu, "cpu"))
+
+    class Probe(parity.Glm5ParitySuite):
+        SEQUENCE_LENGTH = 16
+        BATCH_SIZE = 2
+        TITAN_ROUTED_EXPERT_COMPUTE = "fp32"
+
+    Probe.setUpClass()
+    probe = Probe("test_configured_precision_suite")
+    for component in ("indexer", "router", "attention", "block"):
+        recorder = probe._configured_component_recorder(component)
+        # This test guards execution/trace interfaces, not numerical acceptance.
+        # The real suite retains all original numerical/discrete thresholds.
+        assert recorder.results, component
