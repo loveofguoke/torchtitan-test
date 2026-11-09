@@ -1,16 +1,5 @@
 # Ascend GLM on TorchTitan 0.4.0
 
-## Current TorchTitan CUDA/NPU 500-step observation
-
-The current-TorchTitan worker also provides an internal CUDA replay branch for
-the existing MindStudio observation workflow. It imports no Turbo/TorchNPU,
-requires an existing checkpoint and recorded input stream, and never creates
-a substitute fixture. The public entry remains
-`tests/glm5_2_mindstudio/accuracy_benchmark.py --stage observation`; see that
-package's README section on importing recorded training. There is no standalone
-GPU replay entry point. Native Ascend 0.4 captures are a different model/runtime
-and are rejected for this current-TorchTitan comparison.
-
 `worker.py` calls the Ascend GLM recipe and unmodified Trainer under torchrun.
 It reuses the canonical topology registry; the additional two/four-card cases
 are minimal diagnostic compositions, not changes to existing experiment presets.

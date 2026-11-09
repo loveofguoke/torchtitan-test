@@ -681,41 +681,6 @@ python release_artifacts.py upload "$EXPERIMENT" --content full
 
 ## 7. 正常训练现象观察与按需监控
 
-### 已有 Turbo 500 步采集的导入
-
-已通过 Release `--scope` 下载的 `recorded_source` 使用同一个 observation 入口。
-已有 `--experiment` 参数识别其规范目录，仅适配单卡、500 步、单次采集的既有 Turbo 数据，不适用于独立
-Ascend 0.4 模型。它与普通自动生成 fixture 的 observation 数据契约隔离，不覆盖旧实验。
-
-```bash
-EXPERIMENT=glm5-a5-turbo-bf16-s500-seed61-20261109
-python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage observation \
-  --experiment "$EXPERIMENT" --data --topology single --training-steps 500
-export CUDA_VISIBLE_DEVICES=0
-python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage observation \
-  --experiment "$EXPERIMENT" --capture reference --topology single --training-steps 500
-python tests/glm5_2_mindstudio/accuracy_benchmark.py --stage observation \
-  --experiment "$EXPERIMENT" --compare --topology single --training-steps 500
-```
-
-`--data` 不重新生成权重或输入，而是验证全部 SHA256、500 步完整性及精度契约后，
-把原始数据无损复制到 `mindstudio_fixtures/accuracy/<experiment>/recorded_training/`。
-原始下载暂存目录保留。NPU 指标规范化为项目拥有的 training_metrics.jsonl 并发布到
-`mindstudio_artifacts/accuracy/<experiment>/single/s500-recorded-<identity>/observations/training/candidate-r1/`。
-manifest 明确标记 imported_turbo_training，不伪造 msProbe dump 或工具链执行记录。
-
-GPU capture 在相同运行层级的 `mindstudio_runs` 中先跑2步 gate，再从同一初始权重
-和记录输入运行500步；保留 FP32 master/reduction、BF16参数、deterministic 和重计算。
-optimizer/scheduler、loss、norm、路由、位置及共享 indexer 配置漂移会被拒绝。
-成功后发布 reference-r1；完成的采集会跳过，失败的运行归档后重试，活动进程拒绝重跑。
-fixture 代次和输入/权重/源配置哈希绑定，已有fixture不一致或损坏时拒绝，不支持force替换。
-
-compare 复用原 `compare_training_metrics` 与交互式 observation 报告组件，在同层级
-`mindstudio_reports` 下生成 summary.json、summary.log 和 training_observation.html；
-HTML同时镜像到 `html_reports/<profile>/training/single.html`。summary.log是便于文本回传的
-指标摘要。单次500步观察不是双repeat正式精度验收。报告仍需要 requirements-reporting.txt
-中的 Panel/pyecharts，不需要安装或运行 msProbe dump hooks。
-
 标准流程不是一开始 dump。完成配置检查后，先运行无 PrecisionDebugger、无 Monitor
 hook 的正常训练观察。它仍使用统一 checkpoint、token plan 和确定性设置，但模型训练走
 正常 TorchTitan 路径，只额外把 Trainer 已经上报的数值指标写入 JSONL：

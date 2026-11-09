@@ -3823,24 +3823,6 @@ def run_mindstudio_cli(
     add_npu_codegen_argument(parser)
     args = parser.parse_args()
 
-    recorded_source = None
-    if args.experiment and Path(args.experiment).name == args.experiment:
-        source = _root(script_path) / base_config.run_root / args.experiment / "recorded_source"
-        recorded_fixture = (_root(script_path) / base_config.fixture_root /
-                            args.experiment / "recorded_training/fixture.json")
-        if source.is_dir() or recorded_fixture.is_file():
-            recorded_source = source
-    if recorded_source is not None:
-        if (base_config.workflow != "observation" or args.training_steps != 500
-                or args.topology != "single" or args.topologies is not None
-                or args.repeat != 1 or args.force or args.dry_run
-                or not (args.data or args.capture or args.compare)):
-            parser.error("Recorded experiment adoption requires observation, --training-steps 500, single, repeat 1, and data/capture/compare; force/dry-run are unsupported")
-        args.recorded_source = recorded_source
-        from .recorded_observation import dispatch
-        dispatch(Path(script_path).resolve().parents[2], args)
-        return
-
     if (
         base_config.workflow in {"observation", "monitor"}
         and args.training_steps is None

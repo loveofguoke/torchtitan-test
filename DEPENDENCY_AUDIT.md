@@ -19,18 +19,6 @@ artifact checksums. Git cleanliness is diagnostic, not a pass/fail condition.
 
 ## Shared-module impact map
 
-`glm5_2_mindstudio/recorded_observation.py` integrates recorded Turbo training
-through the existing observation data/capture/compare actions. Internal
-`recorded_training.py` shares the worker and recorded-batch contract with NPU
-smoke/capture. CUDA is replay-only; native Ascend 0.4 captures cannot be paired
-with current TorchTitan. Run `test_mindstudio_recorded_observation`,
-`test_gpu_replay`, and `test_recorded_batches` after changes. Fixture identity,
-actual input consumption, complete skip, failed retry and active ownership are
-required boundaries. Imported metrics remain explicitly project-owned
-observation evidence, not a fabricated msProbe result. Standard workflows
-without recorded legacy data must remain unchanged. Adoption uses the existing
---experiment selector; no new public entry point or CLI parameter is needed.
-
 Parity CLI configuration is shared by paired/offline entry points in
 `glm5_2_parity/workflow.py`. `model_config.py` reads the selected TorchTitan GLM
 factory; `ParityModelConfig` contains optional overrides, not copied debug sizes.
