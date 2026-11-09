@@ -369,7 +369,12 @@ def _run_test(
     log_path: Path,
 ) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    configuration = json.loads(environment["GLM5_PARITY_SCENARIO_CONFIG_JSON"])
+    child_environment = environment.copy()
+    scenario_json = child_environment.pop("GLM5_PARITY_SCENARIO_CONFIG_JSON")
+    scenario_path = (log_path.parent / "scenario-config.json").resolve()
+    scenario_path.write_text(scenario_json, encoding="utf-8")
+    child_environment["GLM5_PARITY_SCENARIO_CONFIG_FILE"] = str(scenario_path)
+    configuration = json.loads(scenario_json)
     invocation = [sys.executable, *sys.argv]
     configuration["command"] = invocation
     configuration["runtime_log"] = str(log_path)
@@ -395,6 +400,7 @@ def _run_test(
                 "",
                 "- `command.txt`: exact user-facing command.",
                 "- `experiment.json`: resolved experiment configuration.",
+                "- `scenario-config.json`: exact scenario passed to pytest.",
                 f"- `{log_path.name}`: complete pytest stdout and stderr.",
                 "",
             )
@@ -408,7 +414,7 @@ def _run_test(
         process = subprocess.Popen(
             command,
             cwd=root,
-            env=environment,
+            env=child_environment,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,

@@ -4900,6 +4900,12 @@ class Glm5ParitySuite(
 
     @classmethod
     def _fixture_configuration(cls) -> dict[str, Any]:
+        scenario_path = os.environ.get("GLM5_PARITY_SCENARIO_CONFIG_FILE")
+        scenario_json = (
+            Path(scenario_path).read_text(encoding="utf-8")
+            if scenario_path
+            else ""
+        )
         return {
             "layers": cls.LAYER_INDICES,
             "components": cls.RUN_COMPONENTS,
@@ -4915,9 +4921,7 @@ class Glm5ParitySuite(
             "scenario_config_digest": os.environ.get(
                 "GLM5_PARITY_SCENARIO_CONFIG_DIGEST", ""
             ),
-            "scenario_configuration": os.environ.get(
-                "GLM5_PARITY_SCENARIO_CONFIG_JSON", ""
-            ),
+            "scenario_configuration": scenario_json,
         }
 
     @classmethod

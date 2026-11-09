@@ -4,6 +4,7 @@
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -18,6 +19,7 @@ from tests.glm5_2_parity.contracts import (
 from tests.glm5_2_parity.workflow import (
     _config_digest,
     _run_parity_stage,
+    _run_test,
     OfflineEndpointConfig,
     OfflineParityConfig,
     PairedParityConfig,
@@ -77,6 +79,27 @@ def _config() -> OfflineParityConfig:
 
 
 class TestParityWorkflowRerun(unittest.TestCase):
+    def test_large_scenario_reaches_real_child_through_file(self) -> None:
+        scenario = json.dumps({"scenario_id": "large-config", "native_model_config": "x" * 300_000})
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            probe = root / "test_transport.py"
+            probe.write_text(
+                "import os\nfrom pathlib import Path\n"
+                "def test_transport():\n"
+                "    assert 'GLM5_PARITY_SCENARIO_CONFIG_JSON' not in os.environ\n"
+                "    payload = Path(os.environ['GLM5_PARITY_SCENARIO_CONFIG_FILE']).read_text(encoding='utf-8')\n"
+                "    assert payload == Path('expected.json').read_text(encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            (root / "expected.json").write_text(scenario, encoding="utf-8")
+            environment = os.environ.copy()
+            environment["GLM5_PARITY_SCENARIO_CONFIG_JSON"] = scenario
+            with patch("tests.glm5_2_parity.workflow.TEST_TARGET", str(probe)):
+                _run_test(root=root, environment=environment, log_path=root / "run" / "runtime.log")
+            self.assertEqual(environment["GLM5_PARITY_SCENARIO_CONFIG_JSON"], scenario)
+            self.assertEqual((root / "run" / "scenario-config.json").read_text(encoding="utf-8"), scenario)
+
     def setUp(self):
         resolver = patch("tests.glm5_2_parity.workflow._apply_config_arguments",
                          side_effect=lambda config, arguments: config)

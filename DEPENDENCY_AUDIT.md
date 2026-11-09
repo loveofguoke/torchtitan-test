@@ -41,6 +41,12 @@ for consumer layers. Audit both paired/offline paths and run
 workflow regressions after changing these boundaries. CPU plumbing regressions
 do not establish GPU/NPU numerical acceptance or optimizer convergence.
 
+Parity subprocesses receive the full scenario through run-local
+`scenario-config.json`, not an environment-variable payload. Preserve its exact
+JSON text and scenario digest; native sharding configs can exceed Linux's
+per-string process-launch limit. The workflow regression launches a real child
+with a large configuration to guard this boundary for paired/offline stages.
+
 HSDP presets `hsdp2x4` and `hsdp4x2` are defined only in the common topology
 registry (replicate groups x shards per group). All registry-based eight-card
 suites include them. Keep existing member identities unchanged when extending
