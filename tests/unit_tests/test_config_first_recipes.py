@@ -15,6 +15,31 @@ _CASES = [
 ]
 
 
+@pytest.mark.parametrize("seed_checkpoint", [False, True])
+def test_ms_precision_recipe_cli_uses_current_fields(monkeypatch, tmp_path, seed_checkpoint):
+    from tests.glm5_2_precision.workflow import FormalTrainingConfig, _base_training_args
+    from tests.glm5_2_common.topology import ParallelTopology
+    monkeypatch.setattr(config_first, "_LEGACY_CONFIG_STATE", {})
+    arguments = ["capture", "--module", "glm5", "--config", "glm5_debugmodel",
+                 *_base_training_args(FormalTrainingConfig(steps=500),
+                                      dump_folder=tmp_path, topology=ParallelTopology("single", 1)),
+                 "--checkpoint.enable", "--lr_scheduler.total_steps=500"]
+    arguments += (["--checkpoint.create_seed_checkpoint"] if seed_checkpoint else
+                  ["--checkpoint.load_only", f"--checkpoint.initial_load_path={tmp_path.resolve()}"])
+    config_first.translate_config_first_cli(arguments)
+    config = config_first.legacy_config()
+    assert config.precision.dtype == "float32"
+    assert config.precision.param_dtype == "bfloat16"
+    assert config.precision.reduce_dtype == "float32"
+    assert config.optim.lr_scheduler.total_steps == 500
+    assert config.create_seed_checkpoint is seed_checkpoint
+    assert config.checkpointer is not None
+    assert config.activation_remat is not None
+    if not seed_checkpoint:
+        assert config.checkpointer.initial_load_path == str(tmp_path.resolve())
+        assert config.checkpointer.load_only is True
+
+
 @pytest.mark.parametrize("recipe,topology", _CASES)
 def test_real_smoke_recipe_cli(monkeypatch, recipe, topology):
     monkeypatch.setenv("TORCHTITAN_CONFIG_FIRST_CLI", "1")

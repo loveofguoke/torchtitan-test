@@ -92,25 +92,20 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
         )
 
     def test_training_metrics_capture_does_not_require_tensorboard(self) -> None:
-        class BaseLogger:
-            def log(self, metrics, step) -> None:
+        class MetricsProcessor:
+            def log(self, step, global_avg_loss, global_max_loss, grad_norm, **kwargs) -> None:
                 pass
 
-        class LoggerContainer(BaseLogger):
-            def log(self, metrics, step) -> None:
-                pass
-
-        metrics_module = types.ModuleType("torchtitan.components.metrics")
-        metrics_module.BaseLogger = BaseLogger
-        metrics_module.LoggerContainer = LoggerContainer
-        components_module = types.ModuleType("torchtitan.components")
+        metrics_module = types.ModuleType("torchtitan.observability.metrics")
+        metrics_module.MetricsProcessor = MetricsProcessor
+        components_module = types.ModuleType("torchtitan.observability")
         components_module.metrics = metrics_module
         torchtitan_module = types.ModuleType("torchtitan")
-        torchtitan_module.components = components_module
+        torchtitan_module.observability = components_module
         modules = {
             "torchtitan": torchtitan_module,
-            "torchtitan.components": components_module,
-            "torchtitan.components.metrics": metrics_module,
+            "torchtitan.observability": components_module,
+            "torchtitan.observability.metrics": metrics_module,
         }
         values = {
             "loss_metrics/global_avg_loss": 1.25,
@@ -128,8 +123,8 @@ class MindStudioDiagnosticsTest(unittest.TestCase):
                 os.environ, environment, clear=False
             ):
                 _install_training_metrics_capture()
-                BaseLogger().log(values, 1)
-                LoggerContainer().log(values, 2)
+                MetricsProcessor().log(1, 1.25, 1.5, 0.75, num_flops=0)
+                MetricsProcessor().log(2, 1.25, 1.5, 0.75, num_flops=0)
 
             records = [
                 json.loads(line)

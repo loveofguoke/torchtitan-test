@@ -1099,11 +1099,7 @@ def prepare_fixture(
             "--role=rank",
             "--tee=3",
             "-m",
-            (
-                "tests.glm5_2_precision.seed_checkpoint"
-                if endpoint.device_type == "npu"
-                else "torchtitan.train"
-            ),
+            "tests.glm5_2_precision.seed_checkpoint",
         ]
         command.extend(
             [

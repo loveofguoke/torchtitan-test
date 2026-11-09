@@ -55,7 +55,7 @@ def _install_training_metrics_capture() -> None:
         metrics_path.parent.mkdir(parents=True, exist_ok=True)
         metrics_path.write_text("", encoding="utf-8")
 
-    from torchtitan.components.metrics import BaseLogger, LoggerContainer
+    from torchtitan.observability.metrics import MetricsProcessor
 
     def append_jsonl(
         metrics: dict[str, Any],
@@ -80,30 +80,19 @@ def _install_training_metrics_capture() -> None:
             stream.write(json.dumps(record, sort_keys=True, separators=(",", ":")))
             stream.write("\n")
 
-    original_base_log = BaseLogger.log
-    original_container_log = LoggerContainer.log
+    original_log = MetricsProcessor.log
 
-    def base_log_with_jsonl(
-        self: BaseLogger,
-        metrics: dict[str, Any],
-        step: int,
-    ) -> None:
-        original_base_log(self, metrics, step)
-        append_jsonl(metrics, step)
+    def log_with_jsonl(self, step, global_avg_loss, global_max_loss, grad_norm,
+                      *args, **kwargs):
+        result = original_log(self, step, global_avg_loss, global_max_loss,
+                              grad_norm, *args, **kwargs)
+        append_jsonl({"loss_metrics/global_avg_loss": global_avg_loss,
+                      "loss_metrics/global_max_loss": global_max_loss,
+                      "grad_norm": grad_norm,
+                      **(kwargs.get("extra_metrics") or {})}, step)
+        return result
 
-    def container_log_with_jsonl(
-        self: LoggerContainer,
-        metrics: dict[str, Any],
-        step: int,
-    ) -> None:
-        original_container_log(self, metrics, step)
-        append_jsonl(metrics, step)
-
-    # MetricsProcessor uses BaseLogger when TensorBoard/WandB are disabled and
-    # LoggerContainer when either backend is enabled.  Patch both common exits
-    # so observation capture does not depend on an optional logging backend.
-    BaseLogger.log = base_log_with_jsonl
-    LoggerContainer.log = container_log_with_jsonl
+    MetricsProcessor.log = log_with_jsonl
 
 
 def _require_path(name: str) -> Path:
@@ -385,6 +374,9 @@ def _install_training_monitor() -> None:
 
 
 def main() -> None:
+    import sys
+    from tests.glm5_2_common.config_first import translate_config_first_cli
+    sys.argv = translate_config_first_cli(sys.argv)
     mode = os.environ.get(MODE_ENV)
     if mode == "config-check":
         # Official dynamic configuration collection requires these patches to

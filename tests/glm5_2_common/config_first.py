@@ -132,7 +132,28 @@ def legacy_config():
     if "training.max_context_length" in overrides:
         factory_kwargs["seq_len"] = int(overrides["training.max_context_length"])
     config = factory(**factory_kwargs)
+    if overrides.get("checkpoint.enable"):
+        from torchtitan.components.checkpointer import CheckpointManager
+        config.checkpointer = CheckpointManager.Config()
     for dotted_name, value in overrides.items():
+        if dotted_name == "checkpoint.enable":
+            continue
+        if dotted_name == "checkpoint.create_seed_checkpoint":
+            config.create_seed_checkpoint = bool(value)
+            continue
+        if dotted_name == "metrics.enable_tensorboard":
+            if value:
+                from torchtitan.observability.metrics import TensorBoardLogger
+                config.metrics.loggers.append(TensorBoardLogger.Config())
+            continue
+        dotted_name = {
+            "training.dtype": "precision.dtype",
+            "training.mixed_precision_param": "precision.param_dtype",
+            "training.mixed_precision_reduce": "precision.reduce_dtype",
+            "lr_scheduler.total_steps": "optim.lr_scheduler.total_steps",
+        }.get(dotted_name, dotted_name)
+        if dotted_name.startswith("checkpoint."):
+            dotted_name = "checkpointer." + dotted_name.removeprefix("checkpoint.")
         if dotted_name == "parallelism.spmd_backend":
             continue
         if (

@@ -49,7 +49,7 @@ def _build_source_dataloader(
         dp_rank=0,
         tokenizer=tokenizer,
         max_context_length=sequence_length,
-        num_tokens_per_batch=global_batch_size * sequence_length,
+        num_tokens_per_microbatch=global_batch_size * sequence_length,
     )
 
 
@@ -86,9 +86,11 @@ def _write_plan() -> None:
     global_batch_size = int(os.environ[GLOBAL_BATCH_ENV])
     sequence_length = int(os.environ[SEQUENCE_LENGTH_ENV])
 
-    from torchtitan.config import ConfigManager
-
-    config = ConfigManager().parse_args()
+    import sys
+    from torchtitan.config import ConfigLoader
+    from tests.glm5_2_common.config_first import translate_config_first_cli
+    sys.argv = translate_config_first_cli(sys.argv)
+    config = ConfigLoader().load()
     tokenizer = config.tokenizer.build(tokenizer_path=config.hf_assets_path)
     dataloader = _build_source_dataloader(
         config,
@@ -111,7 +113,10 @@ def _write_plan() -> None:
             "wb"
         ) as label_stream, position_path.open("wb") as position_stream:
             for step in range(steps):
-                input_dict, labels_T = next(iterator)
+                batch = next(iterator)
+                if batch.padding_mask.any():
+                    raise ValueError("Token plan v2 cannot represent padded microbatches")
+                input_dict, labels_T = batch.as_input_dict(), batch.labels
                 inputs_BL, labels_BL, positions_BL = _reshape_source_batch(
                     input_dict,
                     labels_T,

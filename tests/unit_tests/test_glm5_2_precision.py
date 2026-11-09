@@ -130,7 +130,7 @@ def test_token_plan_source_uses_current_torchtitan_dataloader_contract() -> None
         "dp_rank": 0,
         "tokenizer": tokenizer,
         "max_context_length": 128,
-        "num_tokens_per_batch": 8192,
+        "num_tokens_per_microbatch": 8192,
     }
 
 
@@ -474,6 +474,31 @@ def _write_synthetic_token_plan(
         encoding="utf-8",
     )
     return tuple(sample_hashes)
+
+
+@pytest.mark.parametrize("mtp_layers", [0, 1])
+def test_fixed_plan_yields_native_microbatches(tmp_path, monkeypatch, mtp_layers):
+    from tests.glm5_2_precision.fixed_token_dataloader import FixedTokenDataLoader
+    from torchtitan.components.data.types import TokenizedTrainingMicrobatch
+    plan = tmp_path / "plan"
+    _write_synthetic_token_plan(plan)
+    monkeypatch.setenv("GLM5_PRECISION_TENSOR_PARALLEL_DEGREE", "1")
+    monkeypatch.setenv("GLM5_PRECISION_CONTEXT_PARALLEL_DEGREE", "1")
+    monkeypatch.setenv("RANK", "0")
+    loader = FixedTokenDataLoader.Config(
+        token_plan_path=str(plan), global_batch_size=4, training_local_batch_size=2,
+        input_contract_directory=str(tmp_path / "contract"), num_mtp_layers=mtp_layers,
+    ).build(dp_world_size=1, dp_rank=0, tokenizer=None,
+            max_context_length=2, num_tokens_per_microbatch=4)
+    batches = list(loader)
+    loader.close()
+    assert len(batches) == 2
+    assert all(isinstance(batch, TokenizedTrainingMicrobatch) for batch in batches)
+    assert batches[0].input.tolist() == [0, 1, 1, 2]
+    assert batches[0].labels.tolist() == [1, 100, 2, 101]
+    assert not batches[0].padding_mask.any()
+    assert batches[0].loss_token_counts.numel() == 1 + mtp_layers
+    assert batches[0].routing_token_counts.numel() == 1 + mtp_layers
 
 
 def test_load_token_plan_accepts_legacy_shifted_label_format(

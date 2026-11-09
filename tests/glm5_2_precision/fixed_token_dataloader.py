@@ -64,19 +64,20 @@ class FixedTokenDataLoader(BaseDataLoader):
         dp_rank: int,
         tokenizer: BaseTokenizer,
         max_context_length: int,
-        num_tokens_per_batch: int,
+        num_tokens_per_microbatch: int,
         **kwargs: Any,
     ) -> None:
         del tokenizer, kwargs
         self.dp_world_size = dp_world_size
         self.dp_rank = dp_rank
-        if num_tokens_per_batch % max_context_length:
+        if num_tokens_per_microbatch % max_context_length:
             raise ValueError(
                 "fixed token batches require an integer number of sequences"
             )
-        self.dataloader_batch_size = num_tokens_per_batch // max_context_length
+        self.dataloader_batch_size = num_tokens_per_microbatch // max_context_length
         self.global_batch_size = config.global_batch_size
         self.training_local_batch_size = config.training_local_batch_size
+        self.num_mtp_layers = config.num_mtp_layers
         self.plan = load_token_plan(config.token_plan_path)
         if self.plan.sequence_length != max_context_length:
             raise ValueError(
@@ -185,10 +186,21 @@ class FixedTokenDataLoader(BaseDataLoader):
             if batch_in_step + 1 == self.num_batches_per_step:
                 self._write_step_contract(optimizer_step)
 
-            yield {
-                "input": inputs_BL.to(torch.long).reshape(-1),
-                "positions": positions_BL.to(torch.long).reshape(-1),
-            }, labels_BL.to(torch.long).reshape(-1)
+            from torchtitan.components.data.types import TokenizedTrainingMicrobatch
+            from torchtitan.models.deepseek_v3.mtp import get_mtp_token_counts
+            labels = labels_BL.to(torch.long).reshape(-1)
+            positions = positions_BL.to(torch.long).reshape(-1)
+            padding = torch.zeros_like(labels, dtype=torch.bool)
+            loss_counts, routing_counts = get_mtp_token_counts(
+                target_mask=labels != -100, positions=positions,
+                padding_mask=padding, num_mtp_layers=self.num_mtp_layers,
+            )
+            yield TokenizedTrainingMicrobatch(
+                input=inputs_BL.to(torch.long).reshape(-1), labels=labels,
+                positions=positions, padding_mask=padding,
+                loss_token_counts=loss_counts[0] if self.num_mtp_layers == 0 else loss_counts,
+                routing_token_counts=routing_counts,
+            )
 
     def _write_step_contract(self, optimizer_step: int) -> None:
         record = {
@@ -218,6 +230,9 @@ class FixedTokenDataLoader(BaseDataLoader):
             ).encode("utf-8"),
             "world_size": self.dp_world_size,
         }
+
+    def close(self) -> None:
+        self._contract_stream.close()
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
         if not state_dict:
@@ -251,24 +266,22 @@ def install_fixed_token_dataloader() -> None:
     global_batch_size = int(os.environ[GLOBAL_BATCH_SIZE_ENV])
     training_local_batch_size = int(os.environ[TRAINING_LOCAL_BATCH_SIZE_ENV])
 
-    from torchtitan.config import ConfigManager
+    from torchtitan.config import ConfigLoader
 
-    original_parse_args = ConfigManager.parse_args
+    original_load = ConfigLoader.load
 
-    def parse_args_with_fixed_tokens(
-        manager: ConfigManager,
-        args: list[str] | None = None,
-    ):
-        config = original_parse_args(manager, args)
+    def load_with_fixed_tokens(manager, *args, **kwargs):
+        config = original_load(manager, *args, **kwargs)
         config.dataloader = FixedTokenDataLoader.Config(
             token_plan_path=plan_path,
             global_batch_size=global_batch_size,
             training_local_batch_size=training_local_batch_size,
             input_contract_directory=contract_directory,
+            num_mtp_layers=config.dataloader.num_mtp_layers,
         )
         # Loading the shared seed checkpoint is intentionally model-only. The
         # fixed dataloader starts from token-plan step zero for every endpoint.
-        config.checkpoint.initial_load_model_only = True
+        config.checkpointer.initial_load_model_only = True
         return config
 
-    ConfigManager.parse_args = parse_args_with_fixed_tokens
+    ConfigLoader.load = load_with_fixed_tokens
