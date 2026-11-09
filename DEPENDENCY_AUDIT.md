@@ -53,6 +53,12 @@ tolerances, report path and process exit code. Missing report finalization is
 reported explicitly, never treated as numerical success. Trace-only rows are
 excluded from checkpoint verdict counts.
 
+The HF reference builder explicitly aligns MLA q/kv RMSNorm epsilon with the
+selected native flavor. HF's MLA constructors use their own defaults rather
+than `config.rms_norm_eps`; setting the latter only aligns decoder norms.
+Both paired and offline HF construction use this builder. This is fixture
+configuration alignment, not a relaxed numerical tolerance or production patch.
+
 HSDP presets `hsdp2x4` and `hsdp4x2` are defined only in the common topology
 registry (replicate groups x shards per group). All registry-based eight-card
 suites include them. Keep existing member identities unchanged when extending
