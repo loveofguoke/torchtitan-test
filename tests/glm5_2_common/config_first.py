@@ -140,6 +140,12 @@ def legacy_config():
         for part in parts[:-1]:
             owner = getattr(owner, part)
         attribute = parts[-1]
+        if (
+            dotted_name == "training.disable_cuda_graphs"
+            and not hasattr(owner, attribute)
+        ):
+            # TorchTitan renamed CUDA graphs to device-neutral accelerator graphs.
+            attribute = "disable_accelerator_graphs"
         if not hasattr(owner, attribute):
             raise AttributeError(
                 f"Current TorchTitan config has no field {dotted_name!r}."

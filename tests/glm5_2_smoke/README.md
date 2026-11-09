@@ -25,6 +25,11 @@ export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
 ## Eager smoke tests
 
+The config-first adapter maps the stable experiment option
+`training.disable_cuda_graphs` to the current TorchTitan field
+`training.disable_accelerator_graphs`. This preserves eager execution without
+changing activation rematerialization or older-checkout CLI behavior.
+
 GPU single-card, one distributed-topology example, and the complete suite:
 
 ```bash

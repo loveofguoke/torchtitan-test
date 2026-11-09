@@ -1,6 +1,10 @@
 import json
+import sys
 from types import SimpleNamespace
 
+import pytest
+
+from tests.glm5_2_common import config_first
 from tests.glm5_2_common.config_first import (
     parse_legacy_dotted_override,
     recipe_contract,
@@ -80,3 +84,39 @@ def test_mtp_legacy_config_emits_resolved_recipe_contract(
     assert serialized["num_mtp_layers"] == 1
     assert serialized["dataloader_num_mtp_layers"] == 1
     assert serialized["mtp_scale"] == 0.3
+
+
+@pytest.mark.parametrize(
+    "graph_field", ["disable_cuda_graphs", "disable_accelerator_graphs"]
+)
+@pytest.mark.parametrize("disabled", [True, False])
+def test_legacy_graph_override_preserves_policy_across_rename(
+    monkeypatch, graph_field, disabled
+) -> None:
+    training = SimpleNamespace(**{graph_field: not disabled})
+    config = SimpleNamespace(training=training)
+    monkeypatch.setitem(
+        sys.modules,
+        "torchtitan.config.parallelism",
+        SimpleNamespace(ParallelismConfig=SimpleNamespace),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "torchtitan_recipes.tests.models",
+        SimpleNamespace(
+            glm5=SimpleNamespace(glm5_debugmodel=lambda **kwargs: config)
+        ),
+    )
+    monkeypatch.setattr(
+        config_first,
+        "_LEGACY_CONFIG_STATE",
+        {
+            "factory": "glm5_debugmodel",
+            "overrides": {"training.disable_cuda_graphs": disabled},
+        },
+    )
+    monkeypatch.setattr(config_first, "recipe_contract", lambda *a, **kw: {})
+
+    assert config_first.legacy_config() is config
+    assert getattr(training, graph_field) is disabled
+    assert vars(training) == {graph_field: disabled}
