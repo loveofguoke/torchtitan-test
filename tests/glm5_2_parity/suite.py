@@ -3694,18 +3694,27 @@ class EndpointTrace:
                     ) -> None:
                         record_order("router", layer_index, label=label)
                         indices = output[1]
-                        scores_for_choice = output[2]
+                        # Router output[2] is now a boolean routing map, not scores.
+                        with torch.no_grad():
+                            scores_for_choice = _module.score_func(_module.gate(_inputs[0]))
                         expert_bias = (
                             _inputs[1] if len(_inputs) > 1 else None
                         )
                         if expert_bias is not None:
                             scores_for_choice = scores_for_choice + expert_bias
                         if _module.num_expert_groups is not None:
-                            scores_for_choice = (
-                                _module._get_node_limited_routing_scores(
-                                    scores_for_choice
-                                )
+                            grouped = scores_for_choice.unflatten(
+                                -1, (_module.num_expert_groups, -1)
                             )
+                            group_scores = grouped.topk(2, dim=-1).values.sum(-1)
+                            group_ids = group_scores.topk(
+                                _module.num_limited_groups, dim=-1, sorted=False
+                            ).indices
+                            excluded = torch.ones_like(group_scores, dtype=torch.bool)
+                            excluded.scatter_(-1, group_ids, False)
+                            scores_for_choice = grouped.masked_fill(
+                                excluded.unsqueeze(-1), float("-inf")
+                            ).flatten(-2)
                         trace.router[label][layer_index] = indices.detach().cpu()
                         trace.router_weights[label][layer_index] = (
                             output[0].detach().cpu()
