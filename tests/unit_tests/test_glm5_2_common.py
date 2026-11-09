@@ -113,10 +113,12 @@ def test_repository_output_lines_are_complete_and_clickable(capsys) -> None:
 
     print_runtime_log(repository_root / "runs" / "runtime.log")
     print_output_path("Report", repository_root / "reports" / "single.html")
+    print_output_path("Parity report", str(repository_root / "parity_reports" / "suite.html"))
 
     assert capsys.readouterr().out.splitlines() == [
         "Runtime log: torchtitan-test/runs/runtime.log",
         "Report: torchtitan-test/reports/single.html",
+        "Parity report: torchtitan-test/parity_reports/suite.html",
     ]
 
 

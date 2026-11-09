@@ -30,10 +30,10 @@ PROCESS_TERMINATION_GRACE_SECONDS = 10.0
 MANAGED_PROCESS_GROUP_ENV = "_TORCHTITAN_TEST_MANAGED_PROCESS_GROUP"
 
 
-def display_repository_path(path: Path) -> str:
+def display_repository_path(path: str | Path) -> str:
     """Render repository-owned paths from the checkout directory name."""
 
-    resolved = path.resolve()
+    resolved = Path(path).resolve()
     try:
         relative = resolved.relative_to(REPOSITORY_ROOT)
     except ValueError:
@@ -77,7 +77,7 @@ def print_runtime_log(log_path: Path) -> None:
     _print_atomic_line(f"Runtime log: {display_repository_path(log_path)}")
 
 
-def print_output_path(label: str, path: Path) -> None:
+def print_output_path(label: str, path: str | Path) -> None:
     """Print a clickable repository-relative experiment output path."""
 
     _print_atomic_line(f"{label}: {display_repository_path(path)}")
