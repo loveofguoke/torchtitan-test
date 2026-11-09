@@ -802,6 +802,17 @@ def _titan_config(model_size: ParityModelSize) -> Any:
     )
 
 
+def _build_hf_model(model_size: ParityModelSize) -> torch.nn.Module:
+    model = GlmMoeDsaForCausalLM(_hf_config(model_size)).float()
+    native = _titan_config(model_size)
+    # HF MLA norms use constructor defaults instead of config.rms_norm_eps.
+    # Debug flavors must compare the same normalization equation on both sides.
+    for layer, config in zip(model.model.layers, native.layers, strict=True):
+        layer.self_attn.q_a_layernorm.variance_epsilon = config.attention.q_norm.eps
+        layer.self_attn.kv_a_layernorm.variance_epsilon = config.attention.kv_norm.eps
+    return model
+
+
 def _build_pair(
     device: torch.device,
     *,
@@ -814,7 +825,7 @@ def _build_pair(
     torch.manual_seed(seed)
     # Build both implementations from one HF state dict so every comparison
     # tests execution differences rather than unrelated random weights.
-    hf_model = GlmMoeDsaForCausalLM(_hf_config(model_size)).float()
+    hf_model = _build_hf_model(model_size)
     titan_config = _titan_config(model_size)
     titan_model = titan_config.build()
     titan_model.init_states()  # Initialize decoder runtime state.
@@ -4988,7 +4999,7 @@ class Glm5ParitySuite(
                     "capturing an HF endpoint requires Transformers: "
                     f"{_TRANSFORMERS_IMPORT_ERROR!r}"
                 )
-            model = GlmMoeDsaForCausalLM(_hf_config(cls.model_size)).float()
+            model = _build_hf_model(cls.model_size)
             incompatible = model.load_state_dict(
                 cls.adapter.to_hf(canonical_state), strict=False
             )

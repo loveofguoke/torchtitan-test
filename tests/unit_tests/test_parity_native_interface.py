@@ -21,6 +21,22 @@ def test_terminal_summary_includes_failures_and_effective_tolerance():
     assert "atol=0.01 rtol=0.02" in summary
     assert "actual=[2] expected=[1]" in summary
     assert "e2e/loss" in summary
+
+
+def test_hf_mla_norms_follow_native_debug_configuration(monkeypatch):
+    monkeypatch.setenv("GLM5_PARITY_MODEL_CONFIG", "debugmodel")
+    size = ParityModelSize()
+    pair = _build_pair(torch.device("cpu"), model_size=size)
+    values = torch.randn(16, size.dim)
+    for hf, native in zip(pair.hf.model.layers, pair.titan.layers.values(), strict=True):
+        attention = native.attention
+        assert hf.self_attn.q_a_layernorm.variance_epsilon == attention.q_norm.eps
+        assert hf.self_attn.kv_a_layernorm.variance_epsilon == attention.kv_norm.eps
+        torch.testing.assert_close(
+            attention.q_norm(attention.wq_a(values)),
+            hf.self_attn.q_a_layernorm(hf.self_attn.q_a_proj(values)),
+            rtol=1e-6, atol=1e-7,
+        )
 from tests.glm5_2_parity.suite import (
     FP32, ModelEndpoint, ParityDataFactory, ParityModelSize, _build_pair,
     _hf_config, _run_causal_lm_endpoint, _set_titan_routed_expert_compute_dtype,
