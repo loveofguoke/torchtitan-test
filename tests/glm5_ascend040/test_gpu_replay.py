@@ -107,3 +107,18 @@ def test_current_recipe_against_recorded_config(tmp_path):
     path = tmp_path / "config.txt"
     path.write_text(repr(config), encoding="utf-8")
     validate_resolved_configs(Path(os.environ["GLM_TEST_REFERENCE_CONFIG"]), path)
+
+
+@pytest.mark.skipif(not os.environ.get("GLM_TEST_REFERENCE_ROOT"), reason="Recorded fixture not supplied")
+def test_real_recorded_fixture_matches_current_model():
+    import torch
+    from torchtitan.config.parallelism import ParallelismConfig
+    from torchtitan_recipes.tests.models.glm5 import glm5_debugmodel
+    root = Path(os.environ["GLM_TEST_REFERENCE_ROOT"])
+    _, fixture, _ = validate_reference(root)
+    config = glm5_debugmodel(seq_len=128, parallelism=ParallelismConfig(enable_sequence_parallel=True))
+    model = config.model.build()
+    model.init_states()
+    state = torch.load(fixture, map_location="cpu", weights_only=True)
+    result = model.load_state_dict(state, strict=True)
+    assert not result.missing_keys and not result.unexpected_keys

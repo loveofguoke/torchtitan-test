@@ -13,7 +13,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from tests.glm5_2_common.cli import print_output_path
+from tests.glm5_2_common.cli import print_output_path, run_managed_process
 
 
 def sha256(path):
@@ -151,8 +151,8 @@ def run(args):
                    "--nproc-per-node=1", str(Path(__file__).with_name("worker.py"))]
         print("command:", subprocess.list2cmdline(command), "steps:", steps, flush=True)
         with (destination / "runtime.log").open("w", encoding="utf-8") as log:
-            completed = subprocess.run(command, cwd=args.titan, env=environment,
-                                       stdout=log, stderr=subprocess.STDOUT)
+            completed = run_managed_process(command, cwd=args.titan, env=environment,
+                                            stdout=log, stderr=subprocess.STDOUT)
         print("training_exit_code:", completed.returncode, flush=True)
         if completed.returncode:
             raise RuntimeError(f"Training failed; see {destination / 'runtime.log'}")
