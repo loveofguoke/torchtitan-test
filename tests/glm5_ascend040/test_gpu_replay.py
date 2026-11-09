@@ -125,3 +125,8 @@ def test_real_recorded_fixture_matches_current_model():
     state = torch.load(fixture, map_location="cpu", weights_only=True)
     result = model.load_state_dict(state, strict=True)
     assert not result.missing_keys and not result.unexpected_keys
+    from recorded_batches import replay_batches
+    batches = list(replay_batches(root / "steps-500/inputs"))
+    assert len(batches) == 500
+    assert all(batch.input.device.type == "cpu" and batch.input.numel() == 1024
+               for batch in batches)
