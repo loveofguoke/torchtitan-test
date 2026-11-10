@@ -15,6 +15,37 @@ _CASES = [
 ]
 
 
+@pytest.mark.parametrize("stage", ["warmup", "sparse"])
+def test_indexer_stage_smoke_builds_trainable_auxiliary_loss(monkeypatch, stage):
+    from torchtitan.models.common.aux_loss import AuxLoss
+    from torchtitan.models.glm5.dsa import Glm5DsaIndexer
+
+    monkeypatch.setenv("TORCHTITAN_CONFIG_FIRST_CLI", "1")
+    monkeypatch.setattr(config_first, "_LEGACY_CONFIG_STATE", {})
+    monkeypatch.setattr(AuxLoss, "_group_counts", AuxLoss._group_counts.copy())
+    config_first.translate_config_first_cli(
+        [
+            "train_gpu.py",
+            "--module",
+            "glm5",
+            "--config",
+            f"glm5_debugmodel_{stage}",
+            "--training.max_context_length=128",
+        ]
+    )
+    config = config_first.legacy_config()
+    assert config.activation_remat is not None
+    import torch
+
+    with torch.device("meta"):
+        model = config.model.build()
+    indexers = [m for m in model.modules() if isinstance(m, Glm5DsaIndexer)]
+    assert indexers and all(p.requires_grad for m in indexers for p in m.parameters())
+    assert any(isinstance(m, AuxLoss) for m in model.modules())
+    backbone = model.layers["0"].attention.wq_b
+    assert all(p.requires_grad == (stage == "sparse") for p in backbone.parameters())
+
+
 @pytest.mark.parametrize("seed_checkpoint", [False, True])
 def test_ms_precision_recipe_cli_uses_current_fields(monkeypatch, tmp_path, seed_checkpoint):
     from tests.glm5_2_precision.workflow import FormalTrainingConfig, _base_training_args

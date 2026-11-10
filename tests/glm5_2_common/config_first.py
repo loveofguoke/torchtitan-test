@@ -72,6 +72,8 @@ def translate_config_first_cli(argv: list[str]) -> list[str]:
     factories = {
         "debugmodel": "glm5_debugmodel",
         "glm5_debugmodel": "glm5_debugmodel",
+        "glm5_debugmodel_warmup": "glm5_debugmodel",
+        "glm5_debugmodel_sparse": "glm5_debugmodel",
         "glm5_2_debugmodel_mtp": "glm5_2_debugmodel_mtp",
         "glm5_2_scaled_debugmodel": "glm5_2_scaled_debugmodel",
     }
@@ -81,7 +83,14 @@ def translate_config_first_cli(argv: list[str]) -> list[str]:
         raise ValueError(
             f"Unsupported config-first GLM recipe {config_name!r}."
         ) from error
-    _LEGACY_CONFIG_STATE.update(factory=factory_name, overrides=overrides)
+    _LEGACY_CONFIG_STATE.update(
+        factory=factory_name,
+        overrides=overrides,
+        indexer_stage={
+            "glm5_debugmodel_warmup": "warmup",
+            "glm5_debugmodel_sparse": "sparse",
+        }.get(str(config_name)),
+    )
     sys.modules["torchtitan_test_config_first"] = sys.modules[__name__]
     translated.extend(
         ["--module", "torchtitan_test_config_first", "--config", "legacy_config"]
@@ -96,14 +105,13 @@ def recipe_contract(config, *, factory_name: str) -> dict[str, object]:
     loss_config = config.loss.loss_fn
     return {
         "factory": factory_name,
+        "indexer_stage": getattr(model_config, "indexer_training_stage", "frozen"),
         "model_config": f"{type(model_config).__module__}.{type(model_config).__qualname__}",
         "num_transformer_layers": len(model_config.layers),
         "num_mtp_layers": len(mtp_layers),
         "loss_config": f"{type(loss_config).__module__}.{type(loss_config).__qualname__}",
         "mtp_scale": getattr(loss_config, "mtp_scale", None),
-        "dataloader_num_mtp_layers": getattr(
-            config.dataloader, "num_mtp_layers", None
-        ),
+        "dataloader_num_mtp_layers": getattr(config.dataloader, "num_mtp_layers", None),
     }
 
 
@@ -129,11 +137,14 @@ def legacy_config():
         setattr(parallelism, attribute, value)
 
     factory_kwargs = {"parallelism": parallelism}
+    if _LEGACY_CONFIG_STATE.get("indexer_stage") is not None:
+        factory_kwargs["indexer_stage"] = _LEGACY_CONFIG_STATE["indexer_stage"]
     if "training.max_context_length" in overrides:
         factory_kwargs["seq_len"] = int(overrides["training.max_context_length"])
     config = factory(**factory_kwargs)
     if overrides.get("checkpoint.enable"):
         from torchtitan.components.checkpointer import CheckpointManager
+
         config.checkpointer = CheckpointManager.Config()
     for dotted_name, value in overrides.items():
         if dotted_name == "checkpoint.enable":
@@ -144,6 +155,7 @@ def legacy_config():
         if dotted_name == "metrics.enable_tensorboard":
             if value:
                 from torchtitan.observability.metrics import TensorBoardLogger
+
                 config.metrics.loggers.append(TensorBoardLogger.Config())
             continue
         dotted_name = {
@@ -156,9 +168,8 @@ def legacy_config():
             dotted_name = "checkpointer." + dotted_name.removeprefix("checkpoint.")
         if dotted_name == "parallelism.spmd_backend":
             continue
-        if (
-            dotted_name == "training.max_context_length"
-            and not hasattr(config.training, "max_context_length")
+        if dotted_name == "training.max_context_length" and not hasattr(
+            config.training, "max_context_length"
         ):
             # The recipe's seq_len builds model attention/RoPE and data context.
             continue
@@ -167,9 +178,8 @@ def legacy_config():
         for part in parts[:-1]:
             owner = getattr(owner, part)
         attribute = parts[-1]
-        if (
-            dotted_name == "training.disable_cuda_graphs"
-            and not hasattr(owner, attribute)
+        if dotted_name == "training.disable_cuda_graphs" and not hasattr(
+            owner, attribute
         ):
             # TorchTitan renamed CUDA graphs to device-neutral accelerator graphs.
             attribute = "disable_accelerator_graphs"

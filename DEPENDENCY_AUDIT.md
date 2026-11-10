@@ -180,6 +180,15 @@ changes recorded by the combination submission-readiness report.
 
 ## Experiment lifecycle contract
 
+Native GLM two-stage smoke reuses `train_smoke.py --config` with
+`glm5_debugmodel_warmup`/`glm5_debugmodel_sparse`. The config-first adapter
+passes `indexer_stage` into the official recipe before building the model,
+and the resolved recipe contract records it. Smoke rejects a stage mismatch;
+these selections have distinct existing config-derived run identities.
+No capture, fixture, release, precision or topology schema is changed. Regress
+`test_config_first`, `test_config_first_recipes` and `test_glm5_2_smoke`, then
+the selected GPU smoke runs with default activation rematerialization enabled.
+
 - `--force` starts a new selected generation and removes every selected old
   run, artifact, report, state file, and archived failed/previous output before
   launching the first process.

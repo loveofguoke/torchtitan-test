@@ -25,6 +25,28 @@ export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
 ## Eager smoke tests
 
+### Native GLM indexer stages
+
+The existing config-first adapter accepts `glm5_debugmodel_warmup` and
+`glm5_debugmodel_sparse` as smoke selections. Both call the official
+`glm5_debugmodel(seq_len=..., indexer_stage=...)` factory; they do not contain
+model implementations or change the default activation-rematerialization policy.
+The runtime recipe contract records the resolved stage, which smoke checks
+before reporting success. Existing frozen runs keep their configuration names
+and output identities.
+
+```bash
+python tests/glm5_2_smoke/train_smoke.py \
+  --device gpu --topology single --steps 2 --config glm5_debugmodel_warmup
+python tests/glm5_2_smoke/train_smoke.py \
+  --device gpu --topology single --steps 2 --config glm5_debugmodel_sparse
+```
+
+These are independent launch/forward/backward/optimizer smoke runs, not a
+checkpoint handoff or convergence experiment. The official CPU GLM suite
+separately checks strict warmup-to-sparse model-weight loading and gradient
+ownership; optimizers are rebuilt when changing stages.
+
 The config-first adapter maps the stable experiment option
 `training.disable_cuda_graphs` to the current TorchTitan field
 `training.disable_accelerator_graphs`. This preserves eager execution without

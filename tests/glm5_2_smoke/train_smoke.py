@@ -765,6 +765,15 @@ def _run_topology(
     evidence_error = None
     mtp_execution_proof = None
     try:
+        expected_stage = {
+            "glm5_debugmodel_warmup": "warmup",
+            "glm5_debugmodel_sparse": "sparse",
+        }.get(config)
+        if expected_stage is not None and (
+            recipe_contract is None
+            or recipe_contract.get("indexer_stage") != expected_stage
+        ):
+            raise ValueError("Smoke did not resolve the requested GLM indexer stage.")
         mtp_execution_proof = _mtp_execution_proof(
             config,
             recipe_contract,
