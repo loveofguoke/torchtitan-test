@@ -30,6 +30,33 @@ Shared consumers have no local indexer module; independent attention/block
 checks of them are rejected because they require producer-layer context.
 Producer-layer component checks can still select only the relevant layers.
 
+The terminal result summary lists indexer/router checkpoints even when they
+pass. A missing trace on both endpoints is an error for an indexer-producing
+layer; only shared consumer layers may omit both traces. This prevents a
+broken hook from looking like successful HF selection validation.
+
+## TorchTitan PR review checks
+
+Reuse the paired entry point for both independent producer checks and the
+released sharing schedule. These are reduced random-initialization checks,
+not real-checkpoint fused/reference overlap or convergence evidence:
+
+```bash
+python tests/glm5_2_parity/titan_hf_gpu_fp32_random_paired.py --run \
+  --visible-device 0 --sequence-length 128
+python tests/glm5_2_parity/titan_hf_gpu_fp32_random_paired.py --run \
+  --visible-device 0 --sequence-length 256
+python tests/glm5_2_parity/titan_hf_gpu_fp32_random_paired.py --run \
+  --visible-device 0 --model-config glm5_2_debugmodel --components e2e \
+  --sequence-length 128
+```
+
+Read the trailing `PARITY RESULT SUMMARY` and the run-local
+`result-summary.txt`; retain the scenario configuration and source SHA with
+the result. FP32 discrete selection remains exact, and no tolerance is
+relaxed for these checks. See the existing NVIDIA performance entry point
+and [review workload](../glm5_2_nvidia/PR_REVIEW.md) for timing evidence.
+
 Offline scenario files expose one required stage at a time:
 
 | Parameter | Purpose | Default |

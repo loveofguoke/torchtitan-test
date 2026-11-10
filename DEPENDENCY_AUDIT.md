@@ -53,6 +53,19 @@ tolerances, report path and process exit code. Missing report finalization is
 reported explicitly, never treated as numerical success. Trace-only rows are
 excluded from checkpoint verdict counts.
 
+PR-review parity summaries retain successful indexer/router checkpoints as
+well as failures. Both endpoints missing an indexer trace is only valid for a
+native shared consumer; a producer must emit a checkpoint or fail. This rule
+applies to paired execution and offline capture/compare, without changing the
+tensor artifact schema or thresholds.
+
+The existing performance metrics process applies the same config-first CLI
+translation as train_gpu.py before invoking TorchTitan. Under the explicit
+TORCHTITAN_CONFIG_FIRST_CLI contract it imports observability metrics/profiler;
+legacy launches retain the historical imports. NVIDIA, MindStudio and generic
+performance launchers share this process; preserve their old default behavior.
+See glm5_2_nvidia/PR_REVIEW.md for the fixed-global-work CP1/2/4 review workload.
+
 The HF reference builder explicitly aligns MLA q/kv RMSNorm epsilon with the
 selected native flavor. HF's MLA constructors use their own defaults rather
 than `config.rms_norm_eps`; setting the latter only aligns decoder norms.

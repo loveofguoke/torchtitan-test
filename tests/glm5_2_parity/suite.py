@@ -3250,6 +3250,12 @@ class ParitySuiteReport:
                 f"detail={result.detail}"
             ).replace("\n", " ")
         lines.extend(describe(s, r) for s, r in failures[:20])
+        lines.append("Indexer and router checkpoints:")
+        selections = [
+            (s, r) for s, r in checkpoints
+            if r.component in {"indexer", "router_indices"}
+        ]
+        lines.extend(describe(s, r) for s, r in selections)
         lines.append("End-to-end outputs and first gradient failures:")
         selected = [(s, r) for s, r in checkpoints if r.component in {"logits", "loss"}]
         selected.extend((s, r) for s, r in failures if "gradient" in r.component)
@@ -7816,7 +7822,10 @@ class Glm5ParitySuite(
                 f"{self._endpoint_path(spec.actual, layer, 'indexer')} <-> "
                 f"{self._endpoint_path(spec.expected, layer, 'indexer')}"
             )
-            if actual_indexer is None and expected_indexer is None:
+            if (
+                actual_indexer is None and expected_indexer is None
+                and self.pair.titan_layer(layer).attention.indexer is None
+            ):
                 # Shared consumers have no physical indexer module to execute.
                 pass
             elif actual_indexer is None or expected_indexer is None:

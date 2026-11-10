@@ -27,6 +27,50 @@ from tests.glm5_2_performance.dynamic_profile import (
 )
 from tests.glm5_2_performance.comparison import build_comparison
 from tests.glm5_2_performance.capture_metrics import _partition_numeric_metrics
+
+
+def test_config_first_performance_metrics_use_current_logger(monkeypatch, tmp_path):
+    import sys
+    from types import ModuleType
+    from tests.glm5_2_performance import capture_metrics
+
+    class Logger:
+        def log(self, metrics, step):
+            pass
+
+    current = ModuleType("torchtitan.observability.metrics")
+    current.TensorBoardLogger = Logger
+    monkeypatch.setitem(sys.modules, current.__name__, current)
+    monkeypatch.setenv("TORCHTITAN_CONFIG_FIRST_CLI", "1")
+    monkeypatch.setenv(capture_metrics.METRICS_PATH_ENV, str(tmp_path / "metrics.jsonl"))
+    monkeypatch.setenv("RANK", "0")
+    capture_metrics._install_metrics_capture()
+    Logger().log({"loss": 1.25}, 1)
+    rows = (tmp_path / "metrics.jsonl").read_text().splitlines()
+    assert len(rows) == 1
+    assert '"loss":1.25' in rows[0]
+
+
+def test_performance_worker_translates_cli_before_training(monkeypatch):
+    import sys
+    from types import ModuleType
+    from tests.glm5_2_common import config_first
+    from tests.glm5_2_performance import capture_metrics
+
+    events = []
+    translated = ["capture", "--module", "torchtitan_test_config_first"]
+    monkeypatch.setattr(config_first, "translate_config_first_cli", lambda argv: translated)
+    monkeypatch.setattr(sys, "argv", ["capture", "--module", "glm5"])
+    monkeypatch.delenv("GLM5_PRECISION_TOKEN_PLAN_PATH", raising=False)
+    monkeypatch.setenv("TORCHTITAN_DEVICE", "gpu")
+    for name in ("configure_compiler_cache", "_install_gpu_rank_filter",
+                 "_install_reduction_dtype_override", "_install_metrics_capture"):
+        monkeypatch.setattr(capture_metrics, name, lambda: None)
+    train = ModuleType("torchtitan.train")
+    train.main = lambda: events.append(list(sys.argv))
+    monkeypatch.setitem(sys.modules, train.__name__, train)
+    capture_metrics.main()
+    assert events == [translated]
 from tests.glm5_2_performance.benchmark_metrics import (
     bootstrap_median_ci,
     detect_steady_state,

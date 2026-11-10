@@ -13,6 +13,7 @@ import json
 import math
 import os
 from pathlib import Path
+import sys
 import time
 from typing import Any, Literal
 
@@ -89,7 +90,10 @@ def _install_metrics_capture() -> None:
     rank = int(os.environ.get("RANK", "0"))
     rank_path = path.with_name(f"{path.stem}.rank-{rank}{path.suffix}")
 
-    from torchtitan.components.metrics import TensorBoardLogger
+    if os.environ.get("TORCHTITAN_CONFIG_FIRST_CLI") == "1":
+        from torchtitan.observability.metrics import TensorBoardLogger
+    else:
+        from torchtitan.components.metrics import TensorBoardLogger
 
     original_log = TensorBoardLogger.log
 
@@ -136,7 +140,10 @@ def _install_gpu_rank_filter() -> None:
     selected_ranks = {int(part.strip()) for part in value.split(",")}
 
     import torch
-    from torchtitan.tools.profiler import Profiler
+    if os.environ.get("TORCHTITAN_CONFIG_FIRST_CLI") == "1":
+        from torchtitan.observability.profiler import Profiler
+    else:
+        from torchtitan.tools.profiler import Profiler
 
     original_build = Profiler.build_torch_profiler
 
@@ -155,6 +162,9 @@ def _install_gpu_rank_filter() -> None:
 
 
 def main() -> None:
+    from tests.glm5_2_common.config_first import translate_config_first_cli
+
+    sys.argv = translate_config_first_cli(sys.argv)
     # Performance capture launches this module directly instead of going
     # through train_npu.py. Apply the same run-local compiler-cache routing
     # before importing TorchTitanTurbo, TorchNPU, or Triton so stale compiled

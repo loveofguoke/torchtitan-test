@@ -23,6 +23,21 @@ def test_terminal_summary_includes_failures_and_effective_tolerance():
     assert "e2e/loss" in summary
 
 
+def test_terminal_summary_exposes_successful_indexer_checkpoints():
+    recorder = parity.ParityRecorder(parity.FP32)
+    indices = torch.tensor([[[0, -1], [0, 1], [1, 2]]])
+    recorder.discrete(
+        scope="configured", component="indexer", layer=0,
+        actual=indices, expected=indices,
+        positions=torch.arange(3).unsqueeze(0),
+    )
+    report = parity.ParitySuiteReport("indexer summary")
+    report.add("end-to-end", recorder)
+    summary = report.terminal_summary()
+    assert "Indexer and router checkpoints:" in summary
+    assert "configured/indexer layer=0 | status=PASS" in summary
+
+
 def test_hf_mla_norms_follow_native_debug_configuration(monkeypatch):
     monkeypatch.setenv("GLM5_PARITY_MODEL_CONFIG", "debugmodel")
     size = ParityModelSize()
@@ -122,3 +137,36 @@ def test_shared_indexer_model_emits_end_to_end_gradient_records(monkeypatch):
     recorder = probe.compare_end_to_end(probe._configured_spec())
     assert any(row.scope == "gradient" for row in recorder.results)
     assert not any(row.component == "indexer" and row.layer == 3 for row in recorder.results)
+
+
+def test_missing_both_producer_traces_cannot_silently_pass(monkeypatch):
+    from contextlib import contextmanager
+
+    monkeypatch.setenv("GLM5_PARITY_MODEL_CONFIG", "debugmodel")
+    monkeypatch.setenv("GLM5_PARITY_MODEL_LAYERS", "1")
+    monkeypatch.setattr(
+        parity, "_parity_device",
+        lambda: (torch.device("cpu"), torch.cpu, "cpu"),
+    )
+
+    class Probe(parity.Glm5ParitySuite):
+        SEQUENCE_LENGTH = 16
+        BATCH_SIZE = 1
+        TITAN_ROUTED_EXPERT_COMPUTE = "fp32"
+
+    install = parity.EndpointTrace.install
+
+    @contextmanager
+    def without_indexer_trace(endpoints, layer_indices):
+        with install(endpoints, layer_indices) as trace:
+            yield trace
+            for captured in trace.indexer.values():
+                captured.clear()
+
+    monkeypatch.setattr(parity.EndpointTrace, "install", without_indexer_trace)
+    Probe.setUpClass()
+    probe = Probe("test_configured_precision_suite")
+    recorder = probe.compare_end_to_end(probe._configured_spec())
+    missing = [row for row in recorder.results if row.component == "indexer"]
+    assert missing
+    assert all(not row.passed for row in missing)
