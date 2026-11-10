@@ -107,8 +107,22 @@ def _cast_floating_dtype_preserving_complex_buffers(
     model: torch.nn.Module,
     dtype: torch.dtype,
 ) -> None:
-    """Cast model compute tensors without destroying complex-valued buffers."""
+    """Preserve complex buffers and declared full-precision parameters."""
     complex_buffers: list[tuple[torch.nn.Module, str, torch.Tensor]] = []
+    preserved_parameters = []
+    preserve_names = (
+        {name for name, _ in model.named_preserve_dtype_params()}
+        if hasattr(model, "named_preserve_dtype_params") else set()
+    )
+    for module_name, module in model.named_modules():
+        for name, parameter in module._parameters.items():
+            qualified_name = f"{module_name}.{name}" if module_name else name
+            if parameter is not None and (
+                qualified_name in preserve_names
+                or qualified_name.endswith("indexer.weights_proj.weight")
+            ):
+                preserved_parameters.append((module, name, parameter))
+                module._parameters[name] = None
     for module in model.modules():
         for name, buffer in module._buffers.items():
             if buffer is not None and buffer.is_complex():
@@ -117,6 +131,8 @@ def _cast_floating_dtype_preserving_complex_buffers(
     try:
         model.to(dtype=dtype)
     finally:
+        for module, name, parameter in preserved_parameters:
+            module._parameters[name] = parameter
         for module, name, buffer in complex_buffers:
             module._buffers[name] = buffer
 

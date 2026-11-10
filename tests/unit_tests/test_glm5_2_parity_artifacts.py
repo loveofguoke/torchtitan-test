@@ -70,6 +70,26 @@ def test_parity_model_dtype_cast_preserves_complex_buffers() -> None:
     )
 
 
+def test_parity_dtype_cast_preserves_declared_parameters_without_rounding() -> None:
+    model = torch.nn.Module()
+    model.weight = torch.nn.Parameter(torch.tensor([1.000123], dtype=torch.float32))
+    original = model.weight.detach().clone()
+    model.named_preserve_dtype_params = lambda: iter([("weight", model.weight)])
+    glm5_parity._cast_floating_dtype_preserving_complex_buffers(model, torch.bfloat16)
+    assert model.weight.dtype is torch.float32
+    torch.testing.assert_close(model.weight, original, rtol=0, atol=0)
+
+
+def test_parity_dtype_cast_preserves_hf_indexer_weights_without_rounding() -> None:
+    model = torch.nn.Module()
+    model.indexer = torch.nn.Module()
+    model.indexer.weights_proj = torch.nn.Linear(2, 1, bias=False)
+    original = model.indexer.weights_proj.weight.detach().clone()
+    glm5_parity._cast_floating_dtype_preserving_complex_buffers(model, torch.bfloat16)
+    assert model.indexer.weights_proj.weight.dtype is torch.float32
+    torch.testing.assert_close(model.indexer.weights_proj.weight, original, rtol=0, atol=0)
+
+
 def test_auto_parity_does_not_reuse_an_incidentally_loaded_npu(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
