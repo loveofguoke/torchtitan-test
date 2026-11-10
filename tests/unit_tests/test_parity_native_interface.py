@@ -11,7 +11,7 @@ from tests.glm5_2_parity import suite as parity
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 def test_cuda_glm_indexer_selects_native_backend(dtype):
-    """Exercise production dispatch, including FP32 mixing weights and packing."""
+    """Exercise production dispatch with FP32 weights cast at the kernel boundary."""
     from unittest.mock import patch
 
     from torchtitan.models.common.attn_gym import lightning_indexer
@@ -32,10 +32,11 @@ def test_cuda_glm_indexer_selects_native_backend(dtype):
     torch.cuda.synchronize()
     assert kernel.call_args.kwargs["impl"] == ("fused" if dtype == torch.bfloat16 else "reference")
     assert kernel.call_args.args[0].dtype == dtype
-    assert kernel.call_args.args[2].dtype == torch.float32
+    assert kernel.call_args.args[2].dtype == dtype
+    assert w.dtype == torch.float32
     assert result.shape == (128, 8)
     assert not result.requires_grad
-    print(f"production indexer: input={dtype} impl={kernel.call_args.kwargs['impl']} weights=fp32")
+    print(f"production indexer: input={dtype} impl={kernel.call_args.kwargs['impl']} kernel_weights={dtype} source_weights={w.dtype}")
 
 
 @pytest.mark.parametrize("sequence_length", [128, 512])
