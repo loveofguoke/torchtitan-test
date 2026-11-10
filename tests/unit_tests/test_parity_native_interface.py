@@ -9,6 +9,48 @@ from tests.glm5_2_parity.model_config import load_model_config, model_dimensions
 from tests.glm5_2_parity import suite as parity
 
 
+def test_cuda_gather_attention_graph_matches_eager_output_and_gradients():
+    """Guard device offsets and fused multi-head pool execution under capture."""
+    from torchtitan.models.glm5.dsa import DsaMetadata, Glm5SparseAttention
+
+    if not torch.cuda.is_available() or torch.version.hip:
+        pytest.skip("requires NVIDIA CUDA")
+    generator = torch.Generator(device="cuda").manual_seed(42)
+    tensors = [
+        torch.randn(32, 2, 64, device="cuda", dtype=torch.bfloat16,
+                    generator=generator, requires_grad=True)
+        for _ in range(3)
+    ]
+    metadata = DsaMetadata.from_positions(torch.arange(32, device="cuda"))
+    rows = torch.arange(32, device="cuda", dtype=torch.int32)
+    indices = torch.stack((rows, rows - 1), dim=-1)
+    attention = Glm5SparseAttention.Config().build()
+
+    def execute():
+        output = attention(
+            *tensors, attention_metadata=metadata,
+            topk_indices_QS=indices, scale=0.125,
+        )
+        gradients = torch.autograd.grad(output.float().square().sum(), tensors)
+        return output, gradients
+
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        for _ in range(3):
+            eager_output, eager_gradients = execute()
+    torch.cuda.current_stream().wait_stream(stream)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        graph_output, graph_gradients = execute()
+    graph.replay()
+    torch.cuda.synchronize()
+    torch.testing.assert_close(graph_output, eager_output, rtol=0, atol=0)
+    for actual, expected in zip(graph_gradients, eager_gradients, strict=True):
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    print("fused gather_attn: H-head pool, window=0, CUDA graph output/gradients match eager exactly")
+
+
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 def test_cuda_glm_indexer_selects_native_backend(dtype):
     """Exercise production dispatch with FP32 weights cast at the kernel boundary."""
