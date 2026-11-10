@@ -9,6 +9,56 @@ from tests.glm5_2_parity.model_config import load_model_config, model_dimensions
 from tests.glm5_2_parity import suite as parity
 
 
+@pytest.mark.parametrize("sequence_length", [128, 512])
+def test_cuda_bf16_fused_indexer_overlap(sequence_length, tmp_path):
+    """Measure random-input selection overlap without asserting exact BF16 ranking."""
+    import json
+
+    from torchtitan.models.common.attn_gym import lightning_indexer
+
+    if not torch.cuda.is_available():
+        pytest.skip("requires CUDA")
+    if torch.version.hip or torch.cuda.get_device_capability()[0] < 9:
+        pytest.skip("fused indexer requires NVIDIA SM90 or newer")
+    generator = torch.Generator(device="cuda").manual_seed(61)
+    q = torch.randn(1, sequence_length, 32, 128, device="cuda", generator=generator)
+    k = torch.randn(1, sequence_length, 128, device="cuda", generator=generator)
+    w = torch.randn(1, sequence_length, 32, device="cuda", generator=generator)
+    topk = 8
+    with torch.no_grad():
+        reference = lightning_indexer(q, k, w, topk, causal=True, impl="reference")
+        fused = lightning_indexer(
+            q.bfloat16(), k.bfloat16(), w.bfloat16(), topk,
+            causal=True, impl="fused",
+        )
+    torch.cuda.synchronize()
+    selections = []
+    for indices in (reference, fused):
+        indices = indices.reshape(sequence_length, topk).long()
+        queries = torch.arange(sequence_length, device="cuda")[:, None]
+        valid = (indices >= 0) & (indices <= queries)
+        assert not ((indices >= 0) & ~valid).any().item()
+        selected = torch.zeros(sequence_length, sequence_length, device="cuda", dtype=torch.int32)
+        selected.scatter_add_(1, indices.clamp(0, sequence_length - 1), valid.int())
+        selected = selected.bool()
+        assert torch.equal(selected.sum(1), (queries.flatten() + 1).clamp_max(topk))
+        selections.append(selected)
+    overlap = (selections[0] & selections[1]).sum(1) / selections[0].sum(1)
+    result = {
+        "seed": 61, "sequence_length": sequence_length, "heads": 32,
+        "head_dim": 128, "topk": topk, "fixture": "random_kernel_inputs",
+        "gpu": torch.cuda.get_device_name(), "torch": torch.__version__,
+        "reference": "fp32/reference", "candidate": "bf16/fused",
+        "mean_topk_overlap": overlap.mean().item(),
+        "minimum_query_overlap": overlap.min().item(),
+        "exact_query_fraction": (overlap == 1).float().mean().item(),
+    }
+    path = tmp_path / f"bf16-indexer-overlap-{sequence_length}.json"
+    path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    print(json.dumps(result, sort_keys=True))
+    print(path)
+
+
 def test_terminal_summary_includes_failures_and_effective_tolerance():
     recorder = parity.ParityRecorder(parity.FP32)
     recorder.tensor(scope="e2e", component="loss", layer="output",
