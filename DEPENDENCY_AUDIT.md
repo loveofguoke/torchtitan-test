@@ -59,6 +59,13 @@ native shared consumer; a producer must emit a checkpoint or fail. This rule
 applies to paired execution and offline capture/compare, without changing the
 tensor artifact schema or thresholds.
 
+GLM indexer CUDA dispatch follows DeepSeek V4: SM90+ FP16/BF16 query
+features use fused selection; FP32 and other devices use reference.
+Mixing weights remain FP32. The native-interface GPU regression verifies the
+actual production kernel choice and packed metadata; ordinary BF16 paired
+parity still checks discrete selections exactly and may expose quantization
+differences. Kernel overlap measurements do not override parity verdicts.
+
 The existing performance metrics process applies the same config-first CLI
 translation as train_gpu.py before invoking TorchTitan. Under the explicit
 TORCHTITAN_CONFIG_FIRST_CLI contract it imports observability metrics/profiler;

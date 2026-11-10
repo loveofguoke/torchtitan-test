@@ -9,6 +9,35 @@ from tests.glm5_2_parity.model_config import load_model_config, model_dimensions
 from tests.glm5_2_parity import suite as parity
 
 
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_cuda_glm_indexer_selects_native_backend(dtype):
+    """Exercise production dispatch, including FP32 mixing weights and packing."""
+    from unittest.mock import patch
+
+    from torchtitan.models.common.attn_gym import lightning_indexer
+    from torchtitan.models.glm5.dsa import DsaMetadata, DSAIndexerTopK
+
+    if not torch.cuda.is_available():
+        pytest.skip("requires CUDA")
+    if torch.version.hip or torch.cuda.get_device_capability()[0] < 9:
+        pytest.skip("fused indexer requires NVIDIA SM90 or newer")
+    generator = torch.Generator(device="cuda").manual_seed(61)
+    q = torch.randn(128, 32, 128, device="cuda", dtype=dtype, generator=generator)
+    k = torch.randn(128, 128, device="cuda", dtype=dtype, generator=generator)
+    w = torch.randn(128, 32, device="cuda", generator=generator)
+    metadata = DsaMetadata.from_positions(torch.arange(128, device="cuda"))
+    indexer = DSAIndexerTopK.Config(index_topk=8).build()
+    with patch("torchtitan.models.glm5.dsa.lightning_indexer", wraps=lightning_indexer) as kernel:
+        result = indexer(q, k, w, metadata=metadata)
+    torch.cuda.synchronize()
+    assert kernel.call_args.kwargs["impl"] == ("fused" if dtype == torch.bfloat16 else "reference")
+    assert kernel.call_args.args[0].dtype == dtype
+    assert kernel.call_args.args[2].dtype == torch.float32
+    assert result.shape == (128, 8)
+    assert not result.requires_grad
+    print(f"production indexer: input={dtype} impl={kernel.call_args.kwargs['impl']} weights=fp32")
+
+
 @pytest.mark.parametrize("sequence_length", [128, 512])
 def test_cuda_bf16_fused_indexer_overlap(sequence_length, tmp_path):
     """Measure random-input selection overlap without asserting exact BF16 ranking."""
