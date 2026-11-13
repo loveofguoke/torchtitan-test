@@ -194,6 +194,18 @@ No capture, fixture, release, precision or topology schema is changed. Regress
 `test_config_first`, `test_config_first_recipes` and `test_glm5_2_smoke`, then
 the selected GPU smoke runs with default activation rematerialization enabled.
 
+KL-only warmup now selects the official recipe's model-local Glm5WarmupLoss;
+recipe_contract must support that direct loss as well as ChunkedLossWrapper.
+The training scalar is normalized KL, not the old teacher LM loss. Do not reuse
+historical warmup losses as new-stage convergence evidence. Frozen 500-step
+MS observation, data/token-plan/fixture/release schemas and names are unchanged.
+Parity resolves historical debugmodel/scaled names through the test-config
+registry in torchtitan_recipes.tests.models.glm5_configs; do not replace their
+architecture with glm5_2_debugmodel. Keep debugmodel's default context 2048
+(even when the experiment consumes 128 tokens) and scaled's context 4096.
+Regress parity native-interface, CLI/workflow identity, config-first recipes,
+and smoke before new captures. This migration never rewrites existing data.
+
 - `--force` starts a new selected generation and removes every selected old
   run, artifact, report, state file, and archived failed/previous output before
   launching the first process.

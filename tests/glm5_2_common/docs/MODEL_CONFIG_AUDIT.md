@@ -18,6 +18,15 @@
 其他训练入口的 `glm5_debugmodel` 是 TorchTitan 训练配置名，内部选择模型。
 目前没有把任意模型家族接入 GLM/HF parity；更换 GLM flavor 不等于支持其他家族。
 
+2026-11-13更新：debugmodel/scaled从生产MODEL_FLAVORS迁至TorchTitan的
+torchtitan_recipes.tests.models.glm5_configs测试配置注册表；parity通过
+resolve_model_config读取，训练仍通过原glm5_debugmodel/scaled recipe。
+模型数学、层builder、初始化策略仍归TorchTitan，test不复制实现。
+保留原名、完整配置、默认context（debugmodel=2048，scaled=4096）、
+CLI参数和存储规则；迁移不重命名、不删除、不重写已有fixture/artifact。
+KL-only warmup loss契约有意变更并记录为Glm5WarmupLoss，不能复用旧LM-loss
+结果证明本轮KL收敛；frozen的500步精度实验不受该stage变化影响。
+
 parity 的 `router_unit_profile()` 是独立 CPU 单元测试夹具，刻意使用微型尺寸，
 不是运行实验时的 debug 默认配置。此类测试夹具无需跟随训练模型变大。
 

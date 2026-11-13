@@ -102,7 +102,7 @@ def recipe_contract(config, *, factory_name: str) -> dict[str, object]:
     """Describe the model, data, and loss branches resolved by a recipe."""
     model_config = config.model
     mtp_layers = tuple(model_config.mtp_layers or ())
-    loss_config = config.loss.loss_fn
+    loss_config = getattr(config.loss, "loss_fn", config.loss)
     return {
         "factory": factory_name,
         "indexer_stage": getattr(model_config, "indexer_training_stage", "frozen"),

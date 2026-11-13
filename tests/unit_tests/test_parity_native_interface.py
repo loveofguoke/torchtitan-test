@@ -182,6 +182,17 @@ def test_hf_mla_norms_follow_native_debug_configuration(monkeypatch):
             hf.self_attn.q_a_layernorm(hf.self_attn.q_a_proj(values)),
             rtol=1e-6, atol=1e-7,
         )
+
+
+@pytest.mark.parametrize("flavor", ["debugmodel", "glm5_2_scaled_debugmodel"])
+def test_parity_uses_moved_experiment_factory_without_changing_snapshot(flavor):
+    from tests.glm5_2_parity.model_config import config_snapshot, load_model_config
+    from torchtitan_recipes.tests.models.glm5_configs import resolve_model_config
+
+    native = load_model_config(flavor)
+    assert config_snapshot(native) == config_snapshot(resolve_model_config(flavor))
+    expected_context = 2048 if flavor == "debugmodel" else 4096
+    assert native.max_context_length == expected_context
 from tests.glm5_2_parity.suite import (
     FP32, ModelEndpoint, ParityDataFactory, ParityModelSize, _build_pair,
     _hf_config, _run_causal_lm_endpoint, _set_titan_routed_expert_compute_dtype,

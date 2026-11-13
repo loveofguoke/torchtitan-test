@@ -44,6 +44,11 @@ def test_indexer_stage_smoke_builds_trainable_auxiliary_loss(monkeypatch, stage)
     assert any(isinstance(m, AuxLoss) for m in model.modules())
     backbone = model.layers["0"].attention.wq_b
     assert all(p.requires_grad == (stage == "sparse") for p in backbone.parameters())
+    from torchtitan.models.glm5.loss import Glm5WarmupLoss
+
+    assert isinstance(config.loss, Glm5WarmupLoss.Config) == (stage == "warmup")
+    contract = config_first.recipe_contract(config, factory_name=f"glm5_debugmodel_{stage}")
+    assert contract["indexer_stage"] == stage
 
 
 @pytest.mark.parametrize("seed_checkpoint", [False, True])
