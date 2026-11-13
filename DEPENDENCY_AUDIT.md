@@ -19,6 +19,14 @@ artifact checksums. Git cleanliness is diagnostic, not a pass/fail condition.
 
 ## Shared-module impact map
 
+The 2026-11-13 regression exposed stale parity references to the deleted
+adapter _TITAN_GATE_UP/_TITAN_DOWN constants. State/gradient reporting now uses
+the public HF_TO_TITAN_INDEXER/LAYER/TOP_LEVEL mappings. All-dense reduced HF
+configs omit the unused router normalization keyword rather than requiring a
+MoE layer. Regress native-interface component/e2e parameter and gradient traces,
+missing-producer detection, and paired/offline parity; thresholds, fixture
+identity, report schema and capture paths are unchanged.
+
 Parity CLI configuration is shared by paired/offline entry points in
 `glm5_2_parity/workflow.py`. `model_config.py` reads the selected TorchTitan GLM
 factory; `ParityModelConfig` contains optional overrides, not copied debug sizes.

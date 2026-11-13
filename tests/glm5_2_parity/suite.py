@@ -704,6 +704,8 @@ class ParityModelSize:
 def _hf_config(model_size: ParityModelSize) -> Any:
     assert GlmMoeDsaConfig is not None
     base = _titan_config(model_size)
+    router = next((layer.feed_forward.router for layer in base.layers
+                   if isinstance(layer.feed_forward, MoE.Config)), None)
     return GlmMoeDsaConfig(
         vocab_size=model_size.vocab_size,
         hidden_size=model_size.dim,
@@ -723,8 +725,7 @@ def _hf_config(model_size: ParityModelSize) -> Any:
         n_group=model_size.router_num_expert_groups,
         topk_group=model_size.router_num_limited_groups,
         num_experts_per_tok=model_size.router_top_k,
-        norm_topk_prob=next(layer.feed_forward.router.route_norm for layer in base.layers
-                           if isinstance(layer.feed_forward, MoE.Config)),
+        **({"norm_topk_prob": router.route_norm} if router is not None else {}),
         max_position_embeddings=model_size.max_position_embeddings,
         rms_norm_eps=base.norm.eps,
         attention_dropout=0.0,
@@ -8036,7 +8037,7 @@ class Glm5ParitySuite(
         ):
             actual = actual_state.get(key)
             expected = expected_state.get(key)
-            layer_match = self.adapter._TITAN_LAYER_KEY.fullmatch(key)
+            layer_match = re.fullmatch(r"layers\.(\d+)\.(.+)", key)
             layer = int(layer_match.group(1)) if layer_match else "global"
             actual_key = (
                 self._hf_path_for_titan_key(key)
@@ -8073,8 +8074,8 @@ class Glm5ParitySuite(
                 )
                 continue
             routed_projection = {
-                self.adapter._TITAN_GATE_UP: "w13",
-                self.adapter._TITAN_DOWN: "w2",
+                self.adapter.HF_TO_TITAN_INDEXER["mlp.experts.gate_up_proj"]: "w13",
+                self.adapter.HF_TO_TITAN_INDEXER["mlp.experts.down_proj"]: "w2",
             }
             expert_name = next(
                 (
@@ -8130,17 +8131,15 @@ class Glm5ParitySuite(
             )
 
     def _hf_path_for_titan_key(self, titan_key: str) -> str:
-        if titan_key in self.adapter._to_hf_top_level:
-            return self.adapter._to_hf_top_level[titan_key]
-        match = self.adapter._TITAN_LAYER_KEY.fullmatch(titan_key)
+        top_level = {native: hf for hf, native in self.adapter.HF_TO_TITAN_TOP_LEVEL.items()}
+        if titan_key in top_level:
+            return top_level[titan_key]
+        match = re.fullmatch(r"layers\.(\d+)\.(.+)", titan_key)
         if match is None:
             return titan_key
         layer, suffix = match.groups()
-        if suffix == self.adapter._TITAN_GATE_UP:
-            return f"model.layers.{layer}.mlp.experts.gate_up_proj"
-        if suffix == self.adapter._TITAN_DOWN:
-            return f"model.layers.{layer}.mlp.experts.down_proj"
-        hf_suffix = self.adapter._to_hf_layer.get(suffix, suffix)
+        hf_suffix = next((hf for hf, native in self.adapter.HF_TO_TITAN_LAYER.items()
+                          if native == suffix), suffix)
         return f"model.layers.{layer}.{hf_suffix}"
 
     def _record_parameter_tree(
@@ -8150,13 +8149,13 @@ class Glm5ParitySuite(
         actual_state = self._canonical_state(spec.actual)
         expected_state = self._canonical_state(spec.expected)
         routed_paths = {
-            self.adapter._TITAN_GATE_UP: ("w13", "gate_up"),
-            self.adapter._TITAN_DOWN: ("w2", "down"),
+            self.adapter.HF_TO_TITAN_INDEXER["mlp.experts.gate_up_proj"]: ("w13", "gate_up"),
+            self.adapter.HF_TO_TITAN_INDEXER["mlp.experts.down_proj"]: ("w2", "down"),
         }
         for key in sorted(set(actual_state) | set(expected_state)):
             actual = actual_state.get(key)
             expected = expected_state.get(key)
-            layer_match = self.adapter._TITAN_LAYER_KEY.fullmatch(key)
+            layer_match = re.fullmatch(r"layers\.(\d+)\.(.+)", key)
             layer = int(layer_match.group(1)) if layer_match else "global"
             actual_key = (
                 self._hf_path_for_titan_key(key)

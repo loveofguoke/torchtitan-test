@@ -311,3 +311,10 @@ def test_missing_both_producer_traces_cannot_silently_pass(monkeypatch):
     missing = [row for row in recorder.results if row.component == "indexer"]
     assert missing
     assert all(not row.passed for row in missing)
+
+
+def test_all_dense_hf_config_has_no_router_dependency(monkeypatch):
+    monkeypatch.setenv("GLM5_PARITY_MODEL_CONFIG", "debugmodel")
+    size = replace(ParityModelSize(), num_layers=1, num_dense_layers=1)
+    config = _hf_config(size)
+    assert config.num_hidden_layers == config.first_k_dense_replace == 1
