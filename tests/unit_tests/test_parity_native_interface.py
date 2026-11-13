@@ -10,7 +10,7 @@ from tests.glm5_2_parity import suite as parity
 
 
 def test_cuda_gather_attention_graph_matches_eager_output_and_gradients():
-    """Guard device offsets and fused multi-head pool execution under capture."""
+    """Guard device offsets and fused shared latent pool under capture."""
     from torchtitan.models.glm5.dsa import DsaMetadata, Glm5SparseAttention
 
     if not torch.cuda.is_available() or torch.version.hip:
@@ -18,8 +18,9 @@ def test_cuda_gather_attention_graph_matches_eager_output_and_gradients():
     generator = torch.Generator(device="cuda").manual_seed(42)
     tensors = [
         torch.randn(32, 2, 64, device="cuda", dtype=torch.bfloat16,
-                    generator=generator, requires_grad=True)
-        for _ in range(3)
+                    generator=generator, requires_grad=True),
+        torch.randn(32, 64, device="cuda", dtype=torch.bfloat16,
+                    generator=generator, requires_grad=True),
     ]
     metadata = DsaMetadata.from_positions(torch.arange(32, device="cuda"))
     rows = torch.arange(32, device="cuda", dtype=torch.int32)
@@ -48,7 +49,7 @@ def test_cuda_gather_attention_graph_matches_eager_output_and_gradients():
     torch.testing.assert_close(graph_output, eager_output, rtol=0, atol=0)
     for actual, expected in zip(graph_gradients, eager_gradients, strict=True):
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
-    print("fused gather_attn: H-head pool, window=0, CUDA graph output/gradients match eager exactly")
+    print("fused gather_attn: shared latent pool, window=0, CUDA graph output/gradients match eager exactly")
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
@@ -58,6 +59,7 @@ def test_cuda_glm_indexer_selects_native_backend(dtype):
 
     from torchtitan.models.common.attn_gym import lightning_indexer
     from torchtitan.models.glm5.dsa import DsaMetadata, DSAIndexerTopK
+    from torchtitan.models.glm5.indexer import select_local_topk
 
     if not torch.cuda.is_available():
         pytest.skip("requires CUDA")
@@ -69,16 +71,22 @@ def test_cuda_glm_indexer_selects_native_backend(dtype):
     w = torch.randn(128, 32, device="cuda", generator=generator)
     metadata = DsaMetadata.from_positions(torch.arange(128, device="cuda"))
     indexer = DSAIndexerTopK.Config(index_topk=8).build()
-    with patch("torchtitan.models.glm5.dsa.lightning_indexer", wraps=lightning_indexer) as kernel:
+    target, implementation = (
+        ("lightning_indexer", lightning_indexer)
+        if dtype == torch.bfloat16 else ("select_local_topk", select_local_topk)
+    )
+    with patch(f"torchtitan.models.glm5.dsa.{target}", wraps=implementation) as kernel:
         result = indexer(q, k, w, metadata=metadata)
     torch.cuda.synchronize()
-    assert kernel.call_args.kwargs["impl"] == ("fused" if dtype == torch.bfloat16 else "reference")
+    if dtype == torch.bfloat16:
+        assert kernel.call_args.kwargs["impl"] == "fused"
     assert kernel.call_args.args[0].dtype == dtype
     assert kernel.call_args.args[2].dtype == dtype
     assert w.dtype == torch.float32
     assert result.shape == (128, 8)
     assert not result.requires_grad
-    print(f"production indexer: input={dtype} impl={kernel.call_args.kwargs['impl']} kernel_weights={dtype} source_weights={w.dtype}")
+    backend = "fused" if target == "lightning_indexer" else "bounded_reference"
+    print(f"production indexer: input={dtype} impl={backend} kernel_weights={dtype} source_weights={w.dtype}")
 
 
 @pytest.mark.parametrize("sequence_length", [128, 512])

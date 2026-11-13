@@ -60,9 +60,14 @@ applies to paired execution and offline capture/compare, without changing the
 tensor artifact schema or thresholds.
 
 GLM indexer CUDA dispatch follows DeepSeek V4: SM90+ FP16/BF16 query
-features use fused selection; FP32 and other devices use reference.
+features use stock fused selection without CP; FP32 and other devices use the
+model-local bounded reference selector. CP uses local queries and global keys,
+with a model-local low-precision CUDA selector or tiled reference.
 Mixing-weight parameters/projection remain FP32; kernel inputs are cast to
-the query dtype because attn-gym requires matching Q/K/weights dtypes.
+the query dtype at the stock fused or low-precision CP boundary. The FP32
+reference keeps FP32 mixing weights rather than rounding through BF16.
+Absorbed MLA now passes one shared latent pool to gathered attention instead
+of three expanded Q/K/V tensors; native-interface graph tests follow that API.
 The native-interface GPU regression verifies the
 actual production kernel choice and packed metadata; ordinary BF16 paired
 parity still checks discrete selections exactly and may expose quantization
