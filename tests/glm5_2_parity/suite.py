@@ -984,13 +984,12 @@ def _set_titan_routed_expert_compute_dtype(
     titan_model: torch.nn.Module,
     compute_dtype: torch.dtype,
 ) -> None:
-    """Run test-model TorchTitan inner experts with eager FP32 linears."""
+    """Run existing TorchTitan experts in FP32; dense-only models are unchanged."""
     if compute_dtype is not torch.float32:
         raise ValueError(
             "the TorchTitan routed-expert experiment supports only FP32"
         )
 
-    num_wrapped = 0
     for layer in titan_model.layers.values():
         if not isinstance(layer.feed_forward, MoE):
             continue
@@ -1056,10 +1055,6 @@ def _set_titan_routed_expert_compute_dtype(
         experts.forward = MethodType(forward_with_fp32, experts)
         experts._parity_compute_dtype = compute_dtype
         experts._parity_uses_grouped_mm = False
-        num_wrapped += 1
-
-    if num_wrapped == 0:
-        raise ValueError("TorchTitan model has no routed-expert modules to wrap")
 
 
 def _annotate_known_compute_dtypes(pair: ParityModelPair) -> None:

@@ -318,3 +318,9 @@ def test_all_dense_hf_config_has_no_router_dependency(monkeypatch):
     size = replace(ParityModelSize(), num_layers=1, num_dense_layers=1)
     config = _hf_config(size)
     assert config.num_hidden_layers == config.first_k_dense_replace == 1
+    pair = _build_pair(torch.device("cpu"), model_size=size)
+    tokens, positions = torch.arange(8), torch.arange(8)
+    expected = pair.titan(tokens, positions=positions)
+    _set_titan_routed_expert_compute_dtype(pair.titan, torch.float32)
+    actual = pair.titan(tokens, positions=positions)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
