@@ -130,7 +130,7 @@ def verify(run, phase):
 def main():
     if len(sys.argv) == 3:
         phase, run = sys.argv[1], Path(sys.argv[2])
-        if phase in ("csa_gather", "csa_flex"):
+        if phase in ("csa_gather", "csa_flex", "gather_bench", "dense_bench"):
             from tests.glm5_2_nvidia.dsv4_csa_control import run_control
             return run_control(run, phase)
         if phase in ("gradient", "step"):
@@ -138,7 +138,8 @@ def main():
         return prepare(run) if phase == "prepare" else measure(run, phase)
     check = sys.argv[1:] == ["--verify-training"]
     csa = sys.argv[1:] == ["--dsv4-csa-control"]
-    if sys.argv[1:] and not (check or csa):
+    direct = sys.argv[1:] == ["--dsv4-gather-vs-dense"]
+    if sys.argv[1:] and not (check or csa or direct):
         raise ValueError("expected --verify-training or no arguments")
     root = Path(__file__).resolve().parents[2]
     outputs = root / "outputs"
@@ -150,6 +151,8 @@ def main():
     codes = {}
     try:
         phases = ("prepare", "gradient", "step") if check else ("prepare", "static", "dynamic")
+        if direct:
+            phases = ("gather_bench", "dense_bench")
         for phase in (("csa_gather", "csa_flex") if csa else phases):
             env = os.environ.copy()
             if phase != "prepare":
@@ -157,12 +160,12 @@ def main():
                 shutil.copytree(pkg, dest, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
                 path = dest / "sparse/gather_attn/impl/triton/forward.py"
                 src = path.read_text()
-                if phase not in ("static", "csa_flex"):
+                if phase not in ("static", "csa_flex", "dense_bench"):
                     path.write_text(dynamic_source(src))
                 print(phase, "forward.py SHA256", hashlib.sha256(path.read_bytes()).hexdigest(), flush=True)
                 env["PYTHONPATH"] = os.pathsep.join([str(dest.parent), env.get("PYTHONPATH", "")])
                 env["TRITON_CACHE_DIR"] = str(dest.parent / "cache")
-            limit = 300 if csa or phase in ("gradient", "step") else 180
+            limit = 300 if direct or csa or phase in ("gradient", "step") else 180
             print(f"{phase}: start (limit {limit}s per process)", flush=True)
             with log.open("a") as f:
                 p = subprocess.Popen([sys.executable, "-u", "-m", module, phase, str(run)],
