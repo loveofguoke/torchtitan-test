@@ -38,7 +38,7 @@ def dense_config(config):
     return base(DeepSeekV3Model.Config, config, layers=layers)
 
 
-def measure(config, sparse, state, tokens, positions, *, diagnose=False):
+def measure(config, sparse, state, tokens, positions, *, diagnose=False, one_step=False):
     torch.manual_seed(61)
     print("phase=build model and move to CUDA", flush=True)
     with set_default_dtype(torch.bfloat16):
@@ -99,6 +99,11 @@ def measure(config, sparse, state, tokens, positions, *, diagnose=False):
         if i == 0:
             print("phase=first backward (may compile)", flush=True)
         loss.backward()
+        if one_step:
+            p = model.layers["0"].attention.wo.weight
+            before = p.detach().clone()
+            gradients = [v.grad for v in model.parameters() if v.grad is not None]
+            assert gradients and all(torch.isfinite(g).all().item() for g in gradients)
         if i == 0:
             print("phase=first AdamW step and GPU synchronization", flush=True)
         optimizer.step()
@@ -106,6 +111,11 @@ def measure(config, sparse, state, tokens, positions, *, diagnose=False):
         seconds = time.perf_counter() - start
         if not math.isfinite(loss.item()):
             raise ValueError(f"non-finite loss at step {i + 1}")
+        if one_step:
+            assert torch.isfinite(p).all() and not torch.equal(p.detach(), before)
+            print(f"RESULT step loss={loss.item():.6f} finite_gradient_tensors={len(gradients)} "
+                  "layer0_wo_updated=True remat=default", flush=True)
+            return
         print(f"step={i+1} warmup={i < WARMUP} seconds={seconds:.4f} loss={loss.item():.6f}",
               flush=True)
         if i >= WARMUP:

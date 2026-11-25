@@ -85,10 +85,57 @@ def measure(run, arm):
                                          oracle_rows=5)), flush=True)
 
 
+def verify(run, phase):
+    import attn_gym
+    import torch
+    from torchtitan.models.glm5.dsa import gather_attn, AuxRequest
+
+    assert Path(attn_gym.__file__).resolve().parent == run / phase / "attn_gym"
+    torch.manual_seed(61)
+    if phase == "step":
+        from tests.glm5_2_nvidia import attention_ab as ab
+        cfg = ab.glm5_scaled_model_config(seq_len=ab.T)
+        tokens = torch.randint(cfg.vocab_size, (ab.T + 1,)).cuda()
+        return ab.measure(cfg, True, {}, tokens, torch.arange(ab.T, device="cuda"), one_step=True)
+
+    q, local, pool, ids, cu, cuk, scale, *_ = torch.load(run / "inputs.pt")
+    q.requires_grad_()
+    pool.requires_grad_()
+    rows = [0, 7, 511, 4096, 8191]
+    out, _ = gather_attn(q, local, pool, ids, cu_seqlens=cu, cu_seqlens_k=cuk,
+                         sliding_window_size=0, scale=scale, impl="fused",
+                         kernel_options={"backend": "triton"}, return_aux=AuxRequest(lse=False))
+    v = torch.randn_like(out[0, :, rows, :])
+    dq, dp = torch.autograd.grad((out[0, :, rows, :].float() * v.float()).sum(), (q, pool))
+    qr, pr = (t.detach().float().requires_grad_() for t in (q, pool))
+    terms = []
+    for j, row in enumerate(rows):
+        idx = ids[0, row].long()
+        kv = pr[0, 0, idx[idx >= 0]]
+        if len(kv):
+            logits = (qr[0, :, row, None, :] * kv).sum(-1) * scale
+            terms.append(((logits.softmax(-1) @ kv) * v[:, j].float()).sum())
+    refs = torch.autograd.grad(sum(terms), (qr, pr))
+    errors = {}
+    for name, grad, ref in zip(("dq", "dpool"), (dq, dp), refs):
+        assert ref.norm() > 0
+        err = (grad.float() - ref).norm() / ref.norm()
+        errors[name] = err.item()
+        print(f"{name} relative_l2={err.item():.6g}", flush=True)
+        assert err < .03, (name, errors)
+        torch.testing.assert_close(grad.float(), ref, atol=.03, rtol=.05)
+    print("RESULT gradient five query rows, all heads; Q/shared pool relative_l2", errors, flush=True)
+
+
 def main():
     if len(sys.argv) == 3:
         phase, run = sys.argv[1], Path(sys.argv[2])
+        if phase in ("gradient", "step"):
+            return verify(run, phase)
         return prepare(run) if phase == "prepare" else measure(run, phase)
+    check = sys.argv[1:] == ["--verify-training"]
+    if sys.argv[1:] and not check:
+        raise ValueError("expected --verify-training or no arguments")
     root = Path(__file__).resolve().parents[2]
     outputs = root / "outputs"
     outputs.mkdir(exist_ok=True)
@@ -98,25 +145,26 @@ def main():
     module = "tests.glm5_2_nvidia.gather_loop_ab"
     codes = {}
     try:
-        for phase in ("prepare", "static", "dynamic"):
+        for phase in (("prepare", "gradient", "step") if check else ("prepare", "static", "dynamic")):
             env = os.environ.copy()
             if phase != "prepare":
                 dest = run / phase / "attn_gym"
                 shutil.copytree(pkg, dest, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
                 path = dest / "sparse/gather_attn/impl/triton/forward.py"
                 src = path.read_text()
-                if phase == "dynamic":
+                if phase != "static":
                     path.write_text(dynamic_source(src))
                 print(phase, "forward.py SHA256", hashlib.sha256(path.read_bytes()).hexdigest(), flush=True)
                 env["PYTHONPATH"] = os.pathsep.join([str(dest.parent), env.get("PYTHONPATH", "")])
                 env["TRITON_CACHE_DIR"] = str(dest.parent / "cache")
-            print(f"{phase}: start (limit 180s per process)", flush=True)
+            limit = 300 if phase in ("gradient", "step") else 180
+            print(f"{phase}: start (limit {limit}s per process)", flush=True)
             with log.open("a") as f:
                 p = subprocess.Popen([sys.executable, "-u", "-m", module, phase, str(run)],
                                      cwd=root, env=env, stdout=f, stderr=subprocess.STDOUT,
                                      start_new_session=True)
                 try:
-                    for _ in range(12):
+                    for _ in range(limit // 15):
                         try:
                             codes[phase] = p.wait(timeout=15)
                             break
@@ -128,7 +176,7 @@ def main():
                     if p.poll() is None:
                         os.killpg(p.pid, signal.SIGKILL)
                         p.wait(timeout=5)
-            if phase == "prepare" and codes[phase]:
+            if (phase == "prepare" or check) and codes[phase]:
                 break
     finally:
         lines = log.read_text(errors="replace").splitlines() if log.exists() else []
