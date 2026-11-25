@@ -9,7 +9,7 @@ import tempfile
 import time
 
 
-def supervise():
+def supervise(*, diagnose=False):
     root = Path(__file__).resolve().parents[2]
     outputs = root / "outputs"
     outputs.mkdir(exist_ok=True)
@@ -33,7 +33,7 @@ def supervise():
             nonlocal result
             for line in reader:
                 print(line, end="", flush=True)
-                if line.startswith("ATTENTION_AB "):
+                if line.startswith("FIRST_FORWARD " if diagnose else "ATTENTION_AB "):
                     result = line.strip()
 
         started = time.monotonic()
@@ -43,7 +43,7 @@ def supervise():
         try:
             proc = subprocess.Popen(
                 [sys.executable, "-u", "-c",
-                 "from tests.glm5_2_nvidia.attention_ab import main; main()"],
+                 f"from tests.glm5_2_nvidia.attention_ab import main; main(diagnose={diagnose!r})"],
                 cwd=root, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
             )
             note(f"worker_pid={proc.pid} | phase=import torch and initialize CUDA")
@@ -75,7 +75,8 @@ def supervise():
             if rc == 0 and not result:
                 rc = 1
             note("========== SUMMARY ==========")
-            note(f"8K attention A/B | exit_code={rc}")
+            label = "8K first-forward diagnostic" if diagnose else "8K attention A/B"
+            note(f"{label} | exit_code={rc}")
             if rc == 0:
                 note(result)
             else:

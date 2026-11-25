@@ -1,6 +1,7 @@
 """Single-GPU, profiler-off optimizer-step comparison for TorchTitan PR 5578."""
 
 import gc
+import faulthandler
 import json
 import math
 import statistics
@@ -37,7 +38,7 @@ def dense_config(config):
     return base(DeepSeekV3Model.Config, config, layers=layers)
 
 
-def measure(config, sparse, state, tokens, positions):
+def measure(config, sparse, state, tokens, positions, *, diagnose=False):
     torch.manual_seed(61)
     print("phase=build model and move to CUDA", flush=True)
     with set_default_dtype(torch.bfloat16):
@@ -56,6 +57,22 @@ def measure(config, sparse, state, tokens, positions):
                                   lr=1e-4, fused=True)
     denominator = torch.tensor([T], device="cuda", dtype=torch.float32)
     inner = config.layers[0].attention.inner_attention
+    if diagnose:
+        def boundary(tag):
+            def hook(*_):
+                print(f"{tag} (waiting for CUDA)", flush=True)
+                torch.cuda.synchronize()
+            return hook
+
+        for name, module in model.named_modules():
+            parts = name.split(".")
+            if (name in {"tok_embeddings", "norm", "lm_head"}
+                    or (parts[0] == "layers" and len(parts) >= 2 and
+                        (len(parts) == 2 or parts[-1] in
+                         {"attention", "indexer", "inner_attention", "feed_forward"}))):
+                module.register_forward_pre_hook(boundary(f"enter {name}"))
+                module.register_forward_hook(boundary(f"return {name}"))
+        faulthandler.dump_traceback_later(30, repeat=True)
     elapsed = []
     for i in range(WARMUP + STEPS):
         print(f"step={i+1}/{WARMUP+STEPS} begin warmup={i < WARMUP}", flush=True)
@@ -71,7 +88,14 @@ def measure(config, sparse, state, tokens, positions):
             print("phase=first forward (may compile)", flush=True)
         logits = model(tokens[:-1], positions=positions,
                        aux_loss_denominators=denominator, **metadata)
+        if diagnose:
+            print("phase=diagnostic cross entropy", flush=True)
         loss = torch.nn.functional.cross_entropy(logits.float(), tokens[1:])
+        if diagnose:
+            torch.cuda.synchronize()
+            faulthandler.cancel_dump_traceback_later()
+            print("FIRST_FORWARD completed forward and CE (diagnostic only)", flush=True)
+            return
         if i == 0:
             print("phase=first backward (may compile)", flush=True)
         loss.backward()
@@ -92,7 +116,7 @@ def measure(config, sparse, state, tokens, positions):
                 peak_allocated_GiB=torch.cuda.max_memory_allocated() / 2**30)
 
 
-def main():
+def main(*, diagnose=False):
     config = glm5_scaled_model_config(seq_len=T)
     torch.manual_seed(61)
     tokens = torch.randint(config.vocab_size, (T + 1,)).cuda()
@@ -101,6 +125,9 @@ def main():
           f"topk=512 layers={len(config.layers)} remat=default seed=61 "
           f"warmup={WARMUP} measured={STEPS}", flush=True)
     state, results = {}, {}
+    if diagnose:
+        measure(config, True, state, tokens, positions, diagnose=True)
+        return
     for name, cfg in (("sparse_frozen_indexer", config), ("dense_causal_flex", dense_config(config))):
         print(name, flush=True)
         results[name] = measure(cfg, cfg is config, state, tokens, positions)
