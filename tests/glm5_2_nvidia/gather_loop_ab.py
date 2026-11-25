@@ -105,7 +105,9 @@ def verify(run, phase):
         tokens = torch.randint(cfg.vocab_size, (ab.T + 1,)).cuda()
         return ab.measure(cfg, True, {}, tokens, torch.arange(ab.T, device="cuda"), one_step=True)
 
-    q, local, pool, ids, cu, cuk, scale, *_ = torch.load(run / "inputs.pt")
+    call_ab = phase.startswith("call_")
+    snapshot = Path(os.environ["GLM_GATHER_INPUTS"]) if call_ab else run / "inputs.pt"
+    q, local, pool, ids, cu, cuk, scale, *_ = torch.load(snapshot)
     q.requires_grad_()
     pool.requires_grad_()
     rows = [0, 7, 511, 4096, 8191]
@@ -163,7 +165,16 @@ def glm_core(run, phase):
     torch.manual_seed(61)
     grad = torch.randn_like(q)
     dense = phase.split("_heads")[0] == "glm_dense"
-    if dense:
+    if call_ab:
+        from torchtitan.models.glm5.dsa import AuxRequest, gather_attn as production_gather
+        kw = dict(scale=scale, sliding_window_size=0, impl="fused", return_aux=AuxRequest(lse=False))
+        if phase != "call_default_offsets":
+            kw["kernel_options"] = {"backend": "triton"}
+        if phase != "call_triton_no_offsets":
+            kw.update(cu_seqlens=cu, cu_seqlens_k=cuk)
+        def call():
+            return production_gather(q, local, pool, ids, **kw)[0]
+    elif dense:
         mask = create_block_mask(lambda b, h, i, j: i >= j, 1, 1, 8192, 8192, device="cuda")
         flex = torch.compile(flex_attention)
         def call():
@@ -187,6 +198,14 @@ def glm_core(run, phase):
     def backward():
         return torch.autograd.grad(out, (q, pool), grad, retain_graph=True)
     assert all(g.isfinite().all() for g in backward())
+    if call_ab:
+        values = tuple(x.detach().cpu() for x in (out, *backward()))
+        reference = run / "default-output-gradients.pt"
+        if phase == "call_default_offsets":
+            torch.save(values, reference)
+        else:
+            for value, expected in zip(values, torch.load(reference), strict=True):
+                torch.testing.assert_close(value, expected, atol=.04, rtol=.05)
     bwd = triton.testing.do_bench(backward, warmup=100, rep=500, return_mode="median")
     print("RESULT", phase, json.dumps(dict(fwd_ms=fwd, bwd_ms=bwd, oracle_rows=4)), flush=True)
 
@@ -194,7 +213,7 @@ def glm_core(run, phase):
 def main():
     if len(sys.argv) == 3:
         phase, run = sys.argv[1], Path(sys.argv[2])
-        if phase.split("_heads")[0] in ("glm_gather", "glm_dense", "glm_recent"):
+        if phase.startswith("call_") or phase.split("_heads")[0] in ("glm_gather", "glm_dense", "glm_recent"):
             return glm_core(run, phase)
         if phase in ("csa_gather", "csa_flex", "gather_bench", "dense_bench"):
             from tests.glm5_2_nvidia.dsv4_csa_control import run_control
@@ -208,7 +227,8 @@ def main():
     glm = sys.argv[1:] == ["--glm-gather-vs-dense"]
     locality = sys.argv[1:] == ["--glm-index-locality"]
     sweep = sys.argv[1:] == ["--glm-head-sweep"]
-    if sys.argv[1:] and not (check or csa or direct or glm or locality or sweep):
+    calls = sys.argv[1:] == ["--glm-call-ab"]
+    if sys.argv[1:] and not (check or csa or direct or glm or locality or sweep or calls):
         raise ValueError("expected --verify-training or no arguments")
     root = Path(__file__).resolve().parents[2]
     outputs = root / "outputs"
@@ -232,6 +252,8 @@ def main():
         if sweep:
             phases = ("prepare", *(f"glm_{backend}_heads{h}" for h in (8, 16, 32, 64)
                                     for backend in ("gather", "dense")))
+        if calls:
+            phases = ("call_default_offsets", "call_triton_offsets", "call_triton_no_offsets")
         for phase in (("csa_gather", "csa_flex") if csa else phases):
             env = os.environ.copy()
             if phase != "prepare":
@@ -244,7 +266,7 @@ def main():
                 print(phase, "forward.py SHA256", hashlib.sha256(path.read_bytes()).hexdigest(), flush=True)
                 env["PYTHONPATH"] = os.pathsep.join([str(dest.parent), env.get("PYTHONPATH", "")])
                 env["TRITON_CACHE_DIR"] = str(dest.parent / "cache")
-            limit = 300 if direct or csa or locality or sweep or phase in ("gradient", "step", "glm_gather", "glm_dense") else 180
+            limit = 300 if calls or direct or csa or locality or sweep or phase in ("gradient", "step", "glm_gather", "glm_dense") else 180
             print(f"{phase}: start (limit {limit}s per process)", flush=True)
             with log.open("a") as f:
                 p = subprocess.Popen([sys.executable, "-u", "-m", module, phase, str(run)],
@@ -263,7 +285,7 @@ def main():
                     if p.poll() is None:
                         os.killpg(p.pid, signal.SIGKILL)
                         p.wait(timeout=5)
-            if (phase == "prepare" or check) and codes[phase]:
+            if (phase in ("prepare", "call_default_offsets") or check) and codes[phase]:
                 break
     except Exception:
         codes[phase] = 1
