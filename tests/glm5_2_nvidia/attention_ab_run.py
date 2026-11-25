@@ -9,7 +9,7 @@ import tempfile
 import time
 
 
-def supervise(*, diagnose=False):
+def supervise(*, diagnose=False, gather=False):
     root = Path(__file__).resolve().parents[2]
     outputs = root / "outputs"
     outputs.mkdir(exist_ok=True)
@@ -25,6 +25,7 @@ def supervise(*, diagnose=False):
         signal.signal(sig, stop)
     rc = 1
     result = ""
+    marker = "GATHER_8K " if gather else "FIRST_FORWARD " if diagnose else "ATTENTION_AB "
     with path.open("a", buffering=1) as log, path.open(errors="replace") as reader:
         def note(line):
             print(line, file=log, flush=True)
@@ -33,7 +34,7 @@ def supervise(*, diagnose=False):
             nonlocal result
             for line in reader:
                 print(line, end="", flush=True)
-                if line.startswith("FIRST_FORWARD " if diagnose else "ATTENTION_AB "):
+                if line.startswith(marker):
                     result = line.strip()
 
         started = time.monotonic()
@@ -41,9 +42,14 @@ def supervise(*, diagnose=False):
         drain()
         proc = None
         try:
+            worker = (f"from tests.glm5_2_nvidia.attention_ab import main; main(diagnose={diagnose!r})")
+            env = os.environ.copy()
+            if gather:
+                worker = "from tests.glm5_2_nvidia.gather_probe import main; main()"
+                env["TRITON_CACHE_DIR"] = str(path.parent / "triton-cache")
+                note(f"private Triton cache: {env['TRITON_CACHE_DIR']}")
             proc = subprocess.Popen(
-                [sys.executable, "-u", "-c",
-                 f"from tests.glm5_2_nvidia.attention_ab import main; main(diagnose={diagnose!r})"],
+                [sys.executable, "-u", "-c", worker], env=env,
                 cwd=root, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
             )
             note(f"worker_pid={proc.pid} | phase=import torch and initialize CUDA")
@@ -76,6 +82,8 @@ def supervise(*, diagnose=False):
                 rc = 1
             note("========== SUMMARY ==========")
             label = "8K first-forward diagnostic" if diagnose else "8K attention A/B"
+            if gather:
+                label = "8K fused gather forward cold/warm"
             note(f"{label} | exit_code={rc}")
             if rc == 0:
                 note(result)
