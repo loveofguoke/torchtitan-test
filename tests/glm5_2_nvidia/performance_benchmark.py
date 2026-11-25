@@ -13,8 +13,7 @@ from tests.glm5_2_nvidia.workflow import run_cli  # noqa: E402
 
 if __name__ == "__main__":
     if sys.argv[1:] == ["--compare-attention-8k"]:
-        from tests.glm5_2_nvidia.attention_ab import main
+        from tests.glm5_2_nvidia.attention_ab_run import supervise
 
-        main()
-        raise SystemExit(0)
+        raise SystemExit(supervise())
     raise SystemExit(run_cli())

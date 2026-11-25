@@ -39,14 +39,18 @@ def dense_config(config):
 
 def measure(config, sparse, state, tokens, positions):
     torch.manual_seed(61)
+    print("phase=build model and move to CUDA", flush=True)
     with set_default_dtype(torch.bfloat16):
         model = config.build().to("cuda")
+    print("phase=initialize weights", flush=True)
     model.init_states()
+    print("phase=copy shared initial state", flush=True)
     if sparse:
         state.update({k: v.detach().cpu().clone() for k, v in model.state_dict().items()
                       if ".indexer." not in k})
     else:
         model.load_state_dict(state, strict=True)
+    print("phase=configure remat and optimizer", flush=True)
     DefaultActivationRematConfig().apply(model)
     optimizer = torch.optim.AdamW((p for p in model.parameters() if p.requires_grad),
                                   lr=1e-4, fused=True)
@@ -54,6 +58,7 @@ def measure(config, sparse, state, tokens, positions):
     inner = config.layers[0].attention.inner_attention
     elapsed = []
     for i in range(WARMUP + STEPS):
+        print(f"step={i+1}/{WARMUP+STEPS} begin warmup={i < WARMUP}", flush=True)
         torch.cuda.synchronize()
         if i == WARMUP:
             torch.cuda.reset_peak_memory_stats()
@@ -62,10 +67,16 @@ def measure(config, sparse, state, tokens, positions):
         metadata = ({"attention_masks": model.get_attention_masks(positions)} if sparse
                     else {"attention_metadata": {
                         MLAAttention: inner.build_attention_metadata(positions)}})
+        if i == 0:
+            print("phase=first forward (may compile)", flush=True)
         logits = model(tokens[:-1], positions=positions,
                        aux_loss_denominators=denominator, **metadata)
         loss = torch.nn.functional.cross_entropy(logits.float(), tokens[1:])
+        if i == 0:
+            print("phase=first backward (may compile)", flush=True)
         loss.backward()
+        if i == 0:
+            print("phase=first AdamW step and GPU synchronization", flush=True)
         optimizer.step()
         torch.cuda.synchronize()
         seconds = time.perf_counter() - start
