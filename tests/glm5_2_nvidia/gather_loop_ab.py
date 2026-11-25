@@ -138,6 +138,15 @@ def glm_core(run, phase):
     q, local, pool, ids, cu, cuk, scale, *_ = torch.load(run / "inputs.pt")
     assert tuple(q.shape) == (1, 8, 8192, 256) and ids.shape[-1] == 512
     assert cu.tolist() == cuk.tolist() == [0, 8192]
+    if phase == "glm_recent":
+        valid = ids >= 0
+        rows = torch.arange(8192, device=ids.device)[None, :, None]
+        count = valid.sum(-1, keepdim=True)
+        assert (count <= rows + 1).all()
+        # Keep padding in exactly the same slots; valid ids ascend to the query.
+        recent = rows - count + valid.cumsum(-1)
+        ids = torch.where(valid, recent.to(ids.dtype), ids)
+        assert torch.equal(ids >= 0, valid)
     q.requires_grad_()
     pool.requires_grad_()
     torch.manual_seed(61)
@@ -174,7 +183,7 @@ def glm_core(run, phase):
 def main():
     if len(sys.argv) == 3:
         phase, run = sys.argv[1], Path(sys.argv[2])
-        if phase in ("glm_gather", "glm_dense"):
+        if phase in ("glm_gather", "glm_dense", "glm_recent"):
             return glm_core(run, phase)
         if phase in ("csa_gather", "csa_flex", "gather_bench", "dense_bench"):
             from tests.glm5_2_nvidia.dsv4_csa_control import run_control
@@ -186,7 +195,8 @@ def main():
     csa = sys.argv[1:] == ["--dsv4-csa-control"]
     direct = sys.argv[1:] == ["--dsv4-gather-vs-dense"]
     glm = sys.argv[1:] == ["--glm-gather-vs-dense"]
-    if sys.argv[1:] and not (check or csa or direct or glm):
+    locality = sys.argv[1:] == ["--glm-index-locality"]
+    if sys.argv[1:] and not (check or csa or direct or glm or locality):
         raise ValueError("expected --verify-training or no arguments")
     root = Path(__file__).resolve().parents[2]
     outputs = root / "outputs"
@@ -202,6 +212,8 @@ def main():
             phases = ("gather_bench", "dense_bench")
         if glm:
             phases = ("prepare", "glm_gather", "glm_dense")
+        if locality:
+            phases = ("prepare", "glm_gather", "glm_recent")
         for phase in (("csa_gather", "csa_flex") if csa else phases):
             env = os.environ.copy()
             if phase != "prepare":
@@ -214,7 +226,7 @@ def main():
                 print(phase, "forward.py SHA256", hashlib.sha256(path.read_bytes()).hexdigest(), flush=True)
                 env["PYTHONPATH"] = os.pathsep.join([str(dest.parent), env.get("PYTHONPATH", "")])
                 env["TRITON_CACHE_DIR"] = str(dest.parent / "cache")
-            limit = 300 if direct or csa or phase in ("gradient", "step", "glm_gather", "glm_dense") else 180
+            limit = 300 if direct or csa or locality or phase in ("gradient", "step", "glm_gather", "glm_dense") else 180
             print(f"{phase}: start (limit {limit}s per process)", flush=True)
             with log.open("a") as f:
                 p = subprocess.Popen([sys.executable, "-u", "-m", module, phase, str(run)],
