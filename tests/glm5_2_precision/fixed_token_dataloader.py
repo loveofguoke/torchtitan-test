@@ -143,6 +143,15 @@ class FixedTokenDataLoader(BaseDataLoader):
         self._step_hashes: list[str] = []
 
     def __iter__(self) -> Iterator[tuple[dict[str, torch.Tensor], torch.Tensor]]:
+        from torchtitan.components.data.types import TokenizedTrainingMicrobatch
+        try:
+            from torchtitan.models.common.mtp import get_mtp_token_counts
+        except ModuleNotFoundError as exc:
+            if exc.name != "torchtitan.models.common.mtp":
+                raise
+            # Older TorchTitan/Ascend baselines predate the shared MTP module.
+            from torchtitan.models.deepseek_v3.mtp import get_mtp_token_counts
+
         while self._next_batch < self.plan.steps * self.num_batches_per_step:
             optimizer_step = self._next_batch // self.num_batches_per_step
             batch_in_step = self._next_batch % self.num_batches_per_step
@@ -186,8 +195,6 @@ class FixedTokenDataLoader(BaseDataLoader):
             if batch_in_step + 1 == self.num_batches_per_step:
                 self._write_step_contract(optimizer_step)
 
-            from torchtitan.components.data.types import TokenizedTrainingMicrobatch
-            from torchtitan.models.deepseek_v3.mtp import get_mtp_token_counts
             labels = labels_BL.to(torch.long).reshape(-1)
             positions = positions_BL.to(torch.long).reshape(-1)
             padding = torch.zeros_like(labels, dtype=torch.bool)
