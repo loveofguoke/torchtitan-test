@@ -13,9 +13,10 @@ from tests.glm5_2_nvidia.workflow import run_cli  # noqa: E402
 
 if __name__ == "__main__":
     if sys.argv[1:] in (["--compare-attention-8k"], ["--diagnose-attention-8k"],
-                        ["--measure-gather-8k"]):
+                        ["--measure-gather-8k"], ["--compare-attention-8k-dynamic"]):
         from tests.glm5_2_nvidia.attention_ab_run import supervise
 
         raise SystemExit(supervise(diagnose=sys.argv[1] == "--diagnose-attention-8k",
-                                   gather=sys.argv[1] == "--measure-gather-8k"))
+                                   gather=sys.argv[1] == "--measure-gather-8k",
+                                   dynamic=sys.argv[1] == "--compare-attention-8k-dynamic"))
     raise SystemExit(run_cli())

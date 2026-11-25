@@ -9,7 +9,7 @@ import tempfile
 import time
 
 
-def supervise(*, diagnose=False, gather=False):
+def supervise(*, diagnose=False, gather=False, dynamic=False):
     root = Path(__file__).resolve().parents[2]
     outputs = root / "outputs"
     outputs.mkdir(exist_ok=True)
@@ -44,6 +44,24 @@ def supervise(*, diagnose=False, gather=False):
         try:
             worker = (f"from tests.glm5_2_nvidia.attention_ab import main; main(diagnose={diagnose!r})")
             env = os.environ.copy()
+            if dynamic:
+                import hashlib
+                import importlib.util
+                import shutil
+                from tests.glm5_2_nvidia.gather_loop_ab import dynamic_source
+
+                pkg = Path(importlib.util.find_spec("attn_gym").origin).parent
+                dest = path.parent / "overlay" / "attn_gym"
+                shutil.copytree(pkg, dest, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+                source = dest / "sparse/gather_attn/impl/triton/forward.py"
+                before = hashlib.sha256(source.read_bytes()).hexdigest()
+                source.write_text(dynamic_source(source.read_text()))
+                note(f"isolated generic gather forward: {before} -> {hashlib.sha256(source.read_bytes()).hexdigest()}")
+                env["PYTHONPATH"] = os.pathsep.join([str(dest.parent), env.get("PYTHONPATH", "")])
+                env["TRITON_CACHE_DIR"] = str(path.parent / "triton-cache")
+                worker = ("import attn_gym; from pathlib import Path; "
+                          f"assert Path(attn_gym.__file__).resolve().parent == Path({str(dest)!r}); "
+                          + worker)
             if gather:
                 worker = "from tests.glm5_2_nvidia.gather_probe import main; main()"
                 env["TRITON_CACHE_DIR"] = str(path.parent / "triton-cache")
@@ -84,6 +102,8 @@ def supervise(*, diagnose=False, gather=False):
             label = "8K first-forward diagnostic" if diagnose else "8K attention A/B"
             if gather:
                 label = "8K fused gather forward cold/warm"
+            if dynamic:
+                label = "8K dynamic-loop sparse vs dense causal Flex"
             note(f"{label} | exit_code={rc}")
             if rc == 0:
                 note(result)
