@@ -105,9 +105,7 @@ def verify(run, phase):
         tokens = torch.randint(cfg.vocab_size, (ab.T + 1,)).cuda()
         return ab.measure(cfg, True, {}, tokens, torch.arange(ab.T, device="cuda"), one_step=True)
 
-    call_ab = phase.startswith("call_")
-    snapshot = Path(os.environ["GLM_GATHER_INPUTS"]) if call_ab else run / "inputs.pt"
-    q, local, pool, ids, cu, cuk, scale, *_ = torch.load(snapshot)
+    q, local, pool, ids, cu, cuk, scale, *_ = torch.load(run / "inputs.pt")
     q.requires_grad_()
     pool.requires_grad_()
     rows = [0, 7, 511, 4096, 8191]
@@ -144,7 +142,9 @@ def glm_core(run, phase):
     from torch.nn.attention.flex_attention import create_block_mask, flex_attention
 
     assert Path(attn_gym.__file__).resolve().parent == run / phase / "attn_gym"
-    q, local, pool, ids, cu, cuk, scale, *_ = torch.load(run / "inputs.pt")
+    call_ab = phase.startswith("call_")
+    snapshot = Path(os.environ["GLM_GATHER_INPUTS"]) if call_ab else run / "inputs.pt"
+    q, local, pool, ids, cu, cuk, scale, *_ = torch.load(snapshot)
     assert tuple(q.shape) == (1, 8, 8192, 256) and ids.shape[-1] == 512
     if "_heads" in phase:
         heads = int(phase.split("_heads")[1])
