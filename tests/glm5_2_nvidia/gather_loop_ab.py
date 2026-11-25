@@ -127,9 +127,55 @@ def verify(run, phase):
     print("RESULT gradient five query rows, all heads; Q/shared pool relative_l2", errors, flush=True)
 
 
+def glm_core(run, phase):
+    import torch
+    import triton
+    import attn_gym
+    from attn_gym.sparse.gather_attn import gather_attn
+    from torch.nn.attention.flex_attention import create_block_mask, flex_attention
+
+    assert Path(attn_gym.__file__).resolve().parent == run / phase / "attn_gym"
+    q, local, pool, ids, cu, cuk, scale, *_ = torch.load(run / "inputs.pt")
+    assert tuple(q.shape) == (1, 8, 8192, 256) and ids.shape[-1] == 512
+    assert cu.tolist() == cuk.tolist() == [0, 8192]
+    q.requires_grad_()
+    pool.requires_grad_()
+    torch.manual_seed(61)
+    grad = torch.randn_like(q)
+    dense = phase == "glm_dense"
+    if dense:
+        mask = create_block_mask(lambda b, h, i, j: i >= j, 1, 1, 8192, 8192, device="cuda")
+        flex = torch.compile(flex_attention)
+        def call():
+            return flex(q, pool, pool, scale=scale, block_mask=mask, enable_gqa=True)
+    else:
+        def call():
+            return gather_attn(q, local, pool, ids, scale=scale, sliding_window_size=0,
+                               cu_seqlens=cu, cu_seqlens_k=cuk, impl="fused",
+                               kernel_options={"backend": "triton"})
+    with torch.no_grad():
+        out = call()
+        for r in (0, 127, 2047, 8191):
+            ix = ids[0, r].long()
+            kv = (pool[0, 0, :r+1] if dense else pool[0, 0, ix[ix >= 0]]).float()
+            qr = q[0, :, r].float()
+            ref = ((qr @ kv.T * scale).softmax(-1) @ kv if len(kv) else torch.zeros_like(qr))
+            torch.testing.assert_close(out[0, :, r].float(), ref, atol=.025, rtol=.04)
+        del out
+        fwd = triton.testing.do_bench(call, warmup=100, rep=500, return_mode="median")
+    out = call()
+    def backward():
+        return torch.autograd.grad(out, (q, pool), grad, retain_graph=True)
+    assert all(g.isfinite().all() for g in backward())
+    bwd = triton.testing.do_bench(backward, warmup=100, rep=500, return_mode="median")
+    print("RESULT", phase, json.dumps(dict(fwd_ms=fwd, bwd_ms=bwd, oracle_rows=4)), flush=True)
+
+
 def main():
     if len(sys.argv) == 3:
         phase, run = sys.argv[1], Path(sys.argv[2])
+        if phase in ("glm_gather", "glm_dense"):
+            return glm_core(run, phase)
         if phase in ("csa_gather", "csa_flex", "gather_bench", "dense_bench"):
             from tests.glm5_2_nvidia.dsv4_csa_control import run_control
             return run_control(run, phase)
@@ -139,7 +185,8 @@ def main():
     check = sys.argv[1:] == ["--verify-training"]
     csa = sys.argv[1:] == ["--dsv4-csa-control"]
     direct = sys.argv[1:] == ["--dsv4-gather-vs-dense"]
-    if sys.argv[1:] and not (check or csa or direct):
+    glm = sys.argv[1:] == ["--glm-gather-vs-dense"]
+    if sys.argv[1:] and not (check or csa or direct or glm):
         raise ValueError("expected --verify-training or no arguments")
     root = Path(__file__).resolve().parents[2]
     outputs = root / "outputs"
@@ -153,6 +200,8 @@ def main():
         phases = ("prepare", "gradient", "step") if check else ("prepare", "static", "dynamic")
         if direct:
             phases = ("gather_bench", "dense_bench")
+        if glm:
+            phases = ("prepare", "glm_gather", "glm_dense")
         for phase in (("csa_gather", "csa_flex") if csa else phases):
             env = os.environ.copy()
             if phase != "prepare":
@@ -160,12 +209,12 @@ def main():
                 shutil.copytree(pkg, dest, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
                 path = dest / "sparse/gather_attn/impl/triton/forward.py"
                 src = path.read_text()
-                if phase not in ("static", "csa_flex", "dense_bench"):
+                if phase not in ("static", "csa_flex", "dense_bench", "glm_dense"):
                     path.write_text(dynamic_source(src))
                 print(phase, "forward.py SHA256", hashlib.sha256(path.read_bytes()).hexdigest(), flush=True)
                 env["PYTHONPATH"] = os.pathsep.join([str(dest.parent), env.get("PYTHONPATH", "")])
                 env["TRITON_CACHE_DIR"] = str(dest.parent / "cache")
-            limit = 300 if direct or csa or phase in ("gradient", "step") else 180
+            limit = 300 if direct or csa or phase in ("gradient", "step", "glm_gather", "glm_dense") else 180
             print(f"{phase}: start (limit {limit}s per process)", flush=True)
             with log.open("a") as f:
                 p = subprocess.Popen([sys.executable, "-u", "-m", module, phase, str(run)],
