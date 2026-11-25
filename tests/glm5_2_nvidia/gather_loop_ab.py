@@ -144,6 +144,10 @@ def glm_core(run, phase):
     assert Path(attn_gym.__file__).resolve().parent == run / phase / "attn_gym"
     q, local, pool, ids, cu, cuk, scale, *_ = torch.load(run / "inputs.pt")
     assert tuple(q.shape) == (1, 8, 8192, 256) and ids.shape[-1] == 512
+    if "_heads" in phase:
+        heads = int(phase.split("_heads")[1])
+        # Tile the same captured queries; allocate before either timed region.
+        q = q.repeat(1, heads // 8, 1, 1).contiguous()
     assert cu.tolist() == cuk.tolist() == [0, 8192]
     if phase == "glm_recent":
         valid = ids >= 0
@@ -158,7 +162,7 @@ def glm_core(run, phase):
     pool.requires_grad_()
     torch.manual_seed(61)
     grad = torch.randn_like(q)
-    dense = phase == "glm_dense"
+    dense = phase.split("_heads")[0] == "glm_dense"
     if dense:
         mask = create_block_mask(lambda b, h, i, j: i >= j, 1, 1, 8192, 8192, device="cuda")
         flex = torch.compile(flex_attention)
@@ -190,7 +194,7 @@ def glm_core(run, phase):
 def main():
     if len(sys.argv) == 3:
         phase, run = sys.argv[1], Path(sys.argv[2])
-        if phase in ("glm_gather", "glm_dense", "glm_recent"):
+        if phase.split("_heads")[0] in ("glm_gather", "glm_dense", "glm_recent"):
             return glm_core(run, phase)
         if phase in ("csa_gather", "csa_flex", "gather_bench", "dense_bench"):
             from tests.glm5_2_nvidia.dsv4_csa_control import run_control
@@ -203,7 +207,8 @@ def main():
     direct = sys.argv[1:] == ["--dsv4-gather-vs-dense"]
     glm = sys.argv[1:] == ["--glm-gather-vs-dense"]
     locality = sys.argv[1:] == ["--glm-index-locality"]
-    if sys.argv[1:] and not (check or csa or direct or glm or locality):
+    sweep = sys.argv[1:] == ["--glm-head-sweep"]
+    if sys.argv[1:] and not (check or csa or direct or glm or locality or sweep):
         raise ValueError("expected --verify-training or no arguments")
     root = Path(__file__).resolve().parents[2]
     outputs = root / "outputs"
@@ -224,6 +229,9 @@ def main():
             phases = ("prepare", "glm_gather", "glm_dense")
         if locality:
             phases = ("prepare", "glm_gather", "glm_recent")
+        if sweep:
+            phases = ("prepare", *(f"glm_{backend}_heads{h}" for h in (8, 16, 32, 64)
+                                    for backend in ("gather", "dense")))
         for phase in (("csa_gather", "csa_flex") if csa else phases):
             env = os.environ.copy()
             if phase != "prepare":
@@ -231,12 +239,12 @@ def main():
                 shutil.copytree(pkg, dest, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
                 path = dest / "sparse/gather_attn/impl/triton/forward.py"
                 src = path.read_text()
-                if phase not in ("static", "csa_flex", "dense_bench", "glm_dense"):
+                if phase.split("_heads")[0] not in ("static", "csa_flex", "dense_bench", "glm_dense"):
                     path.write_text(dynamic_source(src))
                 print(phase, "forward.py SHA256", hashlib.sha256(path.read_bytes()).hexdigest(), flush=True)
                 env["PYTHONPATH"] = os.pathsep.join([str(dest.parent), env.get("PYTHONPATH", "")])
                 env["TRITON_CACHE_DIR"] = str(dest.parent / "cache")
-            limit = 300 if direct or csa or locality or phase in ("gradient", "step", "glm_gather", "glm_dense") else 180
+            limit = 300 if direct or csa or locality or sweep or phase in ("gradient", "step", "glm_gather", "glm_dense") else 180
             print(f"{phase}: start (limit {limit}s per process)", flush=True)
             with log.open("a") as f:
                 p = subprocess.Popen([sys.executable, "-u", "-m", module, phase, str(run)],
