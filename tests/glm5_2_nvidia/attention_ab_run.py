@@ -9,7 +9,7 @@ import tempfile
 import time
 
 
-def supervise(*, diagnose=False, gather=False, dynamic=False):
+def supervise(*, diagnose=False, gather=False, dynamic=False, blockmask=False):
     root = Path(__file__).resolve().parents[2]
     outputs = root / "outputs"
     outputs.mkdir(exist_ok=True)
@@ -44,6 +44,9 @@ def supervise(*, diagnose=False, gather=False, dynamic=False):
         try:
             worker = (f"from tests.glm5_2_nvidia.attention_ab import main; main(diagnose={diagnose!r})")
             env = os.environ.copy()
+            if blockmask:
+                worker = "from tests.glm5_2_nvidia.blockmask_ab import main; main()"
+                note("sparse_frozen_indexer = historical cf7f91e3 BlockMask, not gather")
             if dynamic:
                 import hashlib
                 import importlib.util
@@ -104,6 +107,8 @@ def supervise(*, diagnose=False, gather=False, dynamic=False):
                 label = "8K fused gather forward cold/warm"
             if dynamic:
                 label = "8K dynamic-loop sparse vs dense causal Flex"
+            if blockmask:
+                label = "8K historical BlockMask vs dense causal Flex"
             note(f"{label} | exit_code={rc}")
             if rc == 0:
                 note(result)
