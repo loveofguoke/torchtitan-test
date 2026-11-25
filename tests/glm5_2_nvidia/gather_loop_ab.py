@@ -143,7 +143,8 @@ def glm_core(run, phase):
 
     assert Path(attn_gym.__file__).resolve().parent == run / phase / "attn_gym"
     call_ab = phase.startswith("call_")
-    snapshot = Path(os.environ["GLM_GATHER_INPUTS"]) if call_ab else run / "inputs.pt"
+    profiling = phase.startswith("profile_")
+    snapshot = Path(os.environ["GLM_GATHER_INPUTS"]) if call_ab or profiling else run / "inputs.pt"
     q, local, pool, ids, cu, cuk, scale, *_ = torch.load(snapshot)
     assert tuple(q.shape) == (1, 8, 8192, 256) and ids.shape[-1] == 512
     if "_heads" in phase:
@@ -164,11 +165,11 @@ def glm_core(run, phase):
     pool.requires_grad_()
     torch.manual_seed(61)
     grad = torch.randn_like(q)
-    dense = phase.split("_heads")[0] == "glm_dense"
-    if call_ab:
+    dense = phase.split("_heads")[0] == "glm_dense" or phase == "profile_dense"
+    if call_ab or phase == "profile_gather":
         from torchtitan.models.glm5.dsa import AuxRequest, gather_attn as production_gather
         kw = dict(scale=scale, sliding_window_size=0, impl="fused", return_aux=AuxRequest(lse=False))
-        if phase != "call_default_offsets":
+        if phase not in ("call_default_offsets", "profile_gather"):
             kw["kernel_options"] = {"backend": "triton"}
         if phase != "call_triton_no_offsets":
             kw.update(cu_seqlens=cu, cu_seqlens_k=cuk)
@@ -208,12 +209,32 @@ def glm_core(run, phase):
                 torch.testing.assert_close(value, expected, atol=.04, rtol=.05)
     bwd = triton.testing.do_bench(backward, warmup=100, rep=500, return_mode="median")
     print("RESULT", phase, json.dumps(dict(fwd_ms=fwd, bwd_ms=bwd, oracle_rows=4)), flush=True)
+    if profiling:
+        for label, fn in (("forward", torch.no_grad()(call)), ("backward", backward)):
+            torch.cuda.synchronize()
+            with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,
+                                                    torch.profiler.ProfilerActivity.CUDA]) as prof:
+                for _ in range(3):
+                    fn()
+                torch.cuda.synchronize()
+            path = run / f"{phase}-{label}.json"
+            prof.export_chrome_trace(str(path))
+            totals = {}
+            for e in json.loads(path.read_text())["traceEvents"]:
+                if e.get("cat") in ("kernel", "gpu_memcpy", "gpu_memset") and e.get("ph") == "X":
+                    v = totals.setdefault(e["name"], [0, 0.0])
+                    v[0] += 1
+                    v[1] += e["dur"]
+            if not totals:
+                raise RuntimeError("No GPU activities captured; check CUDA profiler/CUPTI availability")
+            for name, (count, us) in sorted(totals.items(), key=lambda x: -x[1][1])[:8]:
+                print(f"RESULT {phase} {label} ms_per_iteration={us/3000:.3f} launches_over_3={count} {name}", flush=True)
 
 
 def main():
     if len(sys.argv) == 3:
         phase, run = sys.argv[1], Path(sys.argv[2])
-        if phase.startswith("call_") or phase.split("_heads")[0] in ("glm_gather", "glm_dense", "glm_recent"):
+        if phase.startswith(("call_", "profile_")) or phase.split("_heads")[0] in ("glm_gather", "glm_dense", "glm_recent"):
             return glm_core(run, phase)
         if phase in ("csa_gather", "csa_flex", "gather_bench", "dense_bench"):
             from tests.glm5_2_nvidia.dsv4_csa_control import run_control
@@ -228,7 +249,8 @@ def main():
     locality = sys.argv[1:] == ["--glm-index-locality"]
     sweep = sys.argv[1:] == ["--glm-head-sweep"]
     calls = sys.argv[1:] == ["--glm-call-ab"]
-    if sys.argv[1:] and not (check or csa or direct or glm or locality or sweep or calls):
+    profile = sys.argv[1:] == ["--glm-kernel-profile"]
+    if sys.argv[1:] and not (check or csa or direct or glm or locality or sweep or calls or profile):
         raise ValueError("expected --verify-training or no arguments")
     root = Path(__file__).resolve().parents[2]
     outputs = root / "outputs"
@@ -254,6 +276,8 @@ def main():
                                     for backend in ("gather", "dense")))
         if calls:
             phases = ("call_default_offsets", "call_triton_offsets", "call_triton_no_offsets")
+        if profile:
+            phases = ("profile_gather", "profile_dense")
         for phase in (("csa_gather", "csa_flex") if csa else phases):
             env = os.environ.copy()
             if phase != "prepare":
