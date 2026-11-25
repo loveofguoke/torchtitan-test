@@ -13,14 +13,21 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 
 
 def dynamic_source(src):
+    # Already-patched H20 fixture: accept the exact previously measured kernel.
+    if hashlib.sha256(src.encode()).hexdigest() == "4039586e5d65fcb9c5d35fab72039e9dcfefe781cca5a30603a22963bcd3b2b2":
+        return src
     lines = src.splitlines(keepends=True)
     kernel, = (n for n in ast.parse(src).body
                if isinstance(n, ast.FunctionDef) and n.name == "_gather_attn_fwd")
-    loop, = (n for n in ast.walk(kernel) if isinstance(n, ast.For)
-             and ast.unparse(n.iter) == "tl.static_range(0, TOPK)")
+    loops = [n for n in ast.walk(kernel) if isinstance(n, ast.For)
+             and ast.unparse(n.iter) == "tl.static_range(0, TOPK)"]
+    if len(loops) != 1:
+        raise ValueError(f"unsupported gather source {hashlib.sha256(src.encode()).hexdigest()}: found {len(loops)} matching static loops")
+    loop, = loops
     lines[loop.lineno - 1] = lines[loop.lineno - 1].replace("tl.static_range", "tl.range")
     return "".join(lines)
 
@@ -206,7 +213,10 @@ def main():
     pkg = Path(importlib.util.find_spec("attn_gym").origin).parent
     module = "tests.glm5_2_nvidia.gather_loop_ab"
     codes = {}
+    phase = "setup"
     try:
+        with log.open("a") as f:
+            print("attn_gym source:", pkg, file=f)
         phases = ("prepare", "gradient", "step") if check else ("prepare", "static", "dynamic")
         if direct:
             phases = ("gather_bench", "dense_bench")
@@ -247,6 +257,10 @@ def main():
                         p.wait(timeout=5)
             if (phase == "prepare" or check) and codes[phase]:
                 break
+    except Exception:
+        codes[phase] = 1
+        with log.open("a") as f:
+            traceback.print_exc(file=f)
     finally:
         lines = log.read_text(errors="replace").splitlines() if log.exists() else []
         summary = ["========== SUMMARY ==========", str(codes) + " (124=timeout)",
