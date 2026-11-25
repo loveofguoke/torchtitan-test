@@ -26,7 +26,7 @@ def config_snapshot(value):
 
 def load_model_config(flavor="debugmodel"):
     from torchtitan.config.parallelism import ParallelismConfig
-    from torchtitan_recipes.tests.models.glm5_configs import resolve_model_config
+    from tests.glm5_2_common.experiment_configs import resolve_model_config
 
     return resolve_model_config(flavor, parallelism=ParallelismConfig())
 

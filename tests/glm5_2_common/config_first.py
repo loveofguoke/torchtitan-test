@@ -120,7 +120,10 @@ def legacy_config():
     from torchtitan.config.parallelism import ParallelismConfig
     from torchtitan_recipes.tests.models import glm5 as glm5_recipes
 
-    factory = getattr(glm5_recipes, str(_LEGACY_CONFIG_STATE["factory"]))
+    if _LEGACY_CONFIG_STATE["factory"] == "glm5_2_scaled_debugmodel":
+        from tests.glm5_2_common.experiment_configs import scaled_recipe as factory
+    else:
+        factory = getattr(glm5_recipes, str(_LEGACY_CONFIG_STATE["factory"]))
     overrides = dict(_LEGACY_CONFIG_STATE["overrides"])
 
     parallelism = ParallelismConfig()

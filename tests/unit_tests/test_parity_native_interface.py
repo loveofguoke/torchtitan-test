@@ -187,7 +187,7 @@ def test_hf_mla_norms_follow_native_debug_configuration(monkeypatch):
 @pytest.mark.parametrize("flavor", ["debugmodel", "glm5_2_scaled_debugmodel"])
 def test_parity_uses_moved_experiment_factory_without_changing_snapshot(flavor):
     from tests.glm5_2_parity.model_config import config_snapshot, load_model_config
-    from torchtitan_recipes.tests.models.glm5_configs import resolve_model_config
+    from tests.glm5_2_common.experiment_configs import resolve_model_config
 
     native = load_model_config(flavor)
     assert config_snapshot(native) == config_snapshot(resolve_model_config(flavor))
